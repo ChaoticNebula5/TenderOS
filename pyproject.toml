@@ -1,0 +1,41 @@
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker", "packages/*"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+files = ["apps/api/src", "apps/worker/src", "packages/*/src"]
+mypy_path = [
+    "apps/api/src",
+    "apps/worker/src",
+    "packages/core/src",
+    "packages/db/src",
+    "packages/domain/src",
+    "packages/ingestion/src",
+    "packages/retrieval/src",
+    "packages/agents/src",
+    "packages/orchestration/src",
+    "packages/graph_projection/src",
+    "packages/commercial/src",
+    "packages/tools/src",
+    "packages/observability/src",
+    "packages/evals/src",
+]
