@@ -4,19 +4,8 @@ requires-python = "==3.12.*"
 
 [manifest]
 members = [
-    "tenderos-agents",
     "tenderos-api",
-    "tenderos-commercial",
-    "tenderos-core",
-    "tenderos-db",
-    "tenderos-domain",
-    "tenderos-evals",
-    "tenderos-graph-projection",
-    "tenderos-ingestion",
-    "tenderos-observability",
-    "tenderos-orchestration",
-    "tenderos-retrieval",
-    "tenderos-tools",
+    "tenderos-backend",
     "tenderos-worker",
 ]
 
@@ -31,11 +20,11 @@ dev = [
 
 [[package]]
 name = "annotated-doc"
-version = "0.0.4"
+version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/57/ba/046ceea27344560984e26a590f90bc7f4a75b06701f653222458922b558c/annotated_doc-0.0.4.tar.gz", hash = "sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4", size = 7288, upload-time = "2025-11-10T22:07:42.062Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl", hash = "sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320", size = 5303, upload-time = "2025-11-10T22:07:40.673Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
 ]
 
 [[package]]
@@ -126,7 +115,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.140.6"
+version = "0.140.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -135,9 +124,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/d5/d4590616c444770ff573db077bfa798dd3816e164256dbf99891444187c8/fastapi-0.140.6.tar.gz", hash = "sha256:ca7bc6d8233210d26409424209cf5202533fd5ca24c16b2d43ac67c64e5fb3f3", size = 421733, upload-time = "2026-07-27T16:31:49.803Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/cb/7a4d2c2eb5a5d8a91763c05b7383d72917862e32f780daa0e27ffbb34cc6/fastapi-0.140.13.tar.gz", hash = "sha256:500172a08cf1459901f90b05c37d93060dada3b573fec8f0862445db52ba6b4b", size = 424843, upload-time = "2026-07-28T15:37:00.805Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/85/fe220e93709420f15f4a2f018d66de04391943a0de45cc8c640709837359/fastapi-0.140.6-py3-none-any.whl", hash = "sha256:5f141f4341f82cfd916bb3860c576275966936060e3a6de04b2b7055da165893", size = 131122, upload-time = "2026-07-27T16:31:48.35Z" },
+    { url = "https://files.pythonhosted.org/packages/84/4e/f9e8c762ef5e05c40482131e3d5e8b36bca13fa127578261f1d6b35a25d4/fastapi-0.140.13-py3-none-any.whl", hash = "sha256:8b017110e1e9f30a95e8bdb8f71fbe2f0fe3af5717109e5b14f9e069df54f6d4", size = 131222, upload-time = "2026-07-28T15:37:02.124Z" },
 ]
 
 [[package]]
@@ -476,11 +465,6 @@ wheels = [
 ]
 
 [[package]]
-name = "tenderos-agents"
-version = "0.1.0"
-source = { editable = "packages/agents" }
-
-[[package]]
 name = "tenderos-api"
 version = "0.1.0"
 source = { editable = "apps/api" }
@@ -498,59 +482,9 @@ requires-dist = [
 ]
 
 [[package]]
-name = "tenderos-commercial"
+name = "tenderos-backend"
 version = "0.1.0"
-source = { editable = "packages/commercial" }
-
-[[package]]
-name = "tenderos-core"
-version = "0.1.0"
-source = { editable = "packages/core" }
-
-[[package]]
-name = "tenderos-db"
-version = "0.1.0"
-source = { editable = "packages/db" }
-
-[[package]]
-name = "tenderos-domain"
-version = "0.1.0"
-source = { editable = "packages/domain" }
-
-[[package]]
-name = "tenderos-evals"
-version = "0.1.0"
-source = { editable = "packages/evals" }
-
-[[package]]
-name = "tenderos-graph-projection"
-version = "0.1.0"
-source = { editable = "packages/graph_projection" }
-
-[[package]]
-name = "tenderos-ingestion"
-version = "0.1.0"
-source = { editable = "packages/ingestion" }
-
-[[package]]
-name = "tenderos-observability"
-version = "0.1.0"
-source = { editable = "packages/observability" }
-
-[[package]]
-name = "tenderos-orchestration"
-version = "0.1.0"
-source = { editable = "packages/orchestration" }
-
-[[package]]
-name = "tenderos-retrieval"
-version = "0.1.0"
-source = { editable = "packages/retrieval" }
-
-[[package]]
-name = "tenderos-tools"
-version = "0.1.0"
-source = { editable = "packages/tools" }
+source = { editable = "packages/tenderos_backend" }
 
 [[package]]
 name = "tenderos-worker"
@@ -580,15 +514,15 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.51.0"
+version = "0.52.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/65/b7c6c443ccc58678c91e1e973bbe2a878591538655d6e1d47f24ba1c51f3/uvicorn-0.51.0.tar.gz", hash = "sha256:f6f4b69b657c312f516dd2d268ab9ae6f254b11e4bac504f37b2ab58b24dd0b0", size = 94412, upload-time = "2026-07-08T10:59:05.962Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/c8/2d307868453a4bca6e64fa3581d122ae0748a0869c53f159339def179c7c/uvicorn-0.52.0.tar.gz", hash = "sha256:ca8876ad6c1983f394157c168b39d52f6dd56dabf5602fa0982751cffc2293ae", size = 97504, upload-time = "2026-07-29T08:45:34.065Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/ec/dbb7e5a6b91f86bfb9eb7d2988a2730907b6a729875b949c7f022e8b88fa/uvicorn-0.51.0-py3-none-any.whl", hash = "sha256:5d38af6cd620f2ae3849fb44fd4879e0890aa1febe8d47eb355fb45d93fe6a5b", size = 73219, upload-time = "2026-07-08T10:59:04.44Z" },
+    { url = "https://files.pythonhosted.org/packages/39/e6/b5c0630ace9757232aec07112be8146b812787db52141ff9d50674aa7634/uvicorn-0.52.0-py3-none-any.whl", hash = "sha256:3d887809810b89ed33501bcf0a9aba469b06ecd608158efce04bd6b48d8c9b08", size = 79058, upload-time = "2026-07-29T08:45:32.492Z" },
 ]
 
 [package.optional-dependencies]

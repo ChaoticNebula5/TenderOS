@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker", "packages/*"]
+members = ["apps/api", "apps/worker", "packages/tenderos_backend"]
 
 [dependency-groups]
 dev = [
@@ -22,20 +22,9 @@ python_version = "3.12"
 namespace_packages = true
 explicit_package_bases = true
 ignore_missing_imports = true
-files = ["apps/api/src", "apps/worker/src", "packages/*/src"]
+files = ["apps/api/src", "apps/worker/src", "packages/tenderos_backend/src"]
 mypy_path = [
     "apps/api/src",
     "apps/worker/src",
-    "packages/core/src",
-    "packages/db/src",
-    "packages/domain/src",
-    "packages/ingestion/src",
-    "packages/retrieval/src",
-    "packages/agents/src",
-    "packages/orchestration/src",
-    "packages/graph_projection/src",
-    "packages/commercial/src",
-    "packages/tools/src",
-    "packages/observability/src",
-    "packages/evals/src",
+    "packages/tenderos_backend/src",
 ]
