@@ -1,3 +1,8 @@
+# Internal planning/spec docs — not part of the public repo
+/CLAUDE.md
+/TenderOS-PRD.md
+/TenderOS-Build-Guide.md
+
 # Secrets
 .env
 .env.*
