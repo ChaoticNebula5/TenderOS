@@ -1,5 +1,17 @@
+from redis import Redis
+from rq import Queue, Worker
+
+from tenderos_worker.settings import settings
+
+# Queue names per Build Guide Part B §R1 (Long-Running Execution Model).
+QUEUE_NAMES = ["ingestion", "workflow", "projection", "evaluation", "maintenance"]
+
+
 def main() -> None:
-    raise NotImplementedError("RQ worker wiring arrives with B1/B2")
+    connection = Redis.from_url(settings.redis_url)
+    queues = [Queue(name, connection=connection) for name in QUEUE_NAMES]
+    worker = Worker(queues, connection=connection)
+    worker.work()
 
 
 if __name__ == "__main__":
