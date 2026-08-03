@@ -13,6 +13,7 @@ RUN uv sync --frozen --package tenderos-api
 
 COPY apps/api apps/api
 COPY packages/tenderos_backend packages/tenderos_backend
+COPY alembic.ini alembic.ini
 
 EXPOSE 8000
 

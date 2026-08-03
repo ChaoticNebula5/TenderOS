@@ -8,8 +8,14 @@ from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
 
 from tenderos_api.config import settings
+from tenderos_api.errors import register_exception_handlers
+from tenderos_api.routes import auth, organizations, tenders
 
 app = FastAPI(title="TenderOS API")
+register_exception_handlers(app)
+app.include_router(auth.router)
+app.include_router(organizations.router)
+app.include_router(tenders.router)
 
 
 @app.get("/health/live")

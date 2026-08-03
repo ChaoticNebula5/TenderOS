@@ -13,5 +13,6 @@ RUN uv sync --frozen --package tenderos-worker
 
 COPY apps/worker apps/worker
 COPY packages/tenderos_backend packages/tenderos_backend
+COPY alembic.ini alembic.ini
 
 CMD ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.worker"]
