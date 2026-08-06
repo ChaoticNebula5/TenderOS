@@ -10,6 +10,14 @@ dependencies = [
     "pyjwt>=2.9",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
+    "langgraph>=0.6",
+    # LangGraph's own Postgres checkpointer (A3.1) is psycopg (v3)-based, not
+    # asyncpg - it owns only its own checkpoint tables (created via .setup(),
+    # not Alembic), never domain writes. See Part P: "verify current LangGraph
+    # PostgreSQL checkpointer package/imports" - this pairing is the
+    # build-time-verifiable piece, not a locked contract detail.
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary,pool]>=3.2",
 ]
 
 [build-system]

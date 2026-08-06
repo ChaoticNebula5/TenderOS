@@ -1,19 +1,29 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from redis import Redis
 from rq import Queue
+from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.events.outbox_events import (
+    AGGREGATE_APPROVAL_GATE,
+    AGGREGATE_WORKFLOW_RUN,
+    EVENT_GATE_DECISION_RECORDED,
+    EVENT_WORKFLOW_RUN_CREATED,
+)
 
 from tenderos_worker.jobs.placeholder import process_outbox_event
+from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 from tenderos_worker.settings import settings
 
 logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 5
-QUEUE_NAME = "maintenance"
+DEFAULT_QUEUE_NAME = "maintenance"
 
 
 def _backoff_seconds(attempt_count: int) -> float:
@@ -22,27 +32,68 @@ def _backoff_seconds(attempt_count: int) -> float:
     return float(2**attempt_count)
 
 
+def _default_dispatch(event: OutboxEvent) -> tuple[str, Callable[..., Any], tuple, str]:
+    return (
+        DEFAULT_QUEUE_NAME,
+        process_outbox_event,
+        (str(event.id), event.aggregate_type, event.event_type),
+        f"outbox-{event.id}",
+    )
+
+
+def _workflow_run_created_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    workflow_run_id = event.payload["workflow_run_id"]
+    return "workflow", run_workflow, (workflow_run_id,), f"workflow-{workflow_run_id}"
+
+
+def _gate_decision_recorded_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    workflow_run_id = event.payload["workflow_run_id"]
+    gate_id = event.payload["gate_id"]
+    return (
+        "workflow",
+        resume_workflow,
+        (workflow_run_id, gate_id),
+        # Underscore, not the dash B2 used for outbox-{event.id} - that job_id
+        # has exactly one UUID, but this one has two, and UUIDs themselves
+        # contain hyphens, so dash-joining two of them would be ambiguous to
+        # split back apart (RQ job_ids only allow [A-Za-z0-9_-], no colons,
+        # per B2's earlier RQ constraint discovery - I3's own examples use
+        # colons, which is invalid either way).
+        f"resume_{workflow_run_id}_{gate_id}",
+    )
+
+
+# (aggregate_type, event_type) -> a function building (queue_name, job_fn,
+# job_args, job_id) for that event. Anything not listed here falls back to
+# _default_dispatch (maintenance queue, generic process_outbox_event) - same
+# "no real consumer yet" placeholder every other event type still uses.
+_ROUTES: dict[
+    tuple[str, str], Callable[[OutboxEvent], tuple[str, Callable[..., Any], tuple, str]]
+] = {
+    (AGGREGATE_WORKFLOW_RUN, EVENT_WORKFLOW_RUN_CREATED): _workflow_run_created_dispatch,
+    (AGGREGATE_APPROVAL_GATE, EVENT_GATE_DECISION_RECORDED): _gate_decision_recorded_dispatch,
+}
+
+
 async def _dispatch_once() -> None:
     connection = Redis.from_url(settings.redis_url)
-    queue = Queue(QUEUE_NAME, connection=connection)
+    queues = {name: Queue(name, connection=connection) for name in (DEFAULT_QUEUE_NAME, "workflow")}
 
     async with UnitOfWork() as uow:
         pending = await uow.outbox.get_pending(max_attempts=MAX_ATTEMPTS)
         for event in pending:
+            build_dispatch = _ROUTES.get(
+                (event.aggregate_type, event.event_type), _default_dispatch
+            )
+            queue_name, job_fn, job_args, job_id = build_dispatch(event)
+
             enqueue_succeeded = True
             try:
-                queue.enqueue(
-                    process_outbox_event,
-                    str(event.id),
-                    event.aggregate_type,
-                    event.event_type,
-                    # RQ's job_id only allows letters/numbers/underscores/dashes -
-                    # no colons, unlike Part I3's own job-ID examples (e.g.
-                    # "ingest:{document_id}:{parser_version}"). Same identifying
-                    # info, different delimiter - a library-constraint fix, not
-                    # a contract change (Part P).
-                    job_id=f"outbox-{event.id}",
-                )
+                queues[queue_name].enqueue(job_fn, *job_args, job_id=job_id)
             except Exception:
                 logger.exception("Failed to enqueue outbox event %s", event.id)
                 enqueue_succeeded = False

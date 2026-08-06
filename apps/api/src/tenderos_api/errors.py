@@ -46,6 +46,24 @@ class InvalidTokenError(APIError):
         super().__init__(401, "INVALID_TOKEN", "Invalid or expired token.")
 
 
+class GateAlreadyDecidedError(APIError):
+    def __init__(self) -> None:
+        super().__init__(
+            409,
+            "GATE_ALREADY_DECIDED",
+            "This gate already has a different recorded decision.",
+        )
+
+
+class IdempotencyKeyRequiredError(APIError):
+    def __init__(self) -> None:
+        super().__init__(
+            400,
+            "IDEMPOTENCY_KEY_REQUIRED",
+            "This operation requires an Idempotency-Key header (Part I1).",
+        )
+
+
 async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,

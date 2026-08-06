@@ -12,6 +12,7 @@ from tenderos_backend.db.session import get_session as _get_backend_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 from tenderos_backend.domain.services import tender_service
+from tenderos_backend.orchestration.gates import action_for_gate_type
 
 from tenderos_api.errors import OrgAccessDeniedError
 
@@ -57,9 +58,46 @@ async def _resolve_organization_id(request: Request) -> UUID:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
         return tender.organization_id
 
+    run_id = request.path_params.get("run_id")
+    if run_id is not None:
+        return await _organization_id_for_run(UUID(run_id))
+
+    gate_id = request.path_params.get("gate_id")
+    if gate_id is not None:
+        async with UnitOfWork() as uow:
+            gate = await uow.gates.get(UUID(gate_id))
+        if gate is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
+        return await _organization_id_for_run(gate.workflow_run_id)
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
+
+
+async def _organization_id_for_run(run_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.get_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Workflow run not found"
+            )
+        tender = await uow.tenders.get(run.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _check_permission(organization_id: UUID, current_user: User, action: str) -> None:
+    async with UnitOfWork() as uow:
+        membership = await uow.memberships.get(organization_id, current_user.id)
+
+        if membership is None:
+            raise OrgAccessDeniedError()
+
+        member_role = Role(membership.role)
+        if member_role not in ACTION_ROLES[action]:
+            raise OrgAccessDeniedError()
 
 
 def require_permission(action: str) -> Callable[..., Awaitable[User]]:
@@ -71,17 +109,33 @@ def require_permission(action: str) -> Callable[..., Awaitable[User]]:
 
     async def _dependency(request: Request, current_user: User = Depends(get_current_user)) -> User:
         organization_id = await _resolve_organization_id(request)
-
-        async with UnitOfWork() as uow:
-            membership = await uow.memberships.get(organization_id, current_user.id)
-
-            if membership is None:
-                raise OrgAccessDeniedError()
-
-            member_role = Role(membership.role)
-            if member_role not in ACTION_ROLES[action]:
-                raise OrgAccessDeniedError()
-
+        await _check_permission(organization_id, current_user, action)
         return current_user
 
     return _dependency
+
+
+async def require_gate_decision_permission(
+    request: Request, current_user: User = Depends(get_current_user)
+) -> User:
+    """RBAC for POST /gates/{gate_id}/decision specifically.
+
+    require_permission's action is a fixed string chosen at route-decoration
+    time, but this route's required action depends on the gate's OWN
+    gate_type (orchestration.gates.GATE_TYPE_ACTIONS - a gate opened as
+    "final_readiness" needs a different action than one opened as
+    "requirement_review"), which isn't known until the gate is fetched from
+    the DB. Same membership/role check as require_permission, just with the
+    action resolved dynamically instead of passed in statically.
+    """
+    gate_id = request.path_params.get("gate_id")
+    if gate_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No gate_id in path")
+    async with UnitOfWork() as uow:
+        gate = await uow.gates.get(UUID(gate_id))
+    if gate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
+
+    organization_id = await _resolve_organization_id(request)
+    await _check_permission(organization_id, current_user, action_for_gate_type(gate.gate_type))
+    return current_user

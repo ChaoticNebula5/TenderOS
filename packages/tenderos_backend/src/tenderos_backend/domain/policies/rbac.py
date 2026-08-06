@@ -46,4 +46,10 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
         {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.TALENT_REVIEWER, Role.ADMIN}
     ),
     "manage_users_roles": frozenset({Role.ADMIN}),
+    # Not in Part H's matrix - added in B3 alongside POST /workflow-runs/{id}/cancel
+    # (G3 lists the route, I6 defines cancellation semantics, but no RBAC row
+    # names who may call it). Mirrors "Create bid"'s bid_manager+admin row with
+    # approver added, since approver already sits above bid_manager in every
+    # other gate-adjacent row (compliance, resource, commercial, final readiness).
+    "cancel_workflow_run": frozenset({Role.BID_MANAGER, Role.APPROVER, Role.ADMIN}),
 }

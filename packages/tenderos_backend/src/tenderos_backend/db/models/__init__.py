@@ -6,8 +6,15 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.user import User
+from tenderos_backend.db.models.workflow import (
+    ApprovalGate,
+    WorkflowRun,
+    WorkflowTask,
+    WorkflowTaskDependency,
+)
 
 __all__ = [
+    "ApprovalGate",
     "AuditEvent",
     "Base",
     "IdempotencyRecord",
@@ -16,4 +23,7 @@ __all__ = [
     "OutboxEvent",
     "Tender",
     "User",
+    "WorkflowRun",
+    "WorkflowTask",
+    "WorkflowTaskDependency",
 ]
