@@ -1,0 +1,147 @@
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
+
+
+class DocumentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_by_tender_and_hash(self, tender_id: uuid.UUID, sha256: str) -> Document | None:
+        result = await self._session.execute(
+            select(Document).where(Document.tender_id == tender_id, Document.sha256 == sha256)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self,
+        tender_id: uuid.UUID,
+        side: str,
+        doc_type: str,
+        filename: str,
+        storage_key: str,
+        sha256: str,
+        mime_type: str | None,
+        file_size_bytes: int,
+    ) -> Document:
+        document = Document(
+            tender_id=tender_id,
+            side=side,
+            doc_type=doc_type,
+            filename=filename,
+            storage_key=storage_key,
+            sha256=sha256,
+            mime_type=mime_type,
+            file_size_bytes=file_size_bytes,
+        )
+        self._session.add(document)
+        await self._session.flush()
+        return document
+
+    async def get(self, document_id: uuid.UUID) -> Document | None:
+        return await self._session.get(Document, document_id)
+
+    async def list_for_tender(self, tender_id: uuid.UUID) -> list[Document]:
+        result = await self._session.execute(
+            select(Document).where(Document.tender_id == tender_id).order_by(Document.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def update_parse_status(
+        self, document_id: uuid.UUID, status: str, page_count: int | None = None
+    ) -> None:
+        document = await self._session.get(Document, document_id)
+        if document is None:
+            raise ValueError(f"Document {document_id} not found")
+        document.parse_status = status
+        if page_count is not None:
+            document.page_count = page_count
+        await self._session.flush()
+
+    async def get_ingestion_run(
+        self, document_id: uuid.UUID, parser_version: str
+    ) -> DocumentIngestionRun | None:
+        result = await self._session.execute(
+            select(DocumentIngestionRun).where(
+                DocumentIngestionRun.document_id == document_id,
+                DocumentIngestionRun.parser_version == parser_version,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_ingestion_run(
+        self, document_id: uuid.UUID, parser_version: str
+    ) -> DocumentIngestionRun:
+        run = DocumentIngestionRun(
+            document_id=document_id, status="queued", parser_version=parser_version
+        )
+        self._session.add(run)
+        await self._session.flush()
+        return run
+
+    async def mark_ingestion_run_status(
+        self,
+        run_id: uuid.UUID,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        run = await self._session.get(DocumentIngestionRun, run_id)
+        if run is None:
+            raise ValueError(f"DocumentIngestionRun {run_id} not found")
+        run.status = status
+        if status == "running" and run.started_at is None:
+            run.started_at = datetime.now(UTC)
+        if status in ("completed", "failed"):
+            run.completed_at = datetime.now(UTC)
+        run.error_code = error_code
+        run.error_message = error_message
+        await self._session.flush()
+
+    async def list_chunks_for_document(self, document_id: uuid.UUID) -> list[DocumentChunk]:
+        result = await self._session.execute(
+            select(DocumentChunk)
+            .where(DocumentChunk.document_id == document_id)
+            .order_by(DocumentChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
+    async def delete_chunks_for_document(self, document_id: uuid.UUID) -> None:
+        for chunk in await self.list_chunks_for_document(document_id):
+            await self._session.delete(chunk)
+        await self._session.flush()
+
+    async def create_chunk(
+        self,
+        document_id: uuid.UUID,
+        chunk_index: int,
+        chunk_text: str,
+        normalized_text: str,
+        content_hash: str,
+        page_num: int | None = None,
+        sheet_name: str | None = None,
+        cell_range: str | None = None,
+        heading_path: list | None = None,
+        token_count: int | None = None,
+        embedding: list[float] | None = None,
+    ) -> DocumentChunk:
+        chunk = DocumentChunk(
+            document_id=document_id,
+            chunk_index=chunk_index,
+            chunk_text=chunk_text,
+            normalized_text=normalized_text,
+            content_hash=content_hash,
+            page_num=page_num,
+            sheet_name=sheet_name,
+            cell_range=cell_range,
+            heading_path=heading_path,
+            token_count=token_count,
+            embedding=embedding,
+        )
+        self._session.add(chunk)
+        await self._session.flush()
+        return chunk

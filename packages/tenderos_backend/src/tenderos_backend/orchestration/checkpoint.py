@@ -6,10 +6,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from tenderos_backend.core.config import settings
 
-# ruff/mypy will flag AsyncPostgresSaver/settings as unused until the
-# TODO(human) body below is filled in - expected, left in deliberately as the
-# "already in scope" imports the docstring describes.
-
 
 @asynccontextmanager
 async def get_checkpointer() -> AsyncIterator[BaseCheckpointSaver]:

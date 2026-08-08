@@ -1,5 +1,6 @@
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.base import Base
+from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
 from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.models.membership import OrganizationMembership
 from tenderos_backend.db.models.organization import Organization
@@ -17,6 +18,9 @@ __all__ = [
     "ApprovalGate",
     "AuditEvent",
     "Base",
+    "Document",
+    "DocumentChunk",
+    "DocumentIngestionRun",
     "IdempotencyRecord",
     "Organization",
     "OrganizationMembership",

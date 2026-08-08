@@ -70,6 +70,10 @@ async def _resolve_organization_id(request: Request) -> UUID:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
         return await _organization_id_for_run(gate.workflow_run_id)
 
+    document_id = request.path_params.get("document_id")
+    if document_id is not None:
+        return await _organization_id_for_document(UUID(document_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -83,6 +87,29 @@ async def _organization_id_for_run(run_id: UUID) -> UUID:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Workflow run not found"
             )
         tender = await uow.tenders.get(run.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_document(document_id: UUID) -> UUID:
+    """A document is scoped to EITHER a tender or an organization directly
+    (Part C's ck_document_scope CHECK enforces exactly one). Tender-scoped
+    documents resolve through their tender; org-scoped ones (B6's company
+    knowledge) already carry organization_id.
+    """
+    async with UnitOfWork() as uow:
+        document = await uow.documents.get(document_id)
+        if document is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        if document.organization_id is not None:
+            return document.organization_id
+        if document.tender_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Document has neither tender nor organization scope",
+            )
+        tender = await uow.tenders.get(document.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id

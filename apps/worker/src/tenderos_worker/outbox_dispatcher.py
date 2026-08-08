@@ -10,11 +10,14 @@ from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
+    AGGREGATE_DOCUMENT,
     AGGREGATE_WORKFLOW_RUN,
+    EVENT_DOCUMENT_UPLOADED,
     EVENT_GATE_DECISION_RECORDED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 
+from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 from tenderos_worker.settings import settings
@@ -67,6 +70,20 @@ def _gate_decision_recorded_dispatch(
     )
 
 
+def _document_uploaded_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    document_id = event.payload["document_id"]
+    return (
+        "ingestion",
+        parse_and_embed_document,
+        (document_id,),
+        # I3's example is ingest:{document_id}:{parser_version}; underscores
+        # for the same reason as resume_ above (RQ rejects colons in job_ids).
+        f"ingest_{document_id}_{PARSER_VERSION}",
+    )
+
+
 # (aggregate_type, event_type) -> a function building (queue_name, job_fn,
 # job_args, job_id) for that event. Anything not listed here falls back to
 # _default_dispatch (maintenance queue, generic process_outbox_event) - same
@@ -76,12 +93,16 @@ _ROUTES: dict[
 ] = {
     (AGGREGATE_WORKFLOW_RUN, EVENT_WORKFLOW_RUN_CREATED): _workflow_run_created_dispatch,
     (AGGREGATE_APPROVAL_GATE, EVENT_GATE_DECISION_RECORDED): _gate_decision_recorded_dispatch,
+    (AGGREGATE_DOCUMENT, EVENT_DOCUMENT_UPLOADED): _document_uploaded_dispatch,
 }
 
 
 async def _dispatch_once() -> None:
     connection = Redis.from_url(settings.redis_url)
-    queues = {name: Queue(name, connection=connection) for name in (DEFAULT_QUEUE_NAME, "workflow")}
+    queues = {
+        name: Queue(name, connection=connection)
+        for name in (DEFAULT_QUEUE_NAME, "workflow", "ingestion")
+    }
 
     async with UnitOfWork() as uow:
         pending = await uow.outbox.get_pending(max_attempts=MAX_ATTEMPTS)

@@ -23,6 +23,8 @@ extend-immutable-calls = [
     "fastapi.Query",
     "fastapi.Body",
     "fastapi.Path",
+    "fastapi.File",
+    "fastapi.Form",
     "tenderos_api.dependencies.require_permission",
     "tenderos_api.idempotency.get_idempotency_context",
 ]

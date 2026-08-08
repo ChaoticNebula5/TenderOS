@@ -7,6 +7,26 @@ EVENT_TENDER_CREATED = "TenderCreated"
 
 AGGREGATE_TENDER = "tender"
 
+# G2 step 5: "Commit ingestion outbox event." This is the "later block" the
+# comment above already named - B14 later lists "DocumentUploaded" among its
+# own outbox events for SSE dispatch, but B4 is the real first owner: this is
+# what triggers the ingestion RQ job, same role WorkflowRunCreated plays for
+# the workflow queue.
+EVENT_DOCUMENT_UPLOADED = "DocumentUploaded"
+
+AGGREGATE_DOCUMENT = "document"
+
+
+def document_uploaded_payload(document_id: uuid.UUID, tender_id: uuid.UUID) -> dict:
+    return {
+        "document_id": str(document_id),
+        "tender_id": str(tender_id),
+    }
+
+
+def document_uploaded_idempotency_key(document_id: uuid.UUID) -> str:
+    return f"document_uploaded:{document_id}"
+
 
 def tender_created_payload(tender_id: uuid.UUID, organization_id: uuid.UUID, name: str) -> dict:
     return {
