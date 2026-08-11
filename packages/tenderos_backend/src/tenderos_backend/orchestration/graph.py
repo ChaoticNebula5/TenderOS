@@ -8,8 +8,10 @@ from tenderos_backend.orchestration.nodes.requirement import (
     commercial_stub_node,
     compliance_stub_node,
     requirement_gate_node,
-    requirement_stub_node,
     talent_stub_node,
+)
+from tenderos_backend.orchestration.nodes.requirement_extraction import (
+    requirement_extraction_node,
 )
 from tenderos_backend.orchestration.nodes.specialist_dispatch import dispatch_specialists
 from tenderos_backend.orchestration.nodes.specialist_join import specialist_join_node
@@ -24,7 +26,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("specialist_dispatch", lambda _state: {})
     builder.add_node("load_context", load_context_node)
     builder.add_node("supervisor", supervisor_node)
-    builder.add_node("requirement_stub", requirement_stub_node)
+    builder.add_node("requirement_extraction", requirement_extraction_node)
     builder.add_node("requirement_gate", requirement_gate_node)
     builder.add_node("compliance_stub", compliance_stub_node)
     builder.add_node("talent_stub", talent_stub_node)
@@ -34,8 +36,8 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
 
     builder.add_edge(START, "load_context")
     builder.add_edge("load_context", "supervisor")
-    builder.add_edge("supervisor", "requirement_stub")
-    builder.add_edge("requirement_stub", "requirement_gate")
+    builder.add_edge("supervisor", "requirement_extraction")
+    builder.add_edge("requirement_extraction", "requirement_gate")
     builder.add_edge("compliance_stub", "specialist_join")
     builder.add_edge("talent_stub", "specialist_join")
     builder.add_edge("commercial_stub", "specialist_join")

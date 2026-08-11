@@ -110,6 +110,30 @@ class DocumentRepository:
         )
         return list(result.scalars().all())
 
+    async def get_chunk(self, chunk_id: uuid.UUID) -> DocumentChunk | None:
+        return await self._session.get(DocumentChunk, chunk_id)
+
+    async def list_chunks_for_tender(self, tender_id: uuid.UUID) -> list[DocumentChunk]:
+        # Ordered by (document, chunk_index) so batch.py's provenance-respecting
+        # batcher sees each document's chunks contiguously and in original
+        # reading order - it groups consecutive same-provenance chunks, which
+        # only means something if the input is already in that order.
+        result = await self._session.execute(
+            select(DocumentChunk)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(Document.tender_id == tender_id)
+            .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
+    async def all_parsed_for_tender(self, tender_id: uuid.UUID) -> bool:
+        # all() on an empty list is True - guarded explicitly so a tender with
+        # zero uploaded documents doesn't silently pass this check and start a
+        # workflow run that extracts nothing and pauses at requirement_gate
+        # with an empty, confusing "review" screen.
+        documents = await self.list_for_tender(tender_id)
+        return len(documents) > 0 and all(doc.parse_status == "parsed" for doc in documents)
+
     async def delete_chunks_for_document(self, document_id: uuid.UUID) -> None:
         for chunk in await self.list_chunks_for_document(document_id):
             await self._session.delete(chunk)

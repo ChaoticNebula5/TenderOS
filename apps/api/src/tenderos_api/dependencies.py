@@ -15,6 +15,7 @@ from tenderos_backend.domain.services import tender_service
 from tenderos_backend.orchestration.gates import action_for_gate_type
 
 from tenderos_api.errors import OrgAccessDeniedError
+from tenderos_api.schemas.requirements import MergeRequirementsRequest
 
 _bearer_scheme = HTTPBearer()
 
@@ -74,6 +75,10 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if document_id is not None:
         return await _organization_id_for_document(UUID(document_id))
 
+    requirement_id = request.path_params.get("requirement_id")
+    if requirement_id is not None:
+        return await _organization_id_for_requirement(UUID(requirement_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -110,6 +115,19 @@ async def _organization_id_for_document(document_id: UUID) -> UUID:
                 detail="Document has neither tender nor organization scope",
             )
         tender = await uow.tenders.get(document.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_requirement(requirement_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        requirement = await uow.requirements.get(requirement_id)
+        if requirement is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
+            )
+        tender = await uow.tenders.get(requirement.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id
@@ -165,4 +183,25 @@ async def require_gate_decision_permission(
 
     organization_id = await _resolve_organization_id(request)
     await _check_permission(organization_id, current_user, action_for_gate_type(gate.gate_type))
+    return current_user
+
+
+async def require_merge_permission(
+    body: MergeRequirementsRequest, current_user: User = Depends(get_current_user)
+) -> User:
+    """RBAC for POST /requirements/merge specifically - that route has no
+    {requirement_id} in its path (it takes several, in the body), so
+    require_permission's path-param-based _resolve_organization_id has
+    nothing to key off. Resolves organization_id from the body's first
+    requirement_id instead - same "resolve dynamically, not from the path"
+    shape as require_gate_decision_permission, just body-keyed instead of
+    gate-type-keyed. FastAPI parses/validates `body` once and shares it with
+    the route handler's own body parameter - not read twice.
+    """
+    if not body.requirement_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="requirement_ids must not be empty"
+        )
+    organization_id = await _organization_id_for_requirement(body.requirement_ids[0])
+    await _check_permission(organization_id, current_user, "review_requirements")
     return current_user

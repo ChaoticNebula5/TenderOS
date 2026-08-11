@@ -75,3 +75,29 @@ def gate_decision_recorded_idempotency_key(gate_id: uuid.UUID) -> str:
     # key never needs a second identifying segment the way the RQ resume
     # job_id does (that one is keyed by decision content too - see I3).
     return f"gate_decision_recorded:{gate_id}"
+
+
+# G5's POST /requirements/{id}/verify - a human asking, on demand, for the
+# extract-then-verify agent to (re-)check one specific requirement. Line 538
+# forbids running an LLM call inside a FastAPI request, so this route can only
+# ever write this event and return; the worker's outbox_dispatcher does the
+# actual verification call, same "commit the intent, let the dispatcher hand
+# it to RQ" shape DocumentUploaded/WorkflowRunCreated already use.
+EVENT_REQUIREMENT_VERIFICATION_REQUESTED = "RequirementVerificationRequested"
+
+AGGREGATE_REQUIREMENT = "requirement"
+
+
+def requirement_verification_requested_payload(requirement_id: uuid.UUID) -> dict:
+    return {"requirement_id": str(requirement_id)}
+
+
+def requirement_verification_requested_idempotency_key(
+    requirement_id: uuid.UUID, request_id: uuid.UUID
+) -> str:
+    # Unlike gate decisions (write-once) or document upload (SHA-256 already
+    # dedups), a human may legitimately ask to re-verify the same requirement
+    # more than once (e.g. after editing its text) - request_id makes each
+    # call its own outbox row instead of colliding on a bare requirement_id
+    # key, mirroring reprocess_document's "fresh identifier per call" choice.
+    return f"requirement_verification_requested:{requirement_id}:{request_id}"

@@ -5,6 +5,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import tender_service, workflow_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.errors import DocumentsNotReadyError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.workflow import (
     AuditEventResponse,
@@ -33,9 +34,12 @@ async def create_workflow_run(
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
 
-    run = await workflow_service.create_workflow_run(
-        tender_id=tender_id, organization_id=tender.organization_id, created_by=current_user.id
-    )
+    try:
+        run = await workflow_service.create_workflow_run(
+            tender_id=tender_id, organization_id=tender.organization_id, created_by=current_user.id
+        )
+    except workflow_service.DocumentsNotReadyError as exc:
+        raise DocumentsNotReadyError() from exc
     response = WorkflowRunResponse.model_validate(run, from_attributes=True)
     await idempotency.finalize(202, response.model_dump(mode="json"))
     return response

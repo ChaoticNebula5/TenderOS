@@ -32,6 +32,12 @@ dependencies = [
     # (uv only honors a source override for a package that is a direct
     # dependency somewhere in the workspace, not a transitive one).
     "torch>=2.0",
+    # B5: first real LLM adapter (this project's own choice of first
+    # provider - A2's literal locked-choice cell names Anthropic; flagged in
+    # the B5 plan/commit message). Part P: verify this resolves to the SDK
+    # surface agents/llm/gemini_adapter.py was written against.
+    "google-genai>=0.3",
+    "pyyaml>=6.0",
 ]
 
 [build-system]

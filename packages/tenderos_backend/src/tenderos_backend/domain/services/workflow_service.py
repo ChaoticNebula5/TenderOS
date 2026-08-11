@@ -1,6 +1,7 @@
 import uuid
 
 from tenderos_backend.core.enums import WorkflowStatus, coarse_status_for
+from tenderos_backend.core.prompts import bundle_version
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.workflow import WorkflowRun, WorkflowTask
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -11,21 +12,33 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_run_created_payload,
 )
 
-# No real LLM agent runs in B3 (every node is a stub), so there is no real
-# prompt bundle to version yet - this becomes prompts/bundle.yaml's actual
-# bundle_version once B5's requirement extraction is the first real caller.
-_STUB_PROMPT_BUNDLE_VERSION = "unversioned-b3-stub"
-
 _CANCELLABLE_STATUSES = frozenset({"queued", "running", "waiting_for_human"})
+
+
+class DocumentsNotReadyError(Exception):
+    """B5: the graph's first real node (requirement_extraction, replacing
+    B3's no-op stub) reads every one of the tender's document_chunks in one
+    pass - if a document is still 'queued'/'parsing' when that node runs, its
+    chunks silently don't exist yet and the extraction agent never sees them,
+    directly starving the 0.90 mandatory-recall gate of content it should
+    have had. Checked here, at creation, rather than inside the node itself,
+    because a node can't usefully "wait" for an in-flight ingestion job
+    without tying up a worker slot - refusing the run before it starts is the
+    same "don't proceed on a doomed precondition" shape B4's OCR/duplicate
+    checks already use.
+    """
 
 
 async def create_workflow_run(
     tender_id: uuid.UUID, organization_id: uuid.UUID, created_by: uuid.UUID
 ) -> WorkflowRun:
     async with UnitOfWork() as uow:
+        if not await uow.documents.all_parsed_for_tender(tender_id):
+            raise DocumentsNotReadyError()
+
         run = await uow.workflow.create_run(
             tender_id=tender_id,
-            prompt_bundle_version=_STUB_PROMPT_BUNDLE_VERSION,
+            prompt_bundle_version=bundle_version(),
             model_config={},
         )
         await uow.outbox.create(

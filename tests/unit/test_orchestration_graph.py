@@ -14,7 +14,7 @@ def test_build_graph_compiles_with_expected_nodes():
     assert node_names >= {
         "load_context",
         "supervisor",
-        "requirement_stub",
+        "requirement_extraction",
         "requirement_gate",
         "specialist_dispatch",
         "compliance_stub",

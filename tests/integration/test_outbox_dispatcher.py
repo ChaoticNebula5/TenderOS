@@ -1,4 +1,5 @@
 import pytest
+from _helpers import make_ready_run_inputs
 from redis import Redis
 from rq import Queue
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -38,13 +39,8 @@ async def test_workflow_run_created_routes_to_the_workflow_queue():
     must land on the "workflow" queue running run_workflow, not "maintenance"
     running the generic process_outbox_event placeholder every other event
     type still falls back to."""
-    registered = await auth_service.register(
-        email="dispatch-routing@example.com", password="hunter2", organization_name="Routing Org"
-    )
-    tender = await tender_service.create_tender(
-        organization_id=registered.organization.id,
-        name="Routing Tender",
-        created_by=registered.user.id,
+    registered, tender = await make_ready_run_inputs(
+        "dispatch-routing@example.com", "Routing Org", "Routing Tender"
     )
     run = await workflow_service.create_workflow_run(
         tender_id=tender.id,

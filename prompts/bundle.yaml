@@ -1,2 +1,15 @@
-bundle_version: "0.0.0"
-prompts: []
+# E1: "uses a versioned prompt" - every LLM-backed agent's system prompt
+# lives in prompts/versions/{bundle_version}/, never inlined in Python, so a
+# prompt change is a diffable, versioned artifact and workflow_runs.
+# prompt_bundle_version (Part C) can record exactly which text ran.
+#
+# bundle_version becomes the real value of that column, replacing B3's
+# placeholder constant (_STUB_PROMPT_BUNDLE_VERSION in workflow_service.py) -
+# B5 is the first block with a real prompt to version.
+bundle_version: "v1"
+
+agents:
+  requirement_extraction:
+    template: requirement_extraction.md
+  requirement_verification:
+    template: requirement_verification.md

@@ -1,8 +1,20 @@
+import asyncio
+import sys
+
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models import Base
+
+if sys.platform == "win32":
+    # LangGraph's AsyncPostgresSaver (checkpoint.py) uses psycopg's async
+    # driver, which refuses to run on Windows' default ProactorEventLoop -
+    # only surfaces in tests that actually touch the checkpointer
+    # (run_workflow/resume_workflow), not the rest of the suite. Test
+    # infrastructure only; production entry points (uvicorn, the RQ worker)
+    # aren't affected by this policy since they run inside Linux containers.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

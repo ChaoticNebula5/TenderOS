@@ -43,3 +43,12 @@ Thumbs.db
 data/synthetic/*.pdf
 data/synthetic/*.docx
 data/synthetic/*.xlsx
+
+# B5's synthetic ground-truth package (scripts/synthetic_tender_a.py) - same
+# reasoning, one level deeper. data/ground_truth/*.jsonl is NOT ignored: the
+# JSONL files are the actual eval labels (Part L2), small and diffable, and
+# are committed like any other test fixture/expected-output file - only the
+# generated document binaries are regenerated-not-committed.
+data/synthetic/tender_a/*.pdf
+data/synthetic/tender_a/*.docx
+data/synthetic/tender_a/*.xlsx

@@ -2,6 +2,7 @@ from types import TracebackType
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.db.repositories.agent_traces import AgentTraceRepository
 from tenderos_backend.db.repositories.audit import AuditRepository
 from tenderos_backend.db.repositories.documents import DocumentRepository
 from tenderos_backend.db.repositories.gates import GateRepository
@@ -9,6 +10,7 @@ from tenderos_backend.db.repositories.idempotency import IdempotencyRepository
 from tenderos_backend.db.repositories.memberships import MembershipRepository
 from tenderos_backend.db.repositories.organizations import OrganizationRepository
 from tenderos_backend.db.repositories.outbox import OutboxRepository
+from tenderos_backend.db.repositories.requirements import RequirementRepository
 from tenderos_backend.db.repositories.tenders import TenderRepository
 from tenderos_backend.db.repositories.users import UserRepository
 from tenderos_backend.db.repositories.workflow import WorkflowRepository
@@ -29,6 +31,8 @@ class UnitOfWork:
         self.workflow: WorkflowRepository
         self.gates: GateRepository
         self.documents: DocumentRepository
+        self.requirements: RequirementRepository
+        self.agent_traces: AgentTraceRepository
 
     async def __aenter__(self) -> "UnitOfWork":
         self.session = await self._session_cm.__aenter__()
@@ -42,6 +46,8 @@ class UnitOfWork:
         self.workflow = WorkflowRepository(self.session)
         self.gates = GateRepository(self.session)
         self.documents = DocumentRepository(self.session)
+        self.requirements = RequirementRepository(self.session)
+        self.agent_traces = AgentTraceRepository(self.session)
         return self
 
     async def __aexit__(

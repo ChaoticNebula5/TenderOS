@@ -20,5 +20,11 @@ RUN uv sync --frozen --package tenderos-worker
 COPY apps/worker apps/worker
 COPY packages/tenderos_backend packages/tenderos_backend
 COPY alembic.ini alembic.ini
+# B5: agents/prompts/loader.py and core/prompts.py read this at a
+# CWD-relative path (WORKDIR /app matches this COPY's destination). The API
+# image needs its own copy too (apps/api/Dockerfile) - workflow_service.
+# create_workflow_run reads bundle_version() from the API process, not just
+# the worker.
+COPY prompts prompts
 
 CMD ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.worker"]

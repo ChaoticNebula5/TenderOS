@@ -1,19 +1,40 @@
+import io
 from uuid import UUID
 
+import docx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from tenderos_api.main import app
+from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.orchestration.nodes import requirement_extraction
+from tenderos_worker.jobs.ingestion import parse_and_embed_document
 from tenderos_worker.jobs.workflow import run_workflow
 
 pytestmark = pytest.mark.asyncio
+
+_DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 async def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+def _docx_bytes() -> bytes:
+    document = docx.Document()
+    document.add_paragraph("Placeholder content for workflow-run API test fixtures.")
+    buf = io.BytesIO()
+    document.save(buf)
+    return buf.getvalue()
+
+
 async def _register_and_create_tender(client: AsyncClient, email: str, org_name: str) -> tuple:
+    """Also uploads and fully ingests one document, via the real HTTP upload
+    route, then a direct parse_and_embed_document call since no live worker
+    runs in this test process - create_workflow_run now refuses to start
+    until every document has parse_status='parsed' (DocumentsNotReadyError).
+    """
     register_resp = await client.post(
         "/auth/register",
         json={"email": email, "password": "hunter2", "organization_name": org_name},
@@ -25,7 +46,16 @@ async def _register_and_create_tender(client: AsyncClient, email: str, org_name:
         json={"name": "API Test RFP"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    return token, tender_resp.json()["id"]
+    tender_id = tender_resp.json()["id"]
+
+    upload_resp = await client.post(
+        f"/tenders/{tender_id}/documents",
+        files={"file": ("placeholder.docx", _docx_bytes(), _DOCX_TYPE)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    await parse_and_embed_document(upload_resp.json()["id"])
+
+    return token, tender_id
 
 
 async def test_create_workflow_run_requires_idempotency_key():
@@ -97,11 +127,19 @@ async def test_cancel_workflow_run_requires_the_new_rbac_action():
         assert allowed.json()["status"] == "cancelled"
 
 
-async def test_gate_decision_via_http_uses_the_gate_types_own_rbac_action():
+async def test_gate_decision_via_http_uses_the_gate_types_own_rbac_action(monkeypatch):
     """requirement_review's action is review_requirements - a role with real
     org membership but the wrong permission for THIS gate_type must still be
     rejected, proving require_gate_decision_permission resolves the action
     from the gate itself rather than some fixed route-level permission."""
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "requirement_extraction",
+        ExtractionOutput,
+        [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])],
+    )
+    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+
     async with await _client() as client:
         admin_token, tender_id = await _register_and_create_tender(
             client, "wf-api-gate-admin@example.com", "WF API Gate Org"

@@ -1,28 +1,41 @@
 import pytest
+from _helpers import make_ready_run_inputs
 from sqlalchemy import select
+from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import (
-    auth_service,
-    gate_service,
-    tender_service,
-    workflow_service,
-)
+from tenderos_backend.domain.services import gate_service, workflow_service
+from tenderos_backend.orchestration.nodes import requirement_extraction
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 
 pytestmark = pytest.mark.asyncio
 
 
-async def _make_run():
-    registered = await auth_service.register(
-        email="graph-exec-test@example.com",
-        password="hunter2",
-        organization_name="Graph Exec Test Org",
+@pytest.fixture(autouse=True)
+def _fake_extraction_llm(monkeypatch):
+    # Every test in this file drives the real graph through
+    # requirement_extraction_node - autouse so no test forgets to patch it
+    # out, matching the "every automated test runs against FakeLLMClient,
+    # never a live model" rule (agents/llm/fake_client.py's own docstring).
+    # Scripted with 5 identical empty responses: this file's own fixture
+    # document produces one chunk/one batch normally, but a test isn't
+    # guaranteed to stay at exactly one call forever, and a clear
+    # AssertionError from an exhausted script is a better failure than a
+    # silent hang if that ever changes.
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "requirement_extraction",
+        ExtractionOutput,
+        [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])] * 5,
     )
-    tender = await tender_service.create_tender(
-        organization_id=registered.organization.id,
-        name="RFP Graph Exec Test",
-        created_by=registered.user.id,
+    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    return fake_client
+
+
+async def _make_run():
+    registered, tender = await make_ready_run_inputs(
+        "graph-exec-test@example.com", "Graph Exec Test Org", "RFP Graph Exec Test"
     )
     run = await workflow_service.create_workflow_run(
         tender_id=tender.id,

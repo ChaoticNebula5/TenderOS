@@ -1,14 +1,14 @@
 import pytest
+from _helpers import make_ready_run_inputs
 from langgraph.types import Send
 from sqlalchemy import select
-from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun, WorkflowTask
+from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import auth_service, tender_service, workflow_service
+from tenderos_backend.domain.services import workflow_service
 from tenderos_backend.orchestration.nodes import final_gate, requirement
 from tenderos_backend.orchestration.nodes.requirement import (
     commercial_stub_node,
     compliance_stub_node,
-    requirement_stub_node,
     talent_stub_node,
 )
 from tenderos_backend.orchestration.nodes.specialist_dispatch import (
@@ -20,13 +20,8 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _make_run() -> WorkflowRun:
-    registered = await auth_service.register(
-        email="node-test@example.com", password="hunter2", organization_name="Node Test Org"
-    )
-    tender = await tender_service.create_tender(
-        organization_id=registered.organization.id,
-        name="RFP Node Test",
-        created_by=registered.user.id,
+    registered, tender = await make_ready_run_inputs(
+        "node-test@example.com", "Node Test Org", "RFP Node Test"
     )
     return await workflow_service.create_workflow_run(
         tender_id=tender.id,
@@ -58,33 +53,11 @@ def _base_state(run: WorkflowRun) -> dict:
     }
 
 
-async def test_requirement_stub_node_creates_and_completes_its_own_task():
-    run = await _make_run()
-
-    result = await requirement_stub_node(_base_state(run))
-
-    assert result == {"status": "awaiting_requirement_review"}
-    async with UnitOfWork() as uow:
-        task = await uow.workflow.get_task_by_key(run.id, f"requirement_extraction:{run.id}")
-    assert task is not None
-    assert task.status == "completed"
-    assert task.task_type == "requirement_extraction"
-
-
-async def test_requirement_stub_node_does_not_duplicate_task_on_rerun():
-    run = await _make_run()
-
-    await requirement_stub_node(_base_state(run))
-    await requirement_stub_node(_base_state(run))
-
-    async with UnitOfWork() as uow:
-        result = await uow.session.execute(
-            select(WorkflowTask).where(
-                WorkflowTask.workflow_run_id == run.id,
-                WorkflowTask.task_type == "requirement_extraction",
-            )
-        )
-    assert len(result.scalars().all()) == 1
+# requirement_extraction_node (replacing B3's requirement_stub_node) makes a
+# real LLM call and needs real chunks to run against - its task-creation/
+# no-duplicate-on-rerun coverage now lives in
+# tests/integration/test_requirement_extraction_node.py, built against a
+# FakeLLMClient and real synthetic chunks rather than bare node-state dicts.
 
 
 @pytest.mark.parametrize("node", [compliance_stub_node, talent_stub_node, commercial_stub_node])

@@ -11,14 +11,17 @@ from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
     AGGREGATE_DOCUMENT,
+    AGGREGATE_REQUIREMENT,
     AGGREGATE_WORKFLOW_RUN,
     EVENT_DOCUMENT_UPLOADED,
     EVENT_GATE_DECISION_RECORDED,
+    EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.placeholder import process_outbox_event
+from tenderos_worker.jobs.verification import verify_requirement_job
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 from tenderos_worker.settings import settings
 
@@ -27,6 +30,20 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 POLL_INTERVAL_SECONDS = 5
 DEFAULT_QUEUE_NAME = "maintenance"
+
+# RQ's own default job_timeout (180s) is sized for short deterministic work
+# (parsing, dispatch) - B5's run_workflow/resume_workflow can now include a
+# real, sequential, multi-call LLM pipeline (N extraction batches + one
+# verification call per mandatory requirement found), which genuinely runs
+# past 180s on real network latency, not because anything is stuck - caught
+# live: B5's own Docker smoke test hit rq.timeouts.JobTimeoutException on a
+# single-document run. Ingestion also gets a generous bump since embedding a
+# large document is the same "real work takes real time" shape. Anything not
+# listed here keeps RQ's default.
+_QUEUE_TIMEOUTS_SECONDS: dict[str, int] = {
+    "workflow": 1800,
+    "ingestion": 600,
+}
 
 
 def _backoff_seconds(attempt_count: int) -> float:
@@ -70,6 +87,24 @@ def _gate_decision_recorded_dispatch(
     )
 
 
+def _requirement_verification_requested_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    requirement_id = event.payload["requirement_id"]
+    return (
+        # No dedicated queue exists for this in Part B's locked 5-queue
+        # table (ingestion/workflow/projection/evaluation/maintenance) -
+        # "workflow" is the closest fit (on-demand agent work triggered by a
+        # human action on a tender's workflow, same category as
+        # resume_workflow), reused rather than adding a 6th queue for one
+        # job type. Flagged here for the record.
+        "workflow",
+        verify_requirement_job,
+        (requirement_id,),
+        f"verify_{requirement_id}_{event.id}",
+    )
+
+
 def _document_uploaded_dispatch(
     event: OutboxEvent,
 ) -> tuple[str, Callable[..., Any], tuple, str]:
@@ -94,6 +129,10 @@ _ROUTES: dict[
     (AGGREGATE_WORKFLOW_RUN, EVENT_WORKFLOW_RUN_CREATED): _workflow_run_created_dispatch,
     (AGGREGATE_APPROVAL_GATE, EVENT_GATE_DECISION_RECORDED): _gate_decision_recorded_dispatch,
     (AGGREGATE_DOCUMENT, EVENT_DOCUMENT_UPLOADED): _document_uploaded_dispatch,
+    (
+        AGGREGATE_REQUIREMENT,
+        EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
+    ): _requirement_verification_requested_dispatch,
 }
 
 
@@ -114,7 +153,12 @@ async def _dispatch_once() -> None:
 
             enqueue_succeeded = True
             try:
-                queues[queue_name].enqueue(job_fn, *job_args, job_id=job_id)
+                queues[queue_name].enqueue(
+                    job_fn,
+                    *job_args,
+                    job_id=job_id,
+                    job_timeout=_QUEUE_TIMEOUTS_SECONDS.get(queue_name),
+                )
             except Exception:
                 logger.exception("Failed to enqueue outbox event %s", event.id)
                 enqueue_succeeded = False

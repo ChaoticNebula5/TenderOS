@@ -7,33 +7,6 @@ from tenderos_backend.domain.services.workflow_service import is_cancelled, sync
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
 from tenderos_backend.orchestration.state import SpecialistTaskState, TenderState
 
-# ruff/mypy will flag interrupt/sync_run_status/build_gate_payload/
-# derive_gate_key as unused until requirement_gate_node's TODO(human) body
-# below is filled in - expected, left in deliberately as the "already in
-# scope" imports the docstring describes.
-
-
-async def requirement_stub_node(state: TenderState) -> dict:
-    workflow_run_id = uuid.UUID(state["workflow_run_id"])
-    task_key = f"requirement_extraction:{workflow_run_id}"
-
-    async with UnitOfWork() as uow:
-        task = await uow.workflow.get_task_by_key(workflow_run_id, task_key)
-
-        if task is None:
-            task = await uow.workflow.create_task(
-                workflow_run_id=workflow_run_id,
-                task_key=task_key,
-                task_type="requirement_extraction",
-                assigned_agent="requirements",
-                priority=10,
-                input_refs={},
-            )
-        await uow.workflow.mark_task_completed(task.id, output_refs={})
-        await uow.commit()
-
-    return {"status": "awaiting_requirement_review"}
-
 
 async def requirement_gate_node(state: TenderState) -> dict:
     """R5's requirement_review human gate - the workflow's first interrupt()."""
@@ -51,21 +24,42 @@ async def requirement_gate_node(state: TenderState) -> dict:
         # way, not get overwritten to "failed" by the normal reject path below.
         return {"status": "rejected"}
 
+    tender_id = uuid.UUID(state["tender_id"])
+
     async with UnitOfWork() as uow:
         gate = await uow.gates.get_by_key(workflow_run_id, gate_key)
 
         if gate is None:
+            # Runs exactly once - interrupt() below replays this whole
+            # function on resume, but by then `gate` is no longer None, so
+            # this block (and the query it depends on) never re-runs. Safe to
+            # read requirements here because requirement_extraction_node
+            # already committed them earlier in this same graph execution,
+            # before this node runs at all.
+            requirements = await uow.requirements.list_for_tender(tender_id)
+            submission_items = await uow.requirements.list_submission_items_for_tender(tender_id)
+            clarifications = await uow.requirements.list_clarification_items_for_tender(tender_id)
+            mandatory = [r for r in requirements if r.mandatory]
+
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
                 gate_id,
                 "requirement_review",
                 workflow_run_id,
-                targets=[],
-                summary={},
+                targets=[
+                    {"target_type": "requirement", "target_id": str(r.id)} for r in requirements
+                ],
+                summary={
+                    "requirement_count": len(requirements),
+                    "mandatory_count": len(mandatory),
+                    "unverified_mandatory_count": len([r for r in mandatory if not r.verified]),
+                    "submission_item_count": len(submission_items),
+                    "clarification_count": len(clarifications),
+                },
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,
-                tender_id=uuid.UUID(state["tender_id"]),
+                tender_id=tender_id,
                 workflow_run_id=workflow_run_id,
                 gate_key=gate_key,
                 gate_type="requirement_review",

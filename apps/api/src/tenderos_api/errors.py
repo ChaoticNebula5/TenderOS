@@ -55,6 +55,15 @@ class GateAlreadyDecidedError(APIError):
         )
 
 
+class DocumentsNotReadyError(APIError):
+    def __init__(self) -> None:
+        super().__init__(
+            409,
+            "DOCUMENTS_NOT_READY",
+            "All uploaded documents must finish parsing before a workflow run can start.",
+        )
+
+
 class IdempotencyKeyRequiredError(APIError):
     def __init__(self) -> None:
         super().__init__(
