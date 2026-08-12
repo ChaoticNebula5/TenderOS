@@ -860,6 +860,7 @@ def _write_knowledge_ground_truth() -> None:
             {
                 "record_type": "certification",
                 "key": cert.key,
+                "name": cert.name,
                 "employee_key": cert.employee_key,
                 "expiry_date": cert.expiry_date,
                 "expected_expired": cert.expiry_date < "2026-08-09",

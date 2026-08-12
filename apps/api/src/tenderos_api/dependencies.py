@@ -79,6 +79,26 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if requirement_id is not None:
         return await _organization_id_for_requirement(UUID(requirement_id))
 
+    # B6 (G6): knowledge_service's own routes never carry org_id/tender_id
+    # in most of their paths (e.g. GET /knowledge/{knowledge_item_id},
+    # POST /employees/{knowledge_item_id}/verify) - these three branches
+    # were missing entirely until this fix, which meant every such route
+    # fell through to the 400 below regardless of the caller's actual
+    # permissions. Caught live: a real smoke-test run against the Docker
+    # stack returned 400 "No organization context in path" for
+    # GET /knowledge/import-batches/{batch_id}/items.
+    batch_id = request.path_params.get("batch_id")
+    if batch_id is not None:
+        return await _organization_id_for_import_batch(UUID(batch_id))
+
+    item_id = request.path_params.get("item_id")
+    if item_id is not None:
+        return await _organization_id_for_import_item(UUID(item_id))
+
+    knowledge_item_id = request.path_params.get("knowledge_item_id")
+    if knowledge_item_id is not None:
+        return await _organization_id_for_knowledge_item(UUID(knowledge_item_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -131,6 +151,37 @@ async def _organization_id_for_requirement(requirement_id: UUID) -> UUID:
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id
+
+
+async def _organization_id_for_import_batch(batch_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.get_import_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import batch not found")
+    return batch.organization_id
+
+
+async def _organization_id_for_import_item(item_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.get_import_item(item_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Import item not found"
+            )
+        batch = await uow.knowledge.get_import_batch(item.batch_id)
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import batch not found")
+    return batch.organization_id
+
+
+async def _organization_id_for_knowledge_item(knowledge_item_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+    if item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
+        )
+    return item.organization_id
 
 
 async def _check_permission(organization_id: UUID, current_user: User, action: str) -> None:

@@ -7,6 +7,7 @@ from tenderos_backend.db.repositories.audit import AuditRepository
 from tenderos_backend.db.repositories.documents import DocumentRepository
 from tenderos_backend.db.repositories.gates import GateRepository
 from tenderos_backend.db.repositories.idempotency import IdempotencyRepository
+from tenderos_backend.db.repositories.knowledge import KnowledgeRepository
 from tenderos_backend.db.repositories.memberships import MembershipRepository
 from tenderos_backend.db.repositories.organizations import OrganizationRepository
 from tenderos_backend.db.repositories.outbox import OutboxRepository
@@ -33,6 +34,7 @@ class UnitOfWork:
         self.documents: DocumentRepository
         self.requirements: RequirementRepository
         self.agent_traces: AgentTraceRepository
+        self.knowledge: KnowledgeRepository
 
     async def __aenter__(self) -> "UnitOfWork":
         self.session = await self._session_cm.__aenter__()
@@ -48,6 +50,7 @@ class UnitOfWork:
         self.documents = DocumentRepository(self.session)
         self.requirements = RequirementRepository(self.session)
         self.agent_traces = AgentTraceRepository(self.session)
+        self.knowledge = KnowledgeRepository(self.session)
         return self
 
     async def __aexit__(

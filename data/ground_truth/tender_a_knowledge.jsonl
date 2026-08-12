@@ -4,12 +4,12 @@
 {"record_type": "employee", "key": "EMP-04", "name": "Tom\u00e1s Reyes", "resume_file": "resume_tomas_reyes.docx", "expected_duplicate_of": null, "expected_incomplete": true, "expected_removed": false}
 {"record_type": "employee", "key": "EMP-05", "name": "Dana Whitfield (dup)", "resume_file": "resume_dana_whitfield_resubmit.docx", "expected_duplicate_of": "EMP-01", "expected_incomplete": false, "expected_removed": false}
 {"record_type": "employee", "key": "EMP-06", "name": "Helen Achterberg", "resume_file": null, "expected_duplicate_of": null, "expected_incomplete": false, "expected_removed": true}
-{"record_type": "certification", "key": "CERT-01", "employee_key": "EMP-01", "expiry_date": "2026-09-01", "expected_expired": false}
-{"record_type": "certification", "key": "CERT-02", "employee_key": "EMP-02", "expiry_date": "2026-05-10", "expected_expired": true}
-{"record_type": "certification", "key": "CERT-03", "employee_key": "EMP-03", "expiry_date": "2027-02-15", "expected_expired": false}
-{"record_type": "certification", "key": "CERT-04", "employee_key": "EMP-04", "expiry_date": "2023-11-01", "expected_expired": true}
-{"record_type": "certification", "key": "CERT-05", "employee_key": "EMP-01", "expiry_date": "2027-01-20", "expected_expired": false}
-{"record_type": "certification", "key": "CERT-06", "employee_key": "EMP-03", "expiry_date": "2025-06-30", "expected_expired": true}
+{"record_type": "certification", "key": "CERT-01", "name": "Tax Clearance Certificate", "employee_key": "EMP-01", "expiry_date": "2026-09-01", "expected_expired": false}
+{"record_type": "certification", "key": "CERT-02", "name": "AWS Certified Solutions Architect", "employee_key": "EMP-02", "expiry_date": "2026-05-10", "expected_expired": true}
+{"record_type": "certification", "key": "CERT-03", "name": "PMP", "employee_key": "EMP-03", "expiry_date": "2027-02-15", "expected_expired": false}
+{"record_type": "certification", "key": "CERT-04", "name": "CISSP", "employee_key": "EMP-04", "expiry_date": "2023-11-01", "expected_expired": true}
+{"record_type": "certification", "key": "CERT-05", "name": "ISO 27001 Lead Implementer", "employee_key": "EMP-01", "expiry_date": "2027-01-20", "expected_expired": false}
+{"record_type": "certification", "key": "CERT-06", "name": "PRINCE2 Practitioner", "employee_key": "EMP-03", "expiry_date": "2025-06-30", "expected_expired": true}
 {"record_type": "project", "key": "PROJECT-01", "name": "Regional Network Modernization"}
 {"record_type": "project", "key": "PROJECT-02", "name": "Citizen Services Portal"}
 {"record_type": "project", "key": "PROJECT-03", "name": "Health Records Migration"}

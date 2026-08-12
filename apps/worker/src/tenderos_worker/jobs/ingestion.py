@@ -67,8 +67,14 @@ async def parse_and_embed_document(document_id: str) -> None:
 
     async with UnitOfWork() as uow:
         document = await uow.documents.get(doc_id)
-        if document is None or document.tender_id is None:
-            raise ValueError(f"Document {doc_id} not found or not tender-scoped")
+        # B4 only ever uploaded tender-scoped documents, so this guard
+        # originally required tender_id. B6 adds organization-scoped
+        # documents (resumes, certs, employee-master, capability statement)
+        # via ck_document_scope's tender_id-XOR-organization_id row shape -
+        # parse/chunk/embed below only ever touch document_id, so the guard
+        # just needs *a* scope, not specifically a tender.
+        if document is None or (document.tender_id is None and document.organization_id is None):
+            raise ValueError(f"Document {doc_id} not found or not scoped to a tender/organization")
 
         run = await uow.documents.get_ingestion_run(doc_id, PARSER_VERSION)
         if run is None:

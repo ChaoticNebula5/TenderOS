@@ -11,9 +11,10 @@ class AgentTraceRepository:
 
     async def create(
         self,
-        tender_id: uuid.UUID,
         agent_name: str,
         status: str,
+        tender_id: uuid.UUID | None = None,
+        organization_id: uuid.UUID | None = None,
         workflow_run_id: uuid.UUID | None = None,
         task_id: uuid.UUID | None = None,
         provider: str | None = None,
@@ -28,8 +29,15 @@ class AgentTraceRepository:
         estimated_cost_usd: float | None = None,
         error_code: str | None = None,
     ) -> AgentTrace:
+        # Exactly one of tender_id/organization_id is required - enforced by
+        # ck_agent_trace_scope at the DB layer already, checked here too so a
+        # caller mistake fails at the call site with a clear message instead
+        # of a raw IntegrityError from the flush below.
+        if (tender_id is None) == (organization_id is None):
+            raise ValueError("AgentTrace requires exactly one of tender_id, organization_id")
         trace = AgentTrace(
             tender_id=tender_id,
+            organization_id=organization_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
             agent_name=agent_name,

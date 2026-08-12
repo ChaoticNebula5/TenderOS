@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +18,22 @@ class DocumentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_org_and_hash(
+        self, organization_id: uuid.UUID, sha256: str
+    ) -> Document | None:
+        # Org-scoped sibling of get_by_tender_and_hash above - B6's first
+        # caller of the uq_org_document_hash index 003_documents.py already
+        # created but nothing used until now (B4 only ever uploaded
+        # tender-scoped documents).
+        result = await self._session.execute(
+            select(Document).where(
+                Document.organization_id == organization_id, Document.sha256 == sha256
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def create(
         self,
-        tender_id: uuid.UUID,
         side: str,
         doc_type: str,
         filename: str,
@@ -27,9 +41,14 @@ class DocumentRepository:
         sha256: str,
         mime_type: str | None,
         file_size_bytes: int,
+        tender_id: uuid.UUID | None = None,
+        organization_id: uuid.UUID | None = None,
+        version: int = 1,
+        supersedes_document_id: uuid.UUID | None = None,
     ) -> Document:
         document = Document(
             tender_id=tender_id,
+            organization_id=organization_id,
             side=side,
             doc_type=doc_type,
             filename=filename,
@@ -37,6 +56,8 @@ class DocumentRepository:
             sha256=sha256,
             mime_type=mime_type,
             file_size_bytes=file_size_bytes,
+            version=version,
+            supersedes_document_id=supersedes_document_id,
         )
         self._session.add(document)
         await self._session.flush()
@@ -125,6 +146,50 @@ class DocumentRepository:
             .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
         )
         return list(result.scalars().all())
+
+    async def search_chunks_lexical_for_org(
+        self, organization_id: uuid.UUID, query_text: str, limit: int
+    ) -> list[tuple[DocumentChunk, float]]:
+        """Postgres full-text search over document_chunks.normalized_text,
+        scoped to Document.organization_id (never Document.tender_id) - this
+        is what keeps B6 retrieval from crossing organization boundaries,
+        an explicit "do not proceed if" item. Uses the same
+        to_tsvector('english', normalized_text) expression as
+        idx_document_chunks_fts (003_documents.py) so Postgres can actually
+        use that index rather than a sequential scan.
+        """
+        tsvector = sa.func.to_tsvector("english", DocumentChunk.normalized_text)
+        tsquery = sa.func.plainto_tsquery("english", query_text)
+        rank = sa.func.ts_rank(tsvector, tsquery)
+        result = await self._session.execute(
+            select(DocumentChunk, rank)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(Document.organization_id == organization_id, tsvector.op("@@")(tsquery))
+            .order_by(rank.desc())
+            .limit(limit)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def search_chunks_vector_for_org(
+        self, organization_id: uuid.UUID, query_embedding: list[float], limit: int
+    ) -> list[tuple[DocumentChunk, float]]:
+        """pgvector cosine-distance search over document_chunks.embedding,
+        same organization-boundary scoping as the lexical search above.
+        Uses idx_document_chunks_embedding_hnsw (003_documents.py). Returns
+        cosine distance (0 = identical, 2 = opposite) - the caller inverts
+        it to a similarity score for fusion, not this method's concern.
+        """
+        distance = DocumentChunk.embedding.cosine_distance(query_embedding)
+        result = await self._session.execute(
+            select(DocumentChunk, distance)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(
+                Document.organization_id == organization_id, DocumentChunk.embedding.isnot(None)
+            )
+            .order_by(distance)
+            .limit(limit)
+        )
+        return [(row[0], row[1]) for row in result.all()]
 
     async def all_parsed_for_tender(self, tender_id: uuid.UUID) -> bool:
         # all() on an empty list is True - guarded explicitly so a tender with

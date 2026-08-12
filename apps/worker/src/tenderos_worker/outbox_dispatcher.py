@@ -15,11 +15,13 @@ from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_WORKFLOW_RUN,
     EVENT_DOCUMENT_UPLOADED,
     EVENT_GATE_DECISION_RECORDED,
+    EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
+from tenderos_worker.jobs.knowledge_import import process_knowledge_document_import
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.verification import verify_requirement_job
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
@@ -119,6 +121,23 @@ def _document_uploaded_dispatch(
     )
 
 
+def _knowledge_document_uploaded_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    document_id = event.payload["document_id"]
+    batch_id = event.payload["batch_id"]
+    return (
+        # "workflow", not "ingestion" - unlike plain DocumentUploaded, this
+        # job can make LLM calls (resume/capability-statement extraction),
+        # the same multi-call-real-latency shape run_workflow/
+        # resume_workflow already justify the 1800s timeout for.
+        "workflow",
+        process_knowledge_document_import,
+        (document_id, batch_id),
+        f"knowledge_import_{document_id}",
+    )
+
+
 # (aggregate_type, event_type) -> a function building (queue_name, job_fn,
 # job_args, job_id) for that event. Anything not listed here falls back to
 # _default_dispatch (maintenance queue, generic process_outbox_event) - same
@@ -129,6 +148,10 @@ _ROUTES: dict[
     (AGGREGATE_WORKFLOW_RUN, EVENT_WORKFLOW_RUN_CREATED): _workflow_run_created_dispatch,
     (AGGREGATE_APPROVAL_GATE, EVENT_GATE_DECISION_RECORDED): _gate_decision_recorded_dispatch,
     (AGGREGATE_DOCUMENT, EVENT_DOCUMENT_UPLOADED): _document_uploaded_dispatch,
+    (
+        AGGREGATE_DOCUMENT,
+        EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
+    ): _knowledge_document_uploaded_dispatch,
     (
         AGGREGATE_REQUIREMENT,
         EVENT_REQUIREMENT_VERIFICATION_REQUESTED,

@@ -18,6 +18,27 @@ class GroundTruthRequirement:
     valid_evidence_keys: list[str]
 
 
+def load_evidence_key_names(path: Path) -> dict[str, str]:
+    """tender_a_knowledge.jsonl (B5's own extension of L2, not a locked
+    schema) carries certification/project/capability records keyed the same
+    way tender_a_requirements.jsonl's valid_evidence_keys references them
+    (e.g. "CERT-01", "PROJECT-03") - this resolves key -> the record's own
+    `name`, which retrieval eval then resolves to a real knowledge_item_id
+    by title lookup (evals/retrieval.py), since the evidence key itself is
+    never persisted anywhere in the database.
+    """
+    names: dict[str, str] = {}
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            data = json.loads(line)
+            if data.get("record_type") in ("certification", "project", "capability") and "name" in data:
+                names[data["key"]] = data["name"]
+    return names
+
+
 def load_requirements_ground_truth(path: Path) -> list[GroundTruthRequirement]:
     records = []
     with path.open(encoding="utf-8") as f:

@@ -13,6 +13,7 @@ from tenderos_api.routes import (
     auth,
     documents,
     gates,
+    knowledge,
     organizations,
     requirements,
     tenders,
@@ -28,6 +29,7 @@ app.include_router(documents.router)
 app.include_router(workflow.router)
 app.include_router(gates.router)
 app.include_router(requirements.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/health/live")

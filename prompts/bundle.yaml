@@ -13,3 +13,11 @@ agents:
     template: requirement_extraction.md
   requirement_verification:
     template: requirement_verification.md
+  resume_extraction:
+    template: resume_extraction.md
+  capability_statement_extraction:
+    template: capability_statement_extraction.md
+  worked_on_extraction:
+    template: worked_on_extraction.md
+  demonstrates_extraction:
+    template: demonstrates_extraction.md

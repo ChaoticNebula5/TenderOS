@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Integer, Numeric
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,9 +10,23 @@ from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKey
 
 class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "agent_traces"
+    __table_args__ = (
+        # B6: tender_id was NOT NULL until organization-scoped agent calls
+        # (resume/certification extraction, WORKED_ON/DEMONSTRATES) existed.
+        # Exactly one of tender_id/organization_id is set per row, mirroring
+        # documents.ck_document_scope.
+        CheckConstraint(
+            "(tender_id IS NOT NULL AND organization_id IS NULL) "
+            "OR (tender_id IS NULL AND organization_id IS NOT NULL)",
+            name="ck_agent_trace_scope",
+        ),
+    )
 
-    tender_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False
+    tender_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=True
+    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
     )
     workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True

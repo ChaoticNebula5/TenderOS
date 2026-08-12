@@ -17,11 +17,22 @@ EVENT_DOCUMENT_UPLOADED = "DocumentUploaded"
 AGGREGATE_DOCUMENT = "document"
 
 
-def document_uploaded_payload(document_id: uuid.UUID, tender_id: uuid.UUID) -> dict:
-    return {
-        "document_id": str(document_id),
-        "tender_id": str(tender_id),
-    }
+def document_uploaded_payload(
+    document_id: uuid.UUID,
+    tender_id: uuid.UUID | None = None,
+    organization_id: uuid.UUID | None = None,
+) -> dict:
+    # _document_uploaded_dispatch (outbox_dispatcher.py) only ever reads
+    # document_id from this payload, so tender_id/organization_id here are
+    # informational (visible in the outbox_events row for debugging/audit),
+    # not load-bearing for routing - safe for either to be absent depending
+    # on which scope uploaded the document.
+    payload: dict = {"document_id": str(document_id)}
+    if tender_id is not None:
+        payload["tender_id"] = str(tender_id)
+    if organization_id is not None:
+        payload["organization_id"] = str(organization_id)
+    return payload
 
 
 def document_uploaded_idempotency_key(document_id: uuid.UUID) -> str:
@@ -101,3 +112,36 @@ def requirement_verification_requested_idempotency_key(
     # call its own outbox row instead of colliding on a bare requirement_id
     # key, mirroring reprocess_document's "fresh identifier per call" choice.
     return f"requirement_verification_requested:{requirement_id}:{request_id}"
+
+
+# B6's knowledge-import upload routes (G6) create a Document (which already
+# fires DocumentUploaded above, triggering ingestion) plus a
+# knowledge_import_batches row - this second event is what triggers the
+# actual mechanical/LLM import step (parsing an employee-master row,
+# extracting a resume profile, ...) once that document exists. Reuses
+# AGGREGATE_DOCUMENT since the event is still fundamentally "this document
+# is ready to be processed," just for a different processing pipeline than
+# plain ingestion - not a new aggregate for what is still a document-shaped
+# event.
+EVENT_KNOWLEDGE_DOCUMENT_UPLOADED = "KnowledgeDocumentUploaded"
+
+
+def knowledge_document_uploaded_payload(document_id: uuid.UUID, batch_id: uuid.UUID) -> dict:
+    return {"document_id": str(document_id), "batch_id": str(batch_id)}
+
+
+def knowledge_document_uploaded_idempotency_key(
+    document_id: uuid.UUID, request_id: uuid.UUID | None = None
+) -> str:
+    # request_id is None for a genuinely new upload (document_id alone is
+    # already unique - one document is only ever freshly uploaded once).
+    # A caller re-queuing processing against an EXISTING document (B6's
+    # replace_employee_resume, when the "new" resume content happens to
+    # match one already on file for this org - documents.uq_org_document_hash
+    # means that reuses the existing row rather than inserting a duplicate)
+    # must pass a fresh one, or this collides with that document's original
+    # upload event on the unique idempotency_key constraint - caught live,
+    # same "fresh identifier per call" fix reprocess_document already needed
+    # for the plain DocumentUploaded event.
+    suffix = f":{request_id}" if request_id is not None else ""
+    return f"knowledge_document_uploaded:{document_id}{suffix}"

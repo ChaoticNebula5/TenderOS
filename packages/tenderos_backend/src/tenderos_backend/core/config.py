@@ -33,5 +33,16 @@ class Settings(BaseSettings):
     # while iterating shouldn't re-pay rate limit/cost for the same request).
     llm_cache_ttl_seconds: int = 86400
 
+    # B6 retrieval. Named as required env vars in Build Guide A2 (line
+    # 506-507) with no default value specified there - these starting
+    # values are this project's own call (same "flag before deciding"
+    # posture as B5's MAX_EXTRACTION_BATCH_TOKENS starting value), to be
+    # confirmed/tuned against the real Recall@10 gate before it's treated
+    # as final. retrieval_top_k: candidates fetched from EACH of lexical/
+    # vector before RRF fusion. rerank_top_n: results returned after
+    # reranking the fused candidates.
+    retrieval_top_k: int = 20
+    rerank_top_n: int = 10
+
 
 settings = Settings()
