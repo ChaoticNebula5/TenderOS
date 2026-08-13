@@ -99,6 +99,16 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if knowledge_item_id is not None:
         return await _organization_id_for_knowledge_item(UUID(knowledge_item_id))
 
+    # B7 (G7): GET/PATCH /compliance/{compliance_id}, .../approve, .../trace
+    # all key on compliance_id with no org_id/tender_id alongside it in the
+    # path - added proactively during B7 planning rather than waiting for a
+    # smoke test to find the gap, since this is the third block in a row
+    # (B6 added batch_id/item_id/knowledge_item_id) that needed a new branch
+    # here for its own route shape.
+    compliance_id = request.path_params.get("compliance_id")
+    if compliance_id is not None:
+        return await _organization_id_for_compliance_entry(UUID(compliance_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -182,6 +192,29 @@ async def _organization_id_for_knowledge_item(knowledge_item_id: UUID) -> UUID:
             status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
         )
     return item.organization_id
+
+
+async def _organization_id_for_compliance_entry(compliance_entry_id: UUID) -> UUID:
+    """compliance_entries carries no organization_id or tender_id of its
+    own (Part C) - it only ever reaches one through its one-to-one
+    requirement, which is itself only ever reached through its tender. Same
+    two-hop shape as _organization_id_for_requirement, just one hop longer.
+    """
+    async with UnitOfWork() as uow:
+        entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Compliance entry not found"
+            )
+        requirement = await uow.requirements.get(entry.requirement_id)
+        if requirement is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
+            )
+        tender = await uow.tenders.get(requirement.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
 
 
 async def _check_permission(organization_id: UUID, current_user: User, action: str) -> None:

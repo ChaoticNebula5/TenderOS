@@ -5,10 +5,9 @@ from sqlalchemy import select
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import workflow_service
-from tenderos_backend.orchestration.nodes import final_gate, requirement
+from tenderos_backend.orchestration.nodes import compliance, final_gate, requirement
 from tenderos_backend.orchestration.nodes.requirement import (
     commercial_stub_node,
-    compliance_stub_node,
     talent_stub_node,
 )
 from tenderos_backend.orchestration.nodes.specialist_dispatch import (
@@ -58,9 +57,12 @@ def _base_state(run: WorkflowRun) -> dict:
 # no-duplicate-on-rerun coverage now lives in
 # tests/integration/test_requirement_extraction_node.py, built against a
 # FakeLLMClient and real synthetic chunks rather than bare node-state dicts.
+# compliance_analysis_node (replacing B3's compliance_stub_node in B7) is the
+# same shape - its own coverage lives in
+# tests/integration/test_compliance_analysis_node.py for the same reason.
 
 
-@pytest.mark.parametrize("node", [compliance_stub_node, talent_stub_node, commercial_stub_node])
+@pytest.mark.parametrize("node", [talent_stub_node, commercial_stub_node])
 async def test_specialist_stub_completes_only_its_own_task(node):
     run = await _make_run()
     async with UnitOfWork() as uow:
@@ -100,6 +102,7 @@ async def test_specialist_stub_completes_only_its_own_task(node):
     ("module", "node", "gate_type"),
     [
         (requirement, requirement.requirement_gate_node, "requirement_review"),
+        (compliance, compliance.compliance_gate_node, "compliance_review"),
         (final_gate, final_gate.final_gate_node, "final_readiness"),
     ],
 )
@@ -113,9 +116,16 @@ async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
     first = await node(state)
     second = await node(state)
 
-    assert first == {
-        "status": "running_specialists" if gate_type == "requirement_review" else "ready"
-    }
+    # compliance_gate_node deliberately writes no "status" on approve (see
+    # its own docstring) - specialist_join_node owns that transition once
+    # every branch, not just this one, has completed.
+    if gate_type == "final_readiness":
+        expected = {"status": "ready"}
+    elif gate_type == "compliance_review":
+        expected = {}
+    else:
+        expected = {"status": "running_specialists"}
+    assert first == expected
     assert first == second
     async with UnitOfWork() as uow:
         result = await uow.session.execute(
@@ -140,6 +150,45 @@ async def test_requirement_gate_node_rejection_routes_to_rejected(monkeypatch):
         updated_run = await uow.workflow.get_run(run.id)
     assert updated_run is not None
     assert updated_run.status == "failed"
+
+
+async def test_compliance_gate_node_rejection_routes_to_rejected(monkeypatch):
+    monkeypatch.setattr(
+        compliance, "interrupt", lambda payload: {"decision": "reject", "notes": "not ready"}
+    )
+    run = await _make_run()
+
+    result = await compliance.compliance_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    async with UnitOfWork() as uow:
+        updated_run = await uow.workflow.get_run(run.id)
+    assert updated_run is not None
+    assert updated_run.status == "failed"
+
+
+async def test_compliance_gate_node_opens_no_gate_for_a_cancelled_run(monkeypatch):
+    interrupt_called = False
+
+    def _fail_if_called(payload):
+        nonlocal interrupt_called
+        interrupt_called = True
+        return {"decision": "approve", "notes": None}
+
+    monkeypatch.setattr(compliance, "interrupt", _fail_if_called)
+    run = await _make_run()
+    await _cancel(run)
+
+    result = await compliance.compliance_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    assert interrupt_called is False, "a cancelled run must not open interrupt() at all"
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        updated_run = await uow.workflow.get_run(run.id)
+    assert gates == []
+    assert updated_run is not None
+    assert updated_run.status == "cancelled", "must not be overwritten to 'failed'"
 
 
 async def test_dispatch_specialists_sends_one_per_specialist_node_in_order():

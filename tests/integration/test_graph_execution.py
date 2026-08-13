@@ -6,7 +6,7 @@ from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_service, workflow_service
-from tenderos_backend.orchestration.nodes import requirement_extraction
+from tenderos_backend.orchestration.nodes import compliance, requirement_extraction
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 
 pytestmark = pytest.mark.asyncio
@@ -30,6 +30,12 @@ def _fake_extraction_llm(monkeypatch):
         [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])] * 5,
     )
     monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    # compliance_analysis_node constructs its own LLM client unconditionally
+    # (before checking whether there are any requirements to evaluate) - with
+    # zero extracted requirements the fake client is never actually called,
+    # but patching it here keeps this file's real-graph-execution tests from
+    # ever depending on a real GEMINI_API_KEY being present.
+    monkeypatch.setattr(compliance, "_build_llm_client", lambda: FakeLLMClient())
     return fake_client
 
 
@@ -56,12 +62,20 @@ async def _approve(registered, gate):
 
 
 async def test_full_smoke_path_start_to_complete():
-    """B3's own smoke test: start -> requirement stub -> interrupt -> approve
-    gate -> resume -> parallel specialist stubs -> final gate -> approve ->
-    complete. Each run_workflow/resume_workflow call opens its own
-    get_checkpointer() connection independently - nothing is cached between
-    them - which is exactly what makes this equivalent to "stop worker,
-    restart worker" rather than one continuous in-memory call.
+    """B3's own smoke test, extended in B7: start -> requirement extraction
+    -> interrupt -> approve requirement_review -> resume -> parallel
+    specialist branches (compliance now real, talent/commercial still B3
+    stubs) -> compliance's own branch hits a SECOND interrupt
+    (compliance_review) before rejoining the other two at specialist_join ->
+    approve -> resume -> final gate -> approve -> complete.
+
+    Each run_workflow/resume_workflow call opens its own get_checkpointer()
+    connection independently - nothing is cached between them - which is
+    exactly what makes this equivalent to "stop worker, restart worker"
+    rather than one continuous in-memory call, and is the closest thing this
+    automated suite has to B7's own stop-gate bullet "vertical slice
+    survives worker restart" (the real Docker kill-and-restart exercise
+    covers the same property against the live stack, not just in-process).
     """
     registered, run = await _make_run()
 
@@ -91,7 +105,28 @@ async def test_full_smoke_path_start_to_complete():
     assert all(t.status == "completed" for t in specialist_tasks), (
         "parallel state reducers must not lose any of the 3 branch completions"
     )
-    assert {g.gate_type for g in gates} == {"requirement_review", "final_readiness"}
+    # compliance_analysis's own branch now chains into a second gate
+    # (compliance_review) before rejoining specialist_join - talent/
+    # commercial's branches complete without interrupting (still B3 stubs),
+    # but the whole graph superstep still pauses on compliance's interrupt,
+    # so final_readiness isn't reachable yet.
+    assert {g.gate_type for g in gates} == {"requirement_review", "compliance_review"}
+    compliance_gate_row = next(g for g in gates if g.gate_type == "compliance_review")
+
+    await _approve(registered, compliance_gate_row)
+    await resume_workflow(str(run.id), str(compliance_gate_row.id))
+
+    async with UnitOfWork() as uow:
+        after_compliance_gate = await uow.workflow.get_run(run.id)
+        gates = await uow.gates.list_for_run(run.id)
+
+    assert after_compliance_gate is not None
+    assert after_compliance_gate.status == "waiting_for_human"
+    assert {g.gate_type for g in gates} == {
+        "requirement_review",
+        "compliance_review",
+        "final_readiness",
+    }
     final_gate_row = next(g for g in gates if g.gate_type == "final_readiness")
 
     await _approve(registered, final_gate_row)

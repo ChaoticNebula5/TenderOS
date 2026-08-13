@@ -1,3 +1,4 @@
+from tenderos_backend.evals.compliance import ComplianceEvalReport
 from tenderos_backend.evals.extraction import ExtractionEvalReport
 from tenderos_backend.evals.retrieval import RetrievalEvalReport
 
@@ -101,5 +102,40 @@ def format_retrieval_report(report: RetrievalEvalReport) -> str:
         lines.append(f"Misses ({len(report.misses)}):")
         for miss in report.misses:
             lines.append(f"  {miss.requirement_key} -> {miss.evidence_key} ({miss.evidence_name}): {miss.reason}")
+
+    return "\n".join(lines)
+
+
+def format_compliance_report(report: ComplianceEvalReport) -> str:
+    """B7 has no numeric stop-gate (Build Guide: invariant-based - see the
+    three real pass/fail checks the smoke test runs instead) - this report
+    is entirely non-blocking, reported for visibility only, same posture
+    B5/B6's own non-blocking metrics (F1, Recall@5, reranked precision)
+    already carry alongside their real gates.
+    """
+    lines = [
+        "=== B7 Compliance Evaluation (reported, not blocking) ===",
+        f"Scored: {report.total_scored}  "
+        f"(excluded as needs_review: {report.total_excluded_needs_review}, "
+        f"unscoreable: {report.total_unscoreable})",
+        "",
+        f"Macro-F1:                    {report.macro_f1:.3f}",
+        f"Unsupported-compliance rate: {report.unsupported_compliance_rate:.3f}"
+        "  (fraction of expected-evidence_unavailable rows scored as "
+        "fully/partially compliant - should be 0.0)",
+    ]
+
+    if report.confusion_matrix:
+        lines.append("")
+        lines.append("Confusion matrix (expected -> actual: count):")
+        for (expected, actual), count in sorted(report.confusion_matrix.items()):
+            marker = "" if expected == actual else "  [MISMATCH]"
+            lines.append(f"  {expected} -> {actual}: {count}{marker}")
+
+    if report.mismatches:
+        lines.append("")
+        lines.append(f"Mismatches ({len(report.mismatches)}):")
+        for m in report.mismatches:
+            lines.append(f"  {m.requirement_key}: expected {m.expected_status}, got {m.actual_status}")
 
     return "\n".join(lines)

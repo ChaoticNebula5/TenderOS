@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.repositories.agent_traces import AgentTraceRepository
 from tenderos_backend.db.repositories.audit import AuditRepository
+from tenderos_backend.db.repositories.compliance import ComplianceRepository
 from tenderos_backend.db.repositories.documents import DocumentRepository
 from tenderos_backend.db.repositories.gates import GateRepository
 from tenderos_backend.db.repositories.idempotency import IdempotencyRepository
@@ -35,6 +36,7 @@ class UnitOfWork:
         self.requirements: RequirementRepository
         self.agent_traces: AgentTraceRepository
         self.knowledge: KnowledgeRepository
+        self.compliance: ComplianceRepository
 
     async def __aenter__(self) -> "UnitOfWork":
         self.session = await self._session_cm.__aenter__()
@@ -51,6 +53,7 @@ class UnitOfWork:
         self.requirements = RequirementRepository(self.session)
         self.agent_traces = AgentTraceRepository(self.session)
         self.knowledge = KnowledgeRepository(self.session)
+        self.compliance = ComplianceRepository(self.session)
         return self
 
     async def __aexit__(

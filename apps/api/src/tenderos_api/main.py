@@ -11,6 +11,7 @@ from tenderos_api.config import settings
 from tenderos_api.errors import register_exception_handlers
 from tenderos_api.routes import (
     auth,
+    compliance,
     documents,
     gates,
     knowledge,
@@ -30,6 +31,7 @@ app.include_router(workflow.router)
 app.include_router(gates.router)
 app.include_router(requirements.router)
 app.include_router(knowledge.router)
+app.include_router(compliance.router)
 
 
 @app.get("/health/live")

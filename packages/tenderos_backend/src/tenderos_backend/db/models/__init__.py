@@ -1,6 +1,11 @@
 from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.base import Base
+from tenderos_backend.db.models.compliance import (
+    ComplianceEntry,
+    ComplianceEvidence,
+    EvidenceLink,
+)
 from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
 from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.models.knowledge import (
@@ -40,11 +45,14 @@ __all__ = [
     "Capability",
     "Certification",
     "ClarificationItem",
+    "ComplianceEntry",
+    "ComplianceEvidence",
     "CompanyDocument",
     "Document",
     "DocumentChunk",
     "DocumentIngestionRun",
     "Employee",
+    "EvidenceLink",
     "IdempotencyRecord",
     "KnowledgeImportBatch",
     "KnowledgeImportItem",

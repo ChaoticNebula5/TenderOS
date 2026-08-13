@@ -79,20 +79,6 @@ async def requirement_gate_node(state: TenderState) -> dict:
     return {"status": "running_specialists"}
 
 
-async def compliance_stub_node(state: SpecialistTaskState) -> dict:
-    task_id = uuid.UUID(state["task_id"])
-
-    async with UnitOfWork() as uow:
-        await uow.workflow.mark_task_completed(
-            task_id, output_refs={"summary": "B3 compliance stub completed."}
-        )
-        await uow.commit()
-
-    return {
-        "completed_task_ids": [str(task_id)],
-    }
-
-
 async def talent_stub_node(state: SpecialistTaskState) -> dict:
     task_id = uuid.UUID(state["task_id"])
 

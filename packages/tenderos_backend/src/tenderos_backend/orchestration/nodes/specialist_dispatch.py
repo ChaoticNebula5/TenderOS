@@ -9,8 +9,11 @@ from tenderos_backend.orchestration.state import TenderState
 # supervisor_node built dispatch_task_ids in this same order, so
 # dispatch_task_ids[i] is the WorkflowTask id for _SPECIALIST_NODES[i]'s task.
 # These strings are also the exact node names graph.py registers the
-# compliance/talent/commercial stub nodes under via add_node(...).
-_SPECIALIST_NODES = ("compliance_stub", "talent_stub", "commercial_stub")
+# compliance/talent/commercial nodes under via add_node(...). "compliance_stub"
+# became "compliance_analysis" in B7 (talent_stub/commercial_stub remain B3
+# stubs, unbuilt until B8) - only the entry Send() targets changes here, since
+# compliance_analysis is still the first node compliance's branch reaches.
+_SPECIALIST_NODES = ("compliance_analysis", "talent_stub", "commercial_stub")
 
 
 async def dispatch_specialists(state: TenderState) -> list[Send]:

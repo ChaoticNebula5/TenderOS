@@ -21,3 +21,5 @@ agents:
     template: worked_on_extraction.md
   demonstrates_extraction:
     template: demonstrates_extraction.md
+  compliance_proposal:
+    template: compliance_proposal.md

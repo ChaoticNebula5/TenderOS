@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     extractor_model: str = "changeme"
     verifier_model: str = "changeme"
+    # A2.2's REASONING_MODEL alias - locked in the Build Guide's own env var
+    # table (line 500) since B2, unused until now. PRD 25.5 names this role
+    # explicitly: "strong reasoning model for complex compliance analysis" -
+    # compliance proposal is exactly that call, so it uses this alias rather
+    # than EXTRACTOR_MODEL/VERIFIER_MODEL (both tuned for B5's narrower,
+    # cheaper extraction/verification calls) or a new alias of its own.
+    reasoning_model: str = "changeme"
     # Redis-backed response cache TTL for the LLM adapter (temperature=0
     # calls are deterministic enough that re-running scripts/run_eval.py
     # while iterating shouldn't re-pay rate limit/cost for the same request).
