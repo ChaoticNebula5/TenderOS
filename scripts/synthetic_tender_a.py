@@ -592,11 +592,31 @@ class PricingDiscrepancy(TypedDict):
     issue: str
 
 
-# 4 pricing discrepancies, seeded across two pricing sheets. item_index is
-# 0-based into that sheet's line_items list (None -> the grand-total row,
-# not a specific line item) - the render function resolves this to a real
-# cell address from the actual row layout, rather than a hardcoded cell
-# reference that could silently drift out of sync with the row count.
+# 6 pricing discrepancies now (B8B extends B7's original 4), seeded across
+# two pricing sheets. item_index is 0-based into that sheet's line_items
+# list (None -> the grand-total row, not a specific line item) - the render
+# function resolves this to a real cell address from the actual row layout,
+# rather than a hardcoded cell reference that could silently drift out of
+# sync with the row count.
+#
+# B8B's own required 6 defect categories, and how each is represented here:
+# - wrong total: the two "line_total_..."/"grand_total_..." issues below
+#   (a literal wrong number in place of the working formula).
+# - missing cell: "unit_cost_missing_for_priced_line_item".
+# - currency mismatch: "mismatched_currency" - a per-row Currency column
+#   override targeting one specific row's currency cell.
+# - duplicate cost: NOT a discrepancy-dict entry at all - PRICING_1_ITEMS
+#   below simply lists "Senior Engineer", 1200, 12 twice. Two real,
+#   otherwise-correct rows that happen to be identical is exactly what the
+#   deterministic checker has to notice on its own, not something the
+#   fixture needs to inject via cell-overwriting.
+# - cross-sheet discrepancy: also not a discrepancy-dict entry - "Site
+#   Survey" appears in both PRICING_1_ITEMS and PRICING_2_ITEMS with
+#   different unit costs, the same "let the natural data disagree" approach
+#   duplicate cost uses.
+# - unsupported formula requiring human review: "unsupported_markup_formula" -
+#   a real formula (unlike the wrong-total issues' literal numbers), just
+#   not the simple `=B{row}*C{row}` shape the checker is built to recompute.
 PRICING_DISCREPANCIES: list[PricingDiscrepancy] = [
     {
         "sheet": "pricing_schedule_1.xlsx", "item_index": 0,
@@ -613,6 +633,14 @@ PRICING_DISCREPANCIES: list[PricingDiscrepancy] = [
     {
         "sheet": "pricing_schedule_2.xlsx", "item_index": 2,
         "issue": "unit_cost_missing_for_priced_line_item",
+    },
+    {
+        "sheet": "pricing_schedule_1.xlsx", "item_index": 4,
+        "issue": "mismatched_currency",
+    },
+    {
+        "sheet": "pricing_schedule_2.xlsx", "item_index": 4,
+        "issue": "unsupported_markup_formula",
     },
 ]
 
@@ -757,22 +785,34 @@ def _render_capability_statement_docx() -> bytes:
 def _render_pricing_xlsx(
     sheet_filename: str, line_items: list[tuple[str, int | float, int]]
 ) -> bytes:
-    """Lays out line_items with working =B*C formulas and a working =SUM
-    total by default, THEN overwrites specific cells per this sheet's
-    PRICING_DISCREPANCIES entries - the defects are real seeded errors in the
-    generated file, not just entries in a list that describes errors nobody
-    actually wrote.
+    """Lays out line_items with working =B*C formulas, a Currency column
+    (every row "USD" by default), and a working =SUM total, THEN overwrites
+    specific cells per this sheet's PRICING_DISCREPANCIES entries - the
+    defects are real seeded errors in the generated file, not just entries
+    in a list that describes errors nobody actually wrote.
+
+    openpyxl never actually evaluates formulas it writes (there is no Excel
+    engine involved) - a workbook it saves has no cached value behind any
+    "=B2*C2"/"=SUM(...)" cell, so pricing_checks.py's deterministic engine
+    can never rely on reading a "computed" value back out of these cells.
+    It has to recompute Line Total = Unit Cost x Quantity and Grand Total =
+    SUM(Line Totals) itself from the raw Unit Cost/Quantity/Line Total cell
+    contents - which is exactly why a defect here is a literal wrong NUMBER
+    replacing the formula (a real discrepancy between what a human sees
+    displayed and what the numbers actually support), not a broken formula
+    string.
     """
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Pricing"
     sheet["A1"], sheet["B1"], sheet["C1"] = "Item", "Unit Cost", "Quantity"
-    sheet["D1"] = "Line Total"
+    sheet["D1"], sheet["E1"] = "Line Total", "Currency"
     for i, (item, cost, qty) in enumerate(line_items, start=2):
         sheet[f"A{i}"] = item
         sheet[f"B{i}"] = cost
         sheet[f"C{i}"] = qty
         sheet[f"D{i}"] = f"=B{i}*C{i}"
+        sheet[f"E{i}"] = "USD"
     total_row = len(line_items) + 2
     sheet[f"A{total_row}"] = "Total"
     sheet[f"D{total_row}"] = f"=SUM(D2:D{total_row - 1})"
@@ -796,6 +836,19 @@ def _render_pricing_xlsx(
             row = item_index + 2
             sheet[f"B{row}"] = None
             sheet[f"D{row}"] = None
+        elif issue == "mismatched_currency":
+            assert item_index is not None, "this issue type always targets a specific line item"
+            row = item_index + 2
+            sheet[f"E{row}"] = "EUR"
+        elif issue == "unsupported_markup_formula":
+            # A real formula, unlike the wrong-total issues above - just not
+            # the simple =B{row}*C{row} shape the checker knows how to
+            # recompute (an undocumented 10% markup folded into the cell
+            # itself), so it must fall to needs_human_review rather than
+            # being silently accepted or guessed at.
+            assert item_index is not None, "this issue type always targets a specific line item"
+            row = item_index + 2
+            sheet[f"D{row}"] = f"=B{row}*C{row}*1.1"
         else:
             raise ValueError(f"Unknown pricing discrepancy issue: {issue!r}")
 
@@ -941,15 +994,29 @@ def main() -> None:
     # the point of a duplicate-detection test keyed on resume hash.
     documents["resume_dana_whitfield_resubmit.docx"] = documents["resume_dana_whitfield.docx"]
 
+    # item_index 3/4 in each sheet exist for B8B's own seeded defects, not
+    # B5's original scope: index 3 in pricing_1 is a literal duplicate of
+    # index 0 (same description/cost/quantity - the "duplicate cost" case,
+    # not injected via PRICING_DISCREPANCIES since two ordinary-looking rows
+    # that happen to be identical IS the defect). "Site Survey" appears in
+    # BOTH sheets with different unit costs (8000 here, 8500 below) - the
+    # "cross-sheet discrepancy" case, same "let the data disagree naturally"
+    # approach. Index 4 in each sheet is the target row for a
+    # PRICING_DISCREPANCIES-injected cell overwrite (currency mismatch in
+    # pricing_1, unsupported markup formula in pricing_2).
     pricing_1_items: list[tuple[str, int | float, int]] = [
         ("Senior Engineer", 1200, 12),
         ("Project Manager", 1500, 6),
         ("Site Survey", 8000, 1),
+        ("Senior Engineer", 1200, 12),
+        ("Cross-Border Logistics", 2000, 2),
     ]
     pricing_2_items: list[tuple[str, int | float, int]] = [
         ("Security Consultant", 1400, 8),
         ("Data Migration Specialist", 1600, 5),
         ("Training Delivery", 900, 3),
+        ("Site Survey", 8500, 1),
+        ("Custom Integration Work", 3000, 4),
     ]
     documents["pricing_schedule_1.xlsx"] = _render_pricing_xlsx(
         "pricing_schedule_1.xlsx", pricing_1_items

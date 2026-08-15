@@ -5,7 +5,7 @@ from langgraph.types import interrupt
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
-from tenderos_backend.orchestration.state import SpecialistTaskState, TenderState
+from tenderos_backend.orchestration.state import TenderState
 
 
 async def requirement_gate_node(state: TenderState) -> dict:
@@ -77,31 +77,3 @@ async def requirement_gate_node(state: TenderState) -> dict:
 
     await sync_run_status(workflow_run_id, "running_specialists")
     return {"status": "running_specialists"}
-
-
-async def talent_stub_node(state: SpecialistTaskState) -> dict:
-    task_id = uuid.UUID(state["task_id"])
-
-    async with UnitOfWork() as uow:
-        await uow.workflow.mark_task_completed(
-            task_id, output_refs={"summary": "B3 talent stub completed."}
-        )
-        await uow.commit()
-
-    return {
-        "completed_task_ids": [str(task_id)],
-    }
-
-
-async def commercial_stub_node(state: SpecialistTaskState) -> dict:
-    task_id = uuid.UUID(state["task_id"])
-
-    async with UnitOfWork() as uow:
-        await uow.workflow.mark_task_completed(
-            task_id, output_refs={"summary": "B3 commercial stub completed."}
-        )
-        await uow.commit()
-
-    return {
-        "completed_task_ids": [str(task_id)],
-    }

@@ -420,61 +420,136 @@ Each entry:
   batch responses; no automated assertion exists for batch.status
   specifically.
 
-## [B7] Compliance gate rejection kills the whole run, including unrelated completed branches
+## [B7/B8] Post-join gate rejection kills the whole run, including unrelated completed branches
 
 - **Discovered:** B7 planning (flagged before implementation, not found via
   testing) — reviewing how `compliance_gate_node` should fit into
   `orchestration/graph.py`'s existing fan-out (`specialist_dispatch` sends
-  `compliance_analysis`, `talent_stub`, `commercial_stub` in parallel,
-  joining at `specialist_join`).
-- **Topology note (found during implementation, not part of this
-  limitation itself):** the plan's original design nested
-  `compliance_gate_node` *inside* `compliance_analysis`'s own Send()'d
-  branch, between it and `specialist_join`. That was a real bug, not just
-  a design question — an `interrupt()`-bearing node upstream of a Send()
-  fan-in join replays its entire function (including re-delivering a
-  fresh trigger into the join) every time a *later*, unrelated interrupt
-  elsewhere in the same continuation gets resumed, which left the whole
-  workflow permanently stuck after approving `final_readiness` (caught via
-  a live step-by-step debug run, not by an assertion alone). Fixed by
-  moving `compliance_gate_node` to *after* `specialist_join`, the same
-  safe sequential slot `final_gate_node` already occupies. This entry's
-  own subject — reject-path behavior — is unaffected by that fix and is
-  written against the corrected topology below.
-- **Behaviour:** `compliance_gate_node` mirrors `requirement_gate_node`'s
-  only precedent in this codebase for a rejected gate: on `decision ==
-  "reject"`, it marks the whole `workflow_run` `"rejected"` (coarse status
-  `"failed"`) and returns, same as `requirement_gate_node` does. For
-  `requirement_gate_node` this is correct — it gates entry into the
-  specialist branches, so nothing has run yet. For `compliance_gate_node`,
-  now positioned *after* `specialist_join`, it's a weaker fit for a
-  different reason than originally described: by the time this gate can
-  reject, `talent_stub`/`commercial_stub` have *already run to
-  completion* (their `WorkflowTask` rows already show `completed`) — a
-  rejection here doesn't stop them from running, it aborts the whole run
-  after the fact, so whatever they produced is real, persisted, completed
-  work that the run then never proceeds to use.
-- **Risk:** currently low — `talent_stub`/`commercial_stub` are still B3
-  stubs that do nothing but mark their own task complete, so there is
-  nothing real to lose today. This changes the moment B8 gives those
-  branches real work (candidate matching, pricing validation): a rejected
-  compliance gate would then strand genuine, already-completed talent/
-  commercial output that had nothing to do with the compliance reviewer's
-  actual objection.
-- **Status:** accepted-for-now — matches the only existing precedent in
-  this codebase (`requirement_gate_node`'s reject behavior), not a new
-  pattern invented for B7. Scheduled to be revisited deliberately at B8,
-  when talent/commercial branches first have real output worth preserving
-  through a downstream gate's rejection — not something to silently carry
-  forward past that point.
+  `compliance_analysis`, `talent_analysis`, `commercial_analysis` in
+  parallel, joining at `specialist_join`). Revisited at B8 planning as
+  explicitly scheduled, once talent/commercial stopped being stubs.
+- **Topology note (found during B7 implementation, not part of this
+  limitation itself):** B7's original design nested `compliance_gate_node`
+  *inside* `compliance_analysis`'s own Send()'d branch, between it and
+  `specialist_join`. That was a real bug, not just a design question — an
+  `interrupt()`-bearing node upstream of a Send() fan-in join replays its
+  entire function (including re-delivering a fresh trigger into the join)
+  every time a *later*, unrelated interrupt elsewhere in the same
+  continuation gets resumed, which left the whole workflow permanently
+  stuck after approving `final_readiness` (caught via a live step-by-step
+  debug run, not by an assertion alone). Fixed by moving
+  `compliance_gate_node` to *after* `specialist_join`, the same safe
+  sequential slot `final_gate_node` already occupies. B8's
+  `resource_selection_gate_node` and `commercial_approval_gate_node` were
+  built directly in that same sequential slot from the start, precisely to
+  avoid re-discovering this bug a second and third time.
+- **Behaviour:** all three post-join gates — `compliance_gate_node`,
+  `resource_selection_gate_node`, `commercial_approval_gate_node` — mirror
+  `requirement_gate_node`'s only precedent in this codebase for a rejected
+  gate: on `decision == "reject"`, the node marks the whole `workflow_run`
+  `"rejected"` (coarse status `"failed"`) and returns. For
+  `requirement_gate_node` this is a clean fit — it gates entry into the
+  specialist branches, so nothing has run yet. For all three post-join
+  gates it's structurally different: by the time any of them can reject,
+  every specialist branch (`compliance_analysis`, `talent_analysis`,
+  `commercial_analysis`) has *already run to completion* — their
+  `WorkflowTask` rows already show `completed`, and as of B8 that
+  completion represents real work (compliance decisions, role matches,
+  pricing findings), not stub output. A rejection at any of the three
+  gates doesn't stop the others from having run — it aborts the whole run
+  after the fact, so whatever the other branches produced is real,
+  persisted, completed work the run then never proceeds to use.
+- **Risk:** real as of B8, not hypothetical. Rejecting `resource_selection`
+  because a candidate match looks wrong now also strands a genuinely
+  correct, already-approved `commercial_approval` decision for the same
+  run (or vice versa) — the reviewer's objection to one branch has nothing
+  to do with the other two, but all three are discarded together at the
+  run level.
+- **What is and isn't actually lost:** nothing is deleted. Every
+  `compliance_entries` / `role_matches` / `pricing_findings` row a
+  rejected run produced remains in Postgres, correctly attributed to its
+  requirement/role/pricing document, fully queryable and auditable outside
+  the workflow-run's own state machine. What's lost is only that specific
+  run's ability to keep moving forward toward `completed` — a workflow
+  progress loss, not a data loss.
+- **Status:** accepted, not "for-now." Considered and rejected the
+  alternative (building partial-branch rejection now) during B8 planning:
+  that needs a replanning executor plus a finding-category →
+  corrective-task mapping, which the Build Guide explicitly scopes to
+  **B11** ("supervisor mapping from finding category to corrective task,"
+  "bounded revision loop," B2.4's "Proposal ↔ Red-Team loop"). Building it
+  in B8 would jump the build order for a mechanism that already has a
+  named future home. Real fix: **B11's bounded revision loop.** Not
+  revisited again before then.
 - **Test:** `tests/integration/test_orchestration_nodes.py::
-  test_compliance_gate_node_rejection_routes_to_rejected` covers the
-  current (accepted) behavior itself; `test_graph_execution.py::
+  test_compliance_gate_node_rejection_routes_to_rejected` (B7) plus its
+  B8A/B8B analogs for `resource_selection_gate_node` and
+  `commercial_approval_gate_node` cover the current (accepted) behavior at
+  each individual gate; `test_graph_execution.py::
   test_full_smoke_path_start_to_complete` exercises the full corrected
-  topology end to end (all three gates, in order, reaching `completed`).
-  No test exists yet for the stranded-output scenario, since it isn't
-  reachable until B8 gives the sibling branches something real to
-  produce.
+  five-gate topology end to end. No test exists for the
+  stranded-sibling-output scenario itself (e.g. reject resource_selection,
+  assert commercial's already-approved data survives in Postgres) — worth
+  adding when B11 is being built, as the "before" half of that fix's own
+  regression test.
+
+## [B7/B8] tenders.state_version was never bumped, despite the locked invariant requiring it since B7
+
+- **Discovered:** B8 planning — while proactively checking whether
+  `_resolve_organization_id` needed new branches for B8A/B8B's routes
+  (KNOWN_LIMITATIONS' own standing pattern of checking this function every
+  block), also re-read Part C's State-version invariant: "every
+  graph-relevant mutation increments `tenders.state_version` in the same
+  transaction," listing knowledge selection change, evidence change,
+  compliance change, role assignment change, proposal claim change, and
+  amendment impact change. `TenderRepository.bump_state_version` has
+  existed since B1/B2, but a repo-wide search found **zero call sites** —
+  B7's `approve_compliance_entry` and `override_compliance_entry` never
+  called it, despite "compliance change" being explicitly on that list.
+- **Behaviour:** every compliance approval and override since B7 shipped
+  has left `tenders.state_version` unchanged. The column exists, defaults
+  to 0, and has silently stayed there through B7's entire live smoke test
+  and 145-test suite — nothing in either checked it.
+- **Why nothing caught it:** no reader existed yet. The invariant's whole
+  purpose is B10's graph-freshness check (`graph_projection_runs.
+  source_state_version` compared against the tender's current
+  `state_version` to detect a stale Neo4j projection). Until B10 exists,
+  an unbumped `state_version` produces no visible symptom at all — every
+  test that exercises compliance approve/override asserts on the
+  compliance data itself, never on the counter nothing yet reads.
+- **Risk (why this matters more than a typical missed-field bug):** this
+  is exactly the shape B5's ground-truth generator coupling and B7's
+  cache-scoping bug already showed — no crash, a confidently wrong answer
+  far from the cause. Concretely, if left unfixed until B10: every
+  `graph_projection_runs` freshness check would have compared its
+  recorded `source_state_version` against a `tenders.state_version` that
+  never moved, so every projection would read as current no matter how
+  much compliance/role/proposal data changed underneath it in the
+  meantime. B10's own required test #10 ("stale projection query returns
+  `GRAPH_STALE`") would either never fire or fire on the wrong condition,
+  and the failure would surface two blocks later as "why is impact
+  analysis returning outdated results" — with the actual cause sitting in
+  B7 code nobody would think to re-open.
+- **Status:** resolved-in-B8. Fixed by wiring `bump_state_version` into
+  B7's `approve_compliance_entry`/`override_compliance_entry` (one bump
+  per decision write, covering "compliance change" and "evidence change"
+  together rather than once per evidence link) and into B8A's
+  `select_candidate`/`deselect_candidate` (covers "role assignment
+  change"). Commercial/pricing changes are not on the invariant's list, so
+  B8B needs no bump. `knowledge selection change` (B6), `proposal claim
+  change` (B9), and `amendment impact change` (later) are out of scope for
+  this fix and should each be checked against this same invariant when
+  their own block is built or revisited — this entry is the reminder to
+  do that, not a claim that every mutation type is now covered.
+- **Test:** new direct tests assert the bump itself, not just that the
+  surrounding write succeeded — `tests/integration/test_compliance_service.py`
+  (approve/override bump `tenders.state_version` by exactly 1) and
+  `tests/integration/test_talent_service.py` (select/deselect do the
+  same). **B10 must not assume this stays fixed** — its own freshness
+  check should be built to verify the invariant actually holds (e.g. a
+  test that mutates compliance data and asserts the projection is then
+  correctly flagged stale), not just assume every future write path
+  remembers the bump the way this one didn't for an entire block.
 
 ## [B7] Gemini free-tier quota varies enormously by model — verify per-day, not just per-minute, before a live run
 
@@ -515,3 +590,101 @@ Each entry:
   code-correctness one) — the live Docker smoke test itself is the
   evidence: full RFP (74 requirements) processed end to end with
   `gemini-3.5-flash-lite` as `REASONING_MODEL`, no quota exhaustion.
+
+## [B8B] Commercial false-positive rate is measured, but on a narrow fixture
+
+- **Discovered:** B8B's own stop-gate wording is explicit that false
+  positives be "measured and documented," not just that seeded defect
+  recall be checked. `tests/unit/test_pricing_checks.py::
+  test_correct_rows_produce_zero_findings_no_false_positives` is that
+  measurement: `evaluate_row_arithmetic` produces zero findings on the
+  synthetic fixture's two ordinary, non-defective rows ("Project Manager,"
+  "Site Survey" on `pricing_schedule_1.xlsx`).
+- **Behaviour:** 0/2 false positives on the rows actually checked. Every
+  other row in the fixture is a deliberately seeded defect, so 2 is the
+  entire population of "should produce nothing" cases the current
+  synthetic package offers to measure against.
+- **Risk:** this is an honest measurement of a narrow case, not a general
+  false-positive-rate claim. Real pricing workbooks are far messier than
+  two clean rows differing only in description — unusual-but-legitimate
+  formulas, intentional rounding, multi-currency line items that are
+  correct on purpose, or non-standard column layouts could all trip
+  `evaluate_row_arithmetic`'s formula-shape/tolerance policy into a false
+  `wrong_total`/`needs_human_review` on data that was actually fine. The
+  synthetic fixture, by construction, doesn't exercise that variety.
+- **Status:** accepted, measured honestly for what it is. No plan to
+  expand the synthetic fixture's "correct row" population specifically to
+  chase a bigger false-positive sample — the real signal on this will come
+  from B16-era or post-launch real-workbook usage, not from inventing more
+  synthetic clean rows that would still only test what this project itself
+  imagined as "ordinary."
+- **Test:** `test_correct_rows_produce_zero_findings_no_false_positives`
+  (unit), plus the live Docker smoke test's own 8-finding count matching
+  the pytest suite's expected count exactly (no extra live-only findings
+  beyond the 6 seeded categories).
+
+## Standing pattern: local dev/test environment state can silently invalidate a real verification
+
+- **Discovered:** both during B8B's own live Docker smoke test, back to
+  back, in the same session:
+  1. **Stale Docker image.** After writing all of B8B's code, the worker/
+     api containers were only `docker compose restart`ed, not rebuilt.
+     `restart` reuses the existing image; it does not pick up new source
+     changes (worker/api have no dev-mode volume mount - source is baked
+     in at build time). The first live smoke test attempt ran against B8A's
+     image - `commercial_approval_gate` didn't exist in that compiled
+     graph, so `route_after_resource_selection_gate` fell straight through
+     to `final_gate`, silently skipping the entire commercial approval
+     step. It happened to fail loudly *this time*, because the smoke
+     script explicitly waited for `commercial_approval` as its own named
+     gate and timed out when it never appeared - but a less specific check
+     (e.g. "did the run reach `completed`") would have reported success on
+     a run that silently skipped an entire human approval gate.
+  2. **Port-squatting native Postgres.** A native Windows PostgreSQL 18
+     service was bound to `0.0.0.0:5432`, ahead of Docker's own port
+     forward for `tenderos-postgres-1` (also mapped to host `5432`). Every
+     host-side script/pytest connection to `localhost:5432` was silently
+     reaching the native instance, not the project's Postgres 16 container
+     - confirmed by querying `version()` and getting `PostgreSQL 18.0 on
+     x86_64-windows`, not the Debian/Linux 16.13 the container actually
+     runs. This one also failed loudly *this time* (`role "tenderos" does
+     not exist` - the native instance genuinely had no such role), but a
+     native instance that happened to already have a same-named role (a
+     stale one from unrelated prior work, or coincidence) would have let
+     tests run to completion against the wrong database entirely, silently
+     validating nothing about the actual code under test. `docker exec`
+     into the container bypasses host networking entirely, which is why
+     that path kept working the whole time and made the underlying cause
+     harder to spot at first.
+- **Why this belongs next to the measurement-tooling standing pattern
+  above, not folded into it:** same "confidently wrong, not obviously
+  broken" shape, but a different root-cause category - that pattern is
+  about *code* (eval scripts, cache scoping) being wrong; this one is
+  about *environment state* (which image is running, which process owns a
+  port) silently substituting itself for the thing actually being tested.
+  Both are invisible to a result that merely "looks fine."
+- **Risk - why this matters going forward, not just as a postmortem:** B9
+  through B17 are all worker/graph-heavy blocks (proposal drafting,
+  red-team, readiness, graph projection) that will keep needing live
+  Docker verification the same way B7/B8 did. Both traps recur on every
+  future block that (a) changes orchestration/domain code and verifies via
+  a rebuilt-assumed container, or (b) runs host-side scripts/tests against
+  `localhost` and trusts the port. Neither produces a code-level exception
+  in the product itself - both are purely which-process-am-I-actually-
+  talking-to failures, which is exactly the class of bug a "the tests
+  passed" report does not surface on its own.
+- **Status:** accepted as a standing operational risk, not something a
+  one-time fix closes out. Concrete practice going forward: (1) before any
+  live Docker smoke test, rebuild explicitly (`docker compose up -d
+  --build`) rather than `restart` - never assume a running container has
+  today's code; (2) before trusting a host-side test/script run against
+  `localhost`, spot-check which server is actually being reached (a
+  `SELECT version()`/`current_database()` is enough) rather than assuming
+  the connection string implies the intended target; (3) prefer smoke
+  tests that assert the *specific* expected sequence (named gate types, in
+  order) over tests that only check a final coarse status like
+  `completed` - the specificity is what turned both incidents into loud
+  failures instead of silent false passes this time.
+- **Test:** none automated (both are host-machine/Docker-daemon state, not
+  application code) - the incident write-up above and the smoke-test
+  discipline it now dictates are the mitigation.

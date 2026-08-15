@@ -6,7 +6,7 @@ from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_service, workflow_service
-from tenderos_backend.orchestration.nodes import compliance, requirement_extraction
+from tenderos_backend.orchestration.nodes import commercial, compliance, requirement_extraction, talent
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 
 pytestmark = pytest.mark.asyncio
@@ -36,6 +36,15 @@ def _fake_extraction_llm(monkeypatch):
     # but patching it here keeps this file's real-graph-execution tests from
     # ever depending on a real GEMINI_API_KEY being present.
     monkeypatch.setattr(compliance, "_build_llm_client", lambda: FakeLLMClient())
+    # talent_analysis_node also constructs its own client unconditionally
+    # (before checking whether any staffing requirements/candidates exist)
+    # - same reasoning as compliance's own patch above.
+    monkeypatch.setattr(talent, "_build_llm_client", lambda: FakeLLMClient())
+    # commercial_analysis_node too - this file's own fixture tender has no
+    # uploaded .xlsx pricing documents, so evaluate_commercial_for_tender
+    # never actually calls the LLM in practice, but the client is still
+    # constructed unconditionally before that check runs.
+    monkeypatch.setattr(commercial, "_build_llm_client", lambda: FakeLLMClient())
     return fake_client
 
 
@@ -62,12 +71,13 @@ async def _approve(registered, gate):
 
 
 async def test_full_smoke_path_start_to_complete():
-    """B3's own smoke test, extended in B7: start -> requirement extraction
-    -> interrupt -> approve requirement_review -> resume -> parallel
-    specialist branches (compliance now real, talent/commercial still B3
-    stubs) -> compliance's own branch hits a SECOND interrupt
-    (compliance_review) before rejoining the other two at specialist_join ->
-    approve -> resume -> final gate -> approve -> complete.
+    """B3's own smoke test, extended in B7, B8A, and B8B: start ->
+    requirement extraction -> interrupt -> approve requirement_review ->
+    resume -> parallel specialist branches (compliance, talent, and
+    commercial all real now) -> specialist_join -> compliance_review gate ->
+    approve -> resume -> resource_selection gate -> approve -> resume ->
+    commercial_approval gate -> approve -> resume -> final gate -> approve
+    -> complete.
 
     Each run_workflow/resume_workflow call opens its own get_checkpointer()
     connection independently - nothing is cached between them - which is
@@ -105,11 +115,10 @@ async def test_full_smoke_path_start_to_complete():
     assert all(t.status == "completed" for t in specialist_tasks), (
         "parallel state reducers must not lose any of the 3 branch completions"
     )
-    # compliance_analysis's own branch now chains into a second gate
-    # (compliance_review) before rejoining specialist_join - talent/
-    # commercial's branches complete without interrupting (still B3 stubs),
-    # but the whole graph superstep still pauses on compliance's interrupt,
-    # so final_readiness isn't reachable yet.
+    # specialist_join is followed by three sequential gates now (compliance_
+    # review, resource_selection, commercial_approval) before final_
+    # readiness - the whole graph superstep pauses on compliance's interrupt
+    # first, same as before.
     assert {g.gate_type for g in gates} == {"requirement_review", "compliance_review"}
     compliance_gate_row = next(g for g in gates if g.gate_type == "compliance_review")
 
@@ -125,6 +134,41 @@ async def test_full_smoke_path_start_to_complete():
     assert {g.gate_type for g in gates} == {
         "requirement_review",
         "compliance_review",
+        "resource_selection",
+    }
+    resource_selection_gate_row = next(g for g in gates if g.gate_type == "resource_selection")
+
+    await _approve(registered, resource_selection_gate_row)
+    await resume_workflow(str(run.id), str(resource_selection_gate_row.id))
+
+    async with UnitOfWork() as uow:
+        after_resource_selection_gate = await uow.workflow.get_run(run.id)
+        gates = await uow.gates.list_for_run(run.id)
+
+    assert after_resource_selection_gate is not None
+    assert after_resource_selection_gate.status == "waiting_for_human"
+    assert {g.gate_type for g in gates} == {
+        "requirement_review",
+        "compliance_review",
+        "resource_selection",
+        "commercial_approval",
+    }
+    commercial_approval_gate_row = next(g for g in gates if g.gate_type == "commercial_approval")
+
+    await _approve(registered, commercial_approval_gate_row)
+    await resume_workflow(str(run.id), str(commercial_approval_gate_row.id))
+
+    async with UnitOfWork() as uow:
+        after_commercial_approval_gate = await uow.workflow.get_run(run.id)
+        gates = await uow.gates.list_for_run(run.id)
+
+    assert after_commercial_approval_gate is not None
+    assert after_commercial_approval_gate.status == "waiting_for_human"
+    assert {g.gate_type for g in gates} == {
+        "requirement_review",
+        "compliance_review",
+        "resource_selection",
+        "commercial_approval",
         "final_readiness",
     }
     final_gate_row = next(g for g in gates if g.gate_type == "final_readiness")

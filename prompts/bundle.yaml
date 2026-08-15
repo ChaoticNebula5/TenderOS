@@ -23,3 +23,9 @@ agents:
     template: demonstrates_extraction.md
   compliance_proposal:
     template: compliance_proposal.md
+  role_extraction:
+    template: role_extraction.md
+  talent_scoring:
+    template: talent_scoring.md
+  commercial_explanation:
+    template: commercial_explanation.md

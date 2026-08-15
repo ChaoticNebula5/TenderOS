@@ -109,6 +109,28 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if compliance_id is not None:
         return await _organization_id_for_compliance_entry(UUID(compliance_id))
 
+    # B8A (G8): GET /roles/{role_id}/matches, POST /roles/{role_id}/
+    # select-candidate both key on role_id with no tender_id alongside it.
+    # Simpler than compliance_id's three-hop lookup - role_requirements
+    # carries tender_id directly (Part C), so this is one hop, same shape
+    # as _organization_id_for_requirement.
+    role_id = request.path_params.get("role_id")
+    if role_id is not None:
+        return await _organization_id_for_role_requirement(UUID(role_id))
+
+    # B8B (G9): POST /pricing-documents/{pricing_document_id}/validate and
+    # POST /pricing-findings/{pricing_finding_id}/resolve both key on their
+    # own id with no tender_id alongside it. Both one-hop, same shape as
+    # role_id above - pricing_documents/pricing_findings both carry
+    # tender_id directly (Part C).
+    pricing_document_id = request.path_params.get("pricing_document_id")
+    if pricing_document_id is not None:
+        return await _organization_id_for_pricing_document(UUID(pricing_document_id))
+
+    pricing_finding_id = request.path_params.get("pricing_finding_id")
+    if pricing_finding_id is not None:
+        return await _organization_id_for_pricing_finding(UUID(pricing_finding_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -212,6 +234,45 @@ async def _organization_id_for_compliance_entry(compliance_entry_id: UUID) -> UU
                 status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
             )
         tender = await uow.tenders.get(requirement.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_role_requirement(role_requirement_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        role = await uow.talent.get_role_requirement(role_requirement_id)
+        if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Role requirement not found"
+            )
+        tender = await uow.tenders.get(role.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_pricing_document(pricing_document_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        pricing_document = await uow.commercial.get_pricing_document(pricing_document_id)
+        if pricing_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Pricing document not found"
+            )
+        tender = await uow.tenders.get(pricing_document.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_pricing_finding(pricing_finding_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        finding = await uow.commercial.get_pricing_finding(pricing_finding_id)
+        if finding is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Pricing finding not found"
+            )
+        tender = await uow.tenders.get(finding.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id

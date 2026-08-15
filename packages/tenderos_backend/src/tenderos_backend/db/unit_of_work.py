@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.repositories.agent_traces import AgentTraceRepository
 from tenderos_backend.db.repositories.audit import AuditRepository
+from tenderos_backend.db.repositories.commercial import CommercialRepository
 from tenderos_backend.db.repositories.compliance import ComplianceRepository
 from tenderos_backend.db.repositories.documents import DocumentRepository
 from tenderos_backend.db.repositories.gates import GateRepository
@@ -13,6 +14,7 @@ from tenderos_backend.db.repositories.memberships import MembershipRepository
 from tenderos_backend.db.repositories.organizations import OrganizationRepository
 from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.db.repositories.requirements import RequirementRepository
+from tenderos_backend.db.repositories.talent import TalentRepository
 from tenderos_backend.db.repositories.tenders import TenderRepository
 from tenderos_backend.db.repositories.users import UserRepository
 from tenderos_backend.db.repositories.workflow import WorkflowRepository
@@ -37,6 +39,8 @@ class UnitOfWork:
         self.agent_traces: AgentTraceRepository
         self.knowledge: KnowledgeRepository
         self.compliance: ComplianceRepository
+        self.talent: TalentRepository
+        self.commercial: CommercialRepository
 
     async def __aenter__(self) -> "UnitOfWork":
         self.session = await self._session_cm.__aenter__()
@@ -54,6 +58,8 @@ class UnitOfWork:
         self.agent_traces = AgentTraceRepository(self.session)
         self.knowledge = KnowledgeRepository(self.session)
         self.compliance = ComplianceRepository(self.session)
+        self.talent = TalentRepository(self.session)
+        self.commercial = CommercialRepository(self.session)
         return self
 
     async def __aexit__(

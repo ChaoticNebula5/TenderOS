@@ -24,6 +24,7 @@ WorkflowStatus = Literal[
     "running_specialists",
     "awaiting_compliance_review",
     "awaiting_resource_selection",
+    "awaiting_commercial_approval",
     "drafting",
     "projecting_graph",
     "red_teaming",
@@ -45,6 +46,7 @@ _AWAITING_HUMAN: frozenset[WorkflowStatus] = frozenset(
         "awaiting_requirement_review",
         "awaiting_compliance_review",
         "awaiting_resource_selection",
+        "awaiting_commercial_approval",
         "awaiting_finding_resolution",
         "awaiting_final_approval",
     }

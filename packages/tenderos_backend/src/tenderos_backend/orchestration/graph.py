@@ -2,26 +2,32 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from tenderos_backend.orchestration.nodes.commercial import (
+    commercial_analysis_node,
+    commercial_approval_gate_node,
+)
 from tenderos_backend.orchestration.nodes.compliance import (
     compliance_analysis_node,
     compliance_gate_node,
 )
 from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
-from tenderos_backend.orchestration.nodes.requirement import (
-    commercial_stub_node,
-    requirement_gate_node,
-    talent_stub_node,
-)
+from tenderos_backend.orchestration.nodes.requirement import requirement_gate_node
 from tenderos_backend.orchestration.nodes.requirement_extraction import (
     requirement_extraction_node,
 )
 from tenderos_backend.orchestration.nodes.specialist_dispatch import dispatch_specialists
 from tenderos_backend.orchestration.nodes.specialist_join import specialist_join_node
 from tenderos_backend.orchestration.nodes.supervisor_node import supervisor_node
+from tenderos_backend.orchestration.nodes.talent import (
+    resource_selection_gate_node,
+    talent_analysis_node,
+)
 from tenderos_backend.orchestration.routing import (
+    route_after_commercial_approval_gate,
     route_after_compliance_gate,
     route_after_requirement_gate,
+    route_after_resource_selection_gate,
 )
 from tenderos_backend.orchestration.state import TenderState
 
@@ -36,8 +42,10 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("requirement_gate", requirement_gate_node)
     builder.add_node("compliance_analysis", compliance_analysis_node)
     builder.add_node("compliance_gate", compliance_gate_node)
-    builder.add_node("talent_stub", talent_stub_node)
-    builder.add_node("commercial_stub", commercial_stub_node)
+    builder.add_node("talent_analysis", talent_analysis_node)
+    builder.add_node("resource_selection_gate", resource_selection_gate_node)
+    builder.add_node("commercial_analysis", commercial_analysis_node)
+    builder.add_node("commercial_approval_gate", commercial_approval_gate_node)
     builder.add_node("specialist_join", specialist_join_node)
     builder.add_node("final_gate", final_gate_node)
 
@@ -45,17 +53,19 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_edge("load_context", "supervisor")
     builder.add_edge("supervisor", "requirement_extraction")
     builder.add_edge("requirement_extraction", "requirement_gate")
-    # compliance_analysis (Send()-dispatched, same as talent_stub/
-    # commercial_stub) flows straight to specialist_join, same shape as the
-    # other two branches - compliance_gate is NOT nested inside this
-    # Send()'d branch (see compliance_gate_node's own docstring for why:
-    # an interrupt()-bearing node upstream of a Send() fan-in join replays
-    # on every later, unrelated resume in the same continuation, which
-    # broke the graph live). It sits after the join instead, in the same
-    # safe sequential slot final_gate already occupies.
+    # compliance_analysis/talent_analysis/commercial_analysis (all Send()-
+    # dispatched) flow straight to specialist_join, same shape for all
+    # three branches - the three post-join gates (compliance_gate,
+    # resource_selection_gate, commercial_approval_gate) are NOT nested
+    # inside this Send()'d branch (see compliance_gate_node's own docstring
+    # for why: an interrupt()-bearing node upstream of a Send() fan-in join
+    # replays on every later, unrelated resume in the same continuation,
+    # which broke the graph live in B7). All three sit after the join
+    # instead, chained sequentially in the same safe slot final_gate
+    # already occupies.
     builder.add_edge("compliance_analysis", "specialist_join")
-    builder.add_edge("talent_stub", "specialist_join")
-    builder.add_edge("commercial_stub", "specialist_join")
+    builder.add_edge("talent_analysis", "specialist_join")
+    builder.add_edge("commercial_analysis", "specialist_join")
     builder.add_edge("specialist_join", "compliance_gate")
     builder.add_edge("final_gate", END)
 
@@ -70,6 +80,22 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_conditional_edges(
         "compliance_gate",
         route_after_compliance_gate,
+        {
+            "resource_selection_gate": "resource_selection_gate",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges(
+        "resource_selection_gate",
+        route_after_resource_selection_gate,
+        {
+            "commercial_approval_gate": "commercial_approval_gate",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges(
+        "commercial_approval_gate",
+        route_after_commercial_approval_gate,
         {
             "final_gate": "final_gate",
             END: END,

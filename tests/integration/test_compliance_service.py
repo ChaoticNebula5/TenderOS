@@ -215,6 +215,58 @@ async def test_approve_compliance_entry_writes_audit_event():
     assert events[0].actor_id == str(actor_id)
 
 
+async def test_approve_compliance_entry_bumps_tender_state_version():
+    # KNOWN_LIMITATIONS.md: "[B7/B8] tenders.state_version was never
+    # bumped" - Part C's State-version invariant lists "compliance change"
+    # explicitly, and this call was missing from B7 through this fix.
+    # Asserts the bump itself, not just that approve_compliance_entry's
+    # write succeeds - the whole point of the limitation entry is that a
+    # missing bump produces no other visible symptom.
+    org_id, tender_id = await _make_tender()
+    chunk_id = await _make_requirement_chunk(tender_id, org_id)
+    requirement_id = await _make_requirement(tender_id, chunk_id)
+    proposal = ComplianceProposal(
+        status="evidence_unavailable", evidence_refs=[], confidence=0.3, reasoning_summary="x"
+    )
+    entry = await persist_compliance_decision(
+        requirement_id, proposal, enforce_evidence_sufficiency(proposal, []), []
+    )
+    async with UnitOfWork() as uow:
+        before_version = (await uow.tenders.get(tender_id)).state_version
+
+    await approve_compliance_entry(entry.id, uuid.uuid4())
+
+    async with UnitOfWork() as uow:
+        after_version = (await uow.tenders.get(tender_id)).state_version
+    assert after_version == before_version + 1
+
+
+async def test_override_compliance_entry_bumps_tender_state_version():
+    # Same invariant as approve_compliance_entry's own test above, checked
+    # against override_compliance_entry specifically - a separate function
+    # body with its own bump_state_version call site, not proven merely
+    # because approve's call site is proven. This is the exact shape of gap
+    # the fix was meant to close: two call sites, two independent chances
+    # to forget the bump.
+    org_id, tender_id = await _make_tender()
+    chunk_id = await _make_requirement_chunk(tender_id, org_id)
+    requirement_id = await _make_requirement(tender_id, chunk_id)
+    proposal = ComplianceProposal(
+        status="evidence_unavailable", evidence_refs=[], confidence=0.3, reasoning_summary="x"
+    )
+    entry = await persist_compliance_decision(
+        requirement_id, proposal, enforce_evidence_sufficiency(proposal, []), []
+    )
+    async with UnitOfWork() as uow:
+        before_version = (await uow.tenders.get(tender_id)).state_version
+
+    await override_compliance_entry(entry.id, uuid.uuid4(), status="non_compliant")
+
+    async with UnitOfWork() as uow:
+        after_version = (await uow.tenders.get(tender_id)).state_version
+    assert after_version == before_version + 1
+
+
 async def test_override_compliance_entry_writes_audit_event_and_sets_status():
     org_id, tender_id = await _make_tender()
     chunk_id = await _make_requirement_chunk(tender_id, org_id)

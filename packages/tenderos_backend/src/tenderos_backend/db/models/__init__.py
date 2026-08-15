@@ -1,6 +1,7 @@
 from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.base import Base
+from tenderos_backend.db.models.commercial import PricingDocument, PricingFinding, PricingLineItem
 from tenderos_backend.db.models.compliance import (
     ComplianceEntry,
     ComplianceEvidence,
@@ -27,6 +28,12 @@ from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
     SubmissionItem,
+)
+from tenderos_backend.db.models.talent import (
+    RoleMatch,
+    RoleMatchEvidence,
+    RoleRequirement,
+    RoleRequirementSource,
 )
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.user import User
@@ -62,7 +69,14 @@ __all__ = [
     "OrganizationMembership",
     "OutboxEvent",
     "PastProject",
+    "PricingDocument",
+    "PricingFinding",
+    "PricingLineItem",
     "Requirement",
+    "RoleMatch",
+    "RoleMatchEvidence",
+    "RoleRequirement",
+    "RoleRequirementSource",
     "SubmissionItem",
     "Tender",
     "TenderKnowledgeSelection",

@@ -7,13 +7,6 @@ from tenderos_backend.domain.services.workflow_service import is_cancelled, sync
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
 from tenderos_backend.orchestration.state import TenderState
 
-# ruff/mypy will flag the imports above as unused until the TODO(human) body
-# below is filled in - expected, since nothing calls them yet. They're left
-# in deliberately (matching the "already in scope" list in the docstring)
-# rather than stripped, so uuid/interrupt/UnitOfWork/sync_run_status/
-# build_gate_payload/derive_gate_key are all one import already done, not
-# something to go add yourself.
-
 
 async def final_gate_node(state: TenderState) -> dict:
     """R5's final_readiness human gate - B3's stand-in for the eventual full

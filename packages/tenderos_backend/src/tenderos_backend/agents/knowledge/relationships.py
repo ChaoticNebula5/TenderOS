@@ -310,58 +310,11 @@ class RelationshipResolution:
     reason: str
 
 
-# TODO(human): implement resolve_worked_on_verification.
-#
-# Steps (plain-English, not code):
-#   1. Look at whether resume_project_mentions (the SAME resume's own
-#      structured project_mentions, from extract_employee_profile earlier -
-#      a person's resume gets parsed once, for both their profile fields AND
-#      their claimed project list) contains an entry that plausibly refers
-#      to `candidate.project` - compare on name/client, not exact string
-#      equality (people phrase project names differently than the company's
-#      own capability-statement wording; you may want to reuse
-#      agents/knowledge/dedup.py's normalize_employee_name-style approach,
-#      or write a simpler substring/token-overlap check - your call).
-#   2. Decide how the LLM's own confidence and this deterministic
-#      corroboration check combine into one of the three verdicts. This is
-#      the actual design question - not a lookup. Consider:
-#        - LLM confident AND corroborated by resume_project_mentions ->
-#          the strongest case. VERIFIED seems safe, but is there a
-#          confidence floor below which even a corroborated match should
-#          still go to review?
-#        - LLM confident but NOT corroborated by resume_project_mentions ->
-#          the LLM inferred a link the resume's own structured mentions
-#          didn't surface. Is that grounds for NEEDS_REVIEW (a human
-#          decides) or REJECTED (too speculative to write at all, since an
-#          unverified WORKED_ON edge feeding B8's candidate-scoring or B9's
-#          claim-grounding later could misrepresent someone's real
-#          experience)?
-#        - LLM low-confidence but corroborated by resume_project_mentions ->
-#          the deterministic signal disagrees with the LLM's own hedge.
-#          Worth a different verdict than the low-confidence+uncorroborated
-#          case?
-#   3. Return a RelationshipResolution with a `reason` a human reviewer (or
-#      future-you re-reading this) can actually use - name which signal(s)
-#      drove the verdict, not just "review needed."
-#
-# What's already available to use:
-#   - `candidate: WorkedOnCandidate` - has .project (a ProjectCandidateRef:
-#     .name, .client, .year, .knowledge_item_id), .llm_confidence (0.0-1.0),
-#     .llm_reasoning (the model's own one-sentence justification).
-#   - `resume_project_mentions: list[ExtractedProjectMention]` - the SAME
-#     employee's resume, already parsed by extract_employee_profile; each
-#     has .name, .client, .year, all `str | None` except .name.
-#
-# Why this is worth writing by hand: this is the second half of the exact
-# extract-then-verify pattern B5 built and this file's own extract_worked_on
-# implements the first half of - but unlike B5's verify.py (a second LLM
-# call asking a narrow yes/no question), this verification is a
-# deterministic reconciliation between an LLM judgment and a structured
-# signal already sitting in the database, closer in shape to
-# agents/knowledge/dedup.py's precedence policy than to B5's verifier. The
-# risk asymmetry (a wrongly-VERIFIED WORKED_ON edge could misrepresent real
-# experience in a proposal later) is exactly the kind of stakes-aware
-# judgment call CLAUDE.md's TODO(human) standard exists for.
+# Reconciles the LLM's own confidence against a deterministic corroboration
+# check (does resume_project_mentions actually contain this project) into
+# one of three verdicts - VERIFIED needs both signals; either alone
+# downgrades to NEEDS_REVIEW; neither is REJECTED, since an unverified
+# WORKED_ON edge could misrepresent real experience further downstream.
 def resolve_worked_on_verification(
     candidate: WorkedOnCandidate,
     resume_project_mentions: list[ExtractedProjectMention],

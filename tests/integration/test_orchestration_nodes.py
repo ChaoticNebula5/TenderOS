@@ -5,11 +5,7 @@ from sqlalchemy import select
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import workflow_service
-from tenderos_backend.orchestration.nodes import compliance, final_gate, requirement
-from tenderos_backend.orchestration.nodes.requirement import (
-    commercial_stub_node,
-    talent_stub_node,
-)
+from tenderos_backend.orchestration.nodes import commercial, compliance, final_gate, requirement, talent
 from tenderos_backend.orchestration.nodes.specialist_dispatch import (
     _SPECIALIST_NODES,
     dispatch_specialists,
@@ -57,34 +53,12 @@ def _base_state(run: WorkflowRun) -> dict:
 # no-duplicate-on-rerun coverage now lives in
 # tests/integration/test_requirement_extraction_node.py, built against a
 # FakeLLMClient and real synthetic chunks rather than bare node-state dicts.
-# compliance_analysis_node (replacing B3's compliance_stub_node in B7) is the
-# same shape - its own coverage lives in
-# tests/integration/test_compliance_analysis_node.py for the same reason.
-
-
-@pytest.mark.parametrize("node", [talent_stub_node, commercial_stub_node])
-async def test_specialist_stub_completes_only_its_own_task(node):
-    run = await _make_run()
-    async with UnitOfWork() as uow:
-        task = await uow.workflow.create_task(
-            workflow_run_id=run.id,
-            task_key=f"{node.__name__}:{run.id}",
-            task_type="compliance_analysis",
-            assigned_agent="stub",
-            priority=5,
-            input_refs={},
-        )
-        await uow.commit()
-
-    state = {**_base_state(run), "task_id": str(task.id)}
-    result = await node(state)
-
-    assert result == {"completed_task_ids": [str(task.id)]}
-    async with UnitOfWork() as uow:
-        completed = await uow.workflow.get_task_by_key(run.id, task.task_key)
-    assert completed is not None
-    assert completed.status == "completed"
-    assert "summary" in completed.output_refs
+# compliance_analysis_node/talent_analysis_node/commercial_analysis_node
+# (replacing B3's three stub nodes across B7/B8A/B8B) are the same shape -
+# their own coverage lives in test_compliance_analysis_node.py/
+# test_talent_analysis_node.py/test_commercial_analysis_node.py for the same
+# reason. No specialist stubs remain to test here - all three branches are
+# now real.
 
 
 # requirement_gate_node/final_gate_node call interrupt() at the very end -
@@ -103,6 +77,8 @@ async def test_specialist_stub_completes_only_its_own_task(node):
     [
         (requirement, requirement.requirement_gate_node, "requirement_review"),
         (compliance, compliance.compliance_gate_node, "compliance_review"),
+        (talent, talent.resource_selection_gate_node, "resource_selection"),
+        (commercial, commercial.commercial_approval_gate_node, "commercial_approval"),
         (final_gate, final_gate.final_gate_node, "final_readiness"),
     ],
 )
@@ -116,12 +92,14 @@ async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
     first = await node(state)
     second = await node(state)
 
-    # compliance_gate_node deliberately writes no "status" on approve (see
-    # its own docstring) - specialist_join_node owns that transition once
-    # every branch, not just this one, has completed.
+    # compliance_gate_node/resource_selection_gate_node/
+    # commercial_approval_gate_node deliberately write no "status" on
+    # approve (see compliance_gate_node's own docstring) - the next node in
+    # the same un-Send()'d continuation owns that transition, not the gate
+    # node itself.
     if gate_type == "final_readiness":
         expected = {"status": "ready"}
-    elif gate_type == "compliance_review":
+    elif gate_type in ("compliance_review", "resource_selection", "commercial_approval"):
         expected = {}
     else:
         expected = {"status": "running_specialists"}
@@ -165,6 +143,84 @@ async def test_compliance_gate_node_rejection_routes_to_rejected(monkeypatch):
         updated_run = await uow.workflow.get_run(run.id)
     assert updated_run is not None
     assert updated_run.status == "failed"
+
+
+async def test_resource_selection_gate_node_rejection_routes_to_rejected(monkeypatch):
+    monkeypatch.setattr(
+        talent, "interrupt", lambda payload: {"decision": "reject", "notes": "not ready"}
+    )
+    run = await _make_run()
+
+    result = await talent.resource_selection_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    async with UnitOfWork() as uow:
+        updated_run = await uow.workflow.get_run(run.id)
+    assert updated_run is not None
+    assert updated_run.status == "failed"
+
+
+async def test_resource_selection_gate_node_opens_no_gate_for_a_cancelled_run(monkeypatch):
+    interrupt_called = False
+
+    def _fail_if_called(payload):
+        nonlocal interrupt_called
+        interrupt_called = True
+        return {"decision": "approve", "notes": None}
+
+    monkeypatch.setattr(talent, "interrupt", _fail_if_called)
+    run = await _make_run()
+    await _cancel(run)
+
+    result = await talent.resource_selection_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    assert interrupt_called is False, "a cancelled run must not open interrupt() at all"
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        updated_run = await uow.workflow.get_run(run.id)
+    assert gates == []
+    assert updated_run is not None
+    assert updated_run.status == "cancelled", "must not be overwritten to 'failed'"
+
+
+async def test_commercial_approval_gate_node_rejection_routes_to_rejected(monkeypatch):
+    monkeypatch.setattr(
+        commercial, "interrupt", lambda payload: {"decision": "reject", "notes": "not ready"}
+    )
+    run = await _make_run()
+
+    result = await commercial.commercial_approval_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    async with UnitOfWork() as uow:
+        updated_run = await uow.workflow.get_run(run.id)
+    assert updated_run is not None
+    assert updated_run.status == "failed"
+
+
+async def test_commercial_approval_gate_node_opens_no_gate_for_a_cancelled_run(monkeypatch):
+    interrupt_called = False
+
+    def _fail_if_called(payload):
+        nonlocal interrupt_called
+        interrupt_called = True
+        return {"decision": "approve", "notes": None}
+
+    monkeypatch.setattr(commercial, "interrupt", _fail_if_called)
+    run = await _make_run()
+    await _cancel(run)
+
+    result = await commercial.commercial_approval_gate_node(_base_state(run))
+
+    assert result == {"status": "rejected"}
+    assert interrupt_called is False, "a cancelled run must not open interrupt() at all"
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        updated_run = await uow.workflow.get_run(run.id)
+    assert gates == []
+    assert updated_run is not None
+    assert updated_run.status == "cancelled", "must not be overwritten to 'failed'"
 
 
 async def test_compliance_gate_node_opens_no_gate_for_a_cancelled_run(monkeypatch):

@@ -10,10 +10,10 @@ from tenderos_backend.orchestration.state import TenderState
 # dispatch_task_ids[i] is the WorkflowTask id for _SPECIALIST_NODES[i]'s task.
 # These strings are also the exact node names graph.py registers the
 # compliance/talent/commercial nodes under via add_node(...). "compliance_stub"
-# became "compliance_analysis" in B7 (talent_stub/commercial_stub remain B3
-# stubs, unbuilt until B8) - only the entry Send() targets changes here, since
-# compliance_analysis is still the first node compliance's branch reaches.
-_SPECIALIST_NODES = ("compliance_analysis", "talent_stub", "commercial_stub")
+# became "compliance_analysis" in B7, "talent_stub" became "talent_analysis"
+# in B8A, and "commercial_stub" became "commercial_analysis" in B8B - all
+# three specialist branches are now real.
+_SPECIALIST_NODES = ("compliance_analysis", "talent_analysis", "commercial_analysis")
 
 
 async def dispatch_specialists(state: TenderState) -> list[Send]:

@@ -180,63 +180,11 @@ class SufficiencyResult:
     reason: str
 
 
-# TODO(human): implement enforce_evidence_sufficiency.
-#
-# Steps (plain-English, not code):
-#   1. If proposal.status is NOT "fully_compliant" and NOT
-#      "partially_compliant", there's nothing to enforce - PRD 8.4's
-#      invariant ("a status equivalent to full or partial compliance must
-#      be backed by at least one valid supporting evidence path") only
-#      applies to those two statuses. Return a SufficiencyResult with the
-#      proposal's own status unchanged, downgraded=False.
-#   2. Otherwise, look at `materialized_evidence` (the real, persisted
-#      EvidenceLink rows the LLM's cited labels resolved to) and decide how
-#      many of them count as "sufficient" - at minimum this means
-#      .verified is True and .validity_status == "valid", but you decide
-#      whether that's the right bar or too strict/loose.
-#   3. Decide the actual policy - this is the real design question, not a
-#      lookup:
-#        - Zero sufficient evidence items, regardless of what the LLM
-#          proposed -> this MUST downgrade (this is what makes the B7
-#          stop-gate's first bullet - "zero schema-valid compliant
-#          decisions without required evidence" - true by construction
-#          rather than by hoping the LLM behaves). What should the
-#          downgraded status be - always "evidence_unavailable", or does it
-#          depend on whether any evidence was cited at all vs. cited but
-#          all insufficient?
-#        - proposal.status == "fully_compliant" but only SOME cited
-#          evidence is sufficient (the rest expired/unverified) - does that
-#          stay fully_compliant on the strength of what IS sufficient, or
-#          get downgraded to partially_compliant since not everything the
-#          LLM relied on actually holds up?
-#        - proposal.status == "partially_compliant" with >=1 sufficient
-#          item - does partially_compliant's own lower bar mean 1 is always
-#          enough, or should it scale with how many evidence_refs the LLM
-#          cited in the first place?
-#   4. Return a SufficiencyResult whose `reason` names which specific
-#      evidence items were/weren't sufficient and why, in language a human
-#      reviewer can act on without re-deriving your logic - not just
-#      "insufficient evidence."
-#
-# What's already available to use:
-#   - `proposal: ComplianceProposal` - has .status, .evidence_refs (the
-#     labels it cited), .confidence, .reasoning_summary.
-#   - `materialized_evidence: list[EvidenceLink]` - real, persisted rows,
-#     each with .verified (bool) and .validity_status ("valid"/"invalid"/
-#     "expired"/"unknown"), already computed deterministically by
-#     _compute_candidate_signals above - you are not deriving these two
-#     fields yourself, just deciding how they combine into a verdict.
-#
-# Why this is worth writing by hand: this is the one place in the entire
-# compliance pipeline where PRD 8.4's invariant ("must not silently exist
-# without supporting evidence") stops being a hope about model behavior and
-# becomes a fact about what the code actually persists - unlike B6's
-# disagreement-routing (WORKED_ON/DEMONSTRATES), where a human arbitrates a
-# disagreement, this function's output IS what gets written; there is no
-# human step between this function and the database row. Get the threshold
-# wrong and either real evidence gets discarded (an honest compliant answer
-# incorrectly downgraded) or PRD 8.4 gets silently violated (the exact
-# failure the B7 stop-gate exists to prevent).
+# PRD 8.4's evidence-sufficiency policy: the one place a fully_compliant/
+# partially_compliant status stops being a hope about model behavior and
+# becomes a fact about what actually gets persisted - unconditional, not
+# advisory (unlike B6's disagreement-routing, there is no human step
+# between this function and the database row).
 def enforce_evidence_sufficiency(
     proposal: ComplianceProposal, materialized_evidence: list[EvidenceLink]
 ) -> SufficiencyResult:
@@ -453,6 +401,12 @@ async def approve_compliance_entry(
             before=before,
             after={"human_approved": True, "status": updated.status},
         )
+        # Part C's State-version invariant: "compliance change" is one of
+        # the listed graph-relevant mutations, bumped in the same
+        # transaction as the write it accompanies (KNOWN_LIMITATIONS.md:
+        # "[B7/B8] tenders.state_version was never bumped" - this call was
+        # missing from B7 through this fix in B8).
+        await uow.tenders.bump_state_version(tender.id)
         await uow.commit()
         return updated
 
@@ -508,6 +462,8 @@ async def override_compliance_entry(
                 "human_approved": True,
             },
         )
+        # See approve_compliance_entry's own comment - same invariant, same fix.
+        await uow.tenders.bump_state_version(tender.id)
         await uow.commit()
         return updated
 

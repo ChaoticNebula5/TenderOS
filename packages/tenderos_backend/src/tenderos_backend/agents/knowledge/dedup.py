@@ -48,62 +48,10 @@ class DuplicateResolution:
     # review queue entry - e.g. "employee_code matched but name differs"
 
 
-# Employee duplicate-resolution policy implemented below.
-#
-# Steps (plain-English, not code):
-#   1. If `candidates` is empty, return DuplicateResolution(NEW, None, "no
-#      matching employee_code/email/name/resume on file").
-#   2. Otherwise, for each candidate in `candidates`, work out which of the
-#      four signals actually matched this specific candidate (the repository
-#      call that produced `candidates` used OR logic - a candidate might
-#      match on name only, or on employee_code only, or on several fields at
-#      once. You'll need to re-compare `candidate` against each `Employee` to
-#      know which).
-#   3. Decide a precedence between signals - they are not equally trustworthy.
-#      Some things worth weighing (not a complete list - this is the actual
-#      decision to make):
-#        - employee_code is assigned by the organization's own HR system, so
-#          two rows sharing one is a strong signal - but what if the name is
-#          completely different (a code got reused/typo'd)? Does that still
-#          count as a duplicate, or does the mismatch make it NEEDS_REVIEW?
-#        - resume_document_id matching means the literal same resume file
-#          (by content hash, since documents dedup on sha256 within an org -
-#          see B4's uq_org_document_hash) was already on file for that
-#          employee. Does a re-uploaded identical resume alone justify
-#          DUPLICATE, or should it still corroborate rather than decide alone?
-#        - name-only matches (via normalize_employee_name) are the weakest
-#          signal - common names collide. Should a name-only match ever
-#          reach DUPLICATE on its own, or always NEEDS_REVIEW?
-#        - what happens when two DIFFERENT candidates each match on a
-#          different signal (e.g. one shares employee_code, another shares
-#          email, and they're not the same Employee row)? That is a genuine
-#          three-way ambiguity, not just "pick the best candidate."
-#   4. Return a DuplicateResolution reflecting that decision, with `reason`
-#      naming the specific signal(s) that drove it (this string ends up in
-#      knowledge_import_items.error_message or a review-queue note, so it
-#      needs to be useful to the human reviewer, not just to you right now).
-#
-# What's already available to use:
-#   - `candidate_employee_code`, `candidate_name`, `candidate_email`,
-#     `candidate_resume_document_id` - the incoming row's own fields.
-#     candidate_email is always None for employee-master-sourced rows (that
-#     template has no email column - see employee_master.py's headers); it's
-#     only populated when the candidate came from LLM-parsed resume text.
-#   - `candidates: list[Employee]` - already fetched via
-#     KnowledgeRepository.find_employee_duplicate_candidates, i.e. the SQL
-#     matching is already done; this function only adjudicates.
-#   - `normalize_employee_name(str) -> str`, defined just above.
-#   - `Employee` (imported above) has .employee_code, .email, .name,
-#     .resume_document_id, .knowledge_item_id - all directly readable.
-#
-# Why this is worth writing by hand, not boilerplate: B5's mandatory
-# classifier had one signal disagreeing with one other signal (the LLM vs.
-# keyword rules) and "disagree -> review" was the whole rule. Here there are
-# four signals that can each independently hit different candidates, so
-# "does it match" isn't a yes/no - it's a precedence and conflict-resolution
-# policy over multiple simultaneous partial matches, which is exactly the
-# kind of design decision (not a lookup) CLAUDE.md's TODO(human) standard
-# calls out as worth your own judgment rather than mine.
+# Precedence policy over four simultaneous partial-match signals (employee_
+# code, name, resume_document_id, email) - strong signals (code/resume/
+# email) matching different candidates is a genuine conflict, not just
+# "pick the best one," hence NEEDS_REVIEW rather than a forced pick below.
 def resolve_employee_duplicate(
     candidate_employee_code: str | None,
     candidate_name: str,

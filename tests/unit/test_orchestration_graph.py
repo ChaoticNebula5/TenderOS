@@ -19,8 +19,10 @@ def test_build_graph_compiles_with_expected_nodes():
         "specialist_dispatch",
         "compliance_analysis",
         "compliance_gate",
-        "talent_stub",
-        "commercial_stub",
+        "talent_analysis",
+        "resource_selection_gate",
+        "commercial_analysis",
+        "commercial_approval_gate",
         "specialist_join",
         "final_gate",
     }

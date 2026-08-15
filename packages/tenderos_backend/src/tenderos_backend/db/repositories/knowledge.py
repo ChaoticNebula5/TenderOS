@@ -248,6 +248,32 @@ class KnowledgeRepository:
         )
         return list(result.scalars().all())
 
+    async def list_candidate_pool_employees(self, organization_id: uuid.UUID) -> list[Employee]:
+        """B8A's talent candidate pool, deliberately looser than
+        list_bid_eligible_employees (which requires profile_review_status
+        == 'verified' exactly - built for a "browse the approved talent
+        library" view). eligible_for_bid is still a hard filter (Build
+        Guide test: "employee not eligible for bid use excluded" has no
+        "unless reviewed" exception), but 'needs_review' and 'stale'
+        profiles pass through here rather than being hidden - PRD 10.9
+        asks the system to "surface explicit gaps and stale or unknown
+        profile facts," not silently exclude them, and B8A's own test
+        wording ("stale profile visibly warned OR excluded by policy")
+        treats warning as an acceptable alternative to exclusion. Only
+        'archived' (retired from the roster) and 'rejected' (explicitly
+        disqualified) are hard-excluded here - talent_service.py's
+        gap-enforcement step is what turns 'needs_review'/'stale' into a
+        visible warning for anything that does pass through.
+        """
+        result = await self._session.execute(
+            select(Employee).where(
+                Employee.organization_id == organization_id,
+                Employee.eligible_for_bid.is_(True),
+                Employee.profile_review_status.notin_(["archived", "rejected"]),
+            )
+        )
+        return list(result.scalars().all())
+
     async def update_employee(self, knowledge_item_id: uuid.UUID, **fields: object) -> Employee:
         employee = await self._session.get(Employee, knowledge_item_id)
         if employee is None:

@@ -27,4 +27,6 @@
 {"record_type": "pricing_discrepancy", "sheet": "pricing_schedule_1.xlsx", "item_index": null, "issue": "grand_total_does_not_sum_line_items"}
 {"record_type": "pricing_discrepancy", "sheet": "pricing_schedule_2.xlsx", "item_index": 1, "issue": "line_total_does_not_equal_unit_cost_times_quantity"}
 {"record_type": "pricing_discrepancy", "sheet": "pricing_schedule_2.xlsx", "item_index": 2, "issue": "unit_cost_missing_for_priced_line_item"}
+{"record_type": "pricing_discrepancy", "sheet": "pricing_schedule_1.xlsx", "item_index": 4, "issue": "mismatched_currency"}
+{"record_type": "pricing_discrepancy", "sheet": "pricing_schedule_2.xlsx", "item_index": 4, "issue": "unsupported_markup_formula"}
 {"record_type": "requirement_divergence", "requirement_keys": ["REQ-073", "REQ-074"], "obligation": "audit log retention period", "divergent_values": {"REQ-073": "1 year", "REQ-074": "3 years"}, "note": "Same obligation restated in the RFP body (REQ-073) and the technical annexure (REQ-074) with different durations - unlike the old filler tier's near-verbatim duplicates, both should be extracted as distinct requirements, not deduplicated. Not asserted by B5's own eval; exists for a later block to test whether the pipeline surfaces the divergence rather than silently keeping only one."}

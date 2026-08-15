@@ -156,17 +156,17 @@ async def compliance_gate_node(state: TenderState) -> dict:
     decision_payload = interrupt(payload)
     if decision_payload["decision"] == "reject":
         # Known limitation, not an oversight - see KNOWN_LIMITATIONS.md
-        # "[B7] Compliance gate rejection kills the whole run": this mirrors
-        # requirement_gate_node's own reject behavior (the only precedent in
-        # this codebase), but talent_stub/commercial_stub are still stubs -
-        # once B8 makes them real, rejecting here will also discard whatever
-        # they already completed in this same run.
+        # "[B7/B8] Post-join gate rejection kills the whole run": mirrors
+        # requirement_gate_node's reject behavior, now shared by all three
+        # post-join gates (compliance_review, resource_selection,
+        # commercial_approval) - accepted, real fix is B11's bounded
+        # revision loop, not revisited again before then.
         await sync_run_status(workflow_run_id, "rejected")
         return {"status": "rejected"}
 
-    # No status write on approve - final_gate_node, its unconditional next
-    # node with no Send() boundary in between, sets its own
-    # "awaiting_final_approval" value moments later, and nothing routes on
+    # No status write on approve - resource_selection_gate_node, the next
+    # node in this same un-Send()'d continuation, sets its own
+    # "awaiting_resource_selection" value moments later, and nothing routes on
     # any particular non-"rejected" value here. Same reasoning already
     # applied to specialist_join_node: two plain-edge-chained nodes both
     # writing "status" in one continuous, non-Send()-separated execution
