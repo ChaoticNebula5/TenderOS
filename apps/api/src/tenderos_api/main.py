@@ -17,6 +17,7 @@ from tenderos_api.routes import (
     gates,
     knowledge,
     organizations,
+    proposal,
     requirements,
     talent,
     tenders,
@@ -36,6 +37,7 @@ app.include_router(knowledge.router)
 app.include_router(compliance.router)
 app.include_router(talent.router)
 app.include_router(commercial.router)
+app.include_router(proposal.router)
 
 
 @app.get("/health/live")

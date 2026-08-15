@@ -392,33 +392,67 @@ Each entry:
   exists yet asserting the embedding-similarity alternative, since it
   isn't built.
 
-## [B6] knowledge_import_batches.status never advances past 'queued'
+## [B6, re-confirmed B9] knowledge_import_batches.status never advances past 'queued'
 
 - **Discovered:** B6's own Docker smoke test, run end to end against the
   live API/worker/outbox_dispatcher stack. Every upload's batch showed
   `status: "queued"` via `GET /knowledge/import-batches/{id}` even after
   `process_knowledge_document_import` had fully completed and every item
-  in the batch showed `approved`/`needs_review`.
+  in the batch showed `approved`/`needs_review`. **Re-confirmed
+  independently in B9** (this session did not check this file for an
+  existing entry before re-investigating from scratch, which it should
+  have - flagging that process gap plainly rather than quietly merging
+  it away) while the citation-correctness measurement script's own
+  polling loop hung indefinitely against a real employee-master upload.
+  The B9 pass added: a full-repo grep confirming zero writes to
+  `total_items`/`completed_items`/`failed_items`/`status` anywhere
+  outside the migration and the ORM model's own defaults (not just
+  `knowledge_import.py` - `knowledge_service.py` and its repository too),
+  and a live reproduction via direct Postgres query (`status='queued'`,
+  `total_items=0`, all zero, on a batch whose own
+  `knowledge_import_items` rows already numbered 6, all at a terminal
+  status).
 - **Behaviour:** the worker job (`apps/worker/jobs/knowledge_import.py`)
   updates individual `knowledge_import_items` rows as it processes each
   row/extraction, but never writes back to the parent
-  `knowledge_import_batches.status` field itself - there is no code path
-  that ever sets it to anything but its `'queued'` default.
-- **Risk:** low, and not a correctness problem - a reviewer polling
-  `GET .../import-batches/{id}/items` (which this session's smoke test
-  and the actual review flow both use) sees accurate, real-time item
-  status regardless. The batch-level status field is simply dead/
-  unreliable if anything ever reads it expecting a `completed` value -
-  a future UI built against the batch summary endpoint rather than the
-  items list would show a permanently-misleading "queued" badge.
-- **Status:** unverified / accepted. Not fixed this block - noted rather
-  than patched under time pressure at the end of B6, since the fix
-  (update batch.status + total_items/completed_items/failed_items as
-  process_knowledge_document_import runs) is mechanical but touches a
-  file already carrying a lot of new logic this block.
-- **Test:** none dedicated. Observed directly via the live smoke test's
-  batch responses; no automated assertion exists for batch.status
-  specifically.
+  `knowledge_import_batches.status`/`total_items`/`completed_items`/
+  `failed_items` fields at all - there is no code path anywhere in the
+  service, repository, or worker layer that ever sets them to anything
+  but their creation-time defaults. The import itself is not broken -
+  every employee, certification, and resume in both B6's and B9's live
+  runs persisted correctly - only the batch's own aggregate
+  progress-reporting columns are dead.
+- **Risk:** `GET /organizations/{org_id}/knowledge/import-batches/{id}`'s
+  own docstring says explicitly "re-poll ... for progress" - any caller
+  that follows that instruction (a UI progress bar, a future automated
+  script, this session's own first two B9 eval attempts before the
+  workaround) hangs or spins forever reading `queued`/`0 items` no matter
+  how long the import has actually finished. `GET .../items` is
+  unaffected and gives the real, current state - callers that poll that
+  instead never hit this. Originally scoped "low risk" in B6 on the
+  assumption real callers would poll items directly; B9's own live
+  measurement script did exactly that assumption's opposite (polled the
+  batch, per its documented contract) and hung for real, so the risk is
+  more concrete than the original B6 entry scoped it.
+- **Status:** unverified / accepted, not fixed in B6 or B9 - noted rather
+  than patched under time pressure at the end of B6, re-confirmed rather
+  than fixed in B9 since it's B6 code and CLAUDE.md's build-order
+  discipline says fix the block that's actually broken, not patch it as
+  a side effect of an unrelated block's eval script. B9's own
+  citation-correctness script was changed to poll `.../items` instead,
+  working around the bug rather than depending on it. A real fix belongs
+  in B6/B13 (the screen list names "Talent import batches and review
+  queue" - exactly the UI this bug would visibly break) and needs one of:
+  batch-column updates added directly inside
+  `process_knowledge_document_import`, or the GET route computing
+  status/counts from the items table live instead of trusting stored
+  columns that nothing maintains.
+- **Test:** none dedicated in either block. Observed directly via B6's
+  live smoke test and, independently, via B9's `docker exec ... psql`
+  reproduction against a real batch row plus its `knowledge_import_items`
+  rows. Worth a regression test in whichever block fixes it: upload real
+  rows, assert the batch's own `status`/`completed_items` reflect them
+  without needing a second query against `.../items`.
 
 ## [B7/B8] Post-join gate rejection kills the whole run, including unrelated completed branches
 
@@ -625,8 +659,9 @@ Each entry:
 
 ## Standing pattern: local dev/test environment state can silently invalidate a real verification
 
-- **Discovered:** both during B8B's own live Docker smoke test, back to
-  back, in the same session:
+- **Discovered:** two during B8B's own live Docker smoke test, back to
+  back, in the same session; a third during B9's citation-correctness
+  measurement:
   1. **Stale Docker image.** After writing all of B8B's code, the worker/
      api containers were only `docker compose restart`ed, not rebuilt.
      `restart` reuses the existing image; it does not pick up new source
@@ -656,23 +691,48 @@ Each entry:
      into the container bypasses host networking entirely, which is why
      that path kept working the whole time and made the underlying cause
      harder to spot at first.
+  3. **Test-suite teardown destroying a live diagnostic.** During B9,
+     right after a real, hour-plus live pipeline run produced real
+     `proposal_sections`/`proposal_claims`/`compliance_entries`/
+     `evidence_links` rows worth inspecting further, the full automated
+     test suite (`uv run pytest tests/`) was run against that same live
+     `POSTGRES_DSN` "to confirm everything's still green."
+     `tests/integration/conftest.py` has an autouse `_clean_tables`
+     fixture that deletes every table's rows after *each* test - not a
+     bug, exactly the isolation every other integration test in this
+     repo depends on - but it means running the suite against a database
+     you still need to inspect wipes it unconditionally, with no warning
+     and no distinction between "scratch test data" and "the live
+     evidence I was just about to examine." This one failed *silently* in
+     a different sense than the other two: no error, no exception - the
+     very next `psql` query just returned zero rows, and it took a
+     separate round of debugging (checking `docker ps`, re-querying
+     `organizations`) to realize the data was gone rather than never
+     having existed.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
   about *code* (eval scripts, cache scoping) being wrong; this one is
-  about *environment state* (which image is running, which process owns a
-  port) silently substituting itself for the thing actually being tested.
-  Both are invisible to a result that merely "looks fine."
-- **Risk - why this matters going forward, not just as a postmortem:** B9
-  through B17 are all worker/graph-heavy blocks (proposal drafting,
-  red-team, readiness, graph projection) that will keep needing live
-  Docker verification the same way B7/B8 did. Both traps recur on every
-  future block that (a) changes orchestration/domain code and verifies via
-  a rebuilt-assumed container, or (b) runs host-side scripts/tests against
-  `localhost` and trusts the port. Neither produces a code-level exception
-  in the product itself - both are purely which-process-am-I-actually-
-  talking-to failures, which is exactly the class of bug a "the tests
-  passed" report does not surface on its own.
+  about *environment/process state* (which image is running, which
+  process owns a port, which fixture just ran against the database you
+  were about to inspect) silently substituting itself for, or destroying,
+  the thing actually being verified. All three are invisible to a result
+  that merely "looks fine" - the first two produce a wrong answer that
+  looks like a right one; the third produces no answer at all where a
+  real one used to be, without saying so.
+- **Risk - why this matters going forward, not just as a postmortem:** B10
+  through B17 are all worker/graph-heavy blocks (graph projection,
+  red-team, readiness, event-driven reanalysis) that will keep needing
+  live Docker verification the same way B7-B9 did, and will keep producing
+  real live-run data worth inspecting *after* the run, not just during it.
+  All three traps recur on every future block that (a) changes
+  orchestration/domain code and verifies via a rebuilt-assumed container,
+  (b) runs host-side scripts/tests against `localhost` and trusts the
+  port, or (c) runs the automated test suite against the same database a
+  live run's evidence is still sitting in. None of the three produces a
+  code-level exception in the product itself - all three are purely
+  which-process-or-fixture-am-I-actually-touching failures, exactly the
+  class of bug a "the tests passed" report does not surface on its own.
 - **Status:** accepted as a standing operational risk, not something a
   one-time fix closes out. Concrete practice going forward: (1) before any
   live Docker smoke test, rebuild explicitly (`docker compose up -d
@@ -683,8 +743,278 @@ Each entry:
   the connection string implies the intended target; (3) prefer smoke
   tests that assert the *specific* expected sequence (named gate types, in
   order) over tests that only check a final coarse status like
-  `completed` - the specificity is what turned both incidents into loud
-  failures instead of silent false passes this time.
-- **Test:** none automated (both are host-machine/Docker-daemon state, not
-  application code) - the incident write-up above and the smoke-test
-  discipline it now dictates are the mitigation.
+  `completed` - the specificity is what turned the first two incidents
+  into loud failures instead of silent false passes; (4) after a live run
+  produces data worth inspecting further, either do that inspection
+  *before* running the automated test suite against the same
+  `POSTGRES_DSN`, or point the test run at a different database/schema
+  entirely - `_clean_tables`'s teardown has no "are you sure" and no way
+  to tell scratch data from evidence still in use.
+- **Test:** none automated (all three are host-machine/Docker-daemon/test-
+  fixture state, not application code) - the incident write-up above and
+  the discipline it now dictates are the mitigation.
+
+---
+
+## [B9] Section templates are an interpretation, not a locked list
+
+- **Discovered:** B9 planning. Neither the PRD nor the Build Guide specifies
+  what proposal sections TenderOS should draft - B9's own build list just
+  says "section templates" with no enumeration, the same shape B8A's role
+  extraction schema faced with no locked E-part contract.
+- **Behaviour:** `proposal_service.py`'s `SECTION_TEMPLATES` hardcodes six:
+  Company Overview (always drafted, not data-gated), Relevant Experience,
+  Technical Approach, Proposed Team, Compliance and Eligibility, and
+  Commercial Summary - five of the six tied to `requirements.category` or a
+  specialist's own approved output, and skipped entirely (no LLM call, no
+  section row) when the tender has zero underlying approved facts to ground
+  that section against.
+- **Risk:** if a real tender needs a section outside these six - a
+  client-mandated section with its own required heading, for instance -
+  nothing in the current pipeline produces it. A human would have to add it
+  entirely outside the system (no `proposal_sections` row, so no claim
+  traceability for it either).
+- **Status:** accepted interpretation. Not revisited unless a real tender's
+  submission requirements demand a section shape this list can't express.
+- **Test:** none - this is a scope statement about what the six templates
+  cover, not a behavior with a pass/fail case.
+
+---
+
+## [B9] Resolved pricing findings cannot become claim evidence
+
+- **Discovered:** B9, while writing `_facts_from_pricing` in
+  `proposal_service.py` for the Commercial Summary section template.
+- **Behaviour:** `evidence_links.source_kind`'s CHECK constraint (Part C)
+  has no pricing-sourced value (`employee`, `certification`, `past_project`,
+  `capability`, `company_document`, `client_reference`, `partner`,
+  `document_excerpt` only), and every `evidence_links` row requires a real
+  `knowledge_item_id` or `source_chunk_id` - a `pricing_findings` row is
+  neither. So a resolved pricing finding can be offered to the Commercial
+  Summary section as narrative context, but a factual claim that leans on
+  one for support can never resolve a real `evidence_link_id` and is
+  therefore always `unsupported`, even though the underlying finding is a
+  real, human-resolved fact about this tender.
+- **Risk:** none to correctness (a claim that can't cite real evidence
+  correctly stays `unsupported` rather than being wrongly marked
+  `grounded`) - the risk is a UX/completeness gap: the Commercial Summary
+  section may end up thinner or more hedged than the underlying commercial
+  validation actually justifies, because the one specialist output this
+  section most wants to lean on structurally cannot ground a claim.
+- **Status:** accepted. A real fix would add a pricing-sourced
+  `evidence_links.source_kind` value (or a parallel junction table) -
+  out of scope for B9, not blocking its stop-gate since the stop-gate
+  measures unsupported-claims-wrongly-accepted-as-grounded, not proposal
+  section richness.
+- **Test:** none automated - covered by `enforce_claim_grounding`'s own
+  unit tests indirectly (a factual claim with no resolved evidence is
+  asserted `unsupported` regardless of cause).
+
+---
+
+## [B7/B8/B9] Gate approval does not apply GateDecisionRequest.target_updates
+
+- **Discovered:** B9, while planning the citation-correctness live
+  measurement script, by reading `compliance_gate_node`'s source directly
+  and grepping the full repo for `target_updates` usage - **a code-level
+  finding, not an observed live-run failure.** (This entry originally
+  described it as having been directly observed via a gate-only-approval
+  run; that was inaccurate and has been corrected here. No such run was
+  ever executed - the citation-correctness script was written with the
+  real per-target G7/G8/G9 approvals already built in, precisely because
+  this code-reading pass had already surfaced the gap beforehand.) The
+  code-level finding itself stands on its own evidence (below) and does
+  not depend on a live run to be true.
+- **Behaviour:** `GateDecisionRequest` (`apps/api/.../schemas/gates.py`)
+  has carried a `target_updates: list[dict] = []` field since B3, matching
+  R5's own locked example payload (`"target_updates": []`) and the code
+  comment already on that field: *"Real per-target application arrives
+  with the blocks that give gate targets real content (B7+)."* That never
+  happened. `decide_gate` (`routes/gates.py`) reads `body.target_updates`
+  nowhere - `gate_service.record_decision` doesn't take it as a parameter
+  at all. Approving `compliance_review`, `resource_selection`, or
+  `commercial_approval` only unblocks the *workflow* (writes a
+  `gate_decision` audit event, routes to the next node) - it has zero
+  effect on `compliance_entries.human_approved`,
+  `role_matches.human_selected`, or `pricing_findings.resolved`. Those
+  three flags are only ever set through their own separate G7/G8/G9
+  actions (`POST /compliance/{id}/approve`, `POST /roles/{id}/select-
+  candidate`, `POST /pricing-findings/{id}/resolve`), each with its own
+  audit action name.
+- **Risk:** a human reviewer can click "approve" on all three post-join
+  gates and watch the workflow reach `final_readiness`/`completed` with
+  the tender in a state where *no individual decision was ever actually
+  approved* - the coarse workflow status gives no signal that this
+  happened. B9 is the first block whose own output visibly depends on this
+  (an under-approved tender silently drafts a thin or empty proposal), but
+  the same dependency will recur for B10 (graph projection presumably
+  wants to know which facts are human-approved) and B12 (readiness's own
+  required blockers list "compliant decision without valid evidence" and
+  "required role with no human-selected candidate" - exactly the two
+  flags this gap can leave unset even after every gate shows `approved`).
+  This is the same "confidently wrong, not obviously broken" shape as the
+  standing environment-trap pattern already logged, but the root cause
+  here is a genuine, uncompleted piece of B7's original design (the
+  `target_updates` field was added for exactly this and never wired up),
+  not environment state.
+- **Status:** accepted as a known gap, not fixed in B9. **Scheduled to
+  B12 (Readiness and Governance)**, not B11 and not B15 - reasoning below
+  - matching the precedent already set by the gate-rejection limitation's
+  own "real fix is B11" scheduling, so this doesn't stay open-ended the
+  way it silently sat unowned from B7 through B9.
+
+  **Why B12, not B11:** B11's build list (structured findings,
+  finding-resolution gate, supervisor mapping from finding category to
+  corrective task, bounded revision loop) is about *post-hoc* correction
+  after a red-team finding, not the original approval path - it's
+  thematically adjacent (already the scheduled home for the gate-
+  rejection limitation, same "what does a gate decision actually do"
+  territory) but nothing in B11's own stop-gate depends on target_updates
+  being wired up. B11's own automated tests would almost certainly
+  construct `human_approved`/`human_selected` fixture state directly
+  through the repository layer, the same way every integration test in
+  this repo already does (see `test_talent_service.py`,
+  `test_compliance_service.py`) - so B11 could be built and pass its own
+  stop-gate without ever forcing this fix to happen. B12 is different:
+  its own locked "Required blockers" list (Build Guide, verbatim) names
+  *"compliant decision without valid evidence"* and *"required role with
+  no human-selected candidate"* - exactly the two flags this bug leaves
+  silently unset even when every gate shows `approved`. B12's own
+  stop-gate ("seed each blocker and confirm readiness refuses approval
+  until resolved") cannot be honestly satisfied while this bug stands: a
+  reviewer who approves every gate the normal way (no manual per-target
+  G7/G8/G9 workaround - nothing in the current gate UI/API prompts for
+  one) would hit a readiness report stuck refusing approval with no
+  visible explanation, since every gate they can see already reads
+  `approved`. That's a forcing function B11 doesn't have. B12 is also the
+  last block before B13 (Functional UI, depends on B5-B12) designs the
+  actual approve/reject screens - deciding the real policy question here
+  (`target_updates` batch-applies per-target approvals in the same gate-
+  decision call, vs. the UI requires per-target review before a gate can
+  be approved at all) before B13 exists means B13 isn't left to
+  rediscover the same gap while building the gate-approval screen.
+
+  **Why not B15:** B15 is Security and Prompt-Injection Hardening -
+  content/instruction separation, untrusted-document wrapping, tool
+  allowlists, rate limiting, secret scanning. Nothing in its build list
+  or stop-gate touches gate-decision or approval semantics; it does not
+  fit at all, not even loosely.
+- **Not causal for this block's own 18/22-unsupported measurement:** the
+  citation-correctness run (see the merged entry below) was driven with
+  real per-target G7/G8/G9 approvals from the start - 86/86 compliance
+  entries, all 5 roles, all 8 pricing findings - completed *before*
+  `proposal_drafting_node` ran, confirmed directly from the measurement
+  script's own execution log (each batch of individual approvals is
+  logged immediately before its gate's approval, and drafting only runs
+  after the last of the three gates). So the grounded-context builder was
+  handed real, human-approved data in that specific run. This gap is real
+  and matters for any reviewer who does *not* do that manual workaround,
+  but it is not the explanation for that run's own low grounding rate -
+  see the merged entry below for what is.
+- **Test:** none automated yet. Worth a dedicated regression test in
+  whichever block actually resolves it: approve a gate without any
+  per-target action, assert the targets remain unapproved.
+
+---
+
+## [B9] Drafting mostly produces ungrounded text; enforcement catches it - one condition, not two
+
+- **Discovered:** B9's own stop-gate ("claim citation correctness >= 0.95"),
+  measured live against the real `synthetic_tender_a.py` fixtures with real
+  Gemini: real company knowledge (employee master, certifications, 4
+  resumes) imported and verified, a real tender with all 4 documents
+  (RFP, technical annexure, both pricing schedules), driven through every
+  gate with real per-target G7/G8/G9 approvals (86/86 compliance entries
+  individually approved, all 5 roles given a selected candidate, all 8
+  pricing findings resolved) *before* `proposal_drafting_node` ran -
+  confirmed from the measurement script's own execution log, so the
+  target_updates gap logged above was not active in this run (see that
+  entry's own "Not causal" note).
+- **Behaviour:** these are restated together deliberately, not as two
+  findings - they are the same underlying condition described from two
+  angles. The drafted proposal produced 22 total claims: 3 `not_required`
+  (narrative), **18 `unsupported`**, and 1 `grounded`. The one grounded
+  claim's citation genuinely supports it:
+  ```
+  CLAIM: "We hold a valid tax clearance certificate issued by the Revenue
+  Authority, valid through September 2026."
+  CITES: [certification, verified=true, validity=valid] "Tax Clearance
+  Certificate, issued by Revenue Authority, valid from 2025-09-01 to
+  2026-09-01."
+  ```
+  **Measured citation correctness on this run: 1/1 = 100%** - a real
+  number, but not a validated `>= 0.95` rate; a sample of one grounded
+  claim cannot establish that. **The reason the sample is this small is
+  the same fact as the low grounding rate itself**: 18 of 22 real,
+  live-drafted factual claims cited no evidence at all, so there was
+  almost nothing else for the measurement to sample from.
+  `enforce_claim_grounding` correctly withheld every one of them from
+  `grounded` - the invariant is doing exactly what it's supposed to - but
+  that means B9's current drafting behavior mostly produces ungrounded
+  text, and enforcement is the thing making that visible rather than
+  something to work around.
+
+  **The cause of the 18/22 rate is unknown - not "the prompt," not
+  anything else - and that is the honest finding, not a gap in this
+  writeup.** Bug #1 (target_updates, above) has been specifically ruled
+  out for this run: real per-target G7/G8/G9 approvals were confirmed
+  complete, in order, before drafting ran. Beyond ruling that one thing
+  out, there are exactly two live hypotheses and no evidence separating
+  them: (a) the underlying approved compliance/role-match data was
+  genuinely thin on verified evidence for most of these claims, so an
+  honest empty-citation claim is the *correct* behavior per
+  `proposal_drafting.md`'s own prompt ("still be written with empty ref
+  lists rather than omitted"); or (b) real, citable evidence existed and
+  the model didn't cite it, a genuine prompt/model gap. An earlier
+  version of this entry asserted (a) for 11 of the 18 (Technical
+  Approach, Relevant Experience, Commercial Summary) and (b) for the
+  remaining 7 (Proposed Team, e.g. *"employee_1 is a Senior Engineer
+  selected for the Senior Engineer role"*) as if both were confirmed.
+  Neither was. Both were inferred from what the relevant code *can* do
+  (`_facts_from_compliance`/`_facts_from_team`'s own logic), not from a
+  query against what it *did* do for this specific run's actual rows -
+  and the rows are now gone (this session ran the full test suite
+  against the same live database immediately afterward;
+  `tests/integration/conftest.py`'s autouse `_clean_tables` fixture
+  deletes every table's rows after each test, wiping this exact tender's
+  compliance/evidence/role-match data before the deeper check could run -
+  see the environment-traps entry above, now updated with this as its
+  third incident). What is actually confirmed: the model did not cite
+  evidence for any of the 18. What is not confirmed: why, for any of
+  them, individually or as a group. Distinguishing (a) from (b) needs a
+  fresh live run with the resulting database preserved for inspection
+  afterward, not more reasoning from code.
+- **Risk:** none to correctness - `enforce_claim_grounding` behaved
+  exactly as its unit tests specify against real, non-synthetic model
+  output, and zero unsupported claims were wrongly accepted as grounded
+  (the stop-gate's other bullet, which this run serves as live evidence
+  for, on top of the 7/7 unit tests). The real consequence is downstream,
+  not in B9 itself: **B11's red-team block will be operating on a
+  proposal where most claims are unsupported.** That is an expected
+  starting condition for B11 to plan around, not a surprise to diagnose
+  fresh when B11 starts - whoever builds B11 should read this entry
+  first. It is expected in the sense that it has now been observed once,
+  live; it is not yet explained, and B11 should not assume a cause
+  (prompt quality or otherwise) that this entry does not actually
+  establish.
+- **Status:** accepted as an honest partial result, not resolved. Per
+  standing instruction (same rule as B5's own recall gate): no prompt
+  tuning was attempted in response to the low grounded count - that would
+  be adjusting the system to chase a passing number rather than reporting
+  what was actually observed. A real citation-correctness measurement
+  needs either a larger/more diverse live sample (multiple synthetic
+  tenders, or repeated runs against a database that survives the run) or
+  a seeded ground-truth set of claim/evidence pairs with known-correct
+  labels, mirroring how B5's mandatory-recall gate and B7's REQ-073/074
+  divergence check both eventually got real statistical grounding instead
+  of a single anecdote. The open question above - was the underlying
+  evidence thin, or was it available and uncited - needs a fresh live run
+  (with the resulting database left untouched afterward) to close, not
+  further reasoning from code alone.
+- **Test:** `tests/unit/test_claim_grounding.py` (7 cases, synthetic,
+  pins the invariant's logic) + this live run (1 real grounded case, 18
+  real unsupported cases, all correctly classified) - together they cover
+  "the code never wrongly grounds an unsupported claim" thoroughly, but
+  neither is a statistically adequate measurement of citation semantic
+  correctness at scale, and the evidence-availability question above has
+  no test at all yet.

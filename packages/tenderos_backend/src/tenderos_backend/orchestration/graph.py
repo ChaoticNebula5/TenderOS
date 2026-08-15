@@ -12,6 +12,7 @@ from tenderos_backend.orchestration.nodes.compliance import (
 )
 from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
+from tenderos_backend.orchestration.nodes.proposal import proposal_drafting_node
 from tenderos_backend.orchestration.nodes.requirement import requirement_gate_node
 from tenderos_backend.orchestration.nodes.requirement_extraction import (
     requirement_extraction_node,
@@ -47,6 +48,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("commercial_analysis", commercial_analysis_node)
     builder.add_node("commercial_approval_gate", commercial_approval_gate_node)
     builder.add_node("specialist_join", specialist_join_node)
+    builder.add_node("proposal_drafting", proposal_drafting_node)
     builder.add_node("final_gate", final_gate_node)
 
     builder.add_edge(START, "load_context")
@@ -67,6 +69,14 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_edge("talent_analysis", "specialist_join")
     builder.add_edge("commercial_analysis", "specialist_join")
     builder.add_edge("specialist_join", "compliance_gate")
+    # proposal_drafting (B9) sits in the same non-Send()'d sequential slot
+    # the three post-join gates already occupy, between commercial_approval_
+    # gate and final_gate - the "pass-through seam" the B8 plan flagged in
+    # advance. Unlike those three, it's not a gate (Part C's gate_type CHECK
+    # constraint has no 'proposal_review' value, and R2's own topology
+    # places proposal_subgraph before the finding/readiness gates, not
+    # gated itself) - a plain node, same shape as specialist_join/final_gate.
+    builder.add_edge("proposal_drafting", "final_gate")
     builder.add_edge("final_gate", END)
 
     builder.add_conditional_edges(
@@ -97,7 +107,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         "commercial_approval_gate",
         route_after_commercial_approval_gate,
         {
-            "final_gate": "final_gate",
+            "proposal_drafting": "proposal_drafting",
             END: END,
         },
     )

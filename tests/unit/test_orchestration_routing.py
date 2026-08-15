@@ -39,8 +39,8 @@ def test_route_after_resource_selection_gate_ends_on_rejection():
     assert route_after_resource_selection_gate(_state(status="rejected")) == END
 
 
-def test_route_after_commercial_approval_gate_proceeds_to_final_gate_when_not_rejected():
-    assert route_after_commercial_approval_gate(_state()) == "final_gate"
+def test_route_after_commercial_approval_gate_proceeds_to_proposal_drafting_when_not_rejected():
+    assert route_after_commercial_approval_gate(_state()) == "proposal_drafting"
 
 
 def test_route_after_commercial_approval_gate_ends_on_rejection():

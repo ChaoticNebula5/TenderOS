@@ -24,6 +24,13 @@ from tenderos_backend.db.models.knowledge import (
 from tenderos_backend.db.models.membership import OrganizationMembership
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.models.proposal import (
+    ProposalClaim,
+    ProposalClaimEmployee,
+    ProposalClaimEvidence,
+    ProposalClaimRequirement,
+    ProposalSection,
+)
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
@@ -72,6 +79,11 @@ __all__ = [
     "PricingDocument",
     "PricingFinding",
     "PricingLineItem",
+    "ProposalClaim",
+    "ProposalClaimEmployee",
+    "ProposalClaimEvidence",
+    "ProposalClaimRequirement",
+    "ProposalSection",
     "Requirement",
     "RoleMatch",
     "RoleMatchEvidence",

@@ -131,6 +131,22 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if pricing_finding_id is not None:
         return await _organization_id_for_pricing_finding(UUID(pricing_finding_id))
 
+    # B9 (G10): PATCH /proposal/sections/{section_id} and GET /proposal/
+    # claims/{claim_id}/trace both key on their own id with no tender_id
+    # alongside it - GET /tenders/{tender_id}/proposal/sections and POST
+    # .../proposal/generate already resolve through the existing tender_id
+    # branch above. section_id is one-hop (proposal_sections carries
+    # tender_id directly, Part C); claim_id is two-hop (proposal_claims has
+    # no tender_id of its own, only reachable via section_id), same shape as
+    # _organization_id_for_compliance_entry.
+    section_id = request.path_params.get("section_id")
+    if section_id is not None:
+        return await _organization_id_for_proposal_section(UUID(section_id))
+
+    claim_id = request.path_params.get("claim_id")
+    if claim_id is not None:
+        return await _organization_id_for_proposal_claim(UUID(claim_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -273,6 +289,41 @@ async def _organization_id_for_pricing_finding(pricing_finding_id: UUID) -> UUID
                 status_code=status.HTTP_404_NOT_FOUND, detail="Pricing finding not found"
             )
         tender = await uow.tenders.get(finding.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_proposal_section(section_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        section = await uow.proposal.get_proposal_section(section_id)
+        if section is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Proposal section not found"
+            )
+        tender = await uow.tenders.get(section.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_proposal_claim(claim_id: UUID) -> UUID:
+    """proposal_claims carries no tender_id of its own (Part C) - only
+    reachable through its section, same two-hop shape as
+    _organization_id_for_compliance_entry.
+    """
+    async with UnitOfWork() as uow:
+        claim = await uow.proposal.get_proposal_claim(claim_id)
+        if claim is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Proposal claim not found"
+            )
+        section = await uow.proposal.get_proposal_section(claim.section_id)
+        if section is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Proposal section not found"
+            )
+        tender = await uow.tenders.get(section.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id

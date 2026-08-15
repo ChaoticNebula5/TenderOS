@@ -2,11 +2,18 @@ import pytest
 from _helpers import make_ready_run_inputs
 from sqlalchemy import select
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
 from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_service, workflow_service
-from tenderos_backend.orchestration.nodes import commercial, compliance, requirement_extraction, talent
+from tenderos_backend.orchestration.nodes import (
+    commercial,
+    compliance,
+    proposal,
+    requirement_extraction,
+    talent,
+)
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 
 pytestmark = pytest.mark.asyncio
@@ -45,6 +52,20 @@ def _fake_extraction_llm(monkeypatch):
     # never actually calls the LLM in practice, but the client is still
     # constructed unconditionally before that check runs.
     monkeypatch.setattr(commercial, "_build_llm_client", lambda: FakeLLMClient())
+    # proposal_drafting_node also constructs its own client unconditionally.
+    # This file's fixture tender has no approved compliance/talent/commercial
+    # data, so draft_proposal_for_tender skips every data-gated section
+    # template and calls draft_section exactly once, for "Company Overview"
+    # (the one always_on template) - one scripted response is enough, with a
+    # few spares for the same "don't silently hang on an exhausted queue"
+    # reasoning the extraction fixture above already uses.
+    proposal_fake_client = FakeLLMClient()
+    proposal_fake_client.script(
+        "proposal_drafting",
+        ProposalSectionDraft,
+        [ProposalSectionDraft(content="Drafted overview.", claims=[])] * 3,
+    )
+    monkeypatch.setattr(proposal, "_build_llm_client", lambda: proposal_fake_client)
     return fake_client
 
 

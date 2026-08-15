@@ -1,0 +1,118 @@
+import uuid
+from datetime import datetime
+
+from sqlalchemy import TIMESTAMP, Boolean, CheckConstraint, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from tenderos_backend.db.models.base import Base, UUIDPrimaryKeyMixin
+
+
+class ProposalSection(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "proposal_sections"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft','review','approved')", name="ck_proposal_section_status"
+        ),
+        UniqueConstraint(
+            "tender_id", "section_name", "version", name="uq_proposal_section_version"
+        ),
+    )
+
+    tender_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False
+    )
+    section_name: Mapped[str] = mapped_column(nullable=False)
+    content: Mapped[str] = mapped_column(nullable=False, default="")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ProposalClaim(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "proposal_claims"
+    __table_args__ = (
+        CheckConstraint(
+            "claim_type IN ("
+            "'capability','experience','team','compliance','commercial','other'"
+            ")",
+            name="ck_proposal_claim_type",
+        ),
+        CheckConstraint(
+            "grounding_status IN ('grounded','unsupported','needs_review','not_required')",
+            name="ck_proposal_claim_grounding_status",
+        ),
+        UniqueConstraint(
+            "section_id", "content_fingerprint", name="uq_proposal_claim_fingerprint"
+        ),
+    )
+
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("proposal_sections.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_text: Mapped[str] = mapped_column(nullable=False)
+    claim_type: Mapped[str] = mapped_column(nullable=False)
+    is_factual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    grounding_status: Mapped[str] = mapped_column(nullable=False, default="needs_review")
+    content_fingerprint: Mapped[str] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ProposalClaimEvidence(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "proposal_claim_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_claim_id", "evidence_link_id", name="uq_proposal_claim_evidence"
+        ),
+    )
+
+    proposal_claim_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("proposal_claims.id", ondelete="CASCADE"), nullable=False
+    )
+    evidence_link_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("evidence_links.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class ProposalClaimRequirement(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "proposal_claim_requirements"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_claim_id", "requirement_id", name="uq_proposal_claim_requirement"
+        ),
+    )
+
+    proposal_claim_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("proposal_claims.id", ondelete="CASCADE"), nullable=False
+    )
+    requirement_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class ProposalClaimEmployee(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "proposal_claim_employees"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_claim_id",
+            "employee_knowledge_item_id",
+            name="uq_proposal_claim_employee",
+        ),
+    )
+
+    proposal_claim_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("proposal_claims.id", ondelete="CASCADE"), nullable=False
+    )
+    employee_knowledge_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_items.id", ondelete="CASCADE"), nullable=False
+    )

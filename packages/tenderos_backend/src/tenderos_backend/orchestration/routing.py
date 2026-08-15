@@ -27,7 +27,9 @@ def route_after_resource_selection_gate(state: TenderState) -> str:
 
 def route_after_commercial_approval_gate(state: TenderState) -> str:
     # Same sequential-slot reasoning as the two gates above - the last of
-    # the three post-join gates before final_gate.
+    # the three post-join gates. Routes into proposal_drafting (B9) rather
+    # than straight to final_gate now - the "pass-through seam" the B8 plan
+    # flagged in advance.
     if state["status"] == "rejected":
         return END
-    return "final_gate"
+    return "proposal_drafting"
