@@ -38,6 +38,11 @@ dependencies = [
     # surface agents/llm/gemini_adapter.py was written against.
     "google-genai>=0.3",
     "pyyaml>=6.0",
+    # B10: official Neo4j driver for graph_projection/. Same version pin
+    # already used by apps/api's own health-check driver instance (verified
+    # working against the live docker-compose neo4j service since B0/B1) -
+    # matching it here rather than picking a fresh range.
+    "neo4j>=5.26,<6",
 ]
 
 [build-system]

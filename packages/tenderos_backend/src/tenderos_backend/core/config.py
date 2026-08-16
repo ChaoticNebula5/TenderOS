@@ -51,5 +51,26 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 20
     rerank_top_n: int = 10
 
+    # B10: Neo4j projection. neo4j_uri/user/password/database mirror the
+    # fields already proven working in apps/api/config.py's own health check
+    # (unused there beyond connectivity) - duplicated here because
+    # graph_projection/ imports from THIS Settings class, the one
+    # orchestration nodes and domain services actually use, not the thin
+    # API-layer one. Required (no default), same as postgres_dsn/redis_url/
+    # s3_* above - Neo4j is a core infra dependency here, not an optional
+    # one, so a missing .env entry should fail Settings() construction
+    # loudly rather than silently connect to a wrong default.
+    neo4j_uri: str
+    neo4j_user: str
+    neo4j_password: str
+    neo4j_database: str = "neo4j"
+    # D4's locked default. The code may configure up to 6 "for experiments"
+    # via this same env var, but no API request is ever allowed to override
+    # it per-call (schemas/graph.py's impact request body has no hop-count
+    # field at all) - an unbounded or caller-controlled traversal depth on a
+    # variable-length Cypher path is a denial-of-service shape, closed by
+    # construction now rather than deferred to B15.
+    graph_max_hops: int = 4
+
 
 settings = Settings()

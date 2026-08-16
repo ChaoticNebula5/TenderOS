@@ -82,6 +82,19 @@ class TalentRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
+    async def list_sources_for_role(
+        self, role_requirement_id: uuid.UUID
+    ) -> list[RoleRequirementSource]:
+        # B10: the graph projector's SATISFIES edge (Role -> Requirement)
+        # source - the only reader of this junction until now was the write
+        # side (link_role_requirement_source).
+        result = await self._session.execute(
+            select(RoleRequirementSource).where(
+                RoleRequirementSource.role_requirement_id == role_requirement_id
+            )
+        )
+        return list(result.scalars().all())
+
     # ------------------------------------------------------------------
     # role_matches
     # ------------------------------------------------------------------

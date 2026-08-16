@@ -52,4 +52,29 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     # approver added, since approver already sits above bid_manager in every
     # other gate-adjacent row (compliance, resource, commercial, final readiness).
     "cancel_workflow_run": frozenset({Role.BID_MANAGER, Role.APPROVER, Role.ADMIN}),
+    # B10 (G12): Part H's matrix has no "Graph" row at all. view_graph covers
+    # the 4 read/compute routes (status, impact, contradictions, trace) -
+    # full 7-role breadth, same as resolve_redteam_finding (the widest
+    # existing action), justified by PRD 27.13's own invariant ("Traceability
+    # must be accessible from normal workflows, not hidden in an admin-only
+    # screen") and by impact/contradiction analysis being inherently
+    # cross-cutting across compliance/talent/proposal, not owned by one
+    # specialist role. trigger_graph_projection (the manual POST .../
+    # graph/project trigger) is narrower - same set as edit_proposal, since
+    # forcing a recompute is closer to a content-management action than
+    # passive viewing.
+    "view_graph": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
+    "trigger_graph_projection": frozenset(
+        {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.ADMIN}
+    ),
 }

@@ -11,6 +11,7 @@ from tenderos_backend.orchestration.nodes.compliance import (
     compliance_gate_node,
 )
 from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
+from tenderos_backend.orchestration.nodes.graph_projection import project_graph_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
 from tenderos_backend.orchestration.nodes.proposal import proposal_drafting_node
 from tenderos_backend.orchestration.nodes.requirement import requirement_gate_node
@@ -49,6 +50,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("commercial_approval_gate", commercial_approval_gate_node)
     builder.add_node("specialist_join", specialist_join_node)
     builder.add_node("proposal_drafting", proposal_drafting_node)
+    builder.add_node("project_graph", project_graph_node)
     builder.add_node("final_gate", final_gate_node)
 
     builder.add_edge(START, "load_context")
@@ -76,7 +78,14 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     # constraint has no 'proposal_review' value, and R2's own topology
     # places proposal_subgraph before the finding/readiness gates, not
     # gated itself) - a plain node, same shape as specialist_join/final_gate.
-    builder.add_edge("proposal_drafting", "final_gate")
+    builder.add_edge("proposal_drafting", "project_graph")
+    # project_graph (B10) is the next fixed step in R2's own topology
+    # diagram (proposal_subgraph -> project_graph -> red_team), confirmed
+    # independently by R4's task_type enum (graph_projection is a real task
+    # type) and by WorkflowStatus already carrying "projecting_graph"
+    # between "drafting" and "red_teaming" since B3. red_team doesn't exist
+    # yet (B11), so this is the new pass-through seam until then.
+    builder.add_edge("project_graph", "final_gate")
     builder.add_edge("final_gate", END)
 
     builder.add_conditional_edges(

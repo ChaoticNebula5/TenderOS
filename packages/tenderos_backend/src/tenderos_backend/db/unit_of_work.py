@@ -8,6 +8,7 @@ from tenderos_backend.db.repositories.commercial import CommercialRepository
 from tenderos_backend.db.repositories.compliance import ComplianceRepository
 from tenderos_backend.db.repositories.documents import DocumentRepository
 from tenderos_backend.db.repositories.gates import GateRepository
+from tenderos_backend.db.repositories.graph_projection import GraphProjectionRepository
 from tenderos_backend.db.repositories.idempotency import IdempotencyRepository
 from tenderos_backend.db.repositories.knowledge import KnowledgeRepository
 from tenderos_backend.db.repositories.memberships import MembershipRepository
@@ -36,6 +37,7 @@ class UnitOfWork:
         self.workflow: WorkflowRepository
         self.gates: GateRepository
         self.documents: DocumentRepository
+        self.graph_projection: GraphProjectionRepository
         self.requirements: RequirementRepository
         self.agent_traces: AgentTraceRepository
         self.knowledge: KnowledgeRepository
@@ -56,6 +58,7 @@ class UnitOfWork:
         self.workflow = WorkflowRepository(self.session)
         self.gates = GateRepository(self.session)
         self.documents = DocumentRepository(self.session)
+        self.graph_projection = GraphProjectionRepository(self.session)
         self.requirements = RequirementRepository(self.session)
         self.agent_traces = AgentTraceRepository(self.session)
         self.knowledge = KnowledgeRepository(self.session)

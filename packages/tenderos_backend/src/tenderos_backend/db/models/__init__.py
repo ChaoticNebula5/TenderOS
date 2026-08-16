@@ -8,6 +8,7 @@ from tenderos_backend.db.models.compliance import (
     EvidenceLink,
 )
 from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
+from tenderos_backend.db.models.graph_projection import GraphProjectionRun
 from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.models.knowledge import (
     Capability,
@@ -67,6 +68,7 @@ __all__ = [
     "DocumentIngestionRun",
     "Employee",
     "EvidenceLink",
+    "GraphProjectionRun",
     "IdempotencyRecord",
     "KnowledgeImportBatch",
     "KnowledgeImportItem",

@@ -564,26 +564,41 @@ Each entry:
   and the failure would surface two blocks later as "why is impact
   analysis returning outdated results" — with the actual cause sitting in
   B7 code nobody would think to re-open.
-- **Status:** resolved-in-B8. Fixed by wiring `bump_state_version` into
-  B7's `approve_compliance_entry`/`override_compliance_entry` (one bump
-  per decision write, covering "compliance change" and "evidence change"
-  together rather than once per evidence link) and into B8A's
-  `select_candidate`/`deselect_candidate` (covers "role assignment
-  change"). Commercial/pricing changes are not on the invariant's list, so
-  B8B needs no bump. `knowledge selection change` (B6), `proposal claim
-  change` (B9), and `amendment impact change` (later) are out of scope for
-  this fix and should each be checked against this same invariant when
-  their own block is built or revisited — this entry is the reminder to
-  do that, not a claim that every mutation type is now covered.
+- **Status:** resolved-in-B8, extended in B9 and B10. B8 fixed
+  `approve_compliance_entry`/`override_compliance_entry` (covering
+  "compliance change" and "evidence change" together, one bump per
+  decision write rather than once per evidence link) and B8A's
+  `select_candidate`/`deselect_candidate` ("role assignment change").
+  Commercial/pricing changes are not on the invariant's list, so B8B needs
+  no bump. B9's `persist_section_and_claims` covers "proposal claim
+  change." **B10 update:** `knowledge_service.set_knowledge_selection`
+  (B6's own route, `PUT /tenders/{tender_id}/knowledge-selections/
+  {knowledge_item_id}`) was still missing its bump — B6's docstring had
+  deliberately deferred it, explicitly citing graph projection (B10) as
+  the blocking dependency. Found while designing B10's live staleness
+  demo (the demo's own mutation — deselecting a knowledge item — would
+  have silently proven nothing, since `state_version` never moved), fixed
+  in the same transaction as the selection write, matching the other
+  three call sites. Of the six listed mutation types, only **"amendment
+  impact change" remains with no call site** — amendments as a concept
+  aren't built in any block through B10, so there's nothing yet to wire
+  this into; revisit when that block exists, same "reminder, not a closed
+  claim" posture this entry has held since B8.
 - **Test:** new direct tests assert the bump itself, not just that the
   surrounding write succeeded — `tests/integration/test_compliance_service.py`
-  (approve/override bump `tenders.state_version` by exactly 1) and
+  (approve/override bump `tenders.state_version` by exactly 1),
   `tests/integration/test_talent_service.py` (select/deselect do the
-  same). **B10 must not assume this stays fixed** — its own freshness
-  check should be built to verify the invariant actually holds (e.g. a
-  test that mutates compliance data and asserts the projection is then
-  correctly flagged stale), not just assume every future write path
-  remembers the bump the way this one didn't for an entire block.
+  same), `tests/integration/test_proposal_service.py` (claim persist
+  bumps once, a no-op retry does not bump again), and
+  `tests/integration/test_knowledge_service.py` (select and deselect each
+  bump by exactly 1). B10's own freshness check is additionally verified
+  against a REAL mutation through `approve_compliance_entry` (not a
+  manual `UPDATE` on `state_version`) in
+  `tests/integration/test_graph_projection.py::
+  test_stale_projection_raises_graph_stale_after_real_mutation` — the
+  graph is projected fresh, a real approval bumps the counter, and the
+  test asserts `GraphStaleError` is raised before re-projection and
+  clears after it.
 
 ## [B7] Gemini free-tier quota varies enormously by model — verify per-day, not just per-minute, before a live run
 
@@ -1018,3 +1033,45 @@ Each entry:
   neither is a statistically adequate measurement of citation semantic
   correctness at scale, and the evidence-availability question above has
   no test at all yet.
+
+---
+
+## [B10] Two API-surface decisions Part H/G12 don't specify: RBAC action naming and /graph/trace's query shape
+
+- **Discovered:** B10 planning and build. Part H's RBAC matrix has no
+  "Graph" row at all (every other G-part surface reuses or extends an
+  existing named action; this one had nothing to reuse), and G12's build
+  list names `GET .../graph/trace` but neither the PRD nor the Build Guide
+  specifies what a "trace" query actually returns for a given node.
+- **Behaviour:** `rbac.ACTION_ROLES` gained two new keys not transcribed
+  from any locked table: `view_graph` (all 4 read/compute routes - status,
+  impact, contradictions, trace - full 7-role breadth, same width as
+  `resolve_redteam_finding`, justified by PRD 27.13's own invariant that
+  traceability must be accessible from normal workflows, not admin-only)
+  and `trigger_graph_projection` (the manual `POST .../graph/project`
+  trigger - narrower, same 4-role set as `edit_proposal`, since forcing a
+  recompute reads closer to a content-management action than passive
+  viewing). Separately, `graph_service.get_graph_trace` was implemented as
+  "return this node's immediate neighborhood" (the node itself plus every
+  directly connected node/edge, both directions) rather than any bounded
+  multi-hop traversal - a reasonable reading of PRD 27.12's "click any
+  material decision or claim to inspect its origin," but an invented
+  shape, not a transcribed one.
+- **Risk:** if a later block (B13's UI, most likely) needs trace results
+  in a different shape - e.g. a multi-hop path rather than a 1-hop
+  neighborhood, or wants impact-preview-style hop bounding on trace too -
+  this will need revisiting, and the RBAC role assignments are a judgment
+  call a real product/security review could reasonably override (e.g.
+  restricting `trigger_graph_projection` further, or splitting
+  contradiction-viewing from impact-viewing into separate actions).
+- **Status:** accepted interpretation. Both decisions are internally
+  consistent with locked invariants (PRD 27.13's accessibility invariant
+  for RBAC breadth; D5's own hop-bounding caution applied to the trace
+  query's lack of a caller-controlled depth) but neither is dictated by
+  either document, and both were caught and named as such during planning
+  rather than assumed silently.
+- **Test:** `tests/unit/test_graph_trace_labels.py` pins the trace
+  endpoint's label-allowlist behavior (a security fix, not a semantics
+  test) but nothing yet asserts the neighborhood-shape interpretation
+  itself is what a consuming UI actually needs - that can only be judged
+  once B13 has a real trace-view screen to build against.

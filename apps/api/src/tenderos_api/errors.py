@@ -73,6 +73,23 @@ class IdempotencyKeyRequiredError(APIError):
         )
 
 
+class GraphStaleAPIError(APIError):
+    """G12: "Graph endpoints return 409 with code GRAPH_STALE when required
+    projection version is behind" - the API-layer wrapper around domain.
+    services.graph_service.GraphStaleError, same "domain exception -> APIError
+    subclass -> registered handler" translation every other *NotFoundError
+    already goes through in routes/proposal.py etc.
+    """
+
+    def __init__(self, current_state_version: int, projected_state_version: int | None) -> None:
+        super().__init__(
+            409,
+            "GRAPH_STALE",
+            f"Graph projection is behind (current state_version={current_state_version}, "
+            f"last projected={projected_state_version}). Trigger POST .../graph/project and retry.",
+        )
+
+
 async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,

@@ -25,5 +25,6 @@ def test_build_graph_compiles_with_expected_nodes():
         "commercial_approval_gate",
         "specialist_join",
         "proposal_drafting",
+        "project_graph",
         "final_gate",
     }

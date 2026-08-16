@@ -336,6 +336,22 @@ class KnowledgeRepository:
         )
         return list(result.scalars().all())
 
+    # B10: the graph projector resolves a reachable knowledge_item_id to its
+    # child row by item_type - get_employee already existed (B6), these
+    # three are the same shape for the other 3 shared node labels. No
+    # existing caller needed a lookup-by-own-id for these until now, since
+    # every prior block only ever walked from an employee outward
+    # (list_certifications_for_employee) rather than starting from an
+    # arbitrary knowledge_item_id and needing to know what it is.
+    async def get_certification(self, knowledge_item_id: uuid.UUID) -> Certification | None:
+        return await self._session.get(Certification, knowledge_item_id)
+
+    async def get_past_project(self, knowledge_item_id: uuid.UUID) -> PastProject | None:
+        return await self._session.get(PastProject, knowledge_item_id)
+
+    async def get_capability(self, knowledge_item_id: uuid.UUID) -> Capability | None:
+        return await self._session.get(Capability, knowledge_item_id)
+
     async def create_past_project(
         self,
         organization_id: uuid.UUID,

@@ -1,0 +1,269 @@
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+from tenderos_backend.core.config import settings
+from tenderos_backend.db.models.graph_projection import GraphProjectionRun
+from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.graph_projection import queries
+from tenderos_backend.graph_projection.driver import SHARED_LABELS, TENDER_SCOPED_LABELS
+from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
+from tenderos_backend.graph_projection.projector import project_tender as _write_projection
+
+# get_graph_trace's node_label comes from the API caller (a query param on
+# GET /graph/trace), unlike driver.py's own use of these same label tuples
+# for constraint setup - that one only ever interpolates fixed internal
+# constants. Here the caller-influenced value gets validated against this
+# allowlist BEFORE it's allowed anywhere near the Cypher f-string; anything
+# not in this set is rejected outright, not passed through.
+_ALLOWED_TRACE_LABELS = frozenset(TENDER_SCOPED_LABELS) | frozenset(SHARED_LABELS)
+
+
+class TenderNotFoundError(Exception):
+    pass
+
+
+class GraphStaleError(Exception):
+    """Raised whenever a caller asks for graph-derived data and the latest
+    successful projection is behind the tender's current state_version (the
+    Build Guide's "Graph freshness invariant"). routes/graph.py catches this
+    and returns 409 GRAPH_STALE (G12) - never silently returns a possibly-
+    wrong impact/contradiction/trace result (the invariant's own wording).
+    """
+
+    def __init__(
+        self,
+        tender_id: uuid.UUID,
+        current_state_version: int,
+        projected_state_version: int | None,
+    ) -> None:
+        self.tender_id = tender_id
+        self.current_state_version = current_state_version
+        self.projected_state_version = projected_state_version
+        super().__init__(
+            f"Graph for tender {tender_id} is stale: current state_version="
+            f"{current_state_version}, last projected={projected_state_version}"
+        )
+
+
+async def project_tender(tender_id: uuid.UUID) -> GraphProjectionRun:
+    """D3 steps 1-2 and 10-11. Three separate UnitOfWork scopes, each
+    committed independently - same "commit as you go, not one giant
+    transaction" shape draft_proposal_for_tender uses across its own
+    per-section loop. Step 1's "read tender + state_version" (in the first
+    scope) fixes the source_state_version this run claims to represent
+    BEFORE any Neo4j write starts, which is what check_freshness later
+    compares against. If the projector fails partway through, the run is
+    marked 'failed' in its own committed scope (not left 'running' forever,
+    and NOT treated as the latest successful run by
+    get_latest_completed_run's own status filter) and the exception
+    propagates - a partial write must never be mistaken for a fresh graph.
+    """
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        if tender is None:
+            raise TenderNotFoundError(f"Tender {tender_id} not found")
+        run = await uow.graph_projection.create_run(tender_id, tender.state_version)
+        await uow.commit()
+
+    try:
+        async with UnitOfWork() as uow, get_neo4j_session() as session:
+            node_count, relationship_count = await _write_projection(uow, session, tender_id)
+    except Exception as exc:
+        async with UnitOfWork() as uow:
+            await uow.graph_projection.mark_failed(run.id, str(exc))
+            await uow.commit()
+        raise
+
+    async with UnitOfWork() as uow:
+        result = await uow.graph_projection.mark_completed(run.id, node_count, relationship_count)
+        await uow.commit()
+        return result
+
+
+async def check_freshness(tender_id: uuid.UUID) -> GraphProjectionRun:
+    """Every read-path function below calls this first. Returns the latest
+    completed run on success (callers that already need it, e.g.
+    get_graph_status, avoid a second lookup); raises GraphStaleError
+    otherwise - including when no successful projection has ever run.
+    """
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        if tender is None:
+            raise TenderNotFoundError(f"Tender {tender_id} not found")
+
+        latest = await uow.graph_projection.get_latest_completed_run(tender_id)
+        if latest is None or latest.source_state_version != tender.state_version:
+            raise GraphStaleError(
+                tender_id,
+                tender.state_version,
+                latest.source_state_version if latest else None,
+            )
+        return latest
+
+
+async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        if tender is None:
+            raise TenderNotFoundError(f"Tender {tender_id} not found")
+        latest = await uow.graph_projection.get_latest_completed_run(tender_id)
+        fresh = latest is not None and latest.source_state_version == tender.state_version
+        return {
+            "fresh": fresh,
+            "current_state_version": tender.state_version,
+            "projected_state_version": latest.source_state_version if latest else None,
+            "last_projected_at": latest.completed_at if latest else None,
+        }
+
+
+async def preview_impact(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    await check_freshness(tender_id)
+    async with get_neo4j_session() as session:
+        return await queries.preview_impact(
+            session, str(tender_id), str(knowledge_item_id), settings.graph_max_hops
+        )
+
+
+async def find_contradictions(tender_id: uuid.UUID) -> list[dict[str, Any]]:
+    await check_freshness(tender_id)
+    async with get_neo4j_session() as session:
+        tid = str(tender_id)
+        contradictions: list[dict[str, Any]] = []
+        for finder, category in (
+            (queries.find_expired_certification_contradictions, "expired_certification"),
+            (queries.find_deselected_fact_still_used_contradictions, "deselected_fact_in_use"),
+            (
+                queries.find_removed_employee_still_committed_contradictions,
+                "removed_employee_committed",
+            ),
+            (queries.find_unsupported_grounded_claim_contradictions, "unsupported_grounded_claim"),
+        ):
+            for row in await finder(session, tid):
+                contradictions.append({"category": category} | row)
+        return contradictions
+
+
+async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -> dict[str, Any]:
+    """Not locked precisely by either doc (B10's build list just says "graph
+    trace endpoint") - implemented as "show this node's immediate graph
+    neighborhood" (the node itself plus every directly connected node/edge,
+    both directions), matching PRD 27.12's "click any material decision or
+    claim to inspect its origin" without inventing traversal semantics
+    neither doc specifies. See KNOWN_LIMITATIONS.md.
+
+    Two things a caller-facing lookup-by-label-and-id endpoint must never
+    skip, both fixed after an automated security review caught the first
+    draft missing them: (1) node_label is checked against
+    _ALLOWED_TRACE_LABELS before it goes anywhere near the query text -
+    otherwise a caller could pass an arbitrary label string straight into
+    the Cypher; (2) the query itself enforces that the requested node
+    actually belongs to tender_id, not just that node_id exists somewhere in
+    the whole graph - without this, a caller with legitimate graph access to
+    ANY tender could read another tenant's node by UUID alone, since raising
+    403 earlier in the route only proves they can see the requested tender,
+    not that the node they asked for is IN it.
+    """
+    if node_label not in _ALLOWED_TRACE_LABELS:
+        raise ValueError(f"Unknown graph node label: {node_label!r}")
+    await check_freshness(tender_id)
+
+    tid = str(tender_id)
+    # Tender-scoped labels carry their own tender_id property (set by the
+    # projector); shared labels never do (D1) - they're only "in" this
+    # tender at all via a USED_IN edge, so that's what has to be checked
+    # instead. Also note the key property differs: tender-scoped nodes are
+    # keyed by `id`, shared nodes by `knowledge_item_id` (same distinction
+    # cypher/nodes.py's MERGE statements already draw).
+    if node_label in TENDER_SCOPED_LABELS:
+        match_clause = f"MATCH (n:{node_label} {{id: $nodeId, tender_id: $tenderId}})"
+    else:
+        match_clause = (
+            f"MATCH (n:{node_label} {{knowledge_item_id: $nodeId}})"
+            "-[:USED_IN]->(:Tender {id: $tenderId})"
+        )
+
+    async with get_neo4j_session() as session:
+        result = await session.run(
+            match_clause + " "
+            "OPTIONAL MATCH (n)-[r]-(neighbor) "
+            "RETURN n, collect({relationship: type(r), neighbor: neighbor}) AS neighbors",
+            nodeId=node_id,
+            tenderId=tid,
+        )
+        record = await result.single()
+        if record is None:
+            return {"node": None, "neighbors": []}
+        return record.data()
+
+
+@dataclass(frozen=True)
+class EvidenceCoverageResult:
+    valid_path_count: int
+    valid_evidence_ids: list[str] = field(default_factory=list)
+    invalid_evidence_ids: list[str] = field(default_factory=list)
+    recommended_action: str = "compliance_re_evaluation_required"
+
+
+def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageResult:
+    """D7's evidence-coverage decision function. `rows` is exactly
+    queries.evidence_coverage_rows's output for one compliance decision -
+    one dict per attached evidence link, already fetched from Neo4j:
+    {evidence_id, verified, validity_status, knowledge_item_status,
+    valid_until, selected}. `knowledge_item_status`/`selected` come back
+    None when the evidence is a bare document excerpt with no backing
+    knowledge item (PROVIDES was never created for it in the projector -
+    see cypher/relationships.py's own comment on this).
+
+    Steps:
+    1. For each row, decide whether it counts as a currently-valid support
+       path: the evidence link itself must be verified=true AND
+       validity_status='valid'. If the row DOES have a backing fact
+       (knowledge_item_status is not None), that fact's status must also be
+       'active' AND its USED_IN.selected must not be False (None counts as
+       passing - a fact with no selection row at all was never deselected).
+    2. Split evidence_id values into valid_evidence_ids vs
+       invalid_evidence_ids based on step 1's per-row verdict.
+    3. valid_path_count = len(valid_evidence_ids).
+    4. recommended_action = 'review_optional' if valid_path_count > 0 else
+       'compliance_re_evaluation_required' (D7's own rule, verbatim).
+    5. Return an EvidenceCoverageResult with all four fields set.
+
+    The edge case that makes this worth writing by hand rather than a
+    one-line filter: a document-excerpt evidence row (no knowledge_item_id
+    at all) must NOT be penalized for having no fact to check - treat a
+    missing knowledge_item_status/selected as "no disqualifying fact
+    condition applies," not as an automatic failure. Getting this backwards
+    would make every document-excerpt-only compliance decision
+    permanently un-coverable regardless of how solid the excerpt itself is.
+    """
+    # TODO(human)
+    valid_evidence_ids: list[str] = []
+    invalid_evidence_ids: list[str] = []
+    for row in rows:
+        evidence_id = str(row["evidence_id"])
+        evidence_is_valid = row["verified"] is True and row["validity_status"] == "valid"
+        
+        fact_is_valid = row["knowledge_item_status"] is None or (row["knowledge_item_status"] == "active" and row["selected"] is not False)
+        
+        path_is_valid = evidence_is_valid and fact_is_valid
+        
+        if path_is_valid:
+            valid_evidence_ids.append(evidence_id)
+        else:
+            invalid_evidence_ids.append(evidence_id)
+            
+    valid_path_count = len(valid_evidence_ids)
+    if valid_path_count > 0:
+        recommended_action = "review_optional"
+    else:
+        recommended_action = "compliance_re_evaluation_required"
+        
+    return EvidenceCoverageResult(
+        valid_path_count,
+        valid_evidence_ids,
+        invalid_evidence_ids,
+        recommended_action=recommended_action,
+    )

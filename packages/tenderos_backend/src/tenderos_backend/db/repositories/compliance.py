@@ -57,6 +57,16 @@ class ComplianceRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_evidence_links_for_tender(self, tender_id: uuid.UUID) -> list[EvidenceLink]:
+        # B10: the graph projector needs every evidence_links row for the
+        # tender (valid, invalid, and unverified alike) - D7's coverage
+        # re-evaluation has to see the full set to compute valid_path_count
+        # correctly, not just the currently-valid subset.
+        result = await self._session.execute(
+            select(EvidenceLink).where(EvidenceLink.tender_id == tender_id)
+        )
+        return list(result.scalars().all())
+
     # ------------------------------------------------------------------
     # compliance_entries
     # ------------------------------------------------------------------

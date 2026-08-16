@@ -939,15 +939,21 @@ async def set_knowledge_selection(
     The Build Guide's full selection-change flow (impact preview -> confirm
     -> update selection -> bump state version -> outbox
     ImpactReanalysisRequested -> projection -> targeted re-evaluation) needs
-    graph projection (B10) and targeted re-evaluation (B7+) to exist first -
-    out of scope for B6. This persists the selection row itself, the one
-    piece of that flow B6 owns; wiring the rest is a later block's job, not
-    silently approximated here.
+    graph projection (B10) and targeted re-evaluation (B7+/B11) to exist
+    first - impact preview and targeted re-evaluation are still out of scope
+    here. But the state-version bump itself only depended on graph
+    projection existing (B10, so the freshness comparison it feeds has
+    somewhere to compare against) - that dependency is resolved now, so
+    "knowledge selection change" (Part C's own state-version invariant list)
+    gets wired in this same transaction, same as the other three listed
+    mutation types already are. See KNOWN_LIMITATIONS.md for which of the
+    six still have no bump call site.
     """
     async with UnitOfWork() as uow:
         updated = await uow.knowledge.upsert_selection(
             tender_id, knowledge_item_id, selected, actor_user_id, change_reason
         )
+        await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
         return updated
 
