@@ -7,7 +7,7 @@ from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import workflow_service
 from tenderos_backend.orchestration.nodes import commercial, compliance, final_gate, requirement, talent
 from tenderos_backend.orchestration.nodes.specialist_dispatch import (
-    _SPECIALIST_NODES,
+    _TASK_TYPE_TO_NODE,
     dispatch_specialists,
 )
 
@@ -247,24 +247,62 @@ async def test_compliance_gate_node_opens_no_gate_for_a_cancelled_run(monkeypatc
     assert updated_run.status == "cancelled", "must not be overwritten to 'failed'"
 
 
-async def test_dispatch_specialists_sends_one_per_specialist_node_in_order():
+# B11: dispatch_specialists now looks up each dispatched task's real
+# task_type from Postgres (needed so a revision can Send() to just one
+# specialist instead of always all 3 - see specialist_dispatch.py's own
+# comment) - fake string ids like "task-a" no longer work, since they're
+# parsed as real UUIDs and looked up against real WorkflowTask rows.
+async def _make_dispatch_tasks(run: WorkflowRun) -> dict[str, str]:
+    async with UnitOfWork() as uow:
+        task_ids: dict[str, str] = {}
+        for task_type, node_name in _TASK_TYPE_TO_NODE.items():
+            task = await uow.workflow.create_task(
+                workflow_run_id=run.id,
+                task_key=f"{task_type}:{run.id}",
+                task_type=task_type,
+                assigned_agent=node_name,
+                priority=5,
+                input_refs={},
+            )
+            task_ids[node_name] = str(task.id)
+        await uow.commit()
+        return task_ids
+
+
+async def test_dispatch_specialists_sends_one_per_specialist_node():
     run = await _make_run()
-    state = {**_base_state(run), "dispatch_task_ids": ["task-a", "task-b", "task-c"]}
+    node_task_ids = await _make_dispatch_tasks(run)
+    state = {**_base_state(run), "dispatch_task_ids": list(node_task_ids.values())}
 
     sends = await dispatch_specialists(state)
 
     assert len(sends) == 3
     assert all(isinstance(s, Send) for s in sends)
-    assert [s.node for s in sends] == list(_SPECIALIST_NODES)
-    assert [s.arg["task_id"] for s in sends] == ["task-a", "task-b", "task-c"]
+    assert {s.node: s.arg["task_id"] for s in sends} == node_task_ids
+
+
+async def test_dispatch_specialists_sends_only_the_dispatched_task_types():
+    # The actual B11 behavior change: a revision that only needs
+    # compliance_analysis re-run must Send() to ONLY that node, not all 3 -
+    # this is what makes a revision "targeted."
+    run = await _make_run()
+    node_task_ids = await _make_dispatch_tasks(run)
+    state = {**_base_state(run), "dispatch_task_ids": [node_task_ids["compliance_analysis"]]}
+
+    sends = await dispatch_specialists(state)
+
+    assert len(sends) == 1
+    assert sends[0].node == "compliance_analysis"
+    assert sends[0].arg["task_id"] == node_task_ids["compliance_analysis"]
 
 
 async def test_dispatch_specialists_preserves_shared_state_in_each_payload():
     run = await _make_run()
+    node_task_ids = await _make_dispatch_tasks(run)
     state = {
         **_base_state(run),
         "status": "running_specialists",
-        "dispatch_task_ids": ["task-a", "task-b", "task-c"],
+        "dispatch_task_ids": list(node_task_ids.values()),
     }
 
     sends = await dispatch_specialists(state)

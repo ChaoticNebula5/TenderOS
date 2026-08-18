@@ -15,6 +15,7 @@ from tenderos_backend.db.repositories.memberships import MembershipRepository
 from tenderos_backend.db.repositories.organizations import OrganizationRepository
 from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.db.repositories.proposal import ProposalRepository
+from tenderos_backend.db.repositories.redteam import RedteamRepository
 from tenderos_backend.db.repositories.requirements import RequirementRepository
 from tenderos_backend.db.repositories.talent import TalentRepository
 from tenderos_backend.db.repositories.tenders import TenderRepository
@@ -45,6 +46,7 @@ class UnitOfWork:
         self.talent: TalentRepository
         self.commercial: CommercialRepository
         self.proposal: ProposalRepository
+        self.redteam: RedteamRepository
 
     async def __aenter__(self) -> "UnitOfWork":
         self.session = await self._session_cm.__aenter__()
@@ -66,6 +68,7 @@ class UnitOfWork:
         self.talent = TalentRepository(self.session)
         self.commercial = CommercialRepository(self.session)
         self.proposal = ProposalRepository(self.session)
+        self.redteam = RedteamRepository(self.session)
         return self
 
     async def __aexit__(

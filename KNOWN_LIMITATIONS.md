@@ -526,6 +526,22 @@ Each entry:
   assert commercial's already-approved data survives in Postgres) — worth
   adding when B11 is being built, as the "before" half of that fix's own
   regression test.
+- **B11 update:** the mechanism this entry named as the real fix now
+  exists — `targeted_replan_node`/`redteam_service.map_finding_to_
+  corrective_task` (finding-category → corrective-task mapping) and the
+  bounded revision loop (`route_after_red_team`/`route_after_targeted_
+  replan`, `revision_count`/`max_revisions`). **This limitation stays
+  open, deliberately, not because the mechanism is missing but because
+  B11's own build list scopes it to red-team findings only** —
+  `compliance_gate_node`/`resource_selection_gate_node`/
+  `commercial_approval_gate_node`'s own reject paths are a separate call
+  site B11 doesn't touch, and rewiring them to route through
+  `targeted_replan` instead of killing the run is additional scope not
+  named in B11's build list or stop-gate. No later block in Part J
+  revisits those three gates specifically, so this is left explicitly
+  open rather than assigned a block name it doesn't actually have -
+  revisit if/when those three gates' reject behavior is deliberately
+  changed, not before.
 
 ## [B7/B8] tenders.state_version was never bumped, despite the locked invariant requiring it since B7
 
@@ -676,7 +692,9 @@ Each entry:
 
 - **Discovered:** two during B8B's own live Docker smoke test, back to
   back, in the same session; a third during B9's citation-correctness
-  measurement:
+  measurement; a fourth during B11, despite this entry's own "Status"
+  section (point 4 below) already writing down the exact discipline that
+  would have prevented it:
   1. **Stale Docker image.** After writing all of B8B's code, the worker/
      api containers were only `docker compose restart`ed, not rebuilt.
      `restart` reuses the existing image; it does not pick up new source
@@ -724,6 +742,25 @@ Each entry:
      separate round of debugging (checking `docker ps`, re-querying
      `organizations`) to realize the data was gone rather than never
      having existed.
+  4. **Same trap, third time in its exact documented shape, during B11.**
+     Immediately after B11's own live smoke test completed, `uv run pytest
+     tests/` was run against the same live `POSTGRES_DSN` "to confirm
+     everything's still green" - the identical phrase, and the identical
+     mistake, as incident 3. This wiped the just-completed live run's
+     tender/proposal_claims/requirements before a follow-up question
+     ("did red-team's deterministic checks actually fire against the real
+     Gemini draft, or only against the manually-seeded finding?") could be
+     answered from that data. Recovered by re-running the live smoke test
+     once more and inspecting the database immediately afterward, before
+     touching pytest again - not by reconstructing the lost run. Notable
+     specifically because this entry's own "Status" section already named
+     the exact preventive practice ("do that inspection before running the
+     automated test suite against the same `POSTGRES_DSN`") before this
+     incident happened, and it still happened - the discipline being
+     written down once is not the same as it being followed automatically
+     in a later, unrelated-feeling moment (running the full suite as a
+     routine sanity check, not consciously flagged as "touching the same
+     database as the live run I still need").
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -731,23 +768,28 @@ Each entry:
   about *environment/process state* (which image is running, which
   process owns a port, which fixture just ran against the database you
   were about to inspect) silently substituting itself for, or destroying,
-  the thing actually being verified. All three are invisible to a result
+  the thing actually being verified. All four are invisible to a result
   that merely "looks fine" - the first two produce a wrong answer that
-  looks like a right one; the third produces no answer at all where a
-  real one used to be, without saying so.
+  looks like a right one; the third and fourth produce no answer at all
+  where a real one used to be, without saying so.
 - **Risk - why this matters going forward, not just as a postmortem:** B10
   through B17 are all worker/graph-heavy blocks (graph projection,
   red-team, readiness, event-driven reanalysis) that will keep needing
   live Docker verification the same way B7-B9 did, and will keep producing
   real live-run data worth inspecting *after* the run, not just during it.
-  All three traps recur on every future block that (a) changes
-  orchestration/domain code and verifies via a rebuilt-assumed container,
-  (b) runs host-side scripts/tests against `localhost` and trusts the
-  port, or (c) runs the automated test suite against the same database a
-  live run's evidence is still sitting in. None of the three produces a
-  code-level exception in the product itself - all three are purely
-  which-process-or-fixture-am-I-actually-touching failures, exactly the
-  class of bug a "the tests passed" report does not surface on its own.
+  The test-teardown trap specifically has now recurred once already (B9 to
+  B11) despite being named and given a concrete practice after its first
+  occurrence - it is the easiest of the three trap *types* to fall into
+  again precisely because triggering it doesn't feel like touching live
+  data, it feels like "running the test suite," a routine, low-stakes-
+  seeming action. All three trap types recur on every future block that
+  (a) changes orchestration/domain code and verifies via a rebuilt-assumed
+  container, (b) runs host-side scripts/tests against `localhost` and
+  trusts the port, or (c) runs the automated test suite against the same
+  database a live run's evidence is still sitting in. None of the three
+  produces a code-level exception in the product itself - all three are
+  purely which-process-or-fixture-am-I-actually-touching failures, exactly
+  the class of bug a "the tests passed" report does not surface on its own.
 - **Status:** accepted as a standing operational risk, not something a
   one-time fix closes out. Concrete practice going forward: (1) before any
   live Docker smoke test, rebuild explicitly (`docker compose up -d
@@ -764,10 +806,20 @@ Each entry:
   *before* running the automated test suite against the same
   `POSTGRES_DSN`, or point the test run at a different database/schema
   entirely - `_clean_tables`'s teardown has no "are you sure" and no way
-  to tell scratch data from evidence still in use.
-- **Test:** none automated (all three are host-machine/Docker-daemon/test-
-  fixture state, not application code) - the incident write-up above and
-  the discipline it now dictates are the mitigation.
+  to tell scratch data from evidence still in use. Point (4) has now
+  failed to prevent a recurrence once already - treat it as something to
+  actively check before running `pytest` after a live run, not as a
+  practice that, once written down, can be trusted to happen on its own.
+  Not done now, but this is a procedural trap a document can only warn
+  about, not enforce - if it recurs a fifth time, the actual fix is
+  structural, not another written reminder: point the test suite at a
+  dedicated database by default (a separate `POSTGRES_DSN`/database name
+  from whatever a live run or manual script uses), so `_clean_tables`
+  physically cannot reach live-run data regardless of what anyone
+  remembers to check.
+- **Test:** none automated (all four incidents are host-machine/Docker-
+  daemon/test-fixture state, not application code) - the incident
+  write-up above and the discipline it now dictates are the mitigation.
 
 ---
 
@@ -1075,3 +1127,67 @@ Each entry:
   test) but nothing yet asserts the neighborhood-shape interpretation
   itself is what a consuming UI actually needs - that can only be judged
   once B13 has a real trace-view screen to build against.
+
+---
+
+## [B11] Stop-gate proof covers detector correctness against known defects, not detection on organic pipeline output
+
+- **Discovered:** during B11's own live Docker verification, following up
+  a code-review question about whether `critical seeded defect recall =
+  1.00` could be misread as "red-team catches defects in real runs."
+- **Behaviour:** B11's stop-gate is satisfied by
+  `tests/integration/test_redteam_service.py::
+  test_all_seven_seeded_defect_categories_are_detected` - a tender where
+  all 7 required defect categories are constructed directly via
+  repository calls (missing compliance entries, ungrounded claims,
+  expired certs, deselected-employee-still-named claims, pricing
+  findings, missing submission items, gapped role matches), matching this
+  block's own plan (Q4): 4 of the 7 are pipeline-behavior states a
+  document generator can't plant, so the ground truth is asserted into
+  existence, not produced by a real run. This is the right way to prove
+  the detectors are logically correct - it is not a demonstration that
+  they fire against a real, organically-drafted proposal.
+  The live smoke test's own automatic `red_team` pass, run against a real
+  Gemini-drafted proposal, found **zero** findings both times it was run.
+  Confirmed empirically, not inferred from code (a first attempt at this
+  same check destroyed the live run's own data via the test-teardown trap
+  documented above as that entry's 4th incident, and had to be re-run):
+  the live tender's drafted proposal contained exactly 2 claims, both
+  `is_factual=False` and `grounding_status='not_required'` (generic
+  "Company Overview" framing text, e.g. "commitment to delivering
+  high-quality..."). `check_unsupported_claims`'s own query
+  (`is_factual=True and grounding_status not in ('grounded',
+  'not_required')`) correctly skipped both - there was nothing factual
+  and ungrounded in this run's output to catch, not a missed detection.
+  The reason: this smoke test's fixture is a near-empty placeholder
+  document (1 requirement total, same minimal-fixture convention B9/B10's
+  own smoke tests use), a structurally much thinner scenario than B9's
+  own live run against the full `synthetic_tender_a.py` package (65
+  requirements, 22 drafted factual claims, 18 unsupported - see "[B9]
+  Drafting mostly produces ungrounded text" above). The manual
+  `POST /tenders/{id}/redteam/run` trigger, called after directly seeding
+  one `missed_mandatory_requirement` fact, did correctly detect it live
+  through the real running API - proving the wiring works end to end, but
+  that is still a manually-seeded fact, not organic model output.
+- **Risk:** a reader who sees "critical recall = 1.00" without this entry
+  could reasonably conclude red-team has been shown to catch defects
+  arising naturally from real pipeline runs. It has not. What is shown:
+  (1) the 5 check functions are logically correct against defects known
+  to exist (the pytest proof), and (2) the full wiring - automatic firing
+  after `project_graph`, the manual trigger, gate routing, persistence -
+  works against a real Docker stack (the live proof). What is NOT shown:
+  that any of the 5 checks, `check_unsupported_claims` specifically,
+  actually fires when B9's own kind of organic condition (18 of 22 real
+  drafted claims unsupported) is present in a live run. The one existing
+  data point in this codebase for that condition (B9's live run) predates
+  red-team's existence entirely, so it was never checked against it.
+- **Status:** open, not scheduled to a specific later block. Closing it
+  requires a live run against a substantive fixture (`synthetic_tender_a.py`
+  or equivalent) carried all the way through to `red_team`, with the
+  resulting `redteam_findings` inspected before anything else touches
+  that `POSTGRES_DSN` - not a code change, a verification gap.
+- **Test:** none - this is precisely the gap. `test_all_seven_seeded_
+  defect_categories_are_detected` (pytest, constructed defects) and the
+  B11 live smoke test (wiring, one manually-seeded fact) are both real
+  proofs of what they each actually test; neither is a substitute for the
+  other, and neither closes this one.

@@ -239,7 +239,7 @@ def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageRe
     would make every document-excerpt-only compliance decision
     permanently un-coverable regardless of how solid the excerpt itself is.
     """
-    # TODO(human)
+
     valid_evidence_ids: list[str] = []
     invalid_evidence_ids: list[str] = []
     for row in rows:
@@ -267,3 +267,71 @@ def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageRe
         invalid_evidence_ids,
         recommended_action=recommended_action,
     )
+
+
+async def find_contradictions_for_redteam(tender_id: uuid.UUID) -> list[dict[str, Any]]:
+    """B11's graph-contradiction check step (Red Team build item 4) - a thin
+    wrapper around find_contradictions(), enriched with D7's own coverage
+    decision for the two categories that name a specific compliance
+    decision (expired_certification, deselected_fact_in_use). Kept here
+    rather than in domain/services/redteam_checks.py so every Neo4j session
+    this project opens stays inside graph_service.py, the same boundary
+    B10 already established (redteam_checks.py never imports get_neo4j_session
+    itself).
+
+    For those two categories, "the fact went stale" doesn't by itself say
+    how bad it is - a compliance decision can still have OTHER valid
+    evidence backing it. evaluate_evidence_coverage's own recommended_action
+    answers that: 'review_optional' (>=1 valid path remains) downgrades the
+    finding to major; 'compliance_re_evaluation_required' (zero valid paths
+    left) is critical - the compliant decision this tender is relying on may
+    no longer be actually supported. removed_employee_committed and
+    unsupported_grounded_claim don't name a single compliance decision to
+    re-check coverage for, so they stay critical unconditionally - the
+    contradiction itself already IS the disqualifying fact.
+
+    The flagged evidence row itself is excluded from coverage_rows before
+    evaluate_evidence_coverage runs - real bug found while testing this
+    function against a seeded expired-cert case with no other evidence: D7's
+    own evidence_coverage_rows trusts evidence_links.validity_status
+    verbatim, which can be stale (set when the link was created, never
+    revisited as the backing cert aged past its own valid_until - that
+    drift is exactly what the expired_certification query just freshly
+    detected by comparing cert.valid_until against tender.submission_date
+    directly). Without this exclusion, a compliant decision resting on
+    nothing but one now-expired certificate could be scored "review_optional"
+    just because its own stale evidence row still says validity_status=
+    'valid'. Excluding it asks the right question: ignoring the piece of
+    evidence that just got flagged, is there something else backing this
+    decision?
+    """
+    contradictions = await find_contradictions(tender_id)
+    async with get_neo4j_session() as session:
+        for row in contradictions:
+            category = row["category"]
+            if category not in ("expired_certification", "deselected_fact_in_use"):
+                row["severity"] = "critical"
+                continue
+            compliance_node = row.get("compliance") or (
+                row.get("target") if row.get("via") == "SUPPORTS" else None
+            )
+            if compliance_node is None:
+                row["severity"] = "critical"
+                continue
+            flagged_evidence_id = row["evidence"]["id"]
+            coverage_rows = [
+                r
+                for r in await queries.evidence_coverage_rows(session, str(compliance_node["id"]))
+                if r["evidence_id"] != flagged_evidence_id
+            ]
+            coverage = evaluate_evidence_coverage(coverage_rows)
+            row["coverage"] = {
+                "valid_path_count": coverage.valid_path_count,
+                "recommended_action": coverage.recommended_action,
+            }
+            row["severity"] = (
+                "critical"
+                if coverage.recommended_action == "compliance_re_evaluation_required"
+                else "major"
+            )
+    return contradictions

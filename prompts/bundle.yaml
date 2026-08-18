@@ -31,3 +31,5 @@ agents:
     template: commercial_explanation.md
   proposal_drafting:
     template: proposal_drafting.md
+  redteam_critique:
+    template: redteam_critique.md

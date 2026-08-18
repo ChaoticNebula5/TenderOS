@@ -72,5 +72,12 @@ class Settings(BaseSettings):
     # construction now rather than deferred to B15.
     graph_max_hops: int = 4
 
+    # B11: B2.4's own locked value. Seeded into TenderState["max_revisions"]
+    # by load_context_node at run start - a Settings field (not a bare
+    # module constant) for the same reason graph_max_hops is one: it's an
+    # operator-tunable deployment knob, not a hardcoded language-level
+    # constant, even though the spec gives one fixed starting number.
+    max_proposal_revisions: int = 2
+
 
 settings = Settings()

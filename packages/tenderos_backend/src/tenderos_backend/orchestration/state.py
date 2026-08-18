@@ -30,6 +30,25 @@ class TenderState(TypedDict):
     open_critical_finding_ids: list[str]
     changed_knowledge_item_ids: list[str]
 
+    # B11: extends R3's own locked schema the same way SpecialistTaskState
+    # already extends it with task_id - an implementation-necessary field
+    # R3's own list doesn't name. Snapshotted by targeted_replan_node from
+    # open_critical_finding_ids immediately before it dispatches a
+    # revision, so route_after_red_team can compare "open critical findings
+    # now" against "open critical findings going into the last revision" on
+    # the following pass - the real progress check B2.4 requires ("no
+    # measurable progress" as its own stop condition, separate from budget).
+    pre_revision_finding_ids: NotRequired[list[str]]
+    # B11: set by targeted_replan_node, read once by route_after_targeted_
+    # replan. Disambiguates two states that would otherwise both look like
+    # "dispatch_task_ids is empty": nothing was auto-correctable at all
+    # ("none" -> finding_gate) vs. the only corrective task needed is a
+    # proposal redraft, which never goes through specialist_dispatch's
+    # Send() mechanism at all ("proposal_drafting" -> straight there).
+    # "specialist_dispatch" is the third value, used whenever at least one
+    # compliance_analysis task was actually created.
+    revision_dispatch_target: NotRequired[str]
+
     readiness_report_id: str | None
     graph_projection_version: int | None
 

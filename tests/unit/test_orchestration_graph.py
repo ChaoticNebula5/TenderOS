@@ -26,5 +26,8 @@ def test_build_graph_compiles_with_expected_nodes():
         "specialist_join",
         "proposal_drafting",
         "project_graph",
+        "red_team",
+        "targeted_replan",
+        "finding_gate",
         "final_gate",
     }

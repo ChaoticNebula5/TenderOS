@@ -147,6 +147,15 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if claim_id is not None:
         return await _organization_id_for_proposal_claim(UUID(claim_id))
 
+    # B11 (G11): POST /redteam-findings/{finding_id}/resolve keys on
+    # finding_id alone, no tender_id in the path - one-hop, same shape as
+    # _organization_id_for_pricing_finding (redteam_findings.tender_id is a
+    # direct FK, Part C). GET /tenders/{tender_id}/redteam-findings already
+    # resolves via the tender_id branch above.
+    finding_id = request.path_params.get("finding_id")
+    if finding_id is not None:
+        return await _organization_id_for_redteam_finding(UUID(finding_id))
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
     )
@@ -288,6 +297,17 @@ async def _organization_id_for_pricing_finding(pricing_finding_id: UUID) -> UUID
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Pricing finding not found"
             )
+        tender = await uow.tenders.get(finding.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_redteam_finding(finding_id: UUID) -> UUID:
+    async with UnitOfWork() as uow:
+        finding = await uow.redteam.get(finding_id)
+        if finding is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Finding not found")
         tender = await uow.tenders.get(finding.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")

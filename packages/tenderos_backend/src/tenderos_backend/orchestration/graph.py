@@ -14,6 +14,11 @@ from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
 from tenderos_backend.orchestration.nodes.graph_projection import project_graph_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
 from tenderos_backend.orchestration.nodes.proposal import proposal_drafting_node
+from tenderos_backend.orchestration.nodes.redteam import (
+    finding_gate_node,
+    red_team_node,
+    targeted_replan_node,
+)
 from tenderos_backend.orchestration.nodes.requirement import requirement_gate_node
 from tenderos_backend.orchestration.nodes.requirement_extraction import (
     requirement_extraction_node,
@@ -28,8 +33,12 @@ from tenderos_backend.orchestration.nodes.talent import (
 from tenderos_backend.orchestration.routing import (
     route_after_commercial_approval_gate,
     route_after_compliance_gate,
+    route_after_finding_gate,
+    route_after_red_team,
     route_after_requirement_gate,
     route_after_resource_selection_gate,
+    route_after_specialist_join,
+    route_after_targeted_replan,
 )
 from tenderos_backend.orchestration.state import TenderState
 
@@ -51,6 +60,9 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("specialist_join", specialist_join_node)
     builder.add_node("proposal_drafting", proposal_drafting_node)
     builder.add_node("project_graph", project_graph_node)
+    builder.add_node("red_team", red_team_node)
+    builder.add_node("targeted_replan", targeted_replan_node)
+    builder.add_node("finding_gate", finding_gate_node)
     builder.add_node("final_gate", final_gate_node)
 
     builder.add_edge(START, "load_context")
@@ -70,7 +82,10 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_edge("compliance_analysis", "specialist_join")
     builder.add_edge("talent_analysis", "specialist_join")
     builder.add_edge("commercial_analysis", "specialist_join")
-    builder.add_edge("specialist_join", "compliance_gate")
+    # specialist_join's downstream edge became conditional in B11
+    # (route_after_specialist_join) - see that function's own comment. On
+    # the first pass it still goes to compliance_gate, unchanged; on a
+    # revision pass it skips straight to proposal_drafting.
     # proposal_drafting (B9) sits in the same non-Send()'d sequential slot
     # the three post-join gates already occupy, between commercial_approval_
     # gate and final_gate - the "pass-through seam" the B8 plan flagged in
@@ -83,9 +98,8 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     # diagram (proposal_subgraph -> project_graph -> red_team), confirmed
     # independently by R4's task_type enum (graph_projection is a real task
     # type) and by WorkflowStatus already carrying "projecting_graph"
-    # between "drafting" and "red_teaming" since B3. red_team doesn't exist
-    # yet (B11), so this is the new pass-through seam until then.
-    builder.add_edge("project_graph", "final_gate")
+    # between "drafting" and "red_teaming" since B3.
+    builder.add_edge("project_graph", "red_team")
     builder.add_edge("final_gate", END)
 
     builder.add_conditional_edges(
@@ -117,6 +131,45 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         route_after_commercial_approval_gate,
         {
             "proposal_drafting": "proposal_drafting",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges(
+        "specialist_join",
+        route_after_specialist_join,
+        {
+            "compliance_gate": "compliance_gate",
+            "proposal_drafting": "proposal_drafting",
+        },
+    )
+    # B11's bounded revision loop. review_router (R2's diagram) is
+    # route_after_red_team, not a node - see graph.py's own Q1 note and
+    # routing.py's docstrings for the full bound argument. "readiness" is
+    # not built yet (B12); its branch is the same final_gate pass-through
+    # project_graph used to occupy.
+    builder.add_conditional_edges(
+        "red_team",
+        route_after_red_team,
+        {
+            "targeted_replan": "targeted_replan",
+            "finding_gate": "finding_gate",
+            "final_gate": "final_gate",
+        },
+    )
+    builder.add_conditional_edges(
+        "targeted_replan",
+        route_after_targeted_replan,
+        {
+            "specialist_dispatch": "specialist_dispatch",
+            "proposal_drafting": "proposal_drafting",
+            "finding_gate": "finding_gate",
+        },
+    )
+    builder.add_conditional_edges(
+        "finding_gate",
+        route_after_finding_gate,
+        {
+            "final_gate": "final_gate",
             END: END,
         },
     )

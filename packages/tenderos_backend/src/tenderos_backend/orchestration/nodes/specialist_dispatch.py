@@ -2,18 +2,25 @@ import uuid
 
 from langgraph.types import Send
 
+from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import is_cancelled
 from tenderos_backend.orchestration.state import TenderState
 
-# Fixed order matching orchestration.supervisor.build_plan's _STUB_TASK_PLAN -
-# supervisor_node built dispatch_task_ids in this same order, so
-# dispatch_task_ids[i] is the WorkflowTask id for _SPECIALIST_NODES[i]'s task.
-# These strings are also the exact node names graph.py registers the
-# compliance/talent/commercial nodes under via add_node(...). "compliance_stub"
-# became "compliance_analysis" in B7, "talent_stub" became "talent_analysis"
-# in B8A, and "commercial_stub" became "commercial_analysis" in B8B - all
-# three specialist branches are now real.
-_SPECIALIST_NODES = ("compliance_analysis", "talent_analysis", "commercial_analysis")
+# task_type -> the exact node name graph.py registers it under via
+# add_node(...). B3's original design zipped a fixed 3-tuple against
+# dispatch_task_ids positionally, always sending all three - correct for
+# B3's own always-all-3 stub plan, but wrong for B11's revision passes,
+# where targeted_replan_node may dispatch only ONE task_type (e.g. just
+# compliance_analysis) and re-running the other two would re-litigate
+# already-approved, unrelated decisions - the opposite of "targeted." This
+# dict-based lookup is a strict generalization: B3's stub still produces
+# all 3 task_types every first pass, so first-pass behavior is byte-for-
+# byte unchanged; only a revision pass will ever Send() fewer than 3.
+_TASK_TYPE_TO_NODE = {
+    "compliance_analysis": "compliance_analysis",
+    "talent_analysis": "talent_analysis",
+    "commercial_validation": "commercial_analysis",
+}
 
 
 async def dispatch_specialists(state: TenderState) -> list[Send]:
@@ -26,11 +33,18 @@ async def dispatch_specialists(state: TenderState) -> list[Send]:
     if await is_cancelled(uuid.UUID(state["workflow_run_id"])):
         return []
 
-    task_ids = state["dispatch_task_ids"]
-    sends: list[Send] = []
+    task_ids = {uuid.UUID(t) for t in state["dispatch_task_ids"]}
+    async with UnitOfWork() as uow:
+        tasks = await uow.workflow.list_tasks(uuid.UUID(state["workflow_run_id"]))
 
-    for node_name, task_id in zip(_SPECIALIST_NODES, task_ids, strict=True):
-        payload = {**state, "task_id": task_id}
+    sends: list[Send] = []
+    for task in tasks:
+        if task.id not in task_ids:
+            continue
+        node_name = _TASK_TYPE_TO_NODE.get(task.task_type)
+        if node_name is None:
+            continue
+        payload = {**state, "task_id": str(task.id)}
         sends.append(Send(node_name, payload))
 
     return sends

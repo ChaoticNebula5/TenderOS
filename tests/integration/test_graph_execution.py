@@ -3,6 +3,7 @@ from _helpers import make_ready_run_inputs
 from sqlalchemy import select
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
+from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -11,6 +12,7 @@ from tenderos_backend.orchestration.nodes import (
     commercial,
     compliance,
     proposal,
+    redteam,
     requirement_extraction,
     talent,
 )
@@ -66,6 +68,15 @@ def _fake_extraction_llm(monkeypatch):
         [ProposalSectionDraft(content="Drafted overview.", claims=[])] * 3,
     )
     monkeypatch.setattr(proposal, "_build_llm_client", lambda: proposal_fake_client)
+    # red_team_node also constructs its own client unconditionally, same
+    # reasoning as compliance/talent/commercial above - B11's new fixed
+    # step in this graph (project_graph -> red_team), so every real-graph
+    # test in this file now reaches it regardless of what data exists.
+    redteam_fake_client = FakeLLMClient()
+    redteam_fake_client.script(
+        "redteam_critique", RedteamCritique, [RedteamCritique(findings=[])] * 3
+    )
+    monkeypatch.setattr(redteam, "_build_llm_client", lambda: redteam_fake_client)
     return fake_client
 
 
