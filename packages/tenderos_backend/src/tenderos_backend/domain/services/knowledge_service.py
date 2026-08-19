@@ -107,6 +107,17 @@ class CrossOrganizationKnowledgeItemError(Exception):
     CrossTenderOperationError already established for merge_requirements.
     """
 
+
+class CrossOrganizationTenderError(Exception):
+    """Raised when the caller's own authorized organization_id doesn't match
+    tender_id's actual organization_id. The original cross-org fix compared
+    the two RESOURCES (knowledge_item vs tender) to each other but never to
+    the org the request was actually authorized for - this closes that gap
+    by making the caller's org an explicit, independently-checked parameter
+    rather than something the service function only ever learns about
+    indirectly through whichever resource happens to be in the path.
+    """
+
     pass
 
 
@@ -1025,6 +1036,7 @@ async def set_knowledge_selection(
     knowledge_item_id: uuid.UUID,
     selected: bool,
     actor_user_id: uuid.UUID,
+    organization_id: uuid.UUID,
     change_reason: str | None = None,
 ) -> TenderKnowledgeSelection:
     """G6's PUT /tenders/{tender_id}/knowledge-selections/{knowledge_item_id}.
@@ -1040,11 +1052,30 @@ async def set_knowledge_selection(
     gets wired in this same transaction, same as the other three listed
     mutation types already are. See KNOWN_LIMITATIONS.md for which of the
     six still have no bump call site.
+
+    `organization_id` is the org the CALLER was actually authorized for
+    (resolved and permission-checked by the route, independently of this
+    function) - not derived from tender_id/knowledge_item_id here. The
+    original cross-org fix only compared the two resources to each other;
+    a caller legitimately authorized against one org could still target a
+    tender_id/knowledge_item_id pair that both happen to belong to a
+    DIFFERENT org than the one the route actually verified, and that would
+    have passed the old guard silently. Checking tender.organization_id
+    against this explicit parameter closes that regardless of how the
+    route resolved it, rather than trusting the route's resolution path to
+    always agree with what this function would derive on its own.
     """
     async with UnitOfWork() as uow:
         tender = await uow.tenders.get(tender_id)
         if tender is None:
             raise TenderNotFoundError()
+        if tender.organization_id != organization_id:
+            logger.warning(
+                "cross-organization knowledge selection attempt: actor=%s "
+                "authorized_org=%s tender=%s (org=%s)",
+                actor_user_id, organization_id, tender_id, tender.organization_id,
+            )
+            raise CrossOrganizationTenderError()
         knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
         if knowledge_item is None:
             raise KnowledgeItemNotFoundError()

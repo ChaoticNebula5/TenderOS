@@ -165,6 +165,51 @@ async def test_persist_compliance_decision_is_idempotent_on_retry():
     assert len(entries) == 1
 
 
+async def test_persist_compliance_decision_does_not_bump_state_version_on_identical_retry():
+    """CodeRabbit follow-up: persist_compliance_decision used to bump
+    state_version unconditionally, even when re-run with the identical
+    proposal/sufficiency/evidence (the same idempotent-retry shape
+    test_persist_compliance_decision_is_idempotent_on_retry already proves
+    doesn't duplicate the row). Every consumer of state_version (graph
+    freshness, targeted-replan's no-progress check) reads a bump as "the
+    graph is now stale" - bumping on a no-op retry falsely marks an
+    otherwise-fresh graph stale for no actual change. A later call with a
+    genuinely different status must still bump.
+    """
+    org_id, tender_id = await _make_tender()
+    chunk_id = await _make_requirement_chunk(tender_id, org_id)
+    requirement_id = await _make_requirement(tender_id, chunk_id)
+
+    proposal = ComplianceProposal(
+        status="evidence_unavailable",
+        evidence_refs=[],
+        confidence=0.4,
+        reasoning_summary="No supporting evidence was retrieved.",
+    )
+    sufficiency = enforce_evidence_sufficiency(proposal, [])
+
+    await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
+    async with UnitOfWork() as uow:
+        after_first = (await uow.tenders.get(tender_id)).state_version
+
+    await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
+    async with UnitOfWork() as uow:
+        after_identical_retry = (await uow.tenders.get(tender_id)).state_version
+    assert after_identical_retry == after_first, "an identical retry must not bump state_version"
+
+    changed_proposal = ComplianceProposal(
+        status="non_compliant",
+        evidence_refs=[],
+        confidence=0.4,
+        reasoning_summary="Reassessed as non-compliant.",
+    )
+    changed_sufficiency = enforce_evidence_sufficiency(changed_proposal, [])
+    await persist_compliance_decision(requirement_id, changed_proposal, changed_sufficiency, [])
+    async with UnitOfWork() as uow:
+        after_real_change = (await uow.tenders.get(tender_id)).state_version
+    assert after_real_change == after_first + 1, "a genuine status change must still bump"
+
+
 async def test_persist_compliance_decision_generates_clarification_once():
     org_id, tender_id = await _make_tender()
     chunk_id = await _make_requirement_chunk(tender_id, org_id)

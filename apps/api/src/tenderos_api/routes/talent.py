@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from tenderos_backend.db.models.user import User
-from tenderos_backend.domain.services import talent_service
+from tenderos_backend.domain.services import talent_service, tender_service
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
@@ -47,16 +47,44 @@ async def select_candidate(
     shape workflow.py's create_workflow_run and gates.py's decide_gate
     already use, so a retried select/deselect click can't double-audit or
     double-bump tenders.state_version.
+
+    require_permission("select_resource") already resolved+verified an
+    organization_id internally (via role_id), but only returns
+    current_user - re-fetched here so the service function gets it as an
+    explicit parameter, same reasoning set_knowledge_selection's identical
+    fetch documents.
     """
     if idempotency.replay_response is not None:
         _, cached_body = idempotency.replay_response
         return RoleMatchResponse.model_validate(cached_body)
 
+    role = await talent_service.get_role_requirement(role_id)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
+        )
+    tender = await tender_service.get_tender(role.tender_id)
+    if tender is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
+        )
+
     try:
         updated = await talent_service.set_candidate_selection(
-            role_id, body.employee_knowledge_item_id, current_user.id, selected=body.selected
+            role_id,
+            body.employee_knowledge_item_id,
+            current_user.id,
+            tender.organization_id,
+            selected=body.selected,
         )
-    except talent_service.RoleMatchNotFoundError as exc:
+    except (
+        talent_service.RoleMatchNotFoundError,
+        talent_service.CrossOrganizationRoleError,
+    ) as exc:
+        # Same generic 404 for both, same reasoning as
+        # set_knowledge_selection's cross-org error handling - a caller
+        # must not be able to tell "no match row for this candidate"
+        # apart from "role_requirement belongs to another organization."
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
         ) from exc

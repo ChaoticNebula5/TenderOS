@@ -271,6 +271,24 @@ async def persist_compliance_decision(
         tender_id = requirement.tender_id
 
         existing = await uow.compliance.get_compliance_entry_by_requirement(requirement_id)
+        # Computed before either branch writes anything, so it reflects
+        # "did this call actually change something" rather than "did a
+        # write statement run" - a brand-new entry is always a real change;
+        # a reevaluation of an existing one only is if its status differs
+        # or it attaches evidence that wasn't already linked (link_evidence
+        # is itself an ON CONFLICT DO NOTHING upsert, so re-attaching
+        # already-linked evidence is a legitimate no-op, not new evidence).
+        materially_changed = existing is None
+        if existing is not None:
+            already_linked_ids = {
+                e.id for e in await uow.compliance.list_evidence_for_compliance_entry(existing.id)
+            }
+            new_evidence_ids = {e.id for e in materialized_evidence}
+            materially_changed = (
+                existing.status != sufficiency.status
+                or not new_evidence_ids.issubset(already_linked_ids)
+            )
+
         if existing is None:
             entry = await uow.compliance.create_compliance_entry(
                 requirement_id=requirement_id,
@@ -326,8 +344,14 @@ async def persist_compliance_decision(
         # (materialize_evidence + this function, called from
         # evaluate_compliance_for_requirement), which B8's fix never covered.
         # One bump per decision write, not per evidence link, matching that
-        # same precedent.
-        await uow.tenders.bump_state_version(tender_id)
+        # same precedent. Gated on materially_changed (computed above,
+        # before either write branch ran) - every consumer of state_version
+        # (graph freshness, targeted-replan no-progress checks) reads a
+        # bump as "something real changed," so an identical semantic retry
+        # (same status, no new evidence) bumping anyway would falsely mark
+        # an otherwise-fresh graph stale for no actual change.
+        if materially_changed:
+            await uow.tenders.bump_state_version(tender_id)
 
         if proposal.clarification_required:
             question = proposal.clarification_question or (

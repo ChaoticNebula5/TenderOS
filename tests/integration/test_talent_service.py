@@ -14,6 +14,7 @@ from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.talent_service import (
+    CrossOrganizationRoleError,
     _compute_candidate_talent_signals,
     find_candidate_pool,
     set_candidate_selection,
@@ -143,7 +144,9 @@ async def test_select_candidate_writes_audit_and_bumps_state_version():
         await uow.commit()
     actor_id = uuid.uuid4()
 
-    updated = await set_candidate_selection(role.id, employee_item_id, actor_id, selected=True)
+    updated = await set_candidate_selection(
+        role.id, employee_item_id, actor_id, org_id, selected=True
+    )
 
     assert updated.human_selected is True
     async with UnitOfWork() as uow:
@@ -160,6 +163,40 @@ async def test_select_candidate_writes_audit_and_bumps_state_version():
     assert events[0].actor_id == str(actor_id)
 
 
+async def test_set_candidate_selection_rejects_a_role_outside_the_authorized_organization():
+    """Regression test for the same tenant-binding gap fixed in
+    knowledge_service.set_knowledge_selection: set_candidate_selection only
+    ever compared its two resources (role_requirement, employee) to each
+    other via a role_match lookup - never against the org the CALLER was
+    actually authorized for. Not exploitable through the one write path
+    that exists today (evaluate_role_match only ever creates same-org role
+    matches, via find_candidate_pool(organization_id)), but that safety
+    lived in a different function two layers away - this function itself
+    enforced nothing. organization_id is now an explicit, independently-
+    checked parameter for exactly this reason.
+    """
+    org_a, _tender_a = await _make_org_and_tender("Role Auth Org A")
+    org_b, tender_b = await _make_org_and_tender("Role Auth Org B")
+    employee_b = await _make_employee(org_b, "Org B Candidate")
+    async with UnitOfWork() as uow:
+        role_b = await uow.talent.create_role_requirement(
+            tender_id=tender_b, role_name="Org B Role", content_fingerprint=str(uuid.uuid4())
+        )
+        await uow.talent.create_role_match(
+            role_requirement_id=role_b.id, employee_knowledge_item_id=employee_b
+        )
+        await uow.commit()
+    actor_id = uuid.uuid4()
+
+    with pytest.raises(CrossOrganizationRoleError):
+        await set_candidate_selection(role_b.id, employee_b, actor_id, org_a, selected=True)
+
+    async with UnitOfWork() as uow:
+        match = await uow.talent.get_role_match_by_candidate(role_b.id, employee_b)
+    assert match is not None
+    assert match.human_selected is False, "a caller not authorized for org B must not select its candidate"
+
+
 async def test_deselect_candidate_does_not_delete_the_role_match_row():
     org_id, tender_id = await _make_org_and_tender("Deselect Test")
     employee_item_id = await _make_employee(org_id, "Deselectable Emp")
@@ -173,8 +210,10 @@ async def test_deselect_candidate_does_not_delete_the_role_match_row():
         await uow.commit()
     actor_id = uuid.uuid4()
 
-    await set_candidate_selection(role.id, employee_item_id, actor_id, selected=True)
-    updated = await set_candidate_selection(role.id, employee_item_id, actor_id, selected=False)
+    await set_candidate_selection(role.id, employee_item_id, actor_id, org_id, selected=True)
+    updated = await set_candidate_selection(
+        role.id, employee_item_id, actor_id, org_id, selected=False
+    )
 
     assert updated.human_selected is False
     async with UnitOfWork() as uow:

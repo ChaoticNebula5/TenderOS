@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from tenderos_backend.db.models.user import User
-from tenderos_backend.domain.services import document_service, knowledge_service
+from tenderos_backend.domain.services import document_service, knowledge_service, tender_service
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.routes.documents import _validate_upload
@@ -402,12 +402,34 @@ async def set_knowledge_selection(
     knowledge_service.set_knowledge_selection's docstring for why (B7/B10
     dependencies not built yet in B6). This persists the selection row
     itself, the piece B6 owns.
+
+    require_permission(_MANAGE) already resolved+verified an organization_id
+    internally (via tender_id, same as every route keyed on a single
+    resource id), but only returns current_user, not that value - re-fetched
+    here so the service function gets it as an explicit parameter rather
+    than silently re-deriving it from tender_id a second time and trusting
+    that to agree with what was actually authorized.
     """
+    tender = await tender_service.get_tender(tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+
     try:
         updated = await knowledge_service.set_knowledge_selection(
-            tender_id, knowledge_item_id, body.selected, current_user.id, body.change_reason
+            tender_id,
+            knowledge_item_id,
+            body.selected,
+            current_user.id,
+            tender.organization_id,
+            body.change_reason,
         )
-    except knowledge_service.TenderNotFoundError as exc:
+    except (
+        knowledge_service.TenderNotFoundError,
+        knowledge_service.CrossOrganizationTenderError,
+    ) as exc:
+        # Same generic 404 for both, same reasoning as the knowledge-item
+        # pair below: a caller must not be able to tell "gone since I
+        # fetched it" apart from "belongs to another organization."
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
         ) from exc

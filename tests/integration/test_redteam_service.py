@@ -474,6 +474,56 @@ async def test_auto_retired_finding_reopens_when_the_defect_reappears():
     assert reopened.id in {f.id for f in open_major}, "the reopened finding must be in the open set"
 
 
+async def test_reopened_finding_refreshes_severity_from_the_current_detection():
+    """CodeRabbit follow-up to the reopen fix: finding_fingerprint
+    deliberately excludes severity/finding_text (so a re-detection with
+    different wording still upserts onto the same row), but that means a
+    defect that comes back at a DIFFERENT severity than when it was first
+    seen - major, now critical - would otherwise stay stored at the OLD
+    severity, since reopen_finding only cleared resolved/resolution_note/
+    resolution_source and left severity untouched. That directly
+    undermines B11's critical-recall stop-gate and revision routing, both
+    of which read the stored column: a critical regression sitting in the
+    DB labeled 'major' would never enter open_critical_finding_ids, never
+    route through route_after_red_team's revision loop, and never appear
+    in a future readiness report's critical-blocker list.
+    """
+    org_id, tender_id = await _org_and_tender("SeverityRefreshOnReopen")
+    pricing_finding_id = await _pricing_finding(tender_id)  # severity="major" by default
+    await graph_service.project_tender(tender_id)
+
+    critical_ids_pass1 = await _run(tender_id)
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+    target = next(f for f in findings if f.finding_category == "pricing_mismatch")
+    assert target.severity == "major"
+    assert str(target.id) not in critical_ids_pass1, "a major finding must not be in the critical set"
+
+    # Fix it (auto-retire), then bring it back at a DIFFERENT, worse severity.
+    async with UnitOfWork() as uow:
+        await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)
+        await uow.commit()
+    await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        await uow.commercial.update_pricing_finding(
+            pricing_finding_id, resolved=False, severity="critical"
+        )
+        await uow.commit()
+    critical_ids_pass3 = await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        reopened = await uow.redteam.get(target.id)
+    assert reopened is not None
+    assert reopened.resolved is False
+    assert reopened.severity == "critical", (
+        f"reopening must refresh severity from the current draft, got {reopened.severity!r}"
+    )
+    assert str(reopened.id) in critical_ids_pass3, (
+        "a finding reopened at critical severity must enter the revision set"
+    )
+
+
 async def test_human_resolved_finding_does_not_reopen_when_redetected():
     """The case the fix above must not break: a human's resolution is a
     deliberate judgment call (e.g. "accepted, known discrepancy") - it must

@@ -20,7 +20,7 @@ from tenderos_backend.domain.services.tender_service import create_tender
 pytestmark = pytest.mark.asyncio
 
 
-async def _org_tender_and_employee() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+async def _org_tender_and_employee() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
     registered = await register(
         email=f"{uuid.uuid4().hex}@example.com",
         password="hunter2hunter2",
@@ -39,17 +39,17 @@ async def _org_tender_and_employee() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
             title="Selection Test Employee",
         )
         await uow.commit()
-    return tender.id, knowledge_item.id, registered.user.id
+    return registered.organization.id, tender.id, knowledge_item.id, registered.user.id
 
 
 async def test_set_knowledge_selection_bumps_tender_state_version():
-    tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
+    org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
 
     async with UnitOfWork() as uow:
         before_version = (await uow.tenders.get(tender_id)).state_version
 
     await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, True, actor_id
+        tender_id, knowledge_item_id, True, actor_id, org_id
     )
 
     async with UnitOfWork() as uow:
@@ -67,12 +67,14 @@ async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_org
     organization check at all), and proposal drafting could cite org B's
     private data as evidence for an org A claim.
     """
-    tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
-    _other_tender_id, other_org_item_id, _other_actor_id = await _org_tender_and_employee()
+    org_id, tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
+    _other_org_id, _other_tender_id, other_org_item_id, _other_actor_id = (
+        await _org_tender_and_employee()
+    )
 
     with pytest.raises(knowledge_service.CrossOrganizationKnowledgeItemError):
         await knowledge_service.set_knowledge_selection(
-            tender_id, other_org_item_id, True, actor_id
+            tender_id, other_org_item_id, True, actor_id, org_id
         )
 
     async with UnitOfWork() as uow:
@@ -80,21 +82,45 @@ async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_org
     assert selections == [], "the cross-org selection must not be persisted"
 
 
+async def test_set_knowledge_selection_rejects_a_tender_outside_the_authorized_organization():
+    """CodeRabbit follow-up to the fix above: the original guard only
+    compared knowledge_item.organization_id to tender.organization_id -
+    the two RESOURCES to each other - never to the org the CALLER was
+    actually authorized for. A caller authorized for org A who happens to
+    know a tender_id and knowledge_item_id that both belong to org B would
+    pass that guard (the two resources agree with each other) and write a
+    selection - and bump org B's own state_version - despite never having
+    been authorized for org B at all. organization_id is now an explicit,
+    independently-checked parameter for exactly this reason.
+    """
+    org_a_id, _org_a_tender_id, _org_a_item_id, actor_id = await _org_tender_and_employee()
+    _org_b_id, org_b_tender_id, org_b_item_id, _org_b_actor_id = await _org_tender_and_employee()
+
+    with pytest.raises(knowledge_service.CrossOrganizationTenderError):
+        await knowledge_service.set_knowledge_selection(
+            org_b_tender_id, org_b_item_id, True, actor_id, org_a_id
+        )
+
+    async with UnitOfWork() as uow:
+        selections = await uow.knowledge.list_selections_for_tender(org_b_tender_id)
+    assert selections == [], "a caller not authorized for org B must not write org B's selection"
+
+
 async def test_deselecting_also_bumps_state_version():
     # Same call site, opposite direction - selection and deselection are
     # both "knowledge selection change" per Part C's own wording, neither
     # is a no-op for freshness purposes (a deselect is exactly the mutation
     # USED_IN's selected=false property-flip exists to represent in Neo4j).
-    tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
+    org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
     await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, True, actor_id
+        tender_id, knowledge_item_id, True, actor_id, org_id
     )
 
     async with UnitOfWork() as uow:
         before_version = (await uow.tenders.get(tender_id)).state_version
 
     await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, False, actor_id
+        tender_id, knowledge_item_id, False, actor_id, org_id
     )
 
     async with UnitOfWork() as uow:

@@ -821,10 +821,15 @@ Each entry:
   about *environment/process state* (which image is running, which
   process owns a port, which fixture just ran against the database you
   were about to inspect) silently substituting itself for, or destroying,
-  the thing actually being verified. All four are invisible to a result
-  that merely "looks fine" - the first two produce a wrong answer that
-  looks like a right one; the third and fourth produce no answer at all
-  where a real one used to be, without saying so.
+  the thing actually being verified. The first four are invisible to a
+  result that merely "looks fine" - the first two produce a wrong answer
+  that looks like a right one; the third and fourth produce no answer at
+  all where a real one used to be, without saying so. The fifth is the
+  outlier in exactly this dimension, not just in outcome: it was caught
+  in the moment, before anything downstream trusted a wrong result,
+  precisely because the documented practice was actually run rather than
+  skipped - see incident 5 and the "Status" section's own note on point
+  (2) below.
 - **Risk - why this matters going forward, not just as a postmortem:** B10
   through B17 are all worker/graph-heavy blocks (graph projection,
   red-team, readiness, event-driven reanalysis) that will keep needing
@@ -880,7 +885,7 @@ Each entry:
   from whatever a live run or manual script uses), so `_clean_tables`
   physically cannot reach live-run data regardless of what anyone
   remembers to check.
-- **Test:** none automated (all four incidents are host-machine/Docker-
+- **Test:** none automated (all five incidents are host-machine/Docker-
   daemon/test-fixture state, not application code) - the incident
   write-up above and the discipline it now dictates are the mitigation.
 
@@ -1041,6 +1046,16 @@ Each entry:
   and matters for any reviewer who does *not* do that manual workaround,
   but it is not the explanation for that run's own low grounding rate -
   see the merged entry below for what is.
+- **Re-verified independently, pre-B12 (round 2 of the CodeRabbit-fixes
+  pass):** a full-repo grep for `target_updates` outside its own schema
+  field declaration and this entry's own citations found nothing - no
+  service, repository, or route reads it. Confirms this entry's own
+  standing claim still holds and sharpens it in one specific way worth
+  recording for B12 planning: because there is genuinely **zero existing
+  write path** for `target_updates` today, wiring it up is greenfield
+  work, not a modification to something partially built. B12 doesn't need
+  to audit or unwind any existing (possibly-load-bearing) per-target
+  application logic before building the real one - there isn't any yet.
 - **Test:** none automated yet. Worth a dedicated regression test in
   whichever block actually resolves it: approve a gate without any
   per-target action, assert the targets remain unapproved.
@@ -1451,7 +1466,7 @@ Each entry:
   level failure" is a call B12 should make deliberately, not inherit by
   default from whichever shape B11 happened to leave it in.
 
-### B13 (Functional UI) - already the named home for adjacent import-review work
+### B13 (Functional UI) - already named as the owner of the adjacent import-review screen
 
 - **Knowledge imports are neither retryable nor accurately observable**
   (major finding #10). The "not accurately observable" half is fixed as
@@ -1616,3 +1631,88 @@ Each entry:
 - **Test:** none - this is a triage record, not a behavior. Each item's
   eventual fix should get its own test at the point it's actually done,
   matching this file's own convention everywhere else.
+
+---
+
+## Standing pattern: a two-resource guard that never checks the caller's own authorized organization
+
+- **Discovered:** `knowledge_service.set_knowledge_selection` (CodeRabbit
+  round 2 of the pre-B12 fixes pass), then confirmed as a repeating shape
+  by an explicit audit of every other route with the same two-resource
+  structure.
+  1. **`set_knowledge_selection` (fixed).** The original cross-org fix
+     (this file's "a reader trusts a column its writer never keeps
+     current" era) compared `knowledge_item.organization_id` to
+     `tender.organization_id` - the two RESOURCES to each other - but
+     never to the org the CALLER was actually authorized for. A caller
+     legitimately authorized against org B (real membership, real role)
+     who happened to know a `tender_id`/`knowledge_item_id` pair that both
+     belonged to a DIFFERENT org C would still pass the old guard (the two
+     resources agreed with each other) despite never being authorized for
+     org C. Fixed by adding `organization_id` as an explicit parameter,
+     supplied by the route from an independent lookup, checked against
+     `tender.organization_id` before anything else runs.
+  2. **`set_candidate_selection` (found by audit, then fixed the same
+     way).** Exact same shape: `role_id` resolves the authorized org via
+     `require_permission`, but the request body's
+     `employee_knowledge_item_id` was only ever used to look up a
+     `role_matches` row by `(role_requirement_id, employee_knowledge_item_id)`
+     - never checked against the authorized org at all. **Not exploitable
+     through the one write path that exists today** -
+     `role_matches` rows are only ever created by `evaluate_role_match`,
+     itself scoped to `find_candidate_pool(organization_id)` (same-org
+     candidates only), so a cross-org row can't exist in the DB yet and a
+     mismatched request would just 404 via `RoleMatchNotFoundError`. But
+     that safety lived entirely in a DIFFERENT function's own scoping,
+     two layers away - `set_candidate_selection` itself enforced nothing.
+     B12-B17 include admin tooling and bulk operations; any second write
+     path into `role_matches` would have made this live with no change
+     needed to this function at all - the vulnerability was already
+     written, only the input path was missing. Fixed the same way as
+     instance 1: explicit `organization_id` parameter, independently
+     resolved by the route, checked before the role_match lookup.
+- **Why this is worth naming as its own pattern, not just two one-off
+  bugs:** both guards *looked* complete - each compared its own two
+  resources and rejected a mismatch. Neither checked the one thing that
+  actually matters for authorization: does either resource belong to the
+  org this specific request was verified against. A route's
+  `require_permission` dependency resolves organization_id from ONE path
+  resource and stops there; every domain-service function that also
+  touches a SECOND resource id (from the path or the body) inherits that
+  gap silently unless it explicitly re-verifies. The general shape to
+  watch for in future blocks: a service function taking two or more
+  resource ids where only one was ever authorized by the calling route.
+- **Audit performed, three other candidates checked and found clean (not
+  hypothetical - each traced into its actual enforcement mechanism):**
+  - `POST /gates/{gate_id}/decision`'s `target_updates: list[dict]` -
+    confirmed by full-repo grep to have zero write paths anywhere in the
+    codebase (see the dedicated entry above, re-verified in this same
+    audit) - nothing to exploit because nothing reads it yet. Worth
+    knowing for B12 specifically: this means wiring it up is greenfield,
+    not a modification to something partially built.
+  - `POST /tenders/{tender_id}/graph/impact`'s `body.knowledge_item_id` -
+    not a service-level gap: `graph_projection/queries.py`'s own Cypher
+    requires `MATCH (fact)-[:USED_IN]->(:Tender {id: $tenderId})` before
+    returning anything, so a knowledge item from another org can only
+    even appear in a result if it was previously selected into THIS
+    tender via `set_knowledge_selection` - which (post-fix) already
+    enforces same-org. The query's own join is the check.
+  - `POST /requirements/merge`'s `body.requirement_ids: list[UUID]` -
+    `require_merge_permission` only authorizes off `requirement_ids[0]`,
+    but `requirement_service.merge_requirements` independently collects
+    every id's own `tender_id` and raises `CrossTenderOperationError`
+    unless exactly one tender is represented across ALL of them - a real,
+    explicit, whole-list check already in place, not an assumption.
+- **Status:** resolved for instances 1 and 2 (both now take an explicit,
+  independently-resolved `organization_id` and reject a mismatch with the
+  same generic not-found response the missing-resource case already
+  produces, closing the enumeration difference the same way for both).
+  The three audited candidates are accepted as verified-clean, not open
+  items.
+- **Test:** `test_set_knowledge_selection_rejects_a_tender_outside_the_
+  authorized_organization` (`tests/integration/test_knowledge_service.py`)
+  and `test_set_candidate_selection_rejects_a_role_outside_the_authorized_
+  organization` (`tests/integration/test_talent_service.py`), same shape:
+  construct two orgs, authorize against one, attempt the write against
+  the other, assert the specific "not authorized" exception and that
+  nothing persisted.

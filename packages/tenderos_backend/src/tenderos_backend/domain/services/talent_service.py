@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -16,6 +17,9 @@ from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
 
+logger = logging.getLogger(__name__)
+
+
 class TenderNotFoundError(Exception):
     pass
 
@@ -26,6 +30,24 @@ class RoleRequirementNotFoundError(Exception):
 
 class RoleMatchNotFoundError(Exception):
     pass
+
+
+class CrossOrganizationRoleError(Exception):
+    """Raised when the caller's authorized organization_id doesn't match
+    role_requirement_id's own tender's organization. Not currently
+    reachable via the one write path that exists today (role_matches rows
+    are only ever created by evaluate_role_match, scoped to
+    find_candidate_pool(organization_id) - same-org candidates only, so a
+    cross-org role_match can't exist in the DB yet) - but that safety comes
+    from a DIFFERENT function's own scoping, two layers away, not from
+    anything set_candidate_selection itself enforces. Same shape as
+    CrossOrganizationTenderError in knowledge_service.py (which WAS
+    reachable): a guard that looked complete while silently depending on
+    something it never checked. Any future second write path into
+    role_matches (bulk admin tooling, an import, a fix-up script) makes
+    this live with no code change needed here at all - the vulnerability
+    is already written, only the input path was missing.
+    """
 
 
 def _fingerprint(*parts: str) -> str:
@@ -541,6 +563,7 @@ async def set_candidate_selection(
     role_requirement_id: uuid.UUID,
     employee_knowledge_item_id: uuid.UUID,
     actor_user_id: uuid.UUID,
+    organization_id: uuid.UUID,
     selected: bool,
 ) -> RoleMatch:
     """G8's POST /roles/{role_id}/select-candidate - the route's path only
@@ -549,8 +572,32 @@ async def set_candidate_selection(
     row before delegating to _set_human_selected. One locked route handles
     both select and deselect (selected=True/False in the body) rather than
     inventing a second route G8 doesn't define.
+
+    `organization_id` is the org the CALLER was actually authorized for
+    (resolved by the route independently of role_requirement_id) - checked
+    here against role_requirement_id's own tender, same reasoning
+    knowledge_service.set_knowledge_selection's identical parameter
+    documents. Not currently reachable through the one write path that
+    creates role_matches rows today (evaluate_role_match only ever scores
+    same-org candidates), but this function has no way to know that stays
+    true - it must not rely on a different function's own scoping to stay
+    safe, the exact gap that made the original knowledge-selection guard
+    incomplete despite looking finished.
     """
     async with UnitOfWork() as uow:
+        role = await uow.talent.get_role_requirement(role_requirement_id)
+        if role is None:
+            raise RoleMatchNotFoundError()
+        tender = await uow.tenders.get(role.tender_id)
+        if tender is None:
+            raise RoleMatchNotFoundError()
+        if tender.organization_id != organization_id:
+            logger.warning(
+                "cross-organization role-candidate selection attempt: actor=%s "
+                "authorized_org=%s role_requirement=%s (org=%s)",
+                actor_user_id, organization_id, role_requirement_id, tender.organization_id,
+            )
+            raise CrossOrganizationRoleError()
         match = await uow.talent.get_role_match_by_candidate(
             role_requirement_id, employee_knowledge_item_id
         )
@@ -603,6 +650,11 @@ async def _set_human_selected(
         await uow.tenders.bump_state_version(tender.id)
         await uow.commit()
         return updated
+
+
+async def get_role_requirement(role_requirement_id: uuid.UUID) -> RoleRequirement | None:
+    async with UnitOfWork() as uow:
+        return await uow.talent.get_role_requirement(role_requirement_id)
 
 
 async def list_role_requirements_for_tender(tender_id: uuid.UUID) -> list[RoleRequirement]:

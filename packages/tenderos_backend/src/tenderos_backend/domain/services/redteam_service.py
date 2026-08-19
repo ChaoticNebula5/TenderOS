@@ -60,7 +60,9 @@ async def _persist_draft(
         # all: a critical finding sitting unseen in the resolved pile,
         # in exactly the revision loop this mechanism exists to drive).
         if existing.resolved and existing.resolution_source == "system":
-            return await uow.redteam.reopen_finding(existing.id)
+            return await uow.redteam.reopen_finding(
+                existing.id, draft.severity, draft.finding_text, draft.evidence_refs
+            )
         return existing
     return await uow.redteam.create_finding(
         tender_id=tender_id,

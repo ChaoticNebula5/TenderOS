@@ -88,19 +88,42 @@ class RedteamRepository:
         await self._session.flush()
         return finding
 
-    async def reopen_finding(self, finding_id: uuid.UUID) -> RedteamFinding:
+    async def reopen_finding(
+        self,
+        finding_id: uuid.UUID,
+        severity: str,
+        finding_text: str,
+        evidence_refs: list | None = None,
+    ) -> RedteamFinding:
         """A system-retired finding (resolution_source='system') whose
         underlying defect has come back - _persist_draft's own upsert calls
         this instead of returning the still-resolved row untouched. Never
         called against a human-resolved finding (that check is the
         caller's responsibility, same as this repository's other methods
-        trusting their caller's WHERE-clause-equivalent precondition)."""
+        trusting their caller's WHERE-clause-equivalent precondition).
+
+        severity/finding_text/evidence_refs are refreshed from the CURRENT
+        detection, not left at whatever the original (now-stale) row had -
+        finding_fingerprint deliberately excludes severity/finding_text so
+        re-detecting the same underlying condition upserts onto the same
+        row even if its wording changed, but that also means a defect that
+        reappears at a DIFFERENT severity (e.g. was major, now critical)
+        would otherwise stay stored at the old severity - directly
+        undermining B11's critical-recall stop-gate and revision routing,
+        both of which read the stored column, not the fresh draft.
+        target_type/target_id/finding_category/violated_condition are part
+        of the fingerprint itself, so they can't have changed between the
+        original detection and this reappearance - nothing to refresh there.
+        """
         finding = await self._session.get(RedteamFinding, finding_id)
         if finding is None:
             raise ValueError(f"RedteamFinding {finding_id} not found")
         finding.resolved = False
         finding.resolution_note = None
         finding.resolution_source = None
+        finding.severity = severity
+        finding.finding_text = finding_text
+        finding.evidence_refs = evidence_refs or []
         await self._session.flush()
         return finding
 

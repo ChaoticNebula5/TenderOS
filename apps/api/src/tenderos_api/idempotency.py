@@ -66,7 +66,13 @@ def get_idempotency_context(
         # branch below and 409s as IDEMPOTENCY_CONFLICT, the same real
         # conflict a different body already produces - not new
         # error-handling, just a wider definition of "the same request."
-        request_identity = f"{request.method}\n{request.url.path}\n".encode("utf-8")
+        # url.query is folded in for the same reason path is - a route that
+        # reads query params (e.g. a filter/pagination arg) could otherwise
+        # have two materially different requests share one record just
+        # because their path and body happened to match.
+        request_identity = (
+            f"{request.method}\n{request.url.path}\n{request.url.query}\n".encode("utf-8")
+        )
         request_hash = hashlib.sha256(request_identity + body_bytes).hexdigest()
 
         async with UnitOfWork() as uow:
