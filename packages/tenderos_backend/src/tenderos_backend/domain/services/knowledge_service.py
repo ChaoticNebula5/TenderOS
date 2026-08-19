@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -78,6 +79,9 @@ _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS = {
 }
 
 
+logger = logging.getLogger(__name__)
+
+
 class KnowledgeItemNotFoundError(Exception):
     pass
 
@@ -87,6 +91,22 @@ class EmployeeNotFoundError(Exception):
 
 
 class ImportItemNotFoundError(Exception):
+    pass
+
+
+class TenderNotFoundError(Exception):
+    pass
+
+
+class CrossOrganizationKnowledgeItemError(Exception):
+    """Raised when a tender's knowledge selection targets a knowledge_item_id
+    belonging to a different organization. tender_knowledge_selections' two
+    foreign keys (tenders.id, knowledge_items.id) are independent - Postgres
+    has no way to express "same organization_id on both sides" as a single
+    CHECK constraint, so this has to be verified in code, same reasoning
+    CrossTenderOperationError already established for merge_requirements.
+    """
+
     pass
 
 
@@ -837,14 +857,86 @@ async def verify_employee_profile(
         return updated
 
 
-async def list_import_batches(organization_id: uuid.UUID) -> list[KnowledgeImportBatch]:
-    async with UnitOfWork() as uow:
-        return await uow.knowledge.list_import_batches_for_org(organization_id)
+@dataclass(frozen=True)
+class ImportBatchProgress:
+    """ImportBatchResponse's actual data source. KnowledgeImportBatch's own
+    status/total_items/completed_items/failed_items columns are dead - no
+    writer anywhere sets them past their creation-time defaults (see
+    KNOWN_LIMITATIONS.md "knowledge_import_batches.status never advances past
+    'queued'"). Rather than add batch-column writes to every import path that
+    would need to keep them current (employee-master rows, certification
+    rows, capability statement, resumes - each its own call site in
+    apps/worker/jobs/knowledge_import.py), this is computed fresh from
+    knowledge_import_items on every read, the same "recompute from source of
+    truth at read time" fix D7's evaluate_evidence_coverage already uses for
+    evidence rows rather than trusting a denormalized copy - a value with one
+    real writer (each item's own status transition, already correct) instead
+    of two that can drift apart.
+    """
+
+    id: uuid.UUID
+    organization_id: uuid.UUID
+    import_type: str
+    source_document_id: uuid.UUID | None
+    status: str
+    total_items: int
+    completed_items: int
+    failed_items: int
+    created_at: datetime
 
 
-async def get_import_batch(batch_id: uuid.UUID) -> KnowledgeImportBatch | None:
+_IMPORT_ITEM_IN_PROGRESS_STATUSES = frozenset({"pending", "extracted"})
+
+
+def _compute_batch_progress(
+    batch: KnowledgeImportBatch, items: list[KnowledgeImportItem]
+) -> ImportBatchProgress:
+    total = len(items)
+    failed = sum(1 for item in items if item.status == "failed")
+    in_progress = sum(1 for item in items if item.status in _IMPORT_ITEM_IN_PROGRESS_STATUSES)
+    completed = total - failed - in_progress
+
+    if total == 0:
+        computed_status = "queued"
+    elif in_progress > 0:
+        computed_status = "processing"
+    elif any(item.status == "needs_review" for item in items):
+        computed_status = "needs_review"
+    elif failed == total:
+        computed_status = "failed"
+    else:
+        computed_status = "completed"
+
+    return ImportBatchProgress(
+        id=batch.id,
+        organization_id=batch.organization_id,
+        import_type=batch.import_type,
+        source_document_id=batch.source_document_id,
+        status=computed_status,
+        total_items=total,
+        completed_items=completed,
+        failed_items=failed,
+        created_at=batch.created_at,
+    )
+
+
+async def list_import_batches(organization_id: uuid.UUID) -> list[ImportBatchProgress]:
     async with UnitOfWork() as uow:
-        return await uow.knowledge.get_import_batch(batch_id)
+        batches = await uow.knowledge.list_import_batches_for_org(organization_id)
+        progress: list[ImportBatchProgress] = []
+        for batch in batches:
+            items = await uow.knowledge.list_import_items_for_batch(batch.id)
+            progress.append(_compute_batch_progress(batch, items))
+        return progress
+
+
+async def get_import_batch(batch_id: uuid.UUID) -> ImportBatchProgress | None:
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        if batch is None:
+            return None
+        items = await uow.knowledge.list_import_items_for_batch(batch_id)
+        return _compute_batch_progress(batch, items)
 
 
 async def list_import_items(batch_id: uuid.UUID) -> list[KnowledgeImportItem]:
@@ -950,6 +1042,39 @@ async def set_knowledge_selection(
     six still have no bump call site.
     """
     async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        if tender is None:
+            raise TenderNotFoundError()
+        knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+        if knowledge_item is None:
+            raise KnowledgeItemNotFoundError()
+        # tender_knowledge_selections' two foreign keys are independent, so
+        # nothing at the schema level stops org A's tender from selecting
+        # org B's knowledge item - checked here instead. Left unchecked, the
+        # graph projector (projector.py's reachable-shared-node walk) would
+        # MERGE org B's employee/certification/project node straight into
+        # org A's tender graph, and D7/proposal drafting could cite it as
+        # supporting evidence for an org A claim.
+        if knowledge_item.organization_id != tender.organization_id:
+            # The route collapses this into the same generic 404 a
+            # nonexistent knowledge_item_id gets - a caller must not be
+            # able to distinguish "doesn't exist" from "exists in another
+            # organization" by watching which error comes back (that
+            # distinction alone would let a caller enumerate valid
+            # knowledge-item ids across organizations). Logged here, at the
+            # only point that still knows the real reason, precisely
+            # because a cross-org access attempt is worth recording as a
+            # security-relevant event, not just for debugging - the point
+            # is that the CALLER can't tell the two apart, not that this
+            # service stops knowing.
+            logger.warning(
+                "cross-organization knowledge selection attempt: actor=%s "
+                "tender=%s (org=%s) knowledge_item=%s (org=%s)",
+                actor_user_id, tender_id, tender.organization_id,
+                knowledge_item_id, knowledge_item.organization_id,
+            )
+            raise CrossOrganizationKnowledgeItemError()
+
         updated = await uow.knowledge.upsert_selection(
             tender_id, knowledge_item_id, selected, actor_user_id, change_reason
         )

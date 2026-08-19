@@ -30,12 +30,21 @@ async def final_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             gate_id = uuid.uuid4()
+            # degraded_stages accumulates every essential-stage failure
+            # swallowed earlier in this run (proposal_drafting_node,
+            # project_graph_node - see TenderState's own comment on the
+            # field). Surfaced here, not auto-blocked: a human deciding
+            # this gate needs to SEE "proposal drafting failed" rather than
+            # approve a silently-thin or stale-graph bid without knowing
+            # why - the explicit-degraded-state choice, not a hard block,
+            # since this is the one place in the whole run a human is
+            # already looking before anything is marked "ready".
             payload = build_gate_payload(
                 gate_id,
                 "final_readiness",
                 workflow_run_id,
                 targets=[],
-                summary={},
+                summary={"degraded_stages": state.get("degraded_stages", [])},
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,
@@ -55,6 +64,16 @@ async def final_gate_node(state: TenderState) -> dict:
     if decision_payload["decision"] == "reject":
         await sync_run_status(workflow_run_id, "rejected")
         return {"status": "rejected"}
+    if decision_payload["decision"] == "request_changes":
+        # A human explicitly declining to approve must never fall through
+        # to the same "ready" branch approve takes - final_gate is the
+        # workflow's last node (add_edge("final_gate", END), unconditional),
+        # so there is no routing function to also fix here; not advancing
+        # to "ready" IS the whole fix. Does not yet re-open this gate for a
+        # corrective resubmission - same scope boundary the reject path's
+        # own KNOWN_LIMITATIONS entry already carries.
+        await sync_run_status(workflow_run_id, "changes_requested")
+        return {"status": "changes_requested"}
 
     await sync_run_status(workflow_run_id, "ready")
     return {"status": "ready"}

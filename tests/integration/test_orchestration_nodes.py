@@ -1,11 +1,20 @@
 import pytest
 from _helpers import make_ready_run_inputs
+from langgraph.graph import END
 from langgraph.types import Send
 from sqlalchemy import select
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import workflow_service
-from tenderos_backend.orchestration.nodes import commercial, compliance, final_gate, requirement, talent
+from tenderos_backend.orchestration import routing
+from tenderos_backend.orchestration.nodes import (
+    commercial,
+    compliance,
+    final_gate,
+    redteam,
+    requirement,
+    talent,
+)
 from tenderos_backend.orchestration.nodes.specialist_dispatch import (
     _TASK_TYPE_TO_NODE,
     dispatch_specialists,
@@ -45,6 +54,7 @@ def _base_state(run: WorkflowRun) -> dict:
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
 
 
@@ -113,6 +123,70 @@ async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
             )
         )
     assert len(result.scalars().all()) == 1
+
+
+@pytest.mark.parametrize(
+    ("module", "node", "gate_type"),
+    [
+        (requirement, requirement.requirement_gate_node, "requirement_review"),
+        (compliance, compliance.compliance_gate_node, "compliance_review"),
+        (talent, talent.resource_selection_gate_node, "resource_selection"),
+        (commercial, commercial.commercial_approval_gate_node, "commercial_approval"),
+        (redteam, redteam.finding_gate_node, "finding_resolution"),
+        (final_gate, final_gate.final_gate_node, "final_readiness"),
+    ],
+)
+async def test_gate_node_request_changes_does_not_advance(module, node, gate_type, monkeypatch):
+    """Regression test for the audit's worst finding: every gate node
+    checked only decision == "reject" - request_changes (a real,
+    ALLOWED_DECISIONS-valid decision) fell through to the same branch
+    approve takes, so a human explicitly asking for changes silently
+    advanced the run (at final_gate, all the way to "ready"). Parameterized
+    across all six gate types, not just final_gate, since the same bug was
+    structurally identical in each.
+    """
+    monkeypatch.setattr(
+        module, "interrupt", lambda payload: {"decision": "request_changes", "notes": "fix this"}
+    )
+    run = await _make_run()
+
+    result = await node(_base_state(run))
+
+    assert result == {"status": "changes_requested"}, (
+        f"{gate_type} gate advanced on request_changes instead of halting: {result}"
+    )
+    async with UnitOfWork() as uow:
+        updated_run = await uow.workflow.get_run(run.id)
+    assert updated_run is not None
+    assert updated_run.status == "waiting_for_human", (
+        "request_changes must read as waiting_for_human, not silently "
+        f"'completed'/'running': got {updated_run.status!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_fn", "advance_target"),
+    [
+        (routing.route_after_requirement_gate, "specialist_dispatch"),
+        (routing.route_after_compliance_gate, "resource_selection_gate"),
+        (routing.route_after_resource_selection_gate, "commercial_approval_gate"),
+        (routing.route_after_commercial_approval_gate, "proposal_drafting"),
+        (routing.route_after_finding_gate, "final_gate"),
+    ],
+)
+async def test_route_after_gate_halts_the_graph_on_request_changes(route_fn, advance_target):
+    """The node-level test above proves the node itself doesn't silently
+    approve; this proves the graph itself doesn't either - a route_after_*
+    function that still only checked "rejected" would send
+    "changes_requested" down the same advance_target edge every approve
+    takes. final_gate has no route_after function (add_edge("final_gate",
+    END) is unconditional) so it isn't part of this table.
+    """
+    halted = route_fn({"status": "changes_requested"})
+    advanced = route_fn({"status": "approved"})
+
+    assert halted == END
+    assert advanced == advance_target
 
 
 async def test_requirement_gate_node_rejection_routes_to_rejected(monkeypatch):

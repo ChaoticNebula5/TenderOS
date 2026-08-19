@@ -279,16 +279,55 @@ async def persist_compliance_decision(
                 confidence=proposal.confidence,
             )
         else:
-            entry = await uow.compliance.update_compliance_entry(
-                existing.id,
-                status=sufficiency.status,
-                reasoning_summary=proposal.reasoning_summary,
-                confidence=proposal.confidence,
-                last_evaluated_at=datetime.now(UTC),
-            )
+            update_fields: dict[str, object] = {
+                "status": sufficiency.status,
+                "reasoning_summary": proposal.reasoning_summary,
+                "confidence": proposal.confidence,
+                "last_evaluated_at": datetime.now(UTC),
+            }
+            # A human's approval is an approval of the STATUS this entry
+            # showed at the time - proposal_service.py's _facts_from_
+            # compliance trusts human_approved unconditionally, and B12's
+            # own required blockers name "compliant decision without valid
+            # evidence". An automated reevaluation that flips the status
+            # (e.g. fully_compliant -> non_compliant, because the evidence
+            # backing it changed) must clear that approval rather than let
+            # it survive attached to a decision the human never actually
+            # saw - otherwise a stale approval grounds a claim inside a
+            # readiness report asserting everything checks out. An
+            # IDENTICAL status is treated as the same semantic decision the
+            # human already approved and deliberately preserves
+            # human_approved - re-running analysis against unchanged
+            # underlying data isn't a new decision to re-approve.
+            if existing.human_approved and existing.status != sufficiency.status:
+                update_fields["human_approved"] = False
+                tender = await uow.tenders.get(tender_id)
+                if tender is not None:
+                    await uow.audit.create(
+                        organization_id=tender.organization_id,
+                        actor_type="system",
+                        actor_id="compliance_reevaluation",
+                        action="compliance_approval_cleared_on_reevaluation",
+                        tender_id=tender_id,
+                        target_type="compliance_entry",
+                        target_id=existing.id,
+                        before={"status": existing.status, "human_approved": True},
+                        after={"status": sufficiency.status, "human_approved": False},
+                    )
+            entry = await uow.compliance.update_compliance_entry(existing.id, **update_fields)
 
         for evidence in materialized_evidence:
             await uow.compliance.link_evidence(entry.id, evidence.id)
+
+        # Part C's state-version invariant, same "compliance change"/
+        # "evidence change" pair approve_compliance_entry/override_compliance_entry
+        # already bump (KNOWN_LIMITATIONS.md: "tenders.state_version was never
+        # bumped") - this is the automated origination path for that same data
+        # (materialize_evidence + this function, called from
+        # evaluate_compliance_for_requirement), which B8's fix never covered.
+        # One bump per decision write, not per evidence link, matching that
+        # same precedent.
+        await uow.tenders.bump_state_version(tender_id)
 
         if proposal.clarification_required:
             question = proposal.clarification_question or (

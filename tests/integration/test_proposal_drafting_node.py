@@ -51,6 +51,7 @@ def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_i
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
 
 
@@ -99,7 +100,14 @@ async def test_node_swallows_a_drafting_failure_rather_than_raising(monkeypatch)
 
     result = await proposal_drafting_node(_base_state(tender_id, org_id, workflow_run_id))
 
-    assert result == {}, "a drafting failure must not propagate - no workflow_tasks row exists for this node to fail against"
+    assert not result.get(
+        "status"
+    ), "a drafting failure must not propagate - no workflow_tasks row exists for this node to fail against"
+    # Regression test for the audit's finding #16: this failure used to be
+    # invisible outside the logs - a run could reach "ready" with zero
+    # proposal sections and nothing in run state said so. degraded_stages
+    # is how final_gate_node's own gate summary now surfaces it.
+    assert result == {"degraded_stages": ["proposal_drafting:AssertionError"]}, result
     async with UnitOfWork() as uow:
         sections = await uow.proposal.list_proposal_sections_for_tender(tender_id)
     assert sections == []

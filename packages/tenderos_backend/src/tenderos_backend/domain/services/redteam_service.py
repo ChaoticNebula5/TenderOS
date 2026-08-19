@@ -48,9 +48,19 @@ async def _persist_draft(
     )
     existing = await uow.redteam.get_by_fingerprint(tender_id, fingerprint)
     if existing is not None:
-        # Never overwritten here - a human's earlier resolved/resolution_note
-        # on this exact fingerprint survives a finding reappearing unchanged
-        # across repeated red_team passes (Q4's "MERGE-not-delete" design).
+        # A human's resolved/resolution_note on this exact fingerprint
+        # survives a finding reappearing unchanged across repeated
+        # red_team passes (Q4's "MERGE-not-delete" design) - never
+        # overwritten here. But a SYSTEM retirement (auto_retire_
+        # undetected_findings, resolution_source="system") means "this
+        # wasn't detected last pass," not "this is resolved" - if the same
+        # fingerprint is being persisted again right now, the defect is
+        # back, and leaving it resolved would silently hide a
+        # currently-real finding (worse than never auto-retiring it at
+        # all: a critical finding sitting unseen in the resolved pile,
+        # in exactly the revision loop this mechanism exists to drive).
+        if existing.resolved and existing.resolution_source == "system":
+            return await uow.redteam.reopen_finding(existing.id)
         return existing
     return await uow.redteam.create_finding(
         tender_id=tender_id,
@@ -156,6 +166,24 @@ async def run_red_team(
     async with UnitOfWork() as uow:
         for draft in drafts:
             await _persist_draft(uow, tender_id, draft)
+
+        # All 5 checks above (plus the LLM critique) re-derive fully fresh
+        # from this tender's CURRENT state on every pass, never
+        # incrementally - so an unresolved finding whose fingerprint isn't
+        # among what was just (re-)persisted is provably no longer present,
+        # not merely unchecked this time. Without this, a corrected defect
+        # left its finding open forever: a phantom blocker in a readiness
+        # report and a false "no progress" stall in route_after_red_team's
+        # own revision-loop check (both compare against open_critical_
+        # finding_ids, which list_open_for_tender feeds).
+        still_detected_fingerprints = {
+            finding_fingerprint(
+                tender_id, draft.target_type, draft.target_id,
+                draft.finding_category, draft.violated_condition,
+            )
+            for draft in drafts
+        }
+        await uow.redteam.auto_retire_undetected_findings(tender_id, still_detected_fingerprints)
         await uow.commit()
 
     async with UnitOfWork() as uow:

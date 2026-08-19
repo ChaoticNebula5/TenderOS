@@ -53,19 +53,21 @@ async def proposal_drafting_node(state: TenderState) -> dict:
 
     await sync_run_status(workflow_run_id, "drafting")
 
-    client = _build_llm_client()
     try:
+        client = _build_llm_client()
         await draft_proposal_for_tender(
             client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id
         )
-    except Exception:
+    except Exception as exc:
         # Logged and swallowed, not re-raised: this node has no workflow_
         # tasks row to mark failed (see docstring - it's not Send()-
         # dispatched), and the workflow should still be able to reach
-        # final_gate even if drafting hit a problem for this run - the
-        # persisted proposal_sections/proposal_claims rows (or absence of
-        # them) and agent_traces are the record of what happened, not a
-        # field on TenderState.
+        # final_gate even if drafting hit a problem for this run. But
+        # swallowing silently used to mean a run could reach "ready" with
+        # zero proposal sections and nothing in run state said so -
+        # degraded_stages carries this forward to final_gate_node's own
+        # gate summary instead (see TenderState's own comment on the field).
         logger.exception("proposal drafting failed for tender %s", tender_id)
+        return {"degraded_stages": [f"proposal_drafting:{type(exc).__name__}"]}
 
     return {}

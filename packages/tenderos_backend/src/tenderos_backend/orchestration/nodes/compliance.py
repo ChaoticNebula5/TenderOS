@@ -16,6 +16,18 @@ from tenderos_backend.orchestration.state import SpecialistTaskState, TenderStat
 logger = logging.getLogger(__name__)
 
 
+class AllItemsFailedError(Exception):
+    """Raised when every requirement in a non-empty batch failed - distinct
+    from an empty tender (0 requirements, evaluated=0 is correct there) and
+    from a partial failure (some requirements succeed, task still
+    legitimately completes). Caught by this node's own outer except, same
+    as any other exception - not a second failure path, just a real signal
+    for what would otherwise be indistinguishable from full success: a
+    completed task with output_refs showing evaluated_count=0."""
+
+    pass
+
+
 def _build_llm_client() -> LLMClient:
     # Same "function, not module-level singleton" shape
     # requirement_extraction_node's own helper documents - tests monkeypatch
@@ -62,6 +74,17 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
                 logger.exception(
                     "compliance analysis failed for requirement %s", requirement.id
                 )
+
+        if requirements and evaluated == 0:
+            # Every requirement in a non-empty batch failed - a completed
+            # task with evaluated_count=0 would be indistinguishable from a
+            # tender with zero requirements, and B12's readiness report
+            # reads run/task state, not per-item logs. Raising here routes
+            # through the existing except-block below (mark_task_failed +
+            # re-raise), not a second failure path.
+            raise AllItemsFailedError(
+                f"all {len(requirements)} requirements failed compliance analysis"
+            )
 
         async with UnitOfWork() as uow:
             await uow.workflow.mark_task_completed(
@@ -163,6 +186,13 @@ async def compliance_gate_node(state: TenderState) -> dict:
         # revision loop, not revisited again before then.
         await sync_run_status(workflow_run_id, "rejected")
         return {"status": "rejected"}
+    if decision_payload["decision"] == "request_changes":
+        # Same posture as reject - do not advance to resource_selection_gate.
+        # route_after_compliance_gate routes "changes_requested" to END,
+        # same as "rejected". Does not yet re-open this gate for a
+        # corrective resubmission - see final_gate_node's identical note.
+        await sync_run_status(workflow_run_id, "changes_requested")
+        return {"status": "changes_requested"}
 
     # No status write on approve - resource_selection_gate_node, the next
     # node in this same un-Send()'d continuation, sets its own

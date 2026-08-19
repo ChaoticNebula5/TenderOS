@@ -52,7 +52,20 @@ class TenderState(TypedDict):
     readiness_report_id: str | None
     graph_projection_version: int | None
 
-    last_error_code: NotRequired[str | None]
+    # proposal_drafting_node/project_graph_node have no workflow_tasks row
+    # (they're plain sequential nodes, not Send()-dispatched - see their own
+    # docstrings) and deliberately swallow their own exceptions so the run
+    # can still reach final_gate rather than dying mid-pipeline. Without
+    # this, that swallow was silent: the run could report "completed" with
+    # zero proposal sections drafted or a provably-stale graph, and nothing
+    # in run/task state said so. Same accumulate-don't-overwrite reducer as
+    # completed_task_ids/failed_task_ids above - a later stage's success
+    # must never erase an earlier stage's failure from this list. Read by
+    # final_gate_node when building its gate summary (persisted into
+    # approval_gates.request_payload, so it's visible to the human deciding
+    # the gate and to any later reader of that row, not just this run's own
+    # transient LangGraph state).
+    degraded_stages: Annotated[list[str], operator.add]
 
 
 class SpecialistTaskState(TenderState):

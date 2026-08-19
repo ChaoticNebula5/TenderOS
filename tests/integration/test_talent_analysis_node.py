@@ -107,6 +107,7 @@ def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_i
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
 
 
@@ -191,3 +192,22 @@ async def test_node_extracts_one_role_and_scores_one_candidate(monkeypatch):
     assert matches[0].employee_knowledge_item_id == candidate_item_id
     assert matches[0].score == 0.75
     assert matches[0].human_selected is False
+
+    # Regression test for the audit's finding #13: evaluate_role_match's
+    # create_evidence_link call never passed validity_status, so it fell
+    # back to the column's own "unknown" default - proposal_service.py's
+    # _facts_from_team filter requires validity_status == "valid", which
+    # "unknown" can never satisfy. Every talent-sourced evidence link was
+    # therefore permanently excluded from proposal grounding regardless of
+    # how current the underlying employee record actually was.
+    async with UnitOfWork() as uow:
+        evidence_rows = await uow.talent.list_evidence_for_role_match(matches[0].id)
+        assert len(evidence_rows) == 1, "the cited evidence_1 strength must resolve to one link"
+        link = await uow.compliance.get_evidence_link(evidence_rows[0].evidence_link_id)
+    assert link is not None
+    assert link.verified is True
+    assert link.validity_status == "valid", (
+        f"expected a freshly-computed 'valid' (the candidate employee has no "
+        f"valid_until and isn't archived), got {link.validity_status!r} - "
+        "proposal drafting's _facts_from_team filter would silently exclude this"
+    )

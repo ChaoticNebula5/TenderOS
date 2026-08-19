@@ -4,6 +4,7 @@ import uuid
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.checkpoint import get_checkpointer
 from tenderos_backend.orchestration.graph import build_graph
 from tenderos_backend.orchestration.state import TenderState
@@ -53,14 +54,34 @@ async def run_workflow(workflow_run_id: str) -> None:
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
     config: RunnableConfig = {"configurable": {"thread_id": run.langgraph_thread_id}}
 
     logger.info("starting workflow run %s", run_id)
-    async with get_checkpointer() as checkpointer:
-        graph = build_graph(checkpointer)
-        await graph.ainvoke(initial_state, config)
-    logger.info("workflow run %s paused or completed", run_id)
+    try:
+        async with get_checkpointer() as checkpointer:
+            graph = build_graph(checkpointer)
+            await graph.ainvoke(initial_state, config)
+        logger.info("workflow run %s paused or completed", run_id)
+    except Exception:
+        # Individual specialist nodes mark their own WorkflowTask failed
+        # before re-raising (see orchestration/nodes/compliance.py etc.),
+        # but nothing upstream of graph.ainvoke() previously caught that
+        # re-raise to move the RUN to a terminal status - an exception here
+        # left workflow_runs.status stuck at whatever non-terminal value it
+        # last had, forever (see KNOWN_LIMITATIONS.md's B0-B11 catch-up
+        # review). ingestion.py's parse_and_embed_document is the one job
+        # in this codebase that already does this correctly; mirrored here.
+        logger.exception("workflow run %s failed", run_id)
+        # The status==cancelled check above only covers the moment BEFORE
+        # ainvoke() started - a cancellation recorded while a node is
+        # mid-flight lands here too when that node's own work then raises.
+        # Re-checking here, not just before, is what stops "failed" from
+        # silently overwriting a real, deliberate cancellation.
+        if not await is_cancelled(run_id):
+            await sync_run_status(run_id, "failed")
+        raise
 
 
 async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
@@ -85,7 +106,15 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
 
     resume_command: Command[str] = Command(resume=gate.decision_payload)
 
-    async with get_checkpointer() as checkpointer:
-        graph = build_graph(checkpointer)
+    try:
+        async with get_checkpointer() as checkpointer:
+            graph = build_graph(checkpointer)
 
-        await graph.ainvoke(resume_command, config)
+            await graph.ainvoke(resume_command, config)
+    except Exception:
+        # See run_workflow's identical catch above - same gap, same fix,
+        # including the re-check of cancellation-during-execution.
+        logger.exception("workflow run %s failed while resuming", run_id)
+        if not await is_cancelled(run_id):
+            await sync_run_status(run_id, "failed")
+        raise

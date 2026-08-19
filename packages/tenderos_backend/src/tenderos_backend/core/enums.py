@@ -33,6 +33,7 @@ WorkflowStatus = Literal[
     "awaiting_final_approval",
     "ready",
     "rejected",
+    "changes_requested",
     "failed",
 ]
 
@@ -49,6 +50,13 @@ _AWAITING_HUMAN: frozenset[WorkflowStatus] = frozenset(
         "awaiting_commercial_approval",
         "awaiting_finding_resolution",
         "awaiting_final_approval",
+        # A gate's own status is "changes_requested" (a real, valid
+        # ALLOWED_DECISIONS value), but the run itself is not rejected and
+        # not approved - a human's decision is still the last word pending
+        # further action. "waiting_for_human" is the more honest coarse
+        # reading than "failed" (nothing errored) or "running" (nothing is
+        # advancing) - see the gate nodes' own request_changes handling.
+        "changes_requested",
     }
 )
 _TERMINAL: dict[WorkflowStatus, str] = {

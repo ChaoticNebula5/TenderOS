@@ -3,8 +3,17 @@ from langgraph.graph import END
 from tenderos_backend.orchestration.state import TenderState
 
 
+
+# Both a "reject" and a "request_changes" decision must stop the run from
+# advancing - they differ in what the fine-grained status/coarse read says
+# happened (rejected -> failed; changes_requested -> waiting_for_human), not
+# in whether the graph proceeds. Every route_after_*_gate function below
+# checks against this pair rather than "rejected" alone.
+_GATE_HALT_STATUSES = frozenset({"rejected", "changes_requested"})
+
+
 def route_after_requirement_gate(state: TenderState) -> str:
-    if state["status"] == "rejected":
+    if state["status"] in _GATE_HALT_STATUSES:
         return END
     return "specialist_dispatch"
 
@@ -13,14 +22,14 @@ def route_after_compliance_gate(state: TenderState) -> str:
     # compliance_gate sits after specialist_join, before resource_selection_
     # gate (see compliance_gate_node's own docstring for why it's positioned
     # there and not nested inside compliance_analysis's Send()'d branch).
-    if state["status"] == "rejected":
+    if state["status"] in _GATE_HALT_STATUSES:
         return END
     return "resource_selection_gate"
 
 
 def route_after_resource_selection_gate(state: TenderState) -> str:
     # Same sequential-slot reasoning as compliance_gate above.
-    if state["status"] == "rejected":
+    if state["status"] in _GATE_HALT_STATUSES:
         return END
     return "commercial_approval_gate"
 
@@ -30,7 +39,7 @@ def route_after_commercial_approval_gate(state: TenderState) -> str:
     # the three post-join gates. Routes into proposal_drafting (B9) rather
     # than straight to final_gate now - the "pass-through seam" the B8 plan
     # flagged in advance.
-    if state["status"] == "rejected":
+    if state["status"] in _GATE_HALT_STATUSES:
         return END
     return "proposal_drafting"
 
@@ -95,9 +104,10 @@ def route_after_targeted_replan(state: TenderState) -> str:
 
 def route_after_finding_gate(state: TenderState) -> str:
     # Zero edges back into the loop under any decision value (Q5) - reject
-    # ends the run, same as every other gate; anything else proceeds to
-    # final_gate. This one-branch shape is what makes the revision loop
-    # provably bounded independent of route_after_red_team's own checks.
-    if state["status"] == "rejected":
+    # or request_changes both end the run, same as every other gate;
+    # approve proceeds to final_gate. This one-branch-forward shape is what
+    # makes the revision loop provably bounded independent of
+    # route_after_red_team's own checks.
+    if state["status"] in _GATE_HALT_STATUSES:
         return END
     return "final_gate"

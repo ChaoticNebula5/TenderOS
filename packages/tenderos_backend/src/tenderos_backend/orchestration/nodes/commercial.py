@@ -123,5 +123,12 @@ async def commercial_approval_gate_node(state: TenderState) -> dict:
         # post-join gates already carry.
         await sync_run_status(workflow_run_id, "rejected")
         return {"status": "rejected"}
+    if decision_payload["decision"] == "request_changes":
+        # Same posture as reject - do not advance to proposal_drafting.
+        # route_after_commercial_approval_gate routes "changes_requested" to
+        # END, same as "rejected". Does not yet re-open this gate for a
+        # corrective resubmission - see final_gate_node's identical note.
+        await sync_run_status(workflow_run_id, "changes_requested")
+        return {"status": "changes_requested"}
 
     return {}

@@ -20,6 +20,7 @@ from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import document_service
 from tenderos_backend.domain.services.compliance_service import (
+    SufficiencyResult,
     approve_compliance_entry,
     enforce_evidence_sufficiency,
     get_compliance_trace,
@@ -213,6 +214,88 @@ async def test_approve_compliance_entry_writes_audit_event():
     assert len(events) == 1
     assert events[0].action == "compliance_approve"
     assert events[0].actor_id == str(actor_id)
+
+
+async def test_persist_compliance_decision_clears_stale_approval_on_material_status_change():
+    """Regression test for the audit's finding #5: a human approves a
+    fully_compliant result, an automated reevaluation later flips it to
+    non_compliant (the underlying evidence changed), and human_approved
+    used to survive unchanged - proposal_service.py's _facts_from_compliance
+    trusts that flag unconditionally, so a stale approval would ground a
+    claim inside a readiness report asserting everything checks out.
+    """
+    org_id, tender_id = await _make_tender()
+    chunk_id = await _make_requirement_chunk(tender_id, org_id)
+    requirement_id = await _make_requirement(tender_id, chunk_id)
+
+    proposal = ComplianceProposal(
+        status="fully_compliant", evidence_refs=[], confidence=0.9, reasoning_summary="Compliant."
+    )
+    sufficiency = SufficiencyResult(status="fully_compliant", downgraded=False, reason="ok")
+    entry = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
+    actor_id = uuid.uuid4()
+    approved = await approve_compliance_entry(entry.id, actor_id)
+    assert approved.human_approved is True
+
+    revised_proposal = ComplianceProposal(
+        status="non_compliant",
+        evidence_refs=[],
+        confidence=0.9,
+        reasoning_summary="No longer compliant - evidence expired.",
+    )
+    revised_sufficiency = SufficiencyResult(status="non_compliant", downgraded=False, reason="expired")
+    reevaluated = await persist_compliance_decision(
+        requirement_id, revised_proposal, revised_sufficiency, []
+    )
+
+    assert reevaluated.status == "non_compliant"
+    assert reevaluated.human_approved is False, (
+        "a material status change on reevaluation must clear a stale human approval"
+    )
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(AuditEvent).where(
+                AuditEvent.target_type == "compliance_entry",
+                AuditEvent.target_id == entry.id,
+                AuditEvent.action == "compliance_approval_cleared_on_reevaluation",
+            )
+        )
+    events = result.scalars().all()
+    assert len(events) == 1
+    assert events[0].actor_type == "system"
+
+
+async def test_persist_compliance_decision_preserves_approval_on_identical_status():
+    """The other half of the same fix: re-running analysis against
+    unchanged underlying data (same status) is not a new decision - it must
+    NOT clear an approval the human already gave for that same outcome.
+    """
+    org_id, tender_id = await _make_tender()
+    chunk_id = await _make_requirement_chunk(tender_id, org_id)
+    requirement_id = await _make_requirement(tender_id, chunk_id)
+
+    proposal = ComplianceProposal(
+        status="fully_compliant", evidence_refs=[], confidence=0.9, reasoning_summary="Compliant."
+    )
+    sufficiency = SufficiencyResult(status="fully_compliant", downgraded=False, reason="ok")
+    entry = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
+    await approve_compliance_entry(entry.id, uuid.uuid4())
+
+    reevaluated = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
+
+    assert reevaluated.status == "fully_compliant"
+    assert reevaluated.human_approved is True, (
+        "an identical semantic reevaluation must preserve an existing approval"
+    )
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(AuditEvent).where(
+                AuditEvent.target_type == "compliance_entry",
+                AuditEvent.target_id == entry.id,
+                AuditEvent.action == "compliance_approval_cleared_on_reevaluation",
+            )
+        )
+    assert result.scalars().all() == []
 
 
 async def test_approve_compliance_entry_bumps_tender_state_version():

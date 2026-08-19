@@ -22,6 +22,10 @@ class RedteamFinding(UUIDPrimaryKeyMixin, Base):
             "severity IN ('critical','major','minor')",
             name="ck_redteam_finding_severity",
         ),
+        CheckConstraint(
+            "resolution_source IN ('system','human')",
+            name="ck_redteam_finding_resolution_source",
+        ),
         UniqueConstraint(
             "tender_id", "content_fingerprint", name="uq_redteam_finding_fingerprint"
         ),
@@ -41,6 +45,11 @@ class RedteamFinding(UUIDPrimaryKeyMixin, Base):
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolution_note: Mapped[str | None] = mapped_column(nullable=True)
+    # NULL until resolved; 'human' (resolve_finding) or 'system'
+    # (auto_retire_undetected_findings) once it is. Lets _persist_draft
+    # reopen a system-retired finding that reappears while leaving a
+    # human's resolution untouched, without string-matching resolution_note.
+    resolution_source: Mapped[str | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

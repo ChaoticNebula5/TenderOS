@@ -84,5 +84,61 @@ class RedteamRepository:
             raise ValueError(f"RedteamFinding {finding_id} not found")
         finding.resolved = True
         finding.resolution_note = resolution_note
+        finding.resolution_source = "human"
         await self._session.flush()
         return finding
+
+    async def reopen_finding(self, finding_id: uuid.UUID) -> RedteamFinding:
+        """A system-retired finding (resolution_source='system') whose
+        underlying defect has come back - _persist_draft's own upsert calls
+        this instead of returning the still-resolved row untouched. Never
+        called against a human-resolved finding (that check is the
+        caller's responsibility, same as this repository's other methods
+        trusting their caller's WHERE-clause-equivalent precondition)."""
+        finding = await self._session.get(RedteamFinding, finding_id)
+        if finding is None:
+            raise ValueError(f"RedteamFinding {finding_id} not found")
+        finding.resolved = False
+        finding.resolution_note = None
+        finding.resolution_source = None
+        await self._session.flush()
+        return finding
+
+    async def auto_retire_undetected_findings(
+        self, tender_id: uuid.UUID, still_detected_fingerprints: set[str]
+    ) -> list[RedteamFinding]:
+        """run_red_team's own check list always covers the tender's ENTIRE
+        current state on every pass (all 5 steps re-derive fresh from
+        current data, never incrementally) - so an unresolved finding whose
+        fingerprint isn't among what THIS pass just detected is provably no
+        longer present, not merely unchecked this time. Marks it resolved
+        (out of list_open_for_tender's set, same as a human resolution)
+        with a system-authored resolution_note distinguishing it from one -
+        the row itself is never deleted, so it stays in list_for_tender's
+        full history/audit trail. Never touches a finding a human already
+        resolved (the WHERE clause below only selects resolved=False rows).
+        """
+        # SQLAlchemy's notin_() on an empty Python collection compiles
+        # inconsistently across dialects (Postgres itself rejects a bare
+        # NOT IN ()) - branch explicitly rather than relying on that: an
+        # empty still_detected_fingerprints means every open finding is
+        # stale, not "match nothing."
+        conditions = [
+            RedteamFinding.tender_id == tender_id,
+            RedteamFinding.resolved.is_(False),
+        ]
+        if still_detected_fingerprints:
+            conditions.append(
+                RedteamFinding.content_fingerprint.notin_(still_detected_fingerprints)
+            )
+        result = await self._session.execute(select(RedteamFinding).where(*conditions))
+        stale = list(result.scalars().all())
+        for finding in stale:
+            finding.resolved = True
+            finding.resolution_note = (
+                "Auto-retired: no longer detected by the most recent red-team pass."
+            )
+            finding.resolution_source = "system"
+        if stale:
+            await self._session.flush()
+        return stale

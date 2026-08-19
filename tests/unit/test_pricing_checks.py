@@ -9,8 +9,12 @@ not just noise."""
 
 from pathlib import Path
 
-from tenderos_backend.agents.commercial.parse_pricing_workbook import parse_pricing_workbook
+from tenderos_backend.agents.commercial.parse_pricing_workbook import (
+    ParsedPricingCell,
+    parse_pricing_workbook,
+)
 from tenderos_backend.domain.services.pricing_checks import (
+    LogicalRow,
     check_cross_doc_mismatch,
     check_currency_mismatch,
     check_grand_total,
@@ -114,6 +118,83 @@ def test_all_six_seeded_defect_categories_are_recalled():
     }
     missing = required - found_types
     assert not missing, f"seeded defect recall < 100%: missing categories {missing}"
+
+
+def test_grand_total_sum_formula_matching_the_real_row_range_is_not_flagged():
+    """Regression test for an off-by-one in check_grand_total's expected-SUM
+    range: it built f"=SUM(D2:D{rows[-1].row_number + 1})" - one row past the
+    real last line-item row - so a genuinely correct =SUM(D2:D6)-style
+    formula could never match and was always flagged needs_human_review.
+
+    Neither real fixture exercises the SUM-match branch this bug lived in:
+    sheet1's grand total is a literal wrong number, not a formula at all, and
+    sheet2's own row 4 (missing unit cost) makes every row unresolvable
+    before check_grand_total ever reaches the formula comparison - which is
+    exactly why the existing suite passed with the bug still in place. This
+    builds three rows in sheet2's own real shape (same cell refs, same
+    =B{r}*C{r} formula convention, same row numbers 2-4) with every cell
+    resolvable, paired with a grand-total formula spanning exactly those
+    rows - =SUM(D2:D4) - to isolate and actually reach that branch.
+    """
+    sheet = "pricing_schedule_regression"
+
+    def _row(row_number: int, unit_cost: float, quantity: float) -> LogicalRow:
+        return LogicalRow(
+            row_number=row_number,
+            description=f"Line {row_number}",
+            unit_cost=ParsedPricingCell(
+                sheet_name=sheet,
+                cell_ref=f"B{row_number}",
+                row_number=row_number,
+                role="unit_cost",
+                description=None,
+                raw_value=str(unit_cost),
+                numeric_value=unit_cost,
+                formula=None,
+                currency="USD",
+            ),
+            quantity=ParsedPricingCell(
+                sheet_name=sheet,
+                cell_ref=f"C{row_number}",
+                row_number=row_number,
+                role="quantity",
+                description=None,
+                raw_value=str(quantity),
+                numeric_value=quantity,
+                formula=None,
+                currency="USD",
+            ),
+            line_total=ParsedPricingCell(
+                sheet_name=sheet,
+                cell_ref=f"D{row_number}",
+                row_number=row_number,
+                role="line_total",
+                description=None,
+                raw_value=f"=B{row_number}*C{row_number}",
+                numeric_value=None,
+                formula=f"=B{row_number}*C{row_number}",
+                currency="USD",
+            ),
+            currency=None,
+        )
+
+    rows = [_row(2, 100.0, 10.0), _row(3, 250.0, 4.0), _row(4, 50.0, 20.0)]
+    grand_total = ParsedPricingCell(
+        sheet_name=sheet,
+        cell_ref="D5",
+        row_number=5,
+        role="grand_total",
+        description=None,
+        raw_value="=SUM(D2:D4)",
+        numeric_value=None,
+        formula="=SUM(D2:D4)",
+        currency="USD",
+    )
+
+    finding = check_grand_total(rows, grand_total)
+    assert finding is None, (
+        f"a correct =SUM(D2:D4) formula over rows 2-4 was flagged as unsupported: {finding}"
+    )
 
 
 def test_correct_rows_produce_zero_findings_no_false_positives():

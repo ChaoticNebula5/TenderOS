@@ -338,7 +338,7 @@ def check_grand_total(
     expected_sum = sum(line_total_values)
 
     if grand_total.formula is not None:
-        expected_formula = f"=SUM(D2:D{rows[-1].row_number + 1})" if rows else None
+        expected_formula = f"=SUM(D2:D{rows[-1].row_number})" if rows else None
         normalised_actual = "".join(grand_total.formula.split()).casefold()
         normalised_expected = (
             "".join(expected_formula.split()).casefold() if expected_formula else None

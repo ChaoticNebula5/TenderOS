@@ -37,7 +37,14 @@ async def project_graph_node(state: TenderState) -> dict:
 
     try:
         await project_tender(tender_id)
-    except Exception:
+    except Exception as exc:
+        # Swallowed the same way proposal_drafting_node's is, for the same
+        # reason (no workflow_tasks row; the run should still reach
+        # final_gate) - but a failed projection is otherwise invisible
+        # outside a GraphStaleError raised by a LATER read, which nothing
+        # in this run's own path ever triggers. degraded_stages surfaces it
+        # at final_gate_node's own gate summary instead.
         logger.exception("graph projection failed for tender %s", tender_id)
+        return {"degraded_stages": [f"graph_projection:{type(exc).__name__}"]}
 
     return {}

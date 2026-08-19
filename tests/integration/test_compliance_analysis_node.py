@@ -79,6 +79,7 @@ def _base_state(tender_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
 
 

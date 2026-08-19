@@ -65,6 +65,7 @@ def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_i
         "changed_knowledge_item_ids": [],
         "readiness_report_id": None,
         "graph_projection_version": None,
+        "degraded_stages": [],
     }
 
 

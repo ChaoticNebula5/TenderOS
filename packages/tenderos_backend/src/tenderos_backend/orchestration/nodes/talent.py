@@ -20,6 +20,15 @@ from tenderos_backend.orchestration.state import SpecialistTaskState, TenderStat
 logger = logging.getLogger(__name__)
 
 
+class AllItemsFailedError(Exception):
+    """Raised when every attempted (role, candidate) pair failed - not when
+    there was simply nothing to attempt (0 roles or 0 candidates, where
+    evaluated=0 is correct). See compliance_analysis_node's identical
+    AllItemsFailedError for the same reasoning."""
+
+    pass
+
+
 def _build_llm_client() -> LLMClient:
     # Same "function, not module-level singleton" shape compliance_analysis_
     # node's own helper documents.
@@ -57,8 +66,10 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
         candidates = await find_candidate_pool(organization_id)
 
         evaluated = 0
+        attempted = 0
         for role in roles:
             for employee in candidates:
+                attempted += 1
                 try:
                     await evaluate_role_match(client, settings.reasoning_model, role.id, employee)
                     evaluated += 1
@@ -68,6 +79,15 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
                         role.id,
                         employee.knowledge_item_id,
                     )
+
+        if attempted and evaluated == 0:
+            # Every attempted (role, candidate) pair failed - see
+            # AllItemsFailedError's own docstring. attempted, not
+            # len(roles)/len(candidates), since 0 roles or 0 candidates is a
+            # legitimate empty case, not a failure.
+            raise AllItemsFailedError(
+                f"all {attempted} (role, candidate) pairs failed talent scoring"
+            )
 
         async with UnitOfWork() as uow:
             await uow.workflow.mark_task_completed(
@@ -150,5 +170,12 @@ async def resource_selection_gate_node(state: TenderState) -> dict:
         # node already carries, now shared by all three post-join gates.
         await sync_run_status(workflow_run_id, "rejected")
         return {"status": "rejected"}
+    if decision_payload["decision"] == "request_changes":
+        # Same posture as reject - do not advance to commercial_approval_gate.
+        # route_after_resource_selection_gate routes "changes_requested" to
+        # END, same as "rejected". Does not yet re-open this gate for a
+        # corrective resubmission - see final_gate_node's identical note.
+        await sync_run_status(workflow_run_id, "changes_requested")
+        return {"status": "changes_requested"}
 
     return {}

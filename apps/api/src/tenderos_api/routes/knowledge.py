@@ -403,7 +403,27 @@ async def set_knowledge_selection(
     dependencies not built yet in B6). This persists the selection row
     itself, the piece B6 owns.
     """
-    updated = await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, body.selected, current_user.id, body.change_reason
-    )
+    try:
+        updated = await knowledge_service.set_knowledge_selection(
+            tender_id, knowledge_item_id, body.selected, current_user.id, body.change_reason
+        )
+    except knowledge_service.TenderNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
+    except (
+        knowledge_service.KnowledgeItemNotFoundError,
+        knowledge_service.CrossOrganizationKnowledgeItemError,
+    ) as exc:
+        # Same generic 404 for both - a caller must not be able to tell
+        # "this knowledge_item_id doesn't exist" apart from "it exists,
+        # but in another organization." Distinguishing the two in the
+        # response would let a caller enumerate valid knowledge-item ids
+        # across organizations by watching which error comes back. The
+        # real reason is still logged at the service layer (knowledge_
+        # service.set_knowledge_selection), which is the point - the
+        # CALLER can't tell them apart, not that nobody can.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
+        ) from exc
     return KnowledgeSelectionResponse.model_validate(updated, from_attributes=True)

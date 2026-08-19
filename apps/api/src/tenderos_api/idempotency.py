@@ -50,7 +50,24 @@ def get_idempotency_context(
 
         organization_id = await _resolve_organization_id(request)
         body_bytes = await request.body()
-        request_hash = hashlib.sha256(body_bytes).hexdigest()
+        # The lookup key below is (organization_id, operation, idempotency_
+        # key) - operation is always a fixed literal per route (e.g.
+        # "graph_projection_trigger"), never the resource id in the path.
+        # Two different resources of the same type in the same org (two
+        # tenders, two gates) hit with the same Idempotency-Key would
+        # otherwise collide on one record and the second request would
+        # silently replay the first's response instead of running its own
+        # mutation - demonstrated live by
+        # test_duplicate_idempotency_key_replays_wrong_tenders_graph_
+        # projection. request.method + request.url.path (the resolved path,
+        # real ids substituted in - not the route template) folds the
+        # resource identity into the hash, so a same-key request against a
+        # different resource now hits the existing request_hash mismatch
+        # branch below and 409s as IDEMPOTENCY_CONFLICT, the same real
+        # conflict a different body already produces - not new
+        # error-handling, just a wider definition of "the same request."
+        request_identity = f"{request.method}\n{request.url.path}\n".encode("utf-8")
+        request_hash = hashlib.sha256(request_identity + body_bytes).hexdigest()
 
         async with UnitOfWork() as uow:
             existing = await uow.idempotency.get(organization_id, operation, idempotency_key)

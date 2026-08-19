@@ -376,6 +376,136 @@ async def test_red_team_never_mutates_the_content_it_examines():
 # ----------------------------------------------------------------------
 
 
+async def test_corrected_finding_is_auto_retired_from_the_open_set():
+    """Regression test for the audit's finding #19: run_red_team upserted
+    current findings and then returned ALL historically unresolved ones,
+    with nothing marking a finding whose underlying defect was actually
+    fixed as no longer open. That both stalled route_after_red_team's own
+    "no progress" check (comparing open_critical_finding_ids across passes)
+    and would put a phantom blocker in a future readiness report. Here: a
+    missed_mandatory_requirement finding is real on pass 1; the missing
+    compliance_entry is created before pass 2, so the same fingerprint
+    should no longer be (re-)detected - the row must leave the open set
+    (auto-resolved, with a system-authored note) without being deleted.
+    """
+    org_id, tender_id = await _org_and_tender("AutoRetire")
+    chunk_id = await _chunk(tender_id, "req")
+    requirement_id = await _requirement(tender_id, chunk_id, mandatory=True)
+    # check_graph_contradictions (one of the 5 checks run_red_team always
+    # runs) requires a fresh projection - _seed_all_seven's own fixture
+    # does this too. Fixing the defect below never bumps state_version
+    # (the test helpers call the repository directly, not the state-
+    # version-bumping service functions), so this one projection stays
+    # fresh for both passes.
+    await graph_service.project_tender(tender_id)
+
+    first_open_ids = await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+    target = next(f for f in findings if f.finding_category == "missed_mandatory_requirement")
+    assert str(target.id) in first_open_ids or target.severity != "critical", (
+        "the seeded missed_mandatory_requirement finding must be real and open after pass 1"
+    )
+    assert target.resolved is False
+
+    # Fix the underlying defect: the requirement now has a compliance
+    # decision, so check_missing_mandatory_requirements will no longer
+    # draft this fingerprint on the next pass.
+    await _compliance_entry(requirement_id, [])
+
+    second_open_ids = await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        refetched = await uow.redteam.get(target.id)
+    assert refetched is not None, "the row itself must survive, not be deleted"
+    assert refetched.resolved is True, "a corrected finding must be retired from the open set"
+    assert refetched.resolution_note is not None and "auto-retired" in refetched.resolution_note.lower()
+    assert str(target.id) not in second_open_ids
+
+
+async def test_auto_retired_finding_reopens_when_the_defect_reappears():
+    """CodeRabbit review of the #19 fix: auto-retiring a finding
+    (resolved=True) with nothing distinguishing it from a human resolution
+    meant _persist_draft's own upsert returned the still-resolved row
+    untouched even when the SAME fingerprint was detected again - a
+    currently-real, possibly-critical finding sitting silently in the
+    resolved pile, worse than the original bug and plausible in exactly
+    the revision loop this mechanism exists to drive (a corrective task
+    fails to actually fix the defect, or a later change reintroduces it).
+    resolution_source (not a resolution_note string match, which would
+    drift between the two write sites) is what lets reopening distinguish
+    "the system retired this" from "a human resolved this."
+    """
+    org_id, tender_id = await _org_and_tender("ReopenOnReappear")
+    pricing_finding_id = await _pricing_finding(tender_id)
+    await graph_service.project_tender(tender_id)
+
+    await _run(tender_id)
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+    target = next(f for f in findings if f.finding_category == "pricing_mismatch")
+    assert target.resolved is False
+
+    # Fix it: pass 2 no longer detects this fingerprint, auto-retiring it.
+    async with UnitOfWork() as uow:
+        await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)
+        await uow.commit()
+    await _run(tender_id)
+    async with UnitOfWork() as uow:
+        retired = await uow.redteam.get(target.id)
+    assert retired is not None
+    assert retired.resolved is True
+    assert retired.resolution_source == "system"
+
+    # The defect comes back: pass 3 detects the same fingerprint again.
+    async with UnitOfWork() as uow:
+        await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=False)
+        await uow.commit()
+    await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        reopened = await uow.redteam.get(target.id)
+        open_major = await uow.redteam.list_open_for_tender(tender_id, ("critical", "major"))
+    assert reopened is not None
+    assert reopened.resolved is False, "a reappearing defect must reopen an auto-retired finding"
+    assert reopened.resolution_source is None
+    assert reopened.resolution_note is None
+    assert reopened.id in {f.id for f in open_major}, "the reopened finding must be in the open set"
+
+
+async def test_human_resolved_finding_does_not_reopen_when_redetected():
+    """The case the fix above must not break: a human's resolution is a
+    deliberate judgment call (e.g. "accepted, known discrepancy") - it must
+    survive the SAME fingerprint being detected again, exactly like
+    test_resolved_finding_survives_an_unchanged_redetection already proves
+    for an unchanged redetection. This is the reappearing-defect case
+    instead: the underlying condition genuinely comes back, and a human
+    resolution must still not be silently reopened by the system.
+    """
+    org_id, tender_id = await _org_and_tender("HumanResolutionSurvives")
+    pricing_finding_id = await _pricing_finding(tender_id)
+    await graph_service.project_tender(tender_id)
+
+    await _run(tender_id)
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+        target = next(f for f in findings if f.finding_category == "pricing_mismatch")
+        await uow.redteam.resolve_finding(target.id, "accepted, known pricing discrepancy")
+        await uow.commit()
+
+    # The underlying pricing_finding was never actually fixed - the next
+    # pass would detect the same fingerprint again regardless.
+    await _run(tender_id)
+
+    async with UnitOfWork() as uow:
+        refetched = await uow.redteam.get(target.id)
+    assert refetched is not None
+    assert refetched.resolved is True, "a human resolution must not be reopened by redetection"
+    assert refetched.resolution_source == "human"
+    assert refetched.resolution_note == "accepted, known pricing discrepancy"
+
+
 async def test_resolved_finding_survives_an_unchanged_redetection():
     tender_id = await _seed_all_seven("ResolvedSurvives")
     await _run(tender_id)

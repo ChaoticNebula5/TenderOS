@@ -57,6 +57,29 @@ async def test_set_knowledge_selection_bumps_tender_state_version():
     assert after_version == before_version + 1
 
 
+async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_organization():
+    """Regression test for a cross-tenant hole: tender_knowledge_selections'
+    two foreign keys (tenders.id, knowledge_items.id) are independent, so
+    nothing at the schema level stops org A's tender from selecting org B's
+    knowledge item. Left unchecked, the graph projector would MERGE org B's
+    employee node straight into org A's tender graph (projector.py's
+    reachable-shared-node walk resolves knowledge_item_id with no
+    organization check at all), and proposal drafting could cite org B's
+    private data as evidence for an org A claim.
+    """
+    tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
+    _other_tender_id, other_org_item_id, _other_actor_id = await _org_tender_and_employee()
+
+    with pytest.raises(knowledge_service.CrossOrganizationKnowledgeItemError):
+        await knowledge_service.set_knowledge_selection(
+            tender_id, other_org_item_id, True, actor_id
+        )
+
+    async with UnitOfWork() as uow:
+        selections = await uow.knowledge.list_selections_for_tender(tender_id)
+    assert selections == [], "the cross-org selection must not be persisted"
+
+
 async def test_deselecting_also_bumps_state_version():
     # Same call site, opposite direction - selection and deselection are
     # both "knowledge selection change" per Part C's own wording, neither

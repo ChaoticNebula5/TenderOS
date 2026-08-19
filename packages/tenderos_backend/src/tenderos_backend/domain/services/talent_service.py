@@ -32,6 +32,26 @@ def _fingerprint(*parts: str) -> str:
     return sha256_hex("|".join(parts).encode("utf-8"))
 
 
+async def _evidence_validity_status(
+    uow: UnitOfWork, knowledge_item_id: uuid.UUID, today: date
+) -> str:
+    """Same freshly-computed validity_status compliance_service.py's own
+    _compute_candidate_signals derives for compliance evidence - a
+    knowledge_item's status/valid_until, not a value evaluate_role_match's
+    own create_evidence_link call left unset (defaulting to the column's
+    "unknown", which _facts_from_team's validity_status=="valid" filter can
+    never match - see KNOWN_LIMITATIONS.md's B0-B11 catch-up review).
+    """
+    knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+    if knowledge_item is None:
+        return "unknown"
+    if knowledge_item.valid_until is not None and knowledge_item.valid_until < today:
+        return "expired"
+    if knowledge_item.status == "archived":
+        return "invalid"
+    return "valid"
+
+
 # ----------------------------------------------------------------------
 # Role extraction
 # ----------------------------------------------------------------------
@@ -494,6 +514,9 @@ async def evaluate_role_match(
             )
             link = await uow.compliance.get_evidence_link_by_fingerprint(role.tender_id, fingerprint)
             if link is None:
+                validity_status = await _evidence_validity_status(
+                    uow, candidate.knowledge_item_id, today
+                )
                 link = await uow.compliance.create_evidence_link(
                     tender_id=role.tender_id,
                     source_kind=candidate.source_kind,
@@ -501,6 +524,7 @@ async def evaluate_role_match(
                     knowledge_item_id=candidate.knowledge_item_id,
                     excerpt=candidate.excerpt,
                     verified=True,
+                    validity_status=validity_status,
                 )
             await uow.talent.link_role_match_evidence(match.id, link.id, strength["criterion"])
 

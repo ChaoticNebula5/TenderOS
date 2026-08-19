@@ -434,25 +434,29 @@ Each entry:
   measurement script did exactly that assumption's opposite (polled the
   batch, per its documented contract) and hung for real, so the risk is
   more concrete than the original B6 entry scoped it.
-- **Status:** unverified / accepted, not fixed in B6 or B9 - noted rather
-  than patched under time pressure at the end of B6, re-confirmed rather
-  than fixed in B9 since it's B6 code and CLAUDE.md's build-order
-  discipline says fix the block that's actually broken, not patch it as
-  a side effect of an unrelated block's eval script. B9's own
-  citation-correctness script was changed to poll `.../items` instead,
-  working around the bug rather than depending on it. A real fix belongs
-  in B6/B13 (the screen list names "Talent import batches and review
-  queue" - exactly the UI this bug would visibly break) and needs one of:
-  batch-column updates added directly inside
-  `process_knowledge_document_import`, or the GET route computing
-  status/counts from the items table live instead of trusting stored
-  columns that nothing maintains.
-- **Test:** none dedicated in either block. Observed directly via B6's
-  live smoke test and, independently, via B9's `docker exec ... psql`
-  reproduction against a real batch row plus its `knowledge_import_items`
-  rows. Worth a regression test in whichever block fixes it: upload real
-  rows, assert the batch's own `status`/`completed_items` reflect them
-  without needing a second query against `.../items`.
+- **Status:** resolved in the B0-B11 catch-up review (pre-B12), via the
+  second of the two fix options this entry already named:
+  `knowledge_service.get_import_batch`/`list_import_batches` now compute
+  `status`/`total_items`/`completed_items`/`failed_items` live from
+  `knowledge_import_items` on every read (`_compute_batch_progress`)
+  instead of returning the batch row's own dead columns. Not fixed by
+  adding batch-column writes to `process_knowledge_document_import` (the
+  other option this entry named) — that would need a write at every one
+  of that job's four import-type branches (employee-master rows,
+  certification rows, capability statement, resumes) to stay correct, a
+  second copy of the same fact with its own chance to drift. See
+  "Standing pattern: a reader trusts a column its writer never keeps
+  current" below — grouped with the `tenders.state_version` catch-up fix
+  above as the same shape, fixed the same way (recompute from source of
+  truth at read time, matching D7's `evaluate_evidence_coverage`
+  precedent) rather than chasing every writer that would need to keep a
+  denormalized copy current.
+- **Test:** none dedicated yet — the fix removes the dead columns from the
+  read path entirely rather than making them correct, so the previous
+  "assert the batch's own status reflects reality" regression test this
+  entry called for is no longer the right shape; a future test should
+  instead assert `_compute_batch_progress` against a batch with a mix of
+  pending/approved/failed items.
 
 ## [B7/B8] Post-join gate rejection kills the whole run, including unrelated completed branches
 
@@ -580,7 +584,8 @@ Each entry:
   and the failure would surface two blocks later as "why is impact
   analysis returning outdated results" — with the actual cause sitting in
   B7 code nobody would think to re-open.
-- **Status:** resolved-in-B8, extended in B9 and B10. B8 fixed
+- **Status:** resolved-in-B8, extended in B9 and B10, and corrected again
+  in the B0-B11 catch-up review below. B8 fixed
   `approve_compliance_entry`/`override_compliance_entry` (covering
   "compliance change" and "evidence change" together, one bump per
   decision write rather than once per evidence link) and B8A's
@@ -600,6 +605,31 @@ Each entry:
   aren't built in any block through B10, so there's nothing yet to wire
   this into; revisit when that block exists, same "reminder, not a closed
   claim" posture this entry has held since B8.
+  **Catch-up review correction (pre-B12):** every call site fixed above is
+  a *human* review/override/select action. The automated pipeline that
+  actually *originates* compliance and evidence rows —
+  `compliance_service.persist_compliance_decision`, called from
+  `evaluate_compliance_for_requirement` on every ordinary compliance run,
+  with no human action involved — never bumped `state_version` at all.
+  This is not a new mutation type outside the original six; it is the
+  same "compliance change"/"evidence change" pair this entry already
+  claimed as fixed, just missed for the path that creates the data rather
+  than the path that reviews it afterward. Worse, B10's own live
+  staleness demo (the test cited below) exercised only the human-approval
+  call site, so it proved the mechanism for human mutations, and this
+  entry's "resolved-in-B8, extended in B9/B10" status was read as the
+  invariant holding end to end — it wasn't. A compliance run that writes
+  dozens of new evidence/compliance rows with no human step in between
+  left `graph_projection_runs.source_state_version` matching
+  `tenders.state_version` throughout, so `check_freshness` reported the
+  graph fresh while real compliance data had just changed underneath it —
+  precisely what B10 exists to prevent, on what is the *more* common path
+  (an automated run), not an edge case. Fixed by adding the same
+  `bump_state_version` call, once per decision write, directly to
+  `persist_compliance_decision` — see "Standing pattern: a reader trusts
+  a column its writer never keeps current" below for the general shape
+  this belongs to, and why an invariant proven only against its
+  human-approval call site should not be read as proven end to end.
 - **Test:** new direct tests assert the bump itself, not just that the
   surrounding write succeeded — `tests/integration/test_compliance_service.py`
   (approve/override bump `tenders.state_version` by exactly 1),
@@ -694,7 +724,10 @@ Each entry:
   back, in the same session; a third during B9's citation-correctness
   measurement; a fourth during B11, despite this entry's own "Status"
   section (point 4 below) already writing down the exact discipline that
-  would have prevented it:
+  would have prevented it; a fifth during the CodeRabbit-fixes pass
+  following the pre-B12 audit - notable because this one is the first
+  where the documented practice actually caught the problem in the
+  moment, not just named after the fact:
   1. **Stale Docker image.** After writing all of B8B's code, the worker/
      api containers were only `docker compose restart`ed, not rebuilt.
      `restart` reuses the existing image; it does not pick up new source
@@ -761,6 +794,26 @@ Each entry:
      in a later, unrelated-feeling moment (running the full suite as a
      routine sanity check, not consciously flagged as "touching the same
      database as the live run I still need").
+  5. **Port-squatting native Postgres, recurrence - but caught THIS time by
+     the documented practice, not discovered after the fact.** During the
+     CodeRabbit-fixes pass following the pre-B12 audit (a new
+     `redteam_findings.resolution_source` migration), the Docker stack had
+     been stopped between conversation turns; after bringing it back up,
+     the first `alembic upgrade head` attempt failed with `role "tenderos"
+     does not exist` - the same native PostgreSQL 18 service from incident
+     2, still installed, still running, still winning the race for
+     `localhost:5432` on at least the first connection right after the
+     stack restarted. Rather than assume a fluke and retry, practice (2)
+     below was actually run: a direct `SELECT version(), current_database()`
+     against the same DSN, which came back as the real Docker Postgres
+     16.13 container - confirming the failure was a genuine transient race
+     during restart, not a wrong-server problem masquerading as one, before
+     trusting the retried migration. This is the first of the five
+     incidents in this entry where the written-down practice was the thing
+     that actually caught the problem in the moment, rather than the
+     problem being noticed afterward (loudly, per incidents 1-2, or
+     silently, per incidents 3-4) and the practice only being written down
+     in response.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -810,6 +863,16 @@ Each entry:
   failed to prevent a recurrence once already - treat it as something to
   actively check before running `pytest` after a live run, not as a
   practice that, once written down, can be trusted to happen on its own.
+  Point (2), by contrast, has now actually worked as intended once
+  (incident 5) - the practice isn't purely aspirational, it has a real,
+  demonstrated case of catching the exact failure it was written for
+  before anything downstream trusted a wrong result. Worth holding both
+  readings at once rather than either extreme: written-down discipline
+  doesn't enforce itself (point 4's own second failure proves that), but
+  it isn't inert either (point 2's first real save proves that) - the
+  difference so far looks like whether the check was still fresh/specific
+  enough in mind at the moment it mattered, not whether the practice
+  itself was sound.
   Not done now, but this is a procedural trap a document can only warn
   about, not enforce - if it recurs a fifth time, the actual fix is
   structural, not another written reminder: point the test suite at a
@@ -1191,3 +1254,365 @@ Each entry:
   B11 live smoke test (wiring, one manually-seeded fact) are both real
   proofs of what they each actually test; neither is a substitute for the
   other, and neither closes this one.
+
+---
+
+## Standing pattern: a check doesn't actually verify what it claims to - two shapes, "stale column trusted" and "fresh data fetched then ignored"
+
+- **Discovered:** four instances now, found across a B0-B11 catch-up code
+  review done just before B12 (per-commit review hadn't been happening, so
+  this was one pass over everything at once) and a follow-up audit of that
+  review's own "clean" verdicts.
+  1. **B11, shape A (stale column trusted)** —
+     `graph_service.find_contradictions_for_redteam`'s D7 evidence-coverage
+     check trusted `evidence_links.validity_status` verbatim, which is set
+     once when the link is created and never revisited as the backing
+     certificate ages past its own `valid_until` — exactly the drift the
+     expired-certification query sitting right next to it had just freshly
+     detected by comparing dates directly. Fixed in B11 itself by
+     excluding the flagged evidence row before checking for other valid
+     support paths, so the stale column's own bad answer can't feed back
+     into the same decision it was just shown to be wrong about.
+  2. **`tenders.state_version`, shape A (B7-B10, corrected pre-B12)** —
+     the freshness *check* (`graph_service.check_freshness`) was proven
+     correct against every *human* mutation (approve, override, select,
+     deselect), and that was read as the invariant holding end to end.
+     It didn't: `compliance_service.persist_compliance_decision`, the
+     automated pipeline's own write path, never bumped the counter at
+     all, so a compliance run could change real data while the graph
+     kept reporting itself fresh. See the entry above.
+  3. **`knowledge_import_batches` progress fields, shape A (B6, corrected
+     pre-B12)** — `total_items`/`completed_items`/`failed_items`/
+     `status` on the batch row had no writer anywhere outside their
+     creation-time defaults; every caller that read them (a progress UI,
+     a polling script) got a frozen `0/0/0` regardless of how much the
+     import had actually done. See the entry above.
+  4. **`evaluate_evidence_coverage`, shape B (D7, found post-B11 by an
+     independent audit, not by this file's own earlier search)** — the
+     inverse failure, and a distinct mechanism from the first three:
+     `queries.evidence_coverage_rows`'s own docstring says it fetches
+     `fact.valid_until` *specifically* so the decision function can use
+     it, and the Cypher query does return it fresh on every call - but
+     `evaluate_evidence_coverage`'s body never reads
+     `row["valid_until"]` at all, only `row["knowledge_item_status"]`.
+     A certification whose `valid_until` has passed but whose
+     `knowledge_item_status` hasn't separately been flipped to
+     `archived`/`expired` is scored `fact_is_valid=True`. Only safe in
+     practice because the one call path this project's own tests exercise
+     (`find_contradictions_for_redteam`, instance 1 above) happens to
+     call `find_expired_certification_contradictions` first, via a
+     completely separate direct date comparison - a standalone D7
+     coverage read would not independently catch this. Not fixed as of
+     this entry - see "Status" below.
+- **Why this is two shapes, not one, despite both being named under the
+  same pattern:** shape A (instances 1-3) is a column that's stale *at
+  rest* - nothing kept it current, so reading it later reads old news.
+  Shape B (instance 4) is the opposite mechanism - the fresh, live value
+  was fetched successfully, on every call, and then the code simply never
+  looked at it. Shape B is arguably worse to catch by inspection: a stale
+  column at least LOOKS plausible as "probably fine, nobody's touched it"
+  once you know to be suspicious of it, but a value that's fetched,
+  named, documented as needed, and then silently unused looks like
+  nothing is wrong at all - the query is "doing its job." The B0-B11
+  catch-up review's own fourth-instance search explicitly grepped for
+  shape A (reads of `validity_status`, `verified`, certification/employee
+  validity dates, pricing-finding `resolved`, claim `grounding_status`)
+  and missed instance 4 for exactly this reason - it was looking for the
+  wrong shape.
+- **What instances 1-3 (shape A) share, and how they were fixed:** a
+  value that looks like live state (a status column, a validity flag, a
+  version counter) but has exactly one writer, and that writer either
+  only covers *some* of the paths that should update it (instances 2) or
+  was never wired up as a writer at
+  all (instances 1 and 3). The bug is invisible until something reads
+  the value expecting it to be current — the same "confidently wrong, not
+  obviously broken" shape as the measurement-tooling and environment-trap
+  standing patterns already logged in this file, but this one is about
+  denormalized *product* data, not test/verification infrastructure.
+- **The fix applied to instances 2 and 3, and worth naming as the default
+  going forward:** don't chase every writer that would need to keep a
+  denormalized copy current — recompute the value from its real source
+  of truth at read time instead (instance 1's own fix already did this
+  implicitly; D7's `evaluate_evidence_coverage` was named here as the
+  pattern to copy — see the correction below for why that praise was
+  itself half wrong). A value with one real writer and N readers that
+  recompute it is
+  structurally safer than a value with N writers that all have to
+  remember to keep it in sync — the second shape is exactly how
+  instances 2 and 3 happened. This isn't universal (a counter like
+  `state_version` that many different mutations must increment can't be
+  "recomputed" the same way a batch's item-status rollup can — instance 2
+  was fixed by finding the missing writer, not by removing the column),
+  but wherever a column is a pure aggregate/derivation of other rows that
+  already carry the real signal, prefer computing it live over trusting a
+  stored copy.
+- **What this means for future blocks:** when a new invariant is proven
+  by demonstrating it against one call site (a live staleness demo, a
+  regression test), check whether that call site is representative of
+  *every* path that mutates the underlying data, not just the
+  easiest-to-drive one to test — instance 2's own root cause was that
+  B10's demo happened to use the one call site that already worked. A
+  green test against a human-driven action says nothing about an
+  automated pipeline that touches the same invariant through a different
+  code path, and vice versa.
+- **Correction this entry now carries (post-B11, found by an independent
+  audit, not this file's own search):** the B0-B11 catch-up review's own
+  "clean" verdict on `evaluate_evidence_coverage` — reported as one of the
+  four enforcement functions confirmed to "fail closed and run against
+  fresh data" — was wrong on this specific point, and that review's own
+  fourth-instance search (see instance 4 above) missed it because it
+  grepped for shape A (a stale value trusted), not shape B (a fresh value
+  fetched and silently ignored). Retracted explicitly here rather than
+  quietly widened, per that audit's own standard: a review that reports
+  clean incorrectly is worse than one that finds nothing.
+- **Status:** accepted as a standing pattern, not something instances 1-3's
+  fixes close out. Instance 4 (`evaluate_evidence_coverage`/`valid_until`)
+  is NOT fixed as of this entry - recorded here as a verification note
+  from a follow-up audit, scoped to getting the finding right before any
+  fix is attempted, per that audit's own "verify before fixing" ordering.
+- **Test:** each of instances 1-3's own fixes is covered at its own entry
+  above; this entry is the pattern note, not a test target itself. No test
+  yet for instance 4 - worth one asserting a `knowledge_item_status=
+  "active"` fact with a past `valid_until` is NOT scored `fact_is_valid`
+  once it's fixed.
+
+---
+
+## Independent audit (pre-B12): triage of everything not fixed in the B12-prep pass
+
+- **Discovered:** a full-repo independent audit run alongside the B0-B11
+  catch-up review, covering ground the review's own three parallel passes
+  didn't reach. Findings verified as real by code reading (some, like the
+  pricing off-by-one and the cross-tenant knowledge-selection hole, by a
+  live repro or a git-stash-verified failing test) before any fix was
+  attempted. Six were fixed in the pre-B12 pass itself, each with its own
+  entry elsewhere in this file: cross-tenant knowledge selection, the
+  idempotency-key resource-identity gap, `request_changes` silently
+  approving at all six gates, talent evidence never reaching proposal
+  grounding, a stale human approval surviving compliance reevaluation, and
+  corrected red-team findings never leaving the open set. Everything below
+  is the rest - real, not fixed now, each given an honest owning block
+  rather than left unassigned by default.
+- **Why triage instead of fixing all of it now:** the six fixed above were
+  chosen specifically because they'd make B12's own readiness report lie -
+  a "this bid is ready" verdict built on a silently-approved gate, a
+  phantom blocker, or a stale approval is worse than the report simply not
+  existing yet. Everything below doesn't corrupt B12's own output the same
+  direct way, and CLAUDE.md's own build-order discipline says fix the
+  block that owns the problem, not patch it as a side effect of whichever
+  block happens to be reviewing at the time.
+
+### B12 (Readiness and Governance) - readiness-adjacent, not yet corrupting
+
+- **Proposal regeneration retains obsolete claims and references.**
+  Regenerating a section replaces its content but only adds new claims and
+  junction links (`proposal_service.py`'s persistence, `db/repositories/
+  proposal.py`) - claims from a superseded draft stay projected, traced,
+  and red-teamable even though nothing in the current proposal references
+  them. B12's readiness report will need an honest picture of "what does
+  this proposal currently say," and a phantom claim from a prior draft is
+  exactly the kind of thing that could feed a wrong blocker or a wrong
+  all-clear.
+- **`workflow_runs.plan_version` stays zero while the LangGraph checkpoint's
+  own `plan_version` advances** (minor finding #4, `supervisor_node.py`).
+  Not corrupting today (nothing reads the Postgres column), but B12 will
+  likely want to know which planning epoch a run's readiness reflects, and
+  a column that never moves would silently look wrong from Postgres alone.
+- **Invalid gate decisions produce a bare 500, not 422** (minor finding
+  #5, `schemas/gates.py`'s `decision: str` has no enum validation,
+  `orchestration/gates.py:status_for_decision` raises `KeyError` on
+  anything outside `ALLOWED_DECISIONS`). Slightly more relevant post-B12-
+  prep now that a fourth decision value (`request_changes`) is real and
+  load-bearing - worth a proper `Literal`/422 the same pass that builds
+  B12's own gate-decision UI contract.
+- **Open question, not yet a bug: should `red_team_node` failures be
+  tracked as a degraded stage, like proposal drafting and graph
+  projection are?** Found while checking finding #16's CodeRabbit
+  follow-up (whether `_build_llm_client()` sits outside a try block the
+  same way it did in `proposal_drafting_node` before that fix).
+  `red_team_node` builds its client and calls `run_red_team` with no
+  try/except at all - unlike `proposal_drafting_node`/`project_graph_node`
+  (swallow, record `degraded_stages`, let the run reach `final_gate`
+  anyway) and unlike `compliance_analysis_node`/`talent_analysis_node`/
+  `commercial_analysis_node` (their own `workflow_tasks` row, marked
+  failed, exception re-raised). An uncaught exception here propagates all
+  the way to `run_workflow`'s own top-level handler (added this pass),
+  which marks the whole run `failed` - a real, non-silent outcome, just a
+  different one: the run stops outright rather than reaching `final_gate`
+  in a visibly-degraded state the way a failed drafting/projection pass
+  now does. Not clearly wrong - red-team failing outright arguably
+  *should* be more serious than drafting or projection failing, since
+  red-team is meant to be the thing that catches problems before
+  `final_gate`, not one more thing a human reviews around - but this
+  wasn't a deliberate design decision, just where the code already stood
+  when the question was noticed. **Owner: B12**, since `degraded_stages`
+  only exists for B12's own future readiness report to read, and deciding
+  whether a third pattern belongs alongside "swallow + surface" and "task-
+  level failure" is a call B12 should make deliberately, not inherit by
+  default from whichever shape B11 happened to leave it in.
+
+### B13 (Functional UI) - already the named home for adjacent import-review work
+
+- **Knowledge imports are neither retryable nor accurately observable**
+  (major finding #10). The "not accurately observable" half is fixed as
+  of this pass (`ImportBatchProgress` computes live from items - see the
+  standing-pattern entry above). Still open: a partial retry collides
+  with `UNIQUE(batch_id, source_ref)` before resuming, and a failure
+  before any item row is created leaves no terminal state at all. Same
+  owning block this file already named for the sibling issue:
+  `[B6, re-confirmed B9] knowledge_import_batches.status never advances
+  past 'queued'` pointed at B6/B13 for exactly this "review queue" screen.
+- **Required knowledge-import inputs are broken** (major finding #11):
+  employee-master CSV is spec'd but rejected by upload validation with no
+  parser for it; native Excel date/datetime cells become strings
+  `date.fromisoformat()` can't parse; a certification row with a blank
+  employee cell creates an approved, holderless certification instead of
+  routing to review. All three are pure-function bugs (upload validation,
+  the xlsx date parser, the certification importer) - no live stack needed
+  to fix them, just not done in this pass. B13 is the closest fit since
+  it's the block that builds the screens these imports actually feed.
+- **Knowledge selection lacks the required `Idempotency-Key`** (minor
+  finding #1, `PUT /tenders/{tender_id}/knowledge-selections/
+  {knowledge_item_id}`). Worth closing whenever B13 builds the selection
+  UI's own request contract.
+
+### B15 (Security and Prompt-Injection Hardening) - already named by the user for these two
+
+- **Upload limits are checked after an unbounded read** (major finding
+  #20): `await file.read()` (no size argument) runs before
+  `_validate_upload`'s own size check, in both `routes/documents.py` and
+  `routes/knowledge.py` - an authenticated user can force the API to
+  materialize an arbitrarily large upload in memory before the 50MB limit
+  is ever consulted.
+- **Malformed LLM output can leak confidential text into logs** (major
+  finding #21): pydantic `ValidationError`'s own `input_value` field
+  (which can carry source-derived, potentially confidential text) reaches
+  `logger.exception` after a repair retry fails, in both
+  `agents/llm/gemini_adapter.py` and `agents/llm/client.py`.
+
+### B16/B17 (reliability, crash/restart/load, observability) - concurrency and atomicity gaps
+
+- **`bump_state_version` is read-increment-flush with no row lock**
+  (part of major finding #2). Two concurrent transactions can both read
+  `state_version=N` and independently write `N+1`, losing an increment.
+  The *missing call sites* half of this finding was fixed for the
+  automated compliance-origination path this pass (see the state_version
+  entry above); this is the separate, still-open *race* half - real under
+  concurrent writers, not yet reproduced live (would need two genuinely
+  concurrent transactions, not just code reading, to confirm the lost
+  update actually happens under this project's real connection pool
+  behavior).
+- **Idempotency-record acquisition is select-then-insert** (major finding
+  #4, `idempotency.py`): concurrent requests with the same key can both
+  observe "no existing record" and both proceed, or race into the unique
+  constraint. `expires_at` is stored but never consulted by any read path.
+- **Tender creation and idempotency-record completion are two separate
+  commits** (major finding #7): a crash between them lets a retry create
+  a second tender. Real for `create_tender` specifically; some other
+  idempotent operations have their own domain-level dedup (fingerprints)
+  that would mask the same underlying gap.
+- **A failed same-version graph reprojection can leave a damaged graph
+  reading as fresh** (major finding #8): Neo4j writes auto-commit
+  per-statement in this driver usage; if an optional reprojection at the
+  *same* `state_version` partially rewrites the graph and then fails, the
+  prior completed run's row is what `get_latest_completed_run` still
+  returns, but the graph underneath it may now be the partially-rewritten
+  one, not the one that run originally produced.
+- **Re-ingestion destroys stable chunk provenance** (major finding #9,
+  `jobs/ingestion.py`'s delete-then-recreate of `document_chunks`):
+  knowledge-item/requirement provenance pointing at the old chunk ids
+  goes through `ON DELETE SET NULL`, and a requirement still referencing
+  a chunk can make the delete step itself fail. Concurrent workers
+  re-ingesting the same document is a real path (not hypothetical) via
+  the ordinary upload flow.
+- **Workflow retry controls are inert** (major finding #17):
+  `retry_budget_remaining`/`max_attempts` exist in `TenderState`/
+  `WorkflowTask` but nothing reads or decrements either, and nothing
+  requeues a failed task - one transient provider error fails a task
+  outright with no retry.
+- **Outbox events are not claimed atomically** (major finding #22,
+  `db/repositories/outbox.py`/`outbox_dispatcher.py`): select-then-enqueue
+  with no `FOR UPDATE SKIP LOCKED` - two dispatcher instances could both
+  claim the same pending event. Lower real-world impact if the deployment
+  only ever runs one dispatcher, but nothing in the code enforces that
+  assumption.
+- **Cancellation-during-execution race, remaining half** (major finding
+  #14): this pass fixed the half where `run_workflow`/`resume_workflow`'s
+  own new exception handler could overwrite a real `cancelled` status with
+  `failed` (re-checks `is_cancelled()` before writing now). Still open: an
+  in-flight node's own `sync_run_status` call can itself race a
+  concurrent cancellation and write a non-terminal status over
+  `cancelled` - needs either a compare-and-swap on `workflow_runs.status`
+  or a cancellation check immediately before every such write, not
+  reproduced live here.
+- **CI, schema verification, worker image, and Compose readiness** (major
+  findings #23/#24/#25 - CI provisions no service stack but runs all
+  tests; integration tests build schema via `Base.metadata.create_all`,
+  which can pass even with broken Alembic migrations, and the existing
+  `scripts/verify_migrations.py` isn't run in CI; the worker image doesn't
+  bake in the embedding model, so a fresh/offline deployment's first
+  ingestion fails downloading it from Hugging Face; Compose has no
+  migration/init service, and API readiness checks `SELECT 1` and MinIO's
+  unauthenticated liveness endpoint rather than real schema/bucket
+  access). Explicitly the user's own call: these are B16/B17's block, not
+  pre-work - untouched here on purpose, not overlooked.
+- **Compliance's state_version bump is unconditional even on an identical
+  semantic retry** (minor finding #6): `persist_compliance_decision`
+  bumps once per call regardless of whether `status`/evidence actually
+  changed, producing a false-stale graph-freshness signal on a no-op
+  re-run. Same root shape as the human_approved fix this pass made
+  (distinguish "the decision materially changed" from "the same decision
+  was recomputed"), just for `state_version` instead of `human_approved` -
+  worth revisiting together with the read-increment-flush race above,
+  since both touch the same function.
+
+### No clean owning block named yet - flagged honestly rather than force-fit
+
+- **Evidence links accumulate rather than being pruned on reevaluation**
+  (part of major finding #6): a compliance reevaluation adds new
+  `evidence_links`/`compliance_evidence` rows via fingerprinted upsert but
+  never removes the old ones a prior evaluation attached - superseded
+  evidence stays linked to the compliance entry indefinitely. Doesn't
+  corrupt correctness the way a stale `human_approved` did (D7's coverage
+  check and this pass's own reevaluation fix both operate on current
+  status/evidence rows), but it's a real data-hygiene gap with no
+  natural home in the current B12-B17 block list - flagging for a
+  product/build-order decision rather than assigning it to a block that
+  doesn't actually own it.
+- **LLM-inferred `WORKED_ON`/`DEMONSTRATES` relationships carry no
+  `source_chunk_id`** (major finding #12, `knowledge_service.py`'s
+  relationship persistence, contrary to this project's own provenance
+  invariant). B6's own scope boundary already accepted a related gap
+  (normalized-name-only dedup, no fuzzy matching) as deliberate; this one
+  wasn't - it looks like an oversight, not a stated boundary, but no
+  future block currently owns "revisit B6 knowledge-relationship
+  provenance."
+- **`valid_only=True` ignores knowledge-item `status`** (minor finding
+  #2, `agents/knowledge/retrieval.py`): an archived/expired-status item
+  with no `valid_until` date set stays eligible for retrieval even when
+  `valid_only=True` is requested.
+- **DOCX headings are omitted from capability/relationship extraction
+  prompts** (minor finding #3, `agents/knowledge/extract.py`/
+  `relationships.py`): a project or capability name that appears only in
+  a heading, never in body text, is invisible to the extraction LLM.
+- **Red-team's adversarial critique step receives no linked evidence
+  excerpts** (minor finding #7, `agents/redteam/critique.py`), despite
+  its own stated purpose including evidence-overstatement detection.
+  Moderate uncertainty on real impact - some overstatement is detectable
+  from claim text and requirement text alone, without evidence context -
+  but the gap between what the critic advertises and what it's actually
+  given is real.
+- **Every "no clean owning block" item above shares one root cause worth
+  naming directly:** each is a genuine post-B_x completeness gap in a
+  block that's already closed, with no later block in the current J-part
+  list whose own stop-gate depends on it. Recording them here rather than
+  inventing a plausible-sounding owner is deliberate - a home that isn't
+  real is worse than an honest "unassigned," the same standard this
+  file's evaluate_evidence_coverage correction above was held to.
+- **Status:** all items in this entry are open, none fixed here. This
+  entry is the record of the triage decision itself, not a substitute for
+  each item eventually getting its own resolved-in-B_xx update the way
+  every other entry in this file does once actually addressed.
+- **Test:** none - this is a triage record, not a behavior. Each item's
+  eventual fix should get its own test at the point it's actually done,
+  matching this file's own convention everywhere else.
