@@ -17,6 +17,7 @@ from tenderos_backend.agents.knowledge.relationships import (
     WorkedOnCandidate,
 )
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
+from tenderos_backend.core.enums import Role
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.document import Document, DocumentChunk
 from tenderos_backend.db.models.knowledge import (
@@ -35,6 +36,7 @@ from tenderos_backend.domain.events.outbox_events import (
     knowledge_document_uploaded_idempotency_key,
     knowledge_document_uploaded_payload,
 )
+from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 from tenderos_backend.ingestion.chunk import normalize_text
 from tenderos_backend.ingestion.embed import embed_texts
 
@@ -1036,7 +1038,6 @@ async def set_knowledge_selection(
     knowledge_item_id: uuid.UUID,
     selected: bool,
     actor_user_id: uuid.UUID,
-    organization_id: uuid.UUID,
     change_reason: str | None = None,
 ) -> TenderKnowledgeSelection:
     """G6's PUT /tenders/{tender_id}/knowledge-selections/{knowledge_item_id}.
@@ -1053,27 +1054,28 @@ async def set_knowledge_selection(
     mutation types already are. See KNOWN_LIMITATIONS.md for which of the
     six still have no bump call site.
 
-    `organization_id` is the org the CALLER was actually authorized for
-    (resolved and permission-checked by the route, independently of this
-    function) - not derived from tender_id/knowledge_item_id here. The
-    original cross-org fix only compared the two resources to each other;
-    a caller legitimately authorized against one org could still target a
-    tender_id/knowledge_item_id pair that both happen to belong to a
-    DIFFERENT org than the one the route actually verified, and that would
-    have passed the old guard silently. Checking tender.organization_id
-    against this explicit parameter closes that regardless of how the
-    route resolved it, rather than trusting the route's resolution path to
-    always agree with what this function would derive on its own.
+    Verifies actor_user_id's own membership+role against tender_id's real
+    organization_id, fetched right here - it does not take organization_id
+    as a parameter and trust a caller to have derived it correctly. An
+    earlier version of this check accepted organization_id as an argument
+    and compared it against tender.organization_id; every caller (the
+    route included) only ever had one way to produce that argument -
+    re-deriving it from this same tender_id - so the comparison was always
+    true and caught nothing. Checking actor_user_id's actual membership
+    instead means this function stays correct regardless of what a future
+    caller (a different route, a worker, admin tooling) passes in, rather
+    than depending on every future caller re-implementing the route's own
+    authorization resolution correctly.
     """
     async with UnitOfWork() as uow:
         tender = await uow.tenders.get(tender_id)
         if tender is None:
             raise TenderNotFoundError()
-        if tender.organization_id != organization_id:
+        membership = await uow.memberships.get(tender.organization_id, actor_user_id)
+        if membership is None or Role(membership.role) not in ACTION_ROLES["manage_organization_knowledge"]:
             logger.warning(
-                "cross-organization knowledge selection attempt: actor=%s "
-                "authorized_org=%s tender=%s (org=%s)",
-                actor_user_id, organization_id, tender_id, tender.organization_id,
+                "unauthorized knowledge selection attempt: actor=%s tender=%s (org=%s)",
+                actor_user_id, tender_id, tender.organization_id,
             )
             raise CrossOrganizationTenderError()
         knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)

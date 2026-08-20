@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import NamedTuple
 from uuid import UUID
 
 import jwt
@@ -372,6 +373,45 @@ def require_permission(action: str) -> Callable[..., Awaitable[User]]:
         organization_id = await _resolve_organization_id(request)
         await _check_permission(organization_id, current_user, action)
         return current_user
+
+    return _dependency
+
+
+class AuthorizedActor(NamedTuple):
+    """current_user plus the organization_id require_permission_with_org
+    already resolved (from the target resource in the path) and verified
+    (current_user has a permitted membership in it). That organization_id
+    is still the RESOURCE's org, not some independently-sourced "caller's
+    home org" - _resolve_organization_id has no other way to determine
+    scope for a path keyed on a single resource id. What actually protects
+    the route is _check_permission rejecting an unpermitted caller before
+    the route body runs, same as plain require_permission. This exists so
+    a route can hand that already-resolved value to its service function
+    without a second, redundant fetch of the same resource - not so the
+    service can re-verify anything by comparing against it (a comparison
+    of a value against itself proves nothing, which is the exact defect
+    this was added to stop reproducing - see knowledge_service.
+    set_knowledge_selection / talent_service.set_candidate_selection).
+    """
+
+    user: User
+    organization_id: UUID
+
+
+def require_permission_with_org(action: str) -> Callable[..., Awaitable[AuthorizedActor]]:
+    """Same resolve-and-check as require_permission(action), for routes
+    whose caller wants the already-resolved organization_id itself (e.g.
+    to log it) instead of re-deriving it from the target resource a second
+    time inside the route. Not a substitute for a service function
+    verifying its own caller - see AuthorizedActor's docstring.
+    """
+
+    async def _dependency(
+        request: Request, current_user: User = Depends(get_current_user)
+    ) -> AuthorizedActor:
+        organization_id = await _resolve_organization_id(request)
+        await _check_permission(organization_id, current_user, action)
+        return AuthorizedActor(user=current_user, organization_id=organization_id)
 
     return _dependency
 
