@@ -403,12 +403,16 @@ async def set_knowledge_selection(
     dependencies not built yet in B6). This persists the selection row
     itself, the piece B6 owns.
 
-    require_permission(_MANAGE) already resolved+verified an organization_id
-    internally (via tender_id, same as every route keyed on a single
-    resource id), but only returns current_user, not that value - re-fetched
-    here so the service function gets it as an explicit parameter rather
-    than silently re-deriving it from tender_id a second time and trusting
-    that to agree with what was actually authorized.
+    Fetches tender only for this route's own 404 - set_knowledge_selection
+    no longer takes organization_id as a parameter at all (an earlier
+    version of both this route and that function did; removed because
+    every caller only ever had one way to produce that value - re-deriving
+    it from this same tender_id - making the comparison it fed vacuous).
+    The function verifies actor_user_id's own membership internally instead
+    - see its own docstring. This route call previously still passed the
+    old 6-argument shape after that signature changed underneath it (a real
+    bug: the route raised TypeError on every call, caught only because no
+    test in this codebase exercises the route layer directly) - fixed here.
     """
     tender = await tender_service.get_tender(tender_id)
     if tender is None:
@@ -420,7 +424,6 @@ async def set_knowledge_selection(
             knowledge_item_id,
             body.selected,
             current_user.id,
-            tender.organization_id,
             body.change_reason,
         )
     except (

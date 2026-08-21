@@ -548,3 +548,55 @@ async def test_state_version_bump_during_computation_triggers_a_retry(monkeypatc
         "against fresh state rather than persisting under a stale version"
     )
     assert call_count["n"] >= 2, "the bump must have actually been triggered mid-computation"
+
+
+# ----------------------------------------------------------------------
+# CodeRabbit review: blockers 1 and 2 used to issue one query PER
+# requirement/compliance entry - correctness-equivalent to the batched
+# version either way, invisible on this file's other small fixtures, but
+# real O(N) cost on a tender with hundreds of real requirements, paid
+# twice per check (the manual generate route and the orchestration node
+# both call evaluate_readiness). This seeds enough requirements that the
+# difference is actually measurable, not just "the same blockers come out
+# the other end" (which would pass against the old, unbatched code too).
+# ----------------------------------------------------------------------
+
+
+async def test_batched_compliance_and_evidence_queries_scale_with_requests_not_requirements():
+    from sqlalchemy import event
+
+    from tenderos_backend.db.session import engine
+
+    org_id, tender_id = await _org_and_tender("BatchedQueries")
+    chunk_id = await _chunk(tender_id)
+
+    requirement_count = 60
+    for i in range(requirement_count):
+        requirement_id = await _requirement(tender_id, chunk_id, mandatory=True)
+        employee_id = await _employee(org_id, f"Evidence Source {i}")
+        evidence_id = await _evidence_link(tender_id, employee_id, valid=True)
+        await _compliance_entry(requirement_id, status="fully_compliant", evidence_ids=[evidence_id])
+    await _project(tender_id)
+
+    query_count = {"n": 0}
+
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        query_count["n"] += 1
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        result = await readiness_service.evaluate_readiness(tender_id)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _count)
+
+    assert result.ready is True
+    # If blockers 1 and 2 still issued one query per requirement/entry,
+    # this alone would be >= 2 * requirement_count (120) queries just for
+    # those two checks, on top of every other blocker's own queries. A
+    # small, roughly constant count regardless of requirement_count is the
+    # actual proof the batching fix works.
+    assert query_count["n"] < 30, (
+        f"expected a small, roughly constant query count regardless of "
+        f"requirement count, got {query_count['n']} for {requirement_count} requirements - "
+        "blockers 1 and/or 2 may have regressed back to one query per item"
+    )

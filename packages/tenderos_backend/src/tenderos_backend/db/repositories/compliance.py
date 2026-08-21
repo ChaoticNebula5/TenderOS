@@ -104,6 +104,25 @@ class ComplianceRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_compliance_entries_by_requirement_ids(
+        self, requirement_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, ComplianceEntry]:
+        # readiness_service.py's own blocker 1 (unresolved mandatory
+        # requirement) used to call get_compliance_entry_by_requirement
+        # once per requirement in a loop - O(requirements) sequential
+        # round-trips, invisible on a small synthetic tender but real cost
+        # on hundreds of real requirements, and paid twice per check since
+        # evaluate_readiness runs from both the manual generate route and
+        # the orchestration node. One IN-list query, keyed by
+        # requirement_id (UNIQUE on this table, so the mapping is 1:1)
+        # for the caller to look up in memory instead.
+        if not requirement_ids:
+            return {}
+        result = await self._session.execute(
+            select(ComplianceEntry).where(ComplianceEntry.requirement_id.in_(requirement_ids))
+        )
+        return {entry.requirement_id: entry for entry in result.scalars().all()}
+
     async def list_compliance_entries_for_tender(self, tender_id: uuid.UUID) -> list[ComplianceEntry]:
         # compliance_entries has no tender_id column of its own (Part C) -
         # every entry is reached through its one-to-one requirement, so
@@ -162,6 +181,30 @@ class ComplianceRepository:
             .where(ComplianceEvidence.compliance_entry_id == compliance_entry_id)
         )
         return list(result.scalars().all())
+
+    async def list_evidence_for_compliance_entries(
+        self, compliance_entry_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[EvidenceLink]]:
+        # readiness_service.py's own blocker 2 (compliant decision without
+        # valid evidence) - same "one query instead of one per item" fix
+        # as list_compliance_entries_by_requirement_ids above, for the
+        # sibling loop. Selects the junction's own compliance_entry_id
+        # alongside EvidenceLink (unlike the single-entry method above,
+        # which doesn't need it) so results can be grouped back in memory -
+        # every requested id is present in the returned dict, even with an
+        # empty list, so a caller doesn't need `.get(id, [])` at every
+        # call site to tell "no evidence" from "id not in the batch."
+        result: dict[uuid.UUID, list[EvidenceLink]] = {cid: [] for cid in compliance_entry_ids}
+        if not compliance_entry_ids:
+            return result
+        rows = await self._session.execute(
+            select(ComplianceEvidence.compliance_entry_id, EvidenceLink)
+            .join(EvidenceLink, EvidenceLink.id == ComplianceEvidence.evidence_link_id)
+            .where(ComplianceEvidence.compliance_entry_id.in_(compliance_entry_ids))
+        )
+        for compliance_entry_id, evidence_link in rows.all():
+            result[compliance_entry_id].append(evidence_link)
+        return result
 
     async def unlink_all_evidence(self, compliance_entry_id: uuid.UUID) -> None:
         # Used when a re-evaluation (e.g. an on-demand re-run after the

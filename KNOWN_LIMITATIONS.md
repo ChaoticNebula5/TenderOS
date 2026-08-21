@@ -814,6 +814,38 @@ Each entry:
      problem being noticed afterward (loudly, per incidents 1-2, or
      silently, per incidents 3-4) and the practice only being written down
      in response.
+  6. **Container running and healthy, but its host port publish silently
+     missing - a new mechanism, not a repeat of incident 2/5's native-
+     process race.** During B12's CodeRabbit-fixes pass, `docker compose
+     up -d` first failed outright (`port is already allocated` - an
+     unrelated project's own Postgres container, not this project's
+     native-service history, had grabbed 5432 first) - the very port
+     conflict incidents 2/5 already describe, but this time from a
+     *different* source. Stopping that container and retrying brought the
+     stack up "Healthy," but every subsequent host-side connection (`uv
+     run pytest`, a direct `asyncpg.connect`) failed - first with
+     `InvalidPasswordError` (a second, still-unidentified process was
+     transiently answering on `[::1]:5432` at that exact moment), then,
+     once that process was also stopped, with a flat `ConnectionRefusedError`
+     even though `docker ps`/`docker exec ... psql` both showed the real
+     container running and internally healthy. `docker port
+     tenderos-postgres-1` was the diagnostic that actually explained it -
+     empty output, no `0.0.0.0:5432->5432/tcp` line at all, meaning the
+     container's own host port publish had never been (re-)applied,
+     apparently a side effect of the FIRST failed `up` attempt leaving the
+     container in a state `docker compose`'s own idempotency logic then
+     treated as "already correctly up" on the retry, skipping the publish
+     step. `docker compose up -d --force-recreate postgres` (data
+     preserved - a named volume, not tied to container lifecycle) fixed
+     it; `/health/ready` and a real host-side connection both confirmed
+     before trusting the next test run. Same "caught in the moment via a
+     direct check, not discovered afterward" character as incident 5, but
+     the check that caught THIS one was `docker port`, not a SQL identity
+     query - worth knowing as its own diagnostic for this specific
+     symptom (container healthy, host connection refused) the next time
+     it appears, since incident 5's own SQL-identity check answers a
+     different question (which server answered) than this one (did a
+     server answer at all).
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -824,12 +856,15 @@ Each entry:
   the thing actually being verified. The first four are invisible to a
   result that merely "looks fine" - the first two produce a wrong answer
   that looks like a right one; the third and fourth produce no answer at
-  all where a real one used to be, without saying so. The fifth is the
-  outlier in exactly this dimension, not just in outcome: it was caught
-  in the moment, before anything downstream trusted a wrong result,
-  precisely because the documented practice was actually run rather than
-  skipped - see incident 5 and the "Status" section's own note on point
-  (2) below.
+  all where a real one used to be, without saying so. The fifth and sixth
+  are the outliers in exactly this dimension, not just in outcome: both
+  were caught in the moment, before anything downstream trusted a wrong
+  result, precisely because a direct check was actually run rather than
+  assumed away - see incidents 5/6 and the "Status" section's own note on
+  point (2) below. Two different checks caught them (a SQL identity query
+  for 5, `docker port` for 6), which is itself worth noting - "verify
+  before trusting" is the transferable practice, not any one specific
+  command.
 - **Risk - why this matters going forward, not just as a postmortem:** B10
   through B17 are all worker/graph-heavy blocks (graph projection,
   red-team, readiness, event-driven reanalysis) that will keep needing
@@ -885,7 +920,7 @@ Each entry:
   from whatever a live run or manual script uses), so `_clean_tables`
   physically cannot reach live-run data regardless of what anyone
   remembers to check.
-- **Test:** none automated (all five incidents are host-machine/Docker-
+- **Test:** none automated (all six incidents are host-machine/Docker-
   daemon/test-fixture state, not application code) - the incident
   write-up above and the discipline it now dictates are the mitigation.
 
@@ -1734,57 +1769,84 @@ Each entry:
 - **Discovered:** `knowledge_service.set_knowledge_selection` (CodeRabbit
   round 2 of the pre-B12 fixes pass), then confirmed as a repeating shape
   by an explicit audit of every other route with the same two-resource
-  structure.
-  1. **`set_knowledge_selection` (fixed).** The original cross-org fix
-     (this file's "a reader trusts a column its writer never keeps
-     current" era) compared `knowledge_item.organization_id` to
-     `tender.organization_id` - the two RESOURCES to each other - but
-     never to the org the CALLER was actually authorized for. A caller
-     legitimately authorized against org B (real membership, real role)
-     who happened to know a `tender_id`/`knowledge_item_id` pair that both
-     belonged to a DIFFERENT org C would still pass the old guard (the two
-     resources agreed with each other) despite never being authorized for
-     org C. Fixed by adding `organization_id` as an explicit parameter,
-     supplied by the route from an independent lookup, checked against
-     `tender.organization_id` before anything else runs.
-  2. **`set_candidate_selection` (found by audit, then fixed the same
-     way).** Exact same shape: `role_id` resolves the authorized org via
-     `require_permission`, but the request body's
-     `employee_knowledge_item_id` was only ever used to look up a
-     `role_matches` row by `(role_requirement_id, employee_knowledge_item_id)`
-     - never checked against the authorized org at all. **Not exploitable
-     through the one write path that exists today** -
-     `role_matches` rows are only ever created by `evaluate_role_match`,
-     itself scoped to `find_candidate_pool(organization_id)` (same-org
-     candidates only), so a cross-org row can't exist in the DB yet and a
-     mismatched request would just 404 via `RoleMatchNotFoundError`. But
-     that safety lived entirely in a DIFFERENT function's own scoping,
-     two layers away - `set_candidate_selection` itself enforced nothing.
-     B12-B17 include admin tooling and bulk operations; any second write
-     path into `role_matches` would have made this live with no change
-     needed to this function at all - the vulnerability was already
-     written, only the input path was missing. Fixed the same way as
-     instance 1: explicit `organization_id` parameter, independently
-     resolved by the route, checked before the role_match lookup.
-- **Why this is worth naming as its own pattern, not just two one-off
-  bugs:** both guards *looked* complete - each compared its own two
-  resources and rejected a mismatch. Neither checked the one thing that
-  actually matters for authorization: does either resource belong to the
-  org this specific request was verified against. A route's
-  `require_permission` dependency resolves organization_id from ONE path
-  resource and stops there; every domain-service function that also
-  touches a SECOND resource id (from the path or the body) inherits that
-  gap silently unless it explicitly re-verifies. The general shape to
-  watch for in future blocks: a service function taking two or more
-  resource ids where only one was ever authorized by the calling route.
-- **Audit performed, three other candidates checked and found clean (not
-  hypothetical - each traced into its actual enforcement mechanism):**
+  structure. **Rewritten during B12's own CodeRabbit-review pass** after
+  discovering the first fix, below, had shipped incompletely: instance 1
+  was genuinely resolved; instance 2 was not, despite this entry
+  previously saying it was.
+  1. **`set_knowledge_selection` - genuinely resolved.** The original bug
+     compared `knowledge_item.organization_id` to `tender.organization_id`
+     - the two RESOURCES to each other - but never to the org the CALLER
+     was actually authorized for. A caller legitimately authorized against
+     org B who happened to know a `tender_id`/`knowledge_item_id` pair
+     that both belonged to a DIFFERENT org C would pass the old guard (the
+     two resources agreed with each other) despite never being authorized
+     for org C. **First fix attempt** added `organization_id` as an
+     explicit parameter, supplied by the route from an independent lookup.
+     **That attempt was itself defective** (see instance 2's own history
+     below for why) and was replaced before shipping: the function now
+     takes no `organization_id` parameter at all. It fetches `tender_id`'s
+     own tender, then calls `uow.memberships.get(tender.organization_id,
+     actor_user_id)` and checks the membership's role against
+     `ACTION_ROLES["manage_organization_knowledge"]` - deriving and
+     verifying the caller's real authorization internally, from
+     `actor_user_id` and `tender_id` alone, trusting no argument a caller
+     might supply.
+  2. **`set_candidate_selection` - NOT resolved by the fix this entry
+     previously described; genuinely resolved now, during B12.** Audited
+     as "found and fixed the same way" as instance 1's *first* fix attempt
+     - meaning it inherited that attempt's own defect. `routes/talent.py`'s
+     route resolves `organization_id` from `role_id` (via
+     `require_permission`), then separately fetches `tender = get_tender(
+     role.tender_id)` - using that SAME `role_id` - and passed `tender.
+     organization_id` into `set_candidate_selection`, which re-fetched the
+     SAME role/tender and compared `organization_id` against itself. The
+     comparison logic was correct in isolation (the function's own unit
+     test injected a genuinely mismatched value directly and it was
+     correctly rejected) - which is exactly why this looked fixed and
+     nobody caught it: **the test proved the comparison works, not that
+     any real caller could ever produce a mismatch for it to catch.** The
+     only real caller (the route) derives both sides of the comparison
+     from the identical resource, so the check could never fail in
+     practice - functionally identical to not checking at all, the same
+     conclusion `AuthorizedActor`'s own docstring in `dependencies.py`
+     reaches by name. Found during B12 while updating this very entry to
+     reflect instance 1's real fix - re-reading `set_candidate_selection`'s
+     own docstring (which claimed parity with `set_knowledge_selection`'s
+     "identical parameter," no longer true once that parameter was
+     removed) surfaced the mismatch. Not exploitable through the one write
+     path that exists today (`evaluate_role_match` only ever creates
+     same-org role matches via `find_candidate_pool(organization_id)`) -
+     the same non-exploitability caveat this entry has carried since it
+     was first written, unchanged by any of this, because nothing about
+     *why* it's currently safe ever depended on the guard actually working.
+     **Fixed now, the same way as instance 1's real fix:** no
+     `organization_id` parameter; derives `role_requirement_id`'s own
+     tender, checks `actor_user_id`'s real membership against
+     `ACTION_ROLES["select_resource"]`.
+- **The transferable lesson, not the individual bug:** a fix can look
+  complete because its comparison LOGIC is correct, while the thing that
+  actually made the original bug safe-to-exploit - the caller's inability
+  to ever supply a mismatched value - remains completely unaddressed. A
+  unit test that injects an argument directly, bypassing the only real
+  caller, will happily confirm the logic works and say nothing about
+  whether that logic is ever reachable. The generic version: a route
+  resolves `organization_id` from ONE path resource and stops there
+  (`require_permission`'s own contract); handing that value to a service
+  function as a security comparison, when the function derives its OWN
+  comparison target from that SAME resource, produces a check that cannot
+  ever fail - regardless of how correct the comparison itself is. The only
+  fix that actually closes this is deriving and verifying the caller's
+  real authorization (membership + role) from data the CALLER doesn't
+  control, inside the function itself - never trusting a parameter for
+  the comparison, no matter how independently it looks resolved upstream.
+- **Audit performed twice now - once pre-B12 (three candidates, all
+  genuinely clean), once during B12 specifically for this pattern
+  (exhaustive over every `organization_id: uuid.UUID` parameter in
+  `domain/services/`, no third live instance found):**
   - `POST /gates/{gate_id}/decision`'s `target_updates: list[dict]` -
     confirmed by full-repo grep to have zero write paths anywhere in the
-    codebase (see the dedicated entry above, re-verified in this same
-    audit) - nothing to exploit because nothing reads it yet. Worth
-    knowing for B12 specifically: this means wiring it up is greenfield,
-    not a modification to something partially built.
+    codebase at the time (now resolved for real in B12 - see the
+    dedicated `target_updates` entry above).
   - `POST /tenders/{tender_id}/graph/impact`'s `body.knowledge_item_id` -
     not a service-level gap: `graph_projection/queries.py`'s own Cypher
     requires `MATCH (fact)-[:USED_IN]->(:Tender {id: $tenderId})` before
@@ -1797,20 +1859,86 @@ Each entry:
     but `requirement_service.merge_requirements` independently collects
     every id's own `tender_id` and raises `CrossTenderOperationError`
     unless exactly one tender is represented across ALL of them - a real,
-    explicit, whole-list check already in place, not an assumption.
-- **Status:** resolved for instances 1 and 2 (both now take an explicit,
-  independently-resolved `organization_id` and reject a mismatch with the
-  same generic not-found response the missing-resource case already
-  produces, closing the enumeration difference the same way for both).
-  The three audited candidates are accepted as verified-clean, not open
-  items.
+    explicit, whole-list check, not a self-comparison.
+  - B12's own exhaustive sweep: every function across `domain/services/`
+    taking `organization_id: uuid.UUID` as an explicit parameter was
+    checked individually. `document_service.create_document` and
+    `tender_service.create_tender` are plain creates (no pre-existing
+    resource to compare against - the parameter says which org a NEW row
+    belongs to, nothing is verified against it). `gate_service.
+    record_decision`, `requirement_service.patch_requirement`/
+    `merge_requirements`/`split_requirement`, `workflow_service.
+    create_workflow_run`/`cancel_workflow_run` all use it ONLY for
+    `audit.create`'s own `organization_id=` attribution field, never in a
+    security comparison. `membership_service.add_membership` establishes a
+    NEW relationship (no existing resource to compare against). None of
+    these share the vacuous shape - `set_candidate_selection` really was
+    the only other live instance.
+- **Status:** resolved for both instances, for real, as of B12.
+  `set_knowledge_selection` was already correctly fixed before B12 started
+  (this entry's own prior claim about it was accurate); `set_candidate_
+  selection` was not, and is fixed now, the identical way.
 - **Test:** `test_set_knowledge_selection_rejects_a_tender_outside_the_
   authorized_organization` (`tests/integration/test_knowledge_service.py`)
   and `test_set_candidate_selection_rejects_a_role_outside_the_authorized_
-  organization` (`tests/integration/test_talent_service.py`), same shape:
-  construct two orgs, authorize against one, attempt the write against
-  the other, assert the specific "not authorized" exception and that
-  nothing persisted.
+  organization` (`tests/integration/test_talent_service.py`) - both
+  rewritten during this same B12 pass to use a REAL registered actor with
+  real membership in one org, attempting the write against a role/
+  knowledge-item genuinely belonging to a different org, going through
+  the function's own real membership derivation rather than injecting an
+  argument no real caller could ever produce. The old
+  `set_candidate_selection` test (a bare `uuid.uuid4()` actor, an injected
+  `organization_id` argument) is exactly the shape of test this entry's
+  own transferable lesson warns about, and has been replaced, not just
+  left alongside the new one.
+
+---
+
+## [B12] `routes/knowledge.py`'s `set_knowledge_selection` route called the service with a stale 6-argument shape - broken on every call
+
+- **Discovered:** while rewriting the entry above, tracing
+  `set_knowledge_selection`'s real current signature to describe it
+  accurately. The route (`PUT /tenders/{tender_id}/knowledge-selections/
+  {knowledge_item_id}`) still called `knowledge_service.
+  set_knowledge_selection(tender_id, knowledge_item_id, body.selected,
+  current_user.id, tender.organization_id, body.change_reason)` - six
+  positional arguments - against a function whose real signature (fixed
+  before B12 started, per the entry above) takes exactly five
+  (`tender_id, knowledge_item_id, selected, actor_user_id, change_reason=
+  None`). `tender.organization_id` landed in the `change_reason` slot and
+  `body.change_reason` had nowhere left to go.
+- **Behaviour:** `TypeError: set_knowledge_selection() takes from 4 to 5
+  positional arguments but 6 were given`, raised unconditionally on
+  every single call to this route. The endpoint has been completely
+  non-functional since whichever commit dropped the `organization_id`
+  parameter from the service function without updating this one call
+  site. Never caught because every integration test in this codebase
+  calls the service function directly (`await knowledge_service.
+  set_knowledge_selection(...)`), never through the route - this
+  codebase has zero FastAPI TestClient/route-level tests (see the
+  logging-configuration entry above for the same "nothing exercises this
+  layer" shape, different layer). No live smoke test in any block
+  (B6 through B12) happened to exercise real knowledge-selection changes
+  through the actual HTTP route either - every smoke test's own selection
+  changes went through direct `UnitOfWork`/repository calls instead.
+- **Risk:** was P0 in effect (a core, PRD-listed write path - "knowledge
+  selection change" is one of Part C's six state-version-bump mutation
+  types - completely unreachable via its only real route) but is not a
+  data-integrity risk in the way the entry above is: nothing was ever
+  written wrong, because nothing could be written at all.
+- **Status:** fixed - the route now passes the correct five arguments,
+  matching the real signature. General lesson worth naming explicitly:
+  a signature change to a function with real callers needs every call
+  site verified, not just the ones a grep for the function name happens
+  to surface in the file someone's already looking at - this one hid in
+  a route file nobody was editing when the signature changed underneath
+  it, and stayed hidden because nothing at the route layer is tested.
+- **Test:** none added - closing this gap for real means route-level
+  (TestClient) tests, which don't exist anywhere in this codebase yet;
+  out of scope to introduce as a side effect of one bug fix. Worth
+  flagging for whichever block first adds route-level testing
+  infrastructure: this specific class of bug (a correct service function,
+  a stale caller) is invisible to service-level tests by construction.
 
 ---
 

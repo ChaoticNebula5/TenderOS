@@ -88,8 +88,14 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     # manager needs to see the SAME blocker list before ever reaching the
     # final gate, not just the approver deciding it. generate_readiness
     # (the manual POST .../readiness/generate trigger, mirroring B10/B11's
-    # own manual-trigger precedent) is narrower, same set as trigger_graph_
-    # projection - forcing a recompute, not passive viewing.
+    # own manual-trigger precedent) is narrower, same base set as trigger_
+    # graph_projection - forcing a recompute, not passive viewing - PLUS
+    # Role.APPROVER specifically (a real gap trigger_graph_projection
+    # itself doesn't have to worry about): an approver sitting on a
+    # final_readiness gate that decide_gate is refusing to let them waive
+    # past (a stale or not-ready report) needs to be able to regenerate it
+    # themselves rather than being blocked on someone else with a narrower
+    # role doing it for them.
     "view_readiness": frozenset(
         {
             Role.BID_MANAGER,
@@ -102,6 +108,6 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
         }
     ),
     "generate_readiness": frozenset(
-        {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.ADMIN}
+        {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.APPROVER, Role.ADMIN}
     ),
 }

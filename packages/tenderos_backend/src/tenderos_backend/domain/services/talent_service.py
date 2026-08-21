@@ -11,10 +11,12 @@ from tenderos_backend.agents.talent.score_candidates import (
     TalentEvidenceCandidateRef,
     score_candidate,
 )
+from tenderos_backend.core.enums import Role
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.knowledge import Employee
 from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 
 
 logger = logging.getLogger(__name__)
@@ -33,20 +35,29 @@ class RoleMatchNotFoundError(Exception):
 
 
 class CrossOrganizationRoleError(Exception):
-    """Raised when the caller's authorized organization_id doesn't match
-    role_requirement_id's own tender's organization. Not currently
-    reachable via the one write path that exists today (role_matches rows
-    are only ever created by evaluate_role_match, scoped to
-    find_candidate_pool(organization_id) - same-org candidates only, so a
-    cross-org role_match can't exist in the DB yet) - but that safety comes
-    from a DIFFERENT function's own scoping, two layers away, not from
-    anything set_candidate_selection itself enforces. Same shape as
-    CrossOrganizationTenderError in knowledge_service.py (which WAS
-    reachable): a guard that looked complete while silently depending on
-    something it never checked. Any future second write path into
-    role_matches (bulk admin tooling, an import, a fix-up script) makes
-    this live with no code change needed here at all - the vulnerability
-    is already written, only the input path was missing.
+    """Raised when actor_user_id has no membership (or an insufficiently
+    privileged one) in role_requirement_id's own tender's organization -
+    checked by set_candidate_selection deriving that organization directly
+    from role_requirement_id itself, not from a caller-supplied parameter.
+
+    An earlier version of this class documented (and an earlier version of
+    set_candidate_selection implemented) a DIFFERENT check: comparing a
+    caller-supplied organization_id parameter against role_requirement_id's
+    own tender.organization_id. That looked like the same fix knowledge_
+    service.set_knowledge_selection got, but wasn't: every real caller
+    (routes/talent.py's own select_candidate route included) only ever had
+    one way to produce that parameter - re-deriving it from the exact same
+    role_requirement_id the check then compared it against - so the
+    comparison was always true and caught nothing. Worth naming precisely
+    why this survived: the comparison LOGIC was correct (a genuinely
+    mismatched value, injected directly at the unit-test level bypassing
+    the route, was correctly rejected), so the function looked fixed and
+    its own test passed - the gap was entirely in the fact that no real
+    caller could ever produce the mismatched value the test injected
+    directly. Same root shape as CrossOrganizationTenderError's own history
+    in knowledge_service.py, fixed the identical way: derive and verify the
+    actor's real membership internally instead of trusting any argument a
+    caller might supply.
     """
 
 
@@ -563,7 +574,6 @@ async def set_candidate_selection(
     role_requirement_id: uuid.UUID,
     employee_knowledge_item_id: uuid.UUID,
     actor_user_id: uuid.UUID,
-    organization_id: uuid.UUID,
     selected: bool,
 ) -> RoleMatch:
     """G8's POST /roles/{role_id}/select-candidate - the route's path only
@@ -573,16 +583,18 @@ async def set_candidate_selection(
     both select and deselect (selected=True/False in the body) rather than
     inventing a second route G8 doesn't define.
 
-    `organization_id` is the org the CALLER was actually authorized for
-    (resolved by the route independently of role_requirement_id) - checked
-    here against role_requirement_id's own tender, same reasoning
-    knowledge_service.set_knowledge_selection's identical parameter
-    documents. Not currently reachable through the one write path that
-    creates role_matches rows today (evaluate_role_match only ever scores
-    same-org candidates), but this function has no way to know that stays
-    true - it must not rely on a different function's own scoping to stay
-    safe, the exact gap that made the original knowledge-selection guard
-    incomplete despite looking finished.
+    Verifies actor_user_id's own membership+role against role_requirement_
+    id's real tender.organization_id, fetched right here - it does not take
+    organization_id as a parameter and trust a caller to have derived it
+    correctly. Same fix, same reasoning, same history as knowledge_service.
+    set_knowledge_selection's own docstring: an earlier version of this
+    function accepted organization_id as an argument and compared it
+    against tender.organization_id, but every real caller (the route
+    included) only ever had one way to produce that argument - re-deriving
+    it from this same role_requirement_id - so the comparison was always
+    true and caught nothing. Checking actor_user_id's actual membership
+    instead means this function stays correct regardless of what a future
+    caller (a different route, a worker, admin tooling) passes in.
     """
     async with UnitOfWork() as uow:
         role = await uow.talent.get_role_requirement(role_requirement_id)
@@ -591,11 +603,12 @@ async def set_candidate_selection(
         tender = await uow.tenders.get(role.tender_id)
         if tender is None:
             raise RoleMatchNotFoundError()
-        if tender.organization_id != organization_id:
+        membership = await uow.memberships.get(tender.organization_id, actor_user_id)
+        if membership is None or Role(membership.role) not in ACTION_ROLES["select_resource"]:
             logger.warning(
-                "cross-organization role-candidate selection attempt: actor=%s "
-                "authorized_org=%s role_requirement=%s (org=%s)",
-                actor_user_id, organization_id, role_requirement_id, tender.organization_id,
+                "unauthorized role-candidate selection attempt: actor=%s "
+                "role_requirement=%s (org=%s)",
+                actor_user_id, role_requirement_id, tender.organization_id,
             )
             raise CrossOrganizationRoleError()
         match = await uow.talent.get_role_match_by_candidate(

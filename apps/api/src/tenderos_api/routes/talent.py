@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from tenderos_backend.db.models.user import User
-from tenderos_backend.domain.services import talent_service, tender_service
+from tenderos_backend.domain.services import talent_service
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
@@ -48,11 +48,14 @@ async def select_candidate(
     already use, so a retried select/deselect click can't double-audit or
     double-bump tenders.state_version.
 
-    require_permission("select_resource") already resolved+verified an
-    organization_id internally (via role_id), but only returns
-    current_user - re-fetched here so the service function gets it as an
-    explicit parameter, same reasoning set_knowledge_selection's identical
-    fetch documents.
+    Fetches role only for this route's own early 404 - set_candidate_
+    selection no longer takes organization_id as a parameter at all (an
+    earlier version of both this route and that function did; removed
+    because every caller only ever had one way to produce that value -
+    re-deriving it from this same role_id - making the comparison it fed
+    vacuous, the identical history knowledge_service.set_knowledge_
+    selection's own docstring describes). The function verifies
+    actor_user_id's own membership internally instead - see its docstring.
     """
     if idempotency.replay_response is not None:
         _, cached_body = idempotency.replay_response
@@ -63,18 +66,12 @@ async def select_candidate(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
         )
-    tender = await tender_service.get_tender(role.tender_id)
-    if tender is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
-        )
 
     try:
         updated = await talent_service.set_candidate_selection(
             role_id,
             body.employee_knowledge_item_id,
             current_user.id,
-            tender.organization_id,
             selected=body.selected,
         )
     except (

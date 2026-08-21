@@ -145,8 +145,23 @@ async def _evaluate_readiness_once(
         # required/evidence_unavailable is just as unresolved. Both cases
         # fall out of one pass here instead of composing two separate
         # requirement-iteration queries and unioning their results.
+        #
+        # CodeRabbit review: this used to call get_compliance_entry_by_
+        # requirement once PER requirement inside the loop -
+        # O(requirements) sequential round-trips, invisible on the small
+        # synthetic tender this block was built and tested against, real
+        # cost on a tender with hundreds of requirements - paid TWICE per
+        # check, since evaluate_readiness runs both from the manual POST
+        # /readiness/generate route and from readiness_generation_node.
+        # One batched query up front (list_compliance_entries_by_
+        # requirement_ids), then the loop below reads from the resulting
+        # dict in memory instead of awaiting per item.
         # ------------------------------------------------------------
         requirements = await uow.requirements.list_for_tender(tender_id)
+        mandatory_requirement_ids = [r.id for r in requirements if r.mandatory]
+        entries_by_requirement = await uow.compliance.list_compliance_entries_by_requirement_ids(
+            mandatory_requirement_ids
+        )
         mandatory_unresolved = 0
         requirements_completed = 0
         for requirement in requirements:
@@ -154,7 +169,7 @@ async def _evaluate_readiness_once(
                 requirements_completed += 1
             if not requirement.mandatory:
                 continue
-            entry = await uow.compliance.get_compliance_entry_by_requirement(requirement.id)
+            entry = entries_by_requirement.get(requirement.id)
             if entry is None or entry.status in _UNRESOLVED_COMPLIANCE_STATUSES:
                 mandatory_unresolved += 1
                 blockers.append(
@@ -181,8 +196,16 @@ async def _evaluate_readiness_once(
         # row that is itself verified+valid - and must stay answerable even
         # when blocker 7 (stale graph) is already true, not be silently
         # entangled with it.
+        #
+        # Same batching fix as blocker 1 above, for the sibling N+1: one
+        # list_evidence_for_compliance_entries call for every compliance
+        # entry at once, instead of list_evidence_for_compliance_entry
+        # once per entry inside the loop.
         # ------------------------------------------------------------
         compliance_entries = await uow.compliance.list_compliance_entries_for_tender(tender_id)
+        evidence_by_entry = await uow.compliance.list_evidence_for_compliance_entries(
+            [e.id for e in compliance_entries]
+        )
         awaiting_approval = 0
         without_valid_evidence = 0
         for entry in compliance_entries:
@@ -190,7 +213,7 @@ async def _evaluate_readiness_once(
                 awaiting_approval += 1
             if entry.status not in _COMPLIANT_STATUSES:
                 continue
-            evidence = await uow.compliance.list_evidence_for_compliance_entry(entry.id)
+            evidence = evidence_by_entry.get(entry.id, [])
             has_valid = any(e.verified and e.validity_status == "valid" for e in evidence)
             if not has_valid:
                 without_valid_evidence += 1
