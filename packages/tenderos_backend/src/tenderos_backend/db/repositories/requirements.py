@@ -136,6 +136,20 @@ class RequirementRepository:
         )
         return list(result.scalars().all())
 
+    async def update_submission_item(self, item_id: uuid.UUID, **fields: object) -> SubmissionItem:
+        # Same **fields shape as ComplianceRepository.update_compliance_entry/
+        # TalentRepository.update_role_match - no write path exists yet for
+        # flipping status (e.g. missing -> present once a matching document
+        # is uploaded, or -> needs_review), same gap those two had before
+        # their own first caller needed them.
+        item = await self._session.get(SubmissionItem, item_id)
+        if item is None:
+            raise ValueError(f"SubmissionItem {item_id} not found")
+        for key, value in fields.items():
+            setattr(item, key, value)
+        await self._session.flush()
+        return item
+
     async def create_clarification_item(
         self,
         tender_id: uuid.UUID,

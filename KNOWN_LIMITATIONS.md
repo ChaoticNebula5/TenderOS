@@ -1056,9 +1056,39 @@ Each entry:
   work, not a modification to something partially built. B12 doesn't need
   to audit or unwind any existing (possibly-load-bearing) per-target
   application logic before building the real one - there isn't any yet.
-- **Test:** none automated yet. Worth a dedicated regression test in
-  whichever block actually resolves it: approve a gate without any
-  per-target action, assert the targets remain unapproved.
+- **Resolved in B12.** `target_updates` now has a real write path:
+  `domain/services/gate_target_service.py`'s `apply_target_update`/
+  `apply_target_updates`, called from `routes/gates.py`'s `decide_gate`
+  before `gate_service.record_decision` runs, unconditionally on the
+  gate's own decision (a reviewer approving individual targets while
+  still requesting changes on the gate overall is legitimate - see that
+  file's own module comment). Each entry is `{target_type, target_id,
+  decision}` (now a typed Pydantic model, `schemas/gates.py`'s
+  `TargetUpdate`, not the bare `list[dict]` this field carried since B3);
+  `target_type` is one of `compliance_entry`/`role_match`/`pricing_finding`
+  - `role_match`, not `role_requirement`, since a role_requirement can have
+  several candidate matches and `select_candidate` needs the specific one
+  (a real divergence from the other two target_types, which reuse their
+  own gate's `targets` list id directly). Dispatches to the three
+  existing, already-tested, already-audited G7/G8/G9 service calls - no
+  new business logic. Permissive on an unrecognized `target_type`/
+  `decision` value (forward-compatibility); strict on ownership - every
+  target id is resolved back to its true owning tender and compared
+  against the gate's own tender before anything is applied, raising
+  `TargetOwnershipError` (surfaced as a 403) on any mismatch, checked for
+  the WHOLE batch before applying ANY of it (no partial writes when one
+  entry in a multi-entry batch is foreign). This was caught and fixed
+  during planning, not after: the first draft only checked ownership
+  per-entry inside the dispatch loop itself, which would have let an
+  earlier legitimate write commit before a later foreign entry in the
+  same batch was rejected - the exact `select_candidate` cross-tenant
+  shape (see the audit entry below) in a new location, closed before it
+  ever shipped rather than found afterward.
+- **Test:** `tests/integration/test_gate_target_service.py` - the three
+  legitimate dispatch paths, permissive-on-unknown for both
+  `target_type` and `decision`, the cross-tenant reject (single-entry and
+  whole-batch), and the no-partial-writes proof (a batch with one
+  legitimate entry listed BEFORE one foreign entry applies neither).
 
 ---
 
@@ -1156,13 +1186,59 @@ Each entry:
   evidence thin, or was it available and uncited - needs a fresh live run
   (with the resulting database left untouched afterward) to close, not
   further reasoning from code alone.
+- **B12 update - both leading hypotheses now eliminated. Cause still
+  unknown. This is the project's largest known open quality gap.**
+  B12's own live verification drove the identical `synthetic_tender_a.py`
+  package through the real pipeline a second time, with every gate
+  approved via real `target_updates` batch-approval through the actual
+  gate-decision route (96 real per-target approvals genuinely applied and
+  confirmed via before/after DB state - not the G7/G8/G9 workaround this
+  entry's own B9 run used, functionally the same underlying writes via a
+  different call path). B12's own review cycle separately fixed the
+  talent-evidence-never-gets-`validity_status`-set bug in the same
+  window (see the B0-B11 catch-up review) - the *other* live candidate
+  cause this entry's hypothesis (a) named. Both fixes were live and
+  active in this run. Result: 19 factual claims, **2 grounded, 17
+  unsupported - roughly 90% of factual claims still lack valid
+  evidence.** Not an improvement over B9's 1/19 (5.26%) worth reporting
+  as progress - read plainly, it means neither fix meaningfully moved
+  the number. Both of this entry's own named candidate causes are now
+  fixed AND measured under real conditions, and the pipeline still fails
+  to ground the overwhelming majority of factual claims it drafts. **The
+  cause is elsewhere, and is currently unknown.** The two grounded claims
+  this run (a tax-clearance certification citation, a PMP certification
+  citation) are the same *kind* of claim as B9's one grounded case - a
+  directly-verifiable certification fact - consistent with, but not
+  proof of, a narrower version of hypothesis (a): Technical Approach
+  capability claims, Proposed Team assignment claims, and Commercial
+  Summary narrative claims still have no `evidence_link` `source_kind`
+  that could ground them at all, a structural gap regardless of whether
+  `target_updates` or talent-evidence was ever fixed. That narrower
+  reading is plausible, not confirmed - nobody has traced it end to end.
+  **Why this matters at the product level, not just as a metric:**
+  claim-level evidence grounding is the PRD's own core thesis for this
+  product (§5's "Grounded proposal generation" JTBD: "I want factual
+  claims to remain linked to approved evidence rather than being
+  invented by the model") - not one feature among many. Measured twice,
+  independently, against the same real fixture package, under two
+  different sets of upstream fixes: it currently works for roughly 1 in
+  10 factual claims. Not investigated further here - B12 is complete and
+  this was never its own stop-gate - but recorded at full strength so
+  whoever picks it up next inherits the real severity and the two
+  already-eliminated candidate causes, rather than re-deriving either.
+  Unlike the B9 run, this run's database was **not** wiped afterward
+  (the test-teardown trap this project has now hit five times), so the
+  raw data remains available for direct inspection - tender_id and
+  run_id are in the B12 build session's own live-verification output.
 - **Test:** `tests/unit/test_claim_grounding.py` (7 cases, synthetic,
-  pins the invariant's logic) + this live run (1 real grounded case, 18
-  real unsupported cases, all correctly classified) - together they cover
-  "the code never wrongly grounds an unsupported claim" thoroughly, but
-  neither is a statistically adequate measurement of citation semantic
-  correctness at scale, and the evidence-availability question above has
-  no test at all yet.
+  pins the invariant's logic) + two independent live runs (B9: 1 grounded/
+  18 unsupported; B12: 2 grounded/17 unsupported, same fixture package,
+  two different sets of upstream fixes active) - together they cover
+  "the code never wrongly grounds an unsupported claim" thoroughly
+  across two real samples, but
+  neither individually nor combined is a statistically adequate
+  measurement of citation semantic correctness at scale, and the
+  evidence-availability question above still has no test at all.
 
 ---
 
@@ -1259,16 +1335,35 @@ Each entry:
   drafted claims unsupported) is present in a live run. The one existing
   data point in this codebase for that condition (B9's live run) predates
   red-team's existence entirely, so it was never checked against it.
-- **Status:** open, not scheduled to a specific later block. Closing it
-  requires a live run against a substantive fixture (`synthetic_tender_a.py`
-  or equivalent) carried all the way through to `red_team`, with the
-  resulting `redteam_findings` inspected before anything else touches
-  that `POSTGRES_DSN` - not a code change, a verification gap.
-- **Test:** none - this is precisely the gap. `test_all_seven_seeded_
-  defect_categories_are_detected` (pytest, constructed defects) and the
-  B11 live smoke test (wiring, one manually-seeded fact) are both real
-  proofs of what they each actually test; neither is a substitute for the
-  other, and neither closes this one.
+- **Status:** closed by B12's own live verification, exactly the way this
+  entry said it would need to be. B12 drove the real
+  `synthetic_tender_a.py` package (65 requirements, matching this entry's
+  own "substantive fixture" requirement) all the way through to
+  `red_team`, and inspected `redteam_findings` directly before anything
+  else touched that database - no test suite run against the same DSN in
+  between, learning from incidents 1-4 of the environment-traps entry.
+  Result: `check_unsupported_claims` fired **17 times** against this
+  run's organic Gemini output, and a direct `proposal_claims` query
+  (`grounding_status='unsupported' AND is_factual=true`) independently
+  counted **exactly 17** - a perfect match, not an approximation. This is
+  no longer "the one existing data point predates red-team's existence" -
+  it is a real, current, organic-output measurement, taken correctly:
+  cross-checked against the database directly rather than trusted from
+  the findings endpoint alone, matching this project's own "look, don't
+  reason" standard. `check_unsupported_claims` catches what it's supposed
+  to catch on real pipeline output. The other 4 checks remain unconfirmed
+  on organic output (this run's data didn't happen to contain an organic
+  expired-cert/removed-employee/role-gap/graph-contradiction case) - that
+  narrower gap is real but distinct from what this entry originally
+  flagged, and doesn't need its own entry unless a future run specifically
+  goes looking and still finds nothing.
+- **Test:** `test_all_seven_seeded_defect_categories_are_detected` (pytest,
+  constructed defects, proves detector logic) + the B11 live smoke test
+  (wiring, one manually-seeded fact) + B12's own live run (17 organic
+  `unsupported_claim` findings, cross-checked 17/17 against a direct DB
+  query) - together these now cover both halves this entry originally
+  distinguished: detector correctness against known defects, AND
+  detection firing on real organic output, at least for this one check.
 
 ---
 
@@ -1716,3 +1811,121 @@ Each entry:
   construct two orgs, authorize against one, attempt the write against
   the other, assert the specific "not authorized" exception and that
   nothing persisted.
+
+---
+
+## [B12] Neither app calls `logging.basicConfig()` anywhere - every `logger.info()` call in the entire codebase is silently dropped
+
+- **Discovered:** during B12's own live verification of `gate_target_
+  service.apply_target_updates`'s ownership check. A `logger.info(...)`
+  line was added specifically so a live run could confirm the check
+  executed against real ids (the user's own explicit ask, not something
+  self-initiated). The live run applied 96 real `target_updates` entries
+  (84 `compliance_entry` + 4 `role_match` + 8 `pricing_finding`) through
+  the real API - confirmed by the actual DB state afterward (`compliance_
+  decisions_awaiting_approval: 0`, `resource_gaps: 0`, `commercial_
+  findings_open: 0` in the readiness report) - but `docker logs
+  tenderos-api-1 | grep "target ownership verified"` returned zero
+  matches. Checked both apps directly: neither `apps/api` nor `apps/
+  worker` calls `logging.basicConfig()`, `logging.config.dictConfig()`,
+  or sets a root logger level anywhere. Python's own default behavior
+  applies - the root logger sits at `WARNING` with no handler attached,
+  so any `logger.info()` call anywhere in either app is silently
+  discarded before it reaches any output stream, container-captured or
+  otherwise.
+- **Behaviour:** every `.exception()`/`.warning()`/`.error()` call in
+  this codebase DOES surface (they clear the default `WARNING`
+  threshold via Python's own "handler of last resort") - which is
+  exactly why worker logs already looked informative during every prior
+  block's own live verification (`logger.exception(...)` calls in
+  `red_team_node`, `proposal_drafting_node`, `project_graph_node`, etc.
+  all show up). But every `.info()` call - and there are many across this
+  codebase, most written as the kind of "here's what happened, for
+  visibility" line this new one was - has never once been emitted,
+  in any block, since B0. This was never caught before because no prior
+  block's own live verification specifically needed to observe an
+  `.info()`-level line as its proof; every prior live-verification step
+  either checked real API/DB state directly or relied on an `.exception()`
+  call surfacing on the failure path.
+- **Risk:** none for correctness - every write path this project has
+  live-verified (B7 through B12) has been proven by checking real
+  database/API state, never by trusting a log line, so nothing has
+  actually depended on `.info()` output being real. The risk is purely
+  operational: in a real deployment, an operator watching container logs
+  for `.info()`-level visibility into what the system is doing (which
+  request touched which resource, which specialist ran, etc.) would see
+  none of it - only exceptions and warnings. B12's own PRD-derived
+  "cost and trace views for developers/admins" (Build Guide, "Demo
+  deployment" list) and B14's live-progress work both implicitly assume
+  some of this visibility exists.
+- **Status:** not fixed here - out of B12's own scope (nothing in its
+  build list or stop-gate concerns application-wide logging
+  configuration), and the fix is a small, generic one (`logging.
+  basicConfig(level=logging.INFO)` or an equivalent structured-logging
+  setup) that belongs wherever this project's observability/production-
+  readiness work actually lands, not bolted onto this block as a side
+  effect of one line needing to be visible. For THIS block's own
+  verification need, the behavioral proof (96 real target_updates
+  entries correctly applied, confirmed via actual before/after DB state,
+  matching exactly what "the ownership check passed for every one of
+  them" requires - any single failure would have aborted the whole
+  batch per `apply_target_updates`' own all-or-nothing validation pass)
+  stands on its own without the log line, and is arguably a stronger
+  proof than a log message would have been anyway.
+- **Test:** none automated - this is a codebase-wide configuration gap,
+  not a per-function defect; whichever block adds real logging
+  configuration should add a smoke-level test asserting an `.info()`
+  call actually reaches a configured handler, so this class of gap
+  cannot silently regress again.
+
+---
+
+## [B12] Neo4j driver has no explicit request timeout - relies entirely on library defaults
+
+- **Discovered:** during CodeRabbit's review of `readiness_service.py`'s
+  `check_freshness` call (B12's blocker 7, stale-graph-projection check) -
+  asked to confirm the Neo4j driver applies a request timeout on that
+  call, since without one it could block indefinitely.
+- **Behaviour:** checked `graph_projection/driver.py` directly - the
+  module-level driver is constructed as `AsyncGraphDatabase.driver(
+  settings.neo4j_uri, auth=(...))` with no `connection_timeout`,
+  `connection_acquisition_timeout`, `max_transaction_retry_time`, or any
+  other timeout parameter passed. The `neo4j` Python driver does apply
+  its own built-in defaults when none are given (`connection_timeout`
+  ~30s, `connection_acquisition_timeout` ~60s) - so a genuine Neo4j
+  outage or unreachable host does NOT hang the calling request forever,
+  but a real failure can still take close to a minute to surface before
+  the driver gives up and raises, on every code path that touches Neo4j:
+  `check_freshness` (now caught broadly by readiness_service.py's own
+  CodeRabbit-review fix, degrading gracefully into a blocker), but also
+  `project_tender`, `find_contradictions`, `get_graph_trace`, and every
+  other `graph_service.py` function that opens a Neo4j session - none of
+  which have been individually audited for how well they tolerate a
+  minute-long stall on their own request path.
+- **Risk:** not a correctness bug - nothing silently returns wrong data,
+  and B12's own fix means a Neo4j outage degrades readiness rather than
+  crashing it. The risk is purely a latency/availability characteristic
+  nobody has deliberately decided on: an API request that happens to hit
+  a stalled Neo4j call (graph read routes, `project_graph_node`,
+  `readiness_generation_node`) could sit for up to roughly a minute
+  before failing, which is a real user-facing hang even though it
+  eventually resolves. Whether that's acceptable, or whether it needs a
+  shorter explicit timeout (at the cost of more false "unreachable"
+  verdicts on a genuinely slow-but-alive Neo4j under load), is a real
+  product/ops tradeoff, not a bug to silently patch with an arbitrary
+  number.
+- **Status:** not fixed - out of B12's own scope (a driver-wide
+  configuration decision, not specific to the readiness blocker that
+  surfaced it). **Owner: B16 (Full Evaluation, Reliability, and Load
+  Tests)**, not B15 and not B17 - B16's own build list names both
+  "latency" (its scorecard) and "Neo4j wiped and rebuilt" / "provider
+  timeout" (its reliability tests) explicitly; deciding the right
+  timeout value, and confirming request-path behavior under a real
+  Neo4j outage, is exactly what that block's reliability-test pass is
+  for. B15 (Security and Prompt-Injection Hardening) and B17 (UI
+  Polish, Observability, and Deployment) don't fit - neither's build
+  list touches driver-level timeout/resilience configuration.
+- **Test:** none - this is precisely the gap. Worth a reliability test
+  in B16 mirroring its own "Neo4j wiped and rebuilt" scenario: assert a
+  request touching Neo4j fails within a bounded, deliberately-chosen
+  time rather than whatever the library defaults happen to be.

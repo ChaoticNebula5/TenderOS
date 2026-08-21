@@ -29,5 +29,6 @@ def test_build_graph_compiles_with_expected_nodes():
         "red_team",
         "targeted_replan",
         "finding_gate",
+        "readiness_generation",
         "final_gate",
     }

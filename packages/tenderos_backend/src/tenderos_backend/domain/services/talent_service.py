@@ -618,36 +618,53 @@ async def deselect_candidate(role_match_id: uuid.UUID, actor_user_id: uuid.UUID)
     return await _set_human_selected(role_match_id, actor_user_id, selected=False)
 
 
+async def _set_human_selected_in_uow(
+    uow: UnitOfWork, role_match_id: uuid.UUID, actor_user_id: uuid.UUID, selected: bool
+) -> RoleMatch:
+    match = await uow.talent.get_role_match(role_match_id)
+    if match is None:
+        raise RoleMatchNotFoundError()
+    role = await uow.talent.get_role_requirement(match.role_requirement_id)
+    if role is None:
+        raise RoleRequirementNotFoundError()
+    tender = await uow.tenders.get(role.tender_id)
+    if tender is None:
+        raise TenderNotFoundError()
+
+    before = {"human_selected": match.human_selected}
+    updated = await uow.talent.update_role_match(role_match_id, human_selected=selected)
+    await uow.audit.create(
+        organization_id=tender.organization_id,
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        action="role_select" if selected else "role_deselect",
+        tender_id=tender.id,
+        target_type="role_match",
+        target_id=role_match_id,
+        before=before,
+        after={"human_selected": selected},
+    )
+    # Part C's State-version invariant: "role assignment change" is one
+    # of the listed graph-relevant mutations.
+    await uow.tenders.bump_state_version(tender.id)
+    return updated
+
+
+async def select_candidate_in_uow(
+    uow: UnitOfWork, role_match_id: uuid.UUID, actor_user_id: uuid.UUID
+) -> RoleMatch:
+    """The transaction-open, no-commit core of select_candidate - see
+    compliance_service.approve_compliance_entry_in_uow's own docstring for
+    why this exists (gate_target_service.apply_target_updates composes
+    several such writes in one shared transaction)."""
+    return await _set_human_selected_in_uow(uow, role_match_id, actor_user_id, selected=True)
+
+
 async def _set_human_selected(
     role_match_id: uuid.UUID, actor_user_id: uuid.UUID, selected: bool
 ) -> RoleMatch:
     async with UnitOfWork() as uow:
-        match = await uow.talent.get_role_match(role_match_id)
-        if match is None:
-            raise RoleMatchNotFoundError()
-        role = await uow.talent.get_role_requirement(match.role_requirement_id)
-        if role is None:
-            raise RoleRequirementNotFoundError()
-        tender = await uow.tenders.get(role.tender_id)
-        if tender is None:
-            raise TenderNotFoundError()
-
-        before = {"human_selected": match.human_selected}
-        updated = await uow.talent.update_role_match(role_match_id, human_selected=selected)
-        await uow.audit.create(
-            organization_id=tender.organization_id,
-            actor_type="user",
-            actor_id=str(actor_user_id),
-            action="role_select" if selected else "role_deselect",
-            tender_id=tender.id,
-            target_type="role_match",
-            target_id=role_match_id,
-            before=before,
-            after={"human_selected": selected},
-        )
-        # Part C's State-version invariant: "role assignment change" is one
-        # of the listed graph-relevant mutations.
-        await uow.tenders.bump_state_version(tender.id)
+        updated = await _set_human_selected_in_uow(uow, role_match_id, actor_user_id, selected)
         await uow.commit()
         return updated
 

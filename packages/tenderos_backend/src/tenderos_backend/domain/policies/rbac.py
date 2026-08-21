@@ -77,4 +77,31 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     "trigger_graph_projection": frozenset(
         {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.ADMIN}
     ),
+    # B12 (G11): Part H's matrix has "Final readiness approval" (the GATE
+    # decision, APPROVER/ADMIN-only) but no row for reading or generating
+    # the readiness REPORT itself - the same gap B10 found for graph reads,
+    # resolved the same way. view_readiness mirrors view_graph's full
+    # 7-role breadth: readiness blockers span compliance/talent/commercial/
+    # red-team, so it's inherently cross-cutting like graph impact, and
+    # PRD §10.13's own transparency requirement ("explain why the bid is
+    # not ready") argues against restricting it to approvers only - a bid
+    # manager needs to see the SAME blocker list before ever reaching the
+    # final gate, not just the approver deciding it. generate_readiness
+    # (the manual POST .../readiness/generate trigger, mirroring B10/B11's
+    # own manual-trigger precedent) is narrower, same set as trigger_graph_
+    # projection - forcing a recompute, not passive viewing.
+    "view_readiness": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
+    "generate_readiness": frozenset(
+        {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.ADMIN}
+    ),
 }

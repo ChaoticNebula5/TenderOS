@@ -64,7 +64,9 @@ def route_after_specialist_join(state: TenderState) -> str:
 def route_after_red_team(state: TenderState) -> str:
     # The review_router from R2's diagram - routing logic, not a node (see
     # the plan's Q1 answer). Three independent checks, in order:
-    #   1. Nothing open at all -> done, no gate needed.
+    #   1. Nothing open at all -> readiness_generation (B12: was a direct
+    #      final_gate pass-through until now - see readiness_generation_
+    #      node's own docstring for the seam this fills).
     #   2. Budget exhausted (B2.4's own stop condition) -> force to a human.
     #   3. A revision was just attempted and produced the exact same open
     #      critical-finding set as before it ran (B2.4's "no measurable
@@ -78,7 +80,7 @@ def route_after_red_team(state: TenderState) -> str:
     # since it already needs map_finding_to_corrective_task to act.
     open_critical = state.get("open_critical_finding_ids") or []
     if not open_critical:
-        return "final_gate"
+        return "readiness_generation"
     if state["revision_count"] >= state["max_revisions"]:
         return "finding_gate"
     if state["revision_count"] > 0 and set(open_critical) == set(
@@ -105,9 +107,11 @@ def route_after_targeted_replan(state: TenderState) -> str:
 def route_after_finding_gate(state: TenderState) -> str:
     # Zero edges back into the loop under any decision value (Q5) - reject
     # or request_changes both end the run, same as every other gate;
-    # approve proceeds to final_gate. This one-branch-forward shape is what
-    # makes the revision loop provably bounded independent of
-    # route_after_red_team's own checks.
+    # approve proceeds to readiness_generation (B12: was a direct final_
+    # gate pass-through until now, same retargeting as route_after_red_
+    # team's own "nothing open" branch above). This one-branch-forward
+    # shape is what makes the revision loop provably bounded independent
+    # of route_after_red_team's own checks.
     if state["status"] in _GATE_HALT_STATUSES:
         return END
-    return "final_gate"
+    return "readiness_generation"

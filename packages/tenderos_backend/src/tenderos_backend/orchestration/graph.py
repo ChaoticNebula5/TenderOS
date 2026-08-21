@@ -14,6 +14,7 @@ from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
 from tenderos_backend.orchestration.nodes.graph_projection import project_graph_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
 from tenderos_backend.orchestration.nodes.proposal import proposal_drafting_node
+from tenderos_backend.orchestration.nodes.readiness import readiness_generation_node
 from tenderos_backend.orchestration.nodes.redteam import (
     finding_gate_node,
     red_team_node,
@@ -63,6 +64,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("red_team", red_team_node)
     builder.add_node("targeted_replan", targeted_replan_node)
     builder.add_node("finding_gate", finding_gate_node)
+    builder.add_node("readiness_generation", readiness_generation_node)
     builder.add_node("final_gate", final_gate_node)
 
     builder.add_edge(START, "load_context")
@@ -100,6 +102,14 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     # type) and by WorkflowStatus already carrying "projecting_graph"
     # between "drafting" and "red_teaming" since B3.
     builder.add_edge("project_graph", "red_team")
+    # B12: readiness_generation is the "readiness" branch R2's own topology
+    # diagram names, filled in now - a plain unconditional edge into
+    # final_gate, same "seam" pattern project_graph occupied before B10 and
+    # proposal_drafting occupied before B9. Both routes that used to go
+    # straight to final_gate (route_after_red_team's "nothing open" branch,
+    # route_after_finding_gate's "approved" branch) now land here first -
+    # see routing.py's own B12-era comments on both.
+    builder.add_edge("readiness_generation", "final_gate")
     builder.add_edge("final_gate", END)
 
     builder.add_conditional_edges(
@@ -144,16 +154,16 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     )
     # B11's bounded revision loop. review_router (R2's diagram) is
     # route_after_red_team, not a node - see graph.py's own Q1 note and
-    # routing.py's docstrings for the full bound argument. "readiness" is
-    # not built yet (B12); its branch is the same final_gate pass-through
-    # project_graph used to occupy.
+    # routing.py's docstrings for the full bound argument. "readiness" (B12)
+    # now has a real node - both terminal branches below land there instead
+    # of final_gate directly, per routing.py's own B12-era retargeting.
     builder.add_conditional_edges(
         "red_team",
         route_after_red_team,
         {
             "targeted_replan": "targeted_replan",
             "finding_gate": "finding_gate",
-            "final_gate": "final_gate",
+            "readiness_generation": "readiness_generation",
         },
     )
     builder.add_conditional_edges(
@@ -169,7 +179,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         "finding_gate",
         route_after_finding_gate,
         {
-            "final_gate": "final_gate",
+            "readiness_generation": "readiness_generation",
             END: END,
         },
     )

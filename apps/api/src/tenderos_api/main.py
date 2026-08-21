@@ -19,6 +19,7 @@ from tenderos_api.routes import (
     knowledge,
     organizations,
     proposal,
+    readiness,
     redteam,
     requirements,
     talent,
@@ -42,6 +43,7 @@ app.include_router(commercial.router)
 app.include_router(proposal.router)
 app.include_router(graph.router)
 app.include_router(redteam.router)
+app.include_router(readiness.router)
 
 
 @app.get("/health/live")

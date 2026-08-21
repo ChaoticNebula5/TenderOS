@@ -171,7 +171,7 @@ async def test_gate_node_request_changes_does_not_advance(module, node, gate_typ
         (routing.route_after_compliance_gate, "resource_selection_gate"),
         (routing.route_after_resource_selection_gate, "commercial_approval_gate"),
         (routing.route_after_commercial_approval_gate, "proposal_drafting"),
-        (routing.route_after_finding_gate, "final_gate"),
+        (routing.route_after_finding_gate, "readiness_generation"),
     ],
 )
 async def test_route_after_gate_halts_the_graph_on_request_changes(route_fn, advance_target):

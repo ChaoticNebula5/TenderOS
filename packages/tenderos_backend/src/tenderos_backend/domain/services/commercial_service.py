@@ -218,28 +218,38 @@ async def evaluate_commercial_for_tender(
 # ----------------------------------------------------------------------
 
 
+async def resolve_pricing_finding_in_uow(
+    uow: UnitOfWork, pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID
+) -> PricingFinding:
+    """The transaction-open, no-commit core of resolve_pricing_finding -
+    see compliance_service.approve_compliance_entry_in_uow's own docstring
+    for why this exists."""
+    finding = await uow.commercial.get_pricing_finding(pricing_finding_id)
+    if finding is None:
+        raise PricingFindingNotFoundError()
+    tender = await uow.tenders.get(finding.tender_id)
+    if tender is None:
+        raise DocumentNotFoundError()
+
+    before = {"resolved": finding.resolved}
+    updated = await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)
+    await uow.audit.create(
+        organization_id=tender.organization_id,
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        action="pricing_finding_resolve",
+        tender_id=tender.id,
+        target_type="pricing_finding",
+        target_id=pricing_finding_id,
+        before=before,
+        after={"resolved": True},
+    )
+    return updated
+
+
 async def resolve_pricing_finding(pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID) -> PricingFinding:
     async with UnitOfWork() as uow:
-        finding = await uow.commercial.get_pricing_finding(pricing_finding_id)
-        if finding is None:
-            raise PricingFindingNotFoundError()
-        tender = await uow.tenders.get(finding.tender_id)
-        if tender is None:
-            raise DocumentNotFoundError()
-
-        before = {"resolved": finding.resolved}
-        updated = await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)
-        await uow.audit.create(
-            organization_id=tender.organization_id,
-            actor_type="user",
-            actor_id=str(actor_user_id),
-            action="pricing_finding_resolve",
-            tender_id=tender.id,
-            target_type="pricing_finding",
-            target_id=pricing_finding_id,
-            before=before,
-            after={"resolved": True},
-        )
+        updated = await resolve_pricing_finding_in_uow(uow, pricing_finding_id, actor_user_id)
         await uow.commit()
         return updated
 

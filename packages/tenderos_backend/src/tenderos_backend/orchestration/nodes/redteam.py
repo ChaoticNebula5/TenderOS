@@ -39,6 +39,19 @@ async def red_team_node(state: TenderState) -> dict:
     targeted_replan_node both only ever read state, never query the DB
     themselves, same "routing functions read state, nodes do the I/O"
     split every existing route_after_* function already follows.
+
+    B12: wrapped in try/except, matching proposal_drafting_node's own
+    pattern exactly - an open question left from B11 (this node originally
+    had no failure handling at all, unlike proposal_drafting_node/
+    project_graph_node, so a real Gemini failure here used to kill the
+    whole run instead of degrading it). On failure, open_critical_finding_
+    ids is deliberately left OUT of the returned dict rather than set to
+    [] - state's own value (whatever the last successful pass computed, or
+    the TypedDict default if none ever ran) stays untouched, so a failed
+    pass can never look like "nothing open" to route_after_red_team or
+    readiness_generation_node. degraded_stages instead makes the failure
+    visible to both (readiness_generation_node's own red_team_review_
+    incomplete blocker reads exactly this list - see readiness_service.py).
     """
     workflow_run_id = uuid.UUID(state["workflow_run_id"])
     tender_id = uuid.UUID(state["tender_id"])
@@ -48,10 +61,15 @@ async def red_team_node(state: TenderState) -> dict:
 
     await sync_run_status(workflow_run_id, "red_teaming")
 
-    client = _build_llm_client()
-    open_critical_finding_ids = await run_red_team(
-        client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id
-    )
+    try:
+        client = _build_llm_client()
+        open_critical_finding_ids = await run_red_team(
+            client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id
+        )
+    except Exception as exc:
+        logger.exception("red team review failed for tender %s", tender_id)
+        return {"degraded_stages": [f"red_team:{type(exc).__name__}"]}
+
     return {"open_critical_finding_ids": open_critical_finding_ids}
 
 

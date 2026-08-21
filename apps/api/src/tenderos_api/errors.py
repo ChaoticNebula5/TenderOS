@@ -21,6 +21,37 @@ class OrgAccessDeniedError(APIError):
         super().__init__(403, "ORG_ACCESS_DENIED", "Not a member of this organization.")
 
 
+class ReadinessNotWaivedError(APIError):
+    # B12: routes/gates.py's own enforcement of "refuses approval until
+    # resolved or explicitly waived by authorized actor" (Build Guide
+    # stop-gate, verbatim) - decide_gate raises this instead of ever
+    # calling gate_service.record_decision when a final_readiness gate's
+    # "approve" arrives with outstanding blockers and no waive:true.
+    # RBAC already restricts who can reach this route at all for this gate
+    # type (final_readiness_approval is APPROVER/ADMIN-only) - "authorized
+    # actor" is enforced there, not here.
+    def __init__(self) -> None:
+        super().__init__(
+            409,
+            "READINESS_NOT_WAIVED",
+            "Readiness has unresolved blockers. Resolve them, or resubmit "
+            "with waive=true to approve anyway.",
+        )
+
+
+class TargetOwnershipDeniedError(APIError):
+    # B12: routes/gates.py's own translation of gate_target_service.
+    # TargetOwnershipError - same 403 shape as OrgAccessDeniedError, since
+    # both are "the caller is authenticated, but the specific resource
+    # they're trying to touch isn't theirs to touch."
+    def __init__(self) -> None:
+        super().__init__(
+            403,
+            "TARGET_OWNERSHIP_DENIED",
+            "One or more target_updates entries do not belong to this gate's tender.",
+        )
+
+
 class UserNotFoundError(APIError):
     def __init__(self) -> None:
         super().__init__(404, "USER_NOT_FOUND", "No user is registered with that email.")

@@ -3,10 +3,19 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from tenderos_backend.db.models.user import User
 from tenderos_backend.db.models.workflow import ApprovalGate
-from tenderos_backend.domain.services import gate_service, tender_service
+from tenderos_backend.domain.services import (
+    gate_service,
+    gate_target_service,
+    readiness_service,
+    tender_service,
+)
 
 from tenderos_api.dependencies import require_gate_decision_permission, require_permission
-from tenderos_api.errors import GateAlreadyDecidedError
+from tenderos_api.errors import (
+    GateAlreadyDecidedError,
+    ReadinessNotWaivedError,
+    TargetOwnershipDeniedError,
+)
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.gates import GateDecisionRequest, GateResponse
 
@@ -67,6 +76,57 @@ async def decide_gate(
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
 
+    # B12/Q3: the ONLY enforcement point for "refuses approval until
+    # resolved or explicitly waived by authorized actor" (Build Guide
+    # stop-gate, verbatim). Must happen here, synchronously, before
+    # record_decision - final_gate_node's own interrupt() only receives
+    # decision_payload asynchronously, after resume_workflow's RQ job
+    # picks up the GateDecisionRecorded event, by which point the decision
+    # is already permanently written to approval_gates. A missing report
+    # (no readiness_generation run has ever completed for this tender)
+    # reads as not-ready - fail closed, never "nothing to waive."
+    #
+    # CodeRabbit review: this now runs whenever the gate/decision match,
+    # not just when body.waive is unset - waived/waived_blockers below
+    # need to know whether a bypass was actually NEEDED, which requires
+    # checking readiness regardless of what the caller sent. waived is set
+    # True only when there really were outstanding blockers this decision
+    # bypassed - body.waive=true on an already-ready gate asked for
+    # nothing and bypassed nothing, and must not be recorded as a waiver.
+    waived = False
+    waived_blockers: list[dict] | None = None
+    if gate.gate_type == "final_readiness" and body.decision == "approve":
+        readiness = await readiness_service.get_latest_readiness(gate.tender_id)
+        # Same staleness shape graph_service.check_freshness already
+        # guards against: a human can sit on this gate for a while, and
+        # something else may bump tender.state_version after readiness_
+        # generation_node last ran. Comparing versions here means a STALE
+        # ready=True can never silently bypass the waiver requirement -
+        # only a report generated against the tender's CURRENT state does.
+        is_current = readiness is not None and readiness.tender_state_version == tender.state_version
+        not_ready = not is_current or not readiness.ready
+        if not_ready and not body.waive:
+            raise ReadinessNotWaivedError()
+        if not_ready and body.waive:
+            waived = True
+            waived_blockers = readiness.blockers if readiness is not None else []
+
+    # Q1: applied unconditionally, before the gate's own decision is
+    # recorded, regardless of what that decision turns out to be - a
+    # reviewer approving individual targets while still requesting changes
+    # on the gate overall is legitimate (see gate_target_service.py's own
+    # module comment). gate.tender_id, not anything from the request body,
+    # is the trusted anchor apply_target_updates checks every target
+    # against.
+    try:
+        await gate_target_service.apply_target_updates(
+            gate.tender_id,
+            [u.model_dump() for u in body.target_updates],
+            current_user.id,
+        )
+    except gate_target_service.TargetOwnershipError as exc:
+        raise TargetOwnershipDeniedError() from exc
+
     try:
         updated, _is_new = await gate_service.record_decision(
             gate_id=gate_id,
@@ -74,6 +134,8 @@ async def decide_gate(
             decided_by=current_user.id,
             decision=body.decision,
             notes=body.notes,
+            waived=waived,
+            waived_blockers=waived_blockers,
         )
     except gate_service.GateAlreadyDecidedError as exc:
         raise GateAlreadyDecidedError() from exc

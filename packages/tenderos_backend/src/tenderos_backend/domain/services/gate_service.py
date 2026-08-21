@@ -31,6 +31,8 @@ async def record_decision(
     decided_by: uuid.UUID,
     decision: str,
     notes: str | None,
+    waived: bool = False,
+    waived_blockers: list | None = None,
 ) -> tuple[ApprovalGate, bool]:
     """Record a gate decision. Returns (gate, is_new_decision).
 
@@ -43,6 +45,17 @@ async def record_decision(
     Assumes the caller already confirmed the gate exists (the route resolves
     gate_type -> RBAC action from it before this is ever called, so a second
     "not found" branch here would be unreachable).
+
+    waived/waived_blockers (CodeRabbit review): decide_gate (routes/gates.py)
+    passes waived=True only when this specific decision actually bypassed an
+    outstanding READINESS_NOT_WAIVED rejection - not merely whenever the
+    caller's request body happened to set waive=true (e.g. on an already-
+    ready gate, where waive=true asked for nothing and bypassed nothing).
+    Persisted in both the gate's own decision_payload and the audit event,
+    together with which blockers were outstanding at the moment of waiving -
+    a waiver enforced but not recorded is an auditable bypass with no
+    audit trail, which defeats the entire reason this was built as a
+    distinct act instead of letting a bare "approve" through.
     """
     async with UnitOfWork() as uow:
         gate = await uow.gates.get(gate_id)
@@ -55,11 +68,15 @@ async def record_decision(
                 return gate, False
             raise GateAlreadyDecidedError()
 
+        decision_payload: dict = {"decision": decision, "notes": notes, "waived": waived}
+        if waived:
+            decision_payload["waived_blockers"] = waived_blockers or []
+
         updated = await uow.gates.record_decision(
             gate_id=gate_id,
             decided_by=decided_by,
             status=status_for_decision(decision),
-            decision_payload={"decision": decision, "notes": notes},
+            decision_payload=decision_payload,
         )
         await uow.outbox.create(
             aggregate_type=AGGREGATE_APPROVAL_GATE,
@@ -68,6 +85,9 @@ async def record_decision(
             payload=gate_decision_recorded_payload(gate_id, gate.workflow_run_id),
             idempotency_key=gate_decision_recorded_idempotency_key(gate_id),
         )
+        audit_after: dict = {"decision": decision, "waived": waived}
+        if waived:
+            audit_after["waived_blockers"] = waived_blockers or []
         await uow.audit.create(
             organization_id=organization_id,
             actor_type="user",
@@ -77,7 +97,7 @@ async def record_decision(
             workflow_run_id=gate.workflow_run_id,
             target_type="approval_gate",
             target_id=gate_id,
-            after={"decision": decision},
+            after=audit_after,
         )
         await uow.commit()
         return updated, True

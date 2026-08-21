@@ -31,8 +31,10 @@ def _state(**overrides) -> dict:
 
 
 class TestRouteAfterRedTeam:
-    def test_no_open_findings_goes_to_final_gate(self):
-        assert route_after_red_team(_state(open_critical_finding_ids=[])) == "final_gate"
+    def test_no_open_findings_goes_to_readiness_generation(self):
+        # B12: was final_gate directly until readiness_generation filled
+        # in the "readiness" branch R2's diagram names.
+        assert route_after_red_team(_state(open_critical_finding_ids=[])) == "readiness_generation"
 
     def test_open_findings_under_budget_goes_to_targeted_replan(self):
         state = _state(open_critical_finding_ids=["f1"], revision_count=0)
@@ -109,16 +111,18 @@ class TestRouteAfterSpecialistJoin:
 
 
 class TestRouteAfterFindingGate:
-    def test_approve_proceeds_to_final_gate(self):
-        assert route_after_finding_gate(_state(status="ready")) == "final_gate"
+    def test_approve_proceeds_to_readiness_generation(self):
+        # B12: was final_gate directly until readiness_generation filled
+        # in the "readiness" branch R2's diagram names.
+        assert route_after_finding_gate(_state(status="ready")) == "readiness_generation"
 
     def test_reject_ends_the_run(self):
         assert route_after_finding_gate(_state(status="rejected")) == END
 
     def test_no_decision_value_reenters_the_loop(self):
         # The bound-by-construction claim: every legal status this node can
-        # produce routes to either final_gate or END, never back to
-        # targeted_replan/specialist_dispatch/red_team.
+        # produce routes to either readiness_generation or END, never back
+        # to targeted_replan/specialist_dispatch/red_team.
         for status in ("ready", "rejected", "awaiting_final_approval", "changes_requested"):
             result = route_after_finding_gate(_state(status=status))
-            assert result in ("final_gate", END)
+            assert result in ("readiness_generation", END)

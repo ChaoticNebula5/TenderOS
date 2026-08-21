@@ -43,14 +43,12 @@ async def _org_tender_and_employee() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, u
 
 
 async def test_set_knowledge_selection_bumps_tender_state_version():
-    org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
+    _org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
 
     async with UnitOfWork() as uow:
         before_version = (await uow.tenders.get(tender_id)).state_version
 
-    await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, True, actor_id, org_id
-    )
+    await knowledge_service.set_knowledge_selection(tender_id, knowledge_item_id, True, actor_id)
 
     async with UnitOfWork() as uow:
         after_version = (await uow.tenders.get(tender_id)).state_version
@@ -67,14 +65,14 @@ async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_org
     organization check at all), and proposal drafting could cite org B's
     private data as evidence for an org A claim.
     """
-    org_id, tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
+    _org_id, tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
     _other_org_id, _other_tender_id, other_org_item_id, _other_actor_id = (
         await _org_tender_and_employee()
     )
 
     with pytest.raises(knowledge_service.CrossOrganizationKnowledgeItemError):
         await knowledge_service.set_knowledge_selection(
-            tender_id, other_org_item_id, True, actor_id, org_id
+            tender_id, other_org_item_id, True, actor_id
         )
 
     async with UnitOfWork() as uow:
@@ -90,15 +88,20 @@ async def test_set_knowledge_selection_rejects_a_tender_outside_the_authorized_o
     know a tender_id and knowledge_item_id that both belong to org B would
     pass that guard (the two resources agree with each other) and write a
     selection - and bump org B's own state_version - despite never having
-    been authorized for org B at all. organization_id is now an explicit,
-    independently-checked parameter for exactly this reason.
+    been authorized for org B at all. Fixed not by adding an organization_id
+    parameter (a prior draft of this fix did that, then removed it - see
+    set_knowledge_selection's own docstring: every real caller only ever
+    had one way to produce that argument, re-deriving it from tender_id, so
+    the comparison was always true and caught nothing) but by deriving the
+    actor's real membership from tender_id directly, inside the function,
+    where no caller can get it wrong.
     """
-    org_a_id, _org_a_tender_id, _org_a_item_id, actor_id = await _org_tender_and_employee()
+    _org_a_id, _org_a_tender_id, _org_a_item_id, actor_id = await _org_tender_and_employee()
     _org_b_id, org_b_tender_id, org_b_item_id, _org_b_actor_id = await _org_tender_and_employee()
 
     with pytest.raises(knowledge_service.CrossOrganizationTenderError):
         await knowledge_service.set_knowledge_selection(
-            org_b_tender_id, org_b_item_id, True, actor_id, org_a_id
+            org_b_tender_id, org_b_item_id, True, actor_id
         )
 
     async with UnitOfWork() as uow:
@@ -111,17 +114,13 @@ async def test_deselecting_also_bumps_state_version():
     # both "knowledge selection change" per Part C's own wording, neither
     # is a no-op for freshness purposes (a deselect is exactly the mutation
     # USED_IN's selected=false property-flip exists to represent in Neo4j).
-    org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
-    await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, True, actor_id, org_id
-    )
+    _org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
+    await knowledge_service.set_knowledge_selection(tender_id, knowledge_item_id, True, actor_id)
 
     async with UnitOfWork() as uow:
         before_version = (await uow.tenders.get(tender_id)).state_version
 
-    await knowledge_service.set_knowledge_selection(
-        tender_id, knowledge_item_id, False, actor_id, org_id
-    )
+    await knowledge_service.set_knowledge_selection(tender_id, knowledge_item_id, False, actor_id)
 
     async with UnitOfWork() as uow:
         after_version = (await uow.tenders.get(tender_id)).state_version

@@ -435,41 +435,54 @@ async def evaluate_compliance_for_requirement(
 # ----------------------------------------------------------------------
 
 
+async def approve_compliance_entry_in_uow(
+    uow: UnitOfWork, compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID
+) -> ComplianceEntry:
+    """The transaction-open, no-commit core of approve_compliance_entry -
+    for a caller (gate_target_service.apply_target_updates) that needs to
+    compose this write with others in ONE shared transaction, so a later
+    failure in the same batch rolls this one back too rather than leaving
+    it committed. approve_compliance_entry itself (below) is unchanged for
+    every other existing caller (G7's own route) - opens its own UnitOfWork,
+    calls this, commits once.
+    """
+    entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
+    if entry is None:
+        raise ComplianceEntryNotFoundError()
+    requirement = await uow.requirements.get(entry.requirement_id)
+    if requirement is None:
+        raise RequirementNotFoundError()
+    tender = await uow.tenders.get(requirement.tender_id)
+    if tender is None:
+        raise RequirementNotFoundError()
+
+    before = {"human_approved": entry.human_approved, "status": entry.status}
+    updated = await uow.compliance.update_compliance_entry(compliance_entry_id, human_approved=True)
+    await uow.audit.create(
+        organization_id=tender.organization_id,
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        action="compliance_approve",
+        tender_id=tender.id,
+        target_type="compliance_entry",
+        target_id=compliance_entry_id,
+        before=before,
+        after={"human_approved": True, "status": updated.status},
+    )
+    # Part C's State-version invariant: "compliance change" is one of
+    # the listed graph-relevant mutations, bumped in the same
+    # transaction as the write it accompanies (KNOWN_LIMITATIONS.md:
+    # "[B7/B8] tenders.state_version was never bumped" - this call was
+    # missing from B7 through this fix in B8).
+    await uow.tenders.bump_state_version(tender.id)
+    return updated
+
+
 async def approve_compliance_entry(
     compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> ComplianceEntry:
     async with UnitOfWork() as uow:
-        entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
-        if entry is None:
-            raise ComplianceEntryNotFoundError()
-        requirement = await uow.requirements.get(entry.requirement_id)
-        if requirement is None:
-            raise RequirementNotFoundError()
-        tender = await uow.tenders.get(requirement.tender_id)
-        if tender is None:
-            raise RequirementNotFoundError()
-
-        before = {"human_approved": entry.human_approved, "status": entry.status}
-        updated = await uow.compliance.update_compliance_entry(
-            compliance_entry_id, human_approved=True
-        )
-        await uow.audit.create(
-            organization_id=tender.organization_id,
-            actor_type="user",
-            actor_id=str(actor_user_id),
-            action="compliance_approve",
-            tender_id=tender.id,
-            target_type="compliance_entry",
-            target_id=compliance_entry_id,
-            before=before,
-            after={"human_approved": True, "status": updated.status},
-        )
-        # Part C's State-version invariant: "compliance change" is one of
-        # the listed graph-relevant mutations, bumped in the same
-        # transaction as the write it accompanies (KNOWN_LIMITATIONS.md:
-        # "[B7/B8] tenders.state_version was never bumped" - this call was
-        # missing from B7 through this fix in B8).
-        await uow.tenders.bump_state_version(tender.id)
+        updated = await approve_compliance_entry_in_uow(uow, compliance_entry_id, actor_user_id)
         await uow.commit()
         return updated
 
