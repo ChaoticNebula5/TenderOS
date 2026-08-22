@@ -1942,6 +1942,68 @@ Each entry:
 
 ---
 
+## No route-level test coverage exists anywhere in this codebase - this is how a completely dead route survived twelve blocks
+
+- **Discovered:** the entry directly above (`set_knowledge_selection`'s
+  stale 6-argument call site) is the symptom; this is the structural
+  cause, named as its own entry rather than folded into that one's own
+  "Test" note, per explicit instruction after B12's CodeRabbit-fixes
+  round. Confirmed by a targeted audit immediately after: every `await
+  <service>.<function>(...)` call site across all 15 route files
+  (`apps/api/src/tenderos_api/routes/`) was cross-checked against its
+  service function's real current signature. Result: exactly the two
+  already-known bugs (`set_knowledge_selection`, `set_candidate_selection`
+  - both already fixed) and nothing else. No third stale caller exists
+  today - but "none found this time" is not the same claim as "this class
+  of bug cannot happen," and nothing changed about *why* the first one
+  went undetected for however many commits it sat there.
+- **Behaviour:** every integration test in this codebase (B0 through B12,
+  ~305 tests) calls domain-service functions directly - `await
+  knowledge_service.set_knowledge_selection(...)`, never an HTTP request
+  through the route that's supposed to call it. This means the entire
+  HTTP layer - FastAPI dependency wiring (`require_permission` and its
+  variants), request/response schema validation, and critically, whether
+  a route's own service call site still matches that service function's
+  real signature - has never once been exercised by the automated suite,
+  for any route, in any block. The only thing that ever touches routes at
+  all is each block's own live Docker smoke test (B6 onward) - and those
+  are deliberately narrow, walking one vertical slice through however many
+  routes that block's own scenario happens to need, not a systematic pass
+  over the surface. `set_knowledge_selection`'s route was never on any
+  smoke test's path (every block's own knowledge-selection needs were
+  seeded directly via `UnitOfWork`, the same "bypass the parts out of
+  scope for what's being proven" pattern B10/B11's own smoke tests used
+  deliberately) - so a route that raised `TypeError` on literally every
+  call sat completely dead through B7 (or whichever block actually
+  changed the signature) all the way to B12, invisible to ~305 passing
+  tests and however many live smoke tests ran in between.
+- **Risk:** any future signature change to a service function with a real
+  route caller carries the same risk, silently, for every route not
+  specifically exercised by that block's own smoke test - which in
+  practice is most of them, since smoke tests are narrow by design. The
+  targeted audit just performed is a snapshot, not a standing guarantee;
+  it answers "is anything broken right now," not "will the next signature
+  change break something route-level tests would have caught immediately."
+- **Status:** not fixed - deliberately not attempted as a side effect of
+  a bug-fix pass (the user's own explicit instruction: report the
+  structural gap, don't build test infrastructure to close it here).
+  **Owner: B13 (Functional UI).** Not B12, not B16: B13 is the first block
+  in Part J's own build order whose own stop-gate ("the system can only be
+  demonstrated through direct database edits or Swagger" - the thing that
+  must NOT be true) requires exercising every gate/route a human would
+  actually click through, end to end, via its own Playwright scenario -
+  the first point in this project where anything systematically drives
+  the real HTTP surface rather than one block's own narrow vertical slice.
+  Adding FastAPI `TestClient` coverage as part of that same block's own
+  work is the natural, low-friction moment: the route inventory, the
+  request/response shapes, and the auth dependencies all have to be
+  understood anyway to build the UI against them. B16 (Full Evaluation,
+  Reliability, and Load Tests) is downstream of B13 in the build order and
+  would be auditing a UI that's already had to work around this gap by
+  then, not the place that closes it first.
+- **Test:** none - this entry names the gap; closing it is B13's own
+  work, not retroactively built here.
+
 ## [B12] Neither app calls `logging.basicConfig()` anywhere - every `logger.info()` call in the entire codebase is silently dropped
 
 - **Discovered:** during B12's own live verification of `gate_target_
