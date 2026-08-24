@@ -15,7 +15,7 @@ typecheck:
 	uv run mypy
 
 test:
-	uv run pytest
+	POSTGRES_DSN=postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test uv run pytest
 
 migrate:
 	uv run alembic upgrade head

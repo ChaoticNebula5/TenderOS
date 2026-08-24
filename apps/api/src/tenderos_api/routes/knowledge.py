@@ -1,3 +1,4 @@
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -5,6 +6,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import document_service, knowledge_service, tender_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.routes.documents import _validate_upload
 from tenderos_api.schemas.knowledge import (
     EmployeeResponse,
@@ -46,7 +48,25 @@ async def _upload_batch_document(
         side="company",
         doc_type=doc_type,
     )
-    await knowledge_service.queue_knowledge_document_import(document.id, batch_id)
+    # B13: found by route testing, not by reading this file. A fresh
+    # request_id every call, not just when _is_new is False - same
+    # "simpler than branching, harmless for the genuinely-new-document
+    # case" reasoning replace_employee_resume's own call already uses.
+    # Without it: two files in the SAME bulk-resumes upload with
+    # identical content dedup to the same document (create_document's
+    # own org+hash dedup), and this function is called twice for that
+    # one document_id with no request_id - the second
+    # queue_knowledge_document_import call builds the exact same
+    # idempotency_key as the first (knowledge_document_uploaded_
+    # idempotency_key's own docstring names this collision by name), and
+    # the outbox insert 500s on outbox_events' unique idempotency_key
+    # constraint instead of silently no-oping. Caught by
+    # tests/route/test_knowledge_routes.py::
+    # test_upload_resumes_creates_one_batch_for_multiple_files uploading
+    # two byte-identical files, not by inspection.
+    await knowledge_service.queue_knowledge_document_import(
+        document.id, batch_id, request_id=uuid.uuid4()
+    )
 
 
 @router.post(
@@ -76,10 +96,28 @@ async def upload_employee_master(
         side="company",
         doc_type="employee_master",
     )
-    batch = await knowledge_service.create_import_batch(
-        org_id, "employee_master_xlsx", document.id, current_user.id
+    # G6: "Employee-master imports accept CSV or XLSX" - import_type has to
+    # reflect which one was actually uploaded, not assume xlsx always.
+    # process_knowledge_document_import (the worker) branches on this value
+    # to pick the matching parser.
+    import_type = (
+        "employee_master_csv" if filename.lower().endswith(".csv") else "employee_master_xlsx"
     )
-    await knowledge_service.queue_knowledge_document_import(document.id, batch.id)
+    batch = await knowledge_service.create_import_batch(
+        org_id, import_type, document.id, current_user.id
+    )
+    # B13: same shape as _upload_batch_document's own fix (see its
+    # comment) - queue_knowledge_document_import's idempotency key is
+    # built from document_id alone when request_id is omitted, not
+    # document_id+batch_id, so re-uploading this exact file a second
+    # time (a genuinely ordinary action - starting a fresh import batch
+    # from the same spreadsheet) dedups to the same document.id and
+    # collides with the FIRST upload's outbox event, even though this is
+    # a different batch. A fresh request_id every call is what actually
+    # scopes the event to this call, not just this document.
+    await knowledge_service.queue_knowledge_document_import(
+        document.id, batch.id, request_id=uuid.uuid4()
+    )
     return ImportBatchResponse.model_validate(batch, from_attributes=True)
 
 
@@ -109,7 +147,12 @@ async def upload_certifications(
     batch = await knowledge_service.create_import_batch(
         org_id, "certification_documents", document.id, current_user.id
     )
-    await knowledge_service.queue_knowledge_document_import(document.id, batch.id)
+    # B13: same fix as upload_employee_master above - see that route's
+    # own comment for the mechanism (a fresh request_id scopes this
+    # outbox event to THIS call, not just this document_id).
+    await knowledge_service.queue_knowledge_document_import(
+        document.id, batch.id, request_id=uuid.uuid4()
+    )
     return ImportBatchResponse.model_validate(batch, from_attributes=True)
 
 
@@ -181,7 +224,11 @@ async def upload_knowledge_document(
     batch = await knowledge_service.create_import_batch(
         org_id, "manual", document.id, current_user.id
     )
-    await knowledge_service.queue_knowledge_document_import(document.id, batch.id)
+    # B13: same fix as upload_employee_master above - see that route's
+    # own comment for the mechanism.
+    await knowledge_service.queue_knowledge_document_import(
+        document.id, batch.id, request_id=uuid.uuid4()
+    )
 
 
 @router.get(
@@ -308,6 +355,33 @@ async def patch_knowledge_item(
     return KnowledgeItemResponse.model_validate(updated, from_attributes=True)
 
 
+@router.get("/employees/{knowledge_item_id}", response_model=EmployeeResponse)
+async def get_employee(
+    knowledge_item_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
+) -> EmployeeResponse:
+    """B13 (screen 4, profile detail/verification): Part G's own G6 list
+    never named this route - GET /knowledge/{id} (generic, title/status
+    only) and GET /organizations/{org_id}/employees (bid-eligible-only,
+    excludes exactly the unverified profiles a reviewer needs to inspect)
+    were the only two GETs. knowledge_service.get_employee and
+    EmployeeResponse both already existed (patch_employee_profile/
+    verify_employee/replace_employee_resume below all fetch through the
+    same function before mutating) - this exposes them as their own read,
+    it does not add a capability. Same `_MANAGE` action as every other
+    route in this module, not a new view_* action: unlike view_workflow/
+    view_graph/view_readiness/view_gates (all cases of a workflow-
+    transparency read wrongly gated behind a narrow AUTHORING action),
+    this is personnel data - list_bid_eligible_employees already returns
+    the same full EmployeeResponse shape under this same 4-role action,
+    with no prior finding that scope is wrong. Reusing it is consistency
+    with this module's own existing design, not an oversight.
+    """
+    employee = await knowledge_service.get_employee(knowledge_item_id)
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return EmployeeResponse.model_validate(employee, from_attributes=True)
+
+
 @router.patch("/employees/{knowledge_item_id}/profile", response_model=EmployeeResponse)
 async def patch_employee_profile(
     knowledge_item_id: UUID,
@@ -397,6 +471,9 @@ async def set_knowledge_selection(
     knowledge_item_id: UUID,
     body: SetKnowledgeSelectionRequest,
     current_user: User = Depends(require_permission(_MANAGE)),
+    idempotency: IdempotencyContext = Depends(
+        get_idempotency_context("knowledge_selection_change", required=True)
+    ),
 ) -> KnowledgeSelectionResponse:
     """No impact-preview/state-version-bump/projection wiring here - see
     knowledge_service.set_knowledge_selection's docstring for why (B7/B10
@@ -413,7 +490,17 @@ async def set_knowledge_selection(
     old 6-argument shape after that signature changed underneath it (a real
     bug: the route raised TypeError on every call, caught only because no
     test in this codebase exercises the route layer directly) - fixed here.
+
+    B13 (§3c): Idempotency-Key added - Part I1 names "knowledge selection
+    change" as one of its six required-Idempotency-Key operations
+    verbatim; this route never had it wired in, the last of the six left
+    missing. Same required=True shape select_candidate/decide_gate/
+    create_workflow_run already use.
     """
+    if idempotency.replay_response is not None:
+        _, cached_body = idempotency.replay_response
+        return KnowledgeSelectionResponse.model_validate(cached_body)
+
     tender = await tender_service.get_tender(tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
@@ -451,4 +538,6 @@ async def set_knowledge_selection(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge item not found"
         ) from exc
-    return KnowledgeSelectionResponse.model_validate(updated, from_attributes=True)
+    response = KnowledgeSelectionResponse.model_validate(updated, from_attributes=True)
+    await idempotency.finalize(200, response.model_dump(mode="json"))
+    return response

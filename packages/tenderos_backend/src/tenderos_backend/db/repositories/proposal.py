@@ -79,6 +79,12 @@ class ProposalRepository:
         for key, value in fields.items():
             setattr(section, key, value)
         await self._session.flush()
+        # Same DetachedInstanceError concern ComplianceRepository.update_
+        # compliance_entry and RequirementRepository.update_fields document:
+        # updated_at carries an onupdate=func.now() value a plain flush()
+        # doesn't pull back into the Python object, and the route serializes
+        # this object after the UnitOfWork's session has already closed.
+        await self._session.refresh(section)
         return section
 
     # ------------------------------------------------------------------

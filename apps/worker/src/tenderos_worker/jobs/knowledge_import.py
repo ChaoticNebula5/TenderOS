@@ -4,8 +4,15 @@ from datetime import date
 
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy import select
-from tenderos_backend.agents.knowledge.certifications_xlsx import parse_certifications
-from tenderos_backend.agents.knowledge.employee_master import parse_employee_master
+from tenderos_backend.agents.knowledge.certifications_xlsx import (
+    CertificationValidationError,
+    parse_certifications,
+)
+from tenderos_backend.agents.knowledge.employee_master import (
+    EmployeeMasterValidationError,
+    parse_employee_master,
+    parse_employee_master_csv,
+)
 from tenderos_backend.agents.knowledge.extract import (
     extract_capability_statement,
     extract_employee_profile,
@@ -32,6 +39,7 @@ from tenderos_backend.domain.services.knowledge_service import (
     import_past_project,
     import_resume,
     import_worked_on_relationship,
+    record_batch_parse_failure,
 )
 
 from tenderos_worker.jobs.ingestion import parse_and_embed_document
@@ -53,11 +61,26 @@ def _build_llm_client() -> LLMClient:
 async def process_knowledge_document_import(document_id: str, batch_id: str) -> None:
     """Enqueued on KnowledgeDocumentUploaded (outbox_dispatcher.py) - the
     mechanical/LLM import step for one uploaded knowledge document, run
-    here rather than inside the upload request (line 538). Calls
-    parse_and_embed_document itself (idempotent, safe even if the
-    ordinary DocumentUploaded event already triggered ingestion) rather
-    than depending on dispatch order between the two events - this job is
-    self-sufficient regardless of which fires first.
+    here rather than inside the upload request (line 538).
+
+    B13: parse_and_embed_document is now called only for the two batch
+    types whose import actually reads document_chunks -
+    resumes/capability-statements (_process_resume/_process_capability_
+    statement both call list_chunks_for_document directly, extracting
+    from real prose chunks via the LLM). employee_master_csv/
+    employee_master_xlsx/certification_documents never touch chunks at
+    all - they parse deterministically off the raw spreadsheet bytes
+    (parse_employee_master(_csv)/parse_certifications), and
+    import_certification_row builds its own single synthetic chunk
+    internally (_create_synthetic_chunk) rather than depending on this
+    function's chunking. Calling parse_and_embed_document unconditionally
+    for every batch type - this function's original shape - crashed
+    outright for a CSV upload (_extract_blocks has no CSV handling at
+    all) and would have silently mis-chunked an XLSX employee-
+    master/certifications file as if it were a generic prose/pricing
+    document for the two types that would have technically "succeeded."
+    Caught live: uploading a real employee-master.csv through the actual
+    browser against the full Docker stack - see KNOWN_LIMITATIONS.md.
     """
     doc_id = uuid.UUID(document_id)
     batch_uuid = uuid.UUID(batch_id)
@@ -70,13 +93,24 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
         if document is None:
             raise ValueError(f"Document {doc_id} not found")
 
-    await parse_and_embed_document(document_id)
-
     org_id = batch.organization_id
 
     if batch.import_type in ("employee_master_csv", "employee_master_xlsx"):
         content = await storage.get(document.storage_key)
-        rows = parse_employee_master(content)
+        try:
+            rows = (
+                parse_employee_master_csv(content)
+                if batch.import_type == "employee_master_csv"
+                else parse_employee_master(content)
+            )
+        except EmployeeMasterValidationError as exc:
+            # No per-row knowledge_import_items row exists yet at this point
+            # - without a sentinel, _compute_batch_progress sees total=0 and
+            # reports "queued" forever, indistinguishable from an import that
+            # hasn't started. See KNOWN_LIMITATIONS.md.
+            await record_batch_parse_failure(batch_uuid, str(exc))
+            logger.exception("employee-master parse failed for batch %s", batch_uuid)
+            return
         for row in rows:
             await import_employee_master_row(org_id, batch_uuid, row)
         logger.info("employee-master import complete for batch %s (%d rows)", batch_uuid, len(rows))
@@ -84,7 +118,12 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
 
     if batch.import_type == "certification_documents":
         content = await storage.get(document.storage_key)
-        rows = parse_certifications(content)
+        try:
+            rows = parse_certifications(content)
+        except CertificationValidationError as exc:
+            await record_batch_parse_failure(batch_uuid, str(exc))
+            logger.exception("certification parse failed for batch %s", batch_uuid)
+            return
         for row in rows:
             await import_certification_row(org_id, batch_uuid, doc_id, row, today=date.today())
         logger.info("certification import complete for batch %s (%d rows)", batch_uuid, len(rows))
@@ -94,11 +133,17 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
         # Capability statement - "manual" is the closest fit in Part C's
         # locked import_type enum (no dedicated capability_statement
         # value); see knowledge_service's create_import_batch call site
-        # for this same reasoning.
+        # for this same reasoning. Needs real document_chunks first -
+        # _process_capability_statement reads them directly.
+        await parse_and_embed_document(document_id)
         await _process_capability_statement(doc_id, batch_uuid, org_id)
         return
 
     if batch.import_type == "bulk_resumes":
+        # Same chunks-first need as capability statements above -
+        # _process_resume reads document_chunks directly for LLM
+        # extraction.
+        await parse_and_embed_document(document_id)
         await _process_resume(doc_id, batch_uuid, org_id, document.filename)
         return
 

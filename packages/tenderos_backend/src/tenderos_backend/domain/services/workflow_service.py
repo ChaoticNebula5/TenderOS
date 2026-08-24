@@ -67,6 +67,11 @@ async def get_workflow_run(run_id: uuid.UUID) -> WorkflowRun | None:
         return await uow.workflow.get_run(run_id)
 
 
+async def list_workflow_runs(tender_id: uuid.UUID) -> list[WorkflowRun]:
+    async with UnitOfWork() as uow:
+        return await uow.workflow.list_runs_for_tender(tender_id)
+
+
 async def list_tasks(run_id: uuid.UUID) -> list[WorkflowTask]:
     async with UnitOfWork() as uow:
         return await uow.workflow.list_tasks(run_id)

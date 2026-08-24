@@ -1,6 +1,8 @@
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from tenderos_backend.db.models.user import User
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.domain.services import (
@@ -17,30 +19,64 @@ from tenderos_api.errors import (
     TargetOwnershipDeniedError,
 )
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
-from tenderos_api.schemas.gates import GateDecisionRequest, GateResponse
+from tenderos_api.schemas.gates import (
+    CommercialApprovalGateResponse,
+    ComplianceReviewGateResponse,
+    FinalReadinessGateResponse,
+    FindingResolutionGateResponse,
+    GateDecisionRequest,
+    GateResponse,
+    RequirementReviewGateResponse,
+    ResourceSelectionGateResponse,
+)
 
 router = APIRouter(tags=["gates"])
 
+# gate_type -> its matching response subclass, same dict-dispatch style
+# orchestration/gates.py's own GATE_TYPE_ACTIONS already uses. Every gate
+# row's gate_type is one of these six (Part C's CHECK constraint on
+# approval_gates.gate_type), so a KeyError here would mean the DB has a
+# gate_type this API layer has never heard of - not a case to catch, a
+# schema drift to find out about loudly.
+_GATE_TYPE_TO_RESPONSE_CLASS: dict[str, type[BaseModel]] = {
+    "requirement_review": RequirementReviewGateResponse,
+    "compliance_review": ComplianceReviewGateResponse,
+    "resource_selection": ResourceSelectionGateResponse,
+    "commercial_approval": CommercialApprovalGateResponse,
+    "finding_resolution": FindingResolutionGateResponse,
+    "final_readiness": FinalReadinessGateResponse,
+}
+
 
 def _gate_to_response(gate: ApprovalGate) -> GateResponse:
-    return GateResponse(
-        gate_id=gate.id,
-        gate_type=gate.gate_type,
-        workflow_run_id=gate.workflow_run_id,
-        status=gate.status,
-        targets=gate.request_payload.get("targets", []),
-        summary=gate.request_payload.get("summary", {}),
-        allowed_decisions=gate.request_payload.get("allowed_decisions", []),
-        decision_payload=gate.decision_payload,
-        decided_by=gate.decided_by,
-        requested_at=gate.requested_at,
-        decided_at=gate.decided_at,
+    response_class = _GATE_TYPE_TO_RESPONSE_CLASS[gate.gate_type]
+    # cast, not a plain return: the dict lookup above guarantees
+    # response_class matches gate.gate_type at runtime (Part C's CHECK
+    # constraint backs that), but mypy has no way to narrow a dict's value
+    # type down to one specific member of GateResponse's Union from a
+    # runtime string key - this tells it what's already true, not what to
+    # trust blindly.
+    return cast(
+        GateResponse,
+        response_class(
+            gate_id=gate.id,
+            gate_type=gate.gate_type,
+            workflow_run_id=gate.workflow_run_id,
+            status=gate.status,
+            targets=gate.request_payload.get("targets", []),
+            summary=gate.request_payload.get("summary", {}),
+            allowed_decisions=gate.request_payload.get("allowed_decisions", []),
+            decision_payload=gate.decision_payload,
+            decided_by=gate.decided_by,
+            requested_at=gate.requested_at,
+            decided_at=gate.decided_at,
+        ),
     )
 
 
 @router.get("/workflow-runs/{run_id}/gates", response_model=list[GateResponse])
 async def list_gates(
-    run_id: UUID, current_user: User = Depends(require_permission("create_bid"))
+    run_id: UUID, current_user: User = Depends(require_permission("view_gates"))
 ) -> list[GateResponse]:
     gates = await gate_service.list_gates_for_run(run_id)
     return [_gate_to_response(g) for g in gates]
@@ -48,7 +84,7 @@ async def list_gates(
 
 @router.get("/gates/{gate_id}", response_model=GateResponse)
 async def get_gate(
-    gate_id: UUID, current_user: User = Depends(require_permission("create_bid"))
+    gate_id: UUID, current_user: User = Depends(require_permission("view_gates"))
 ) -> GateResponse:
     gate = await gate_service.get_gate(gate_id)
     if gate is None:
@@ -66,8 +102,13 @@ async def decide_gate(
     ),
 ) -> GateResponse:
     if idempotency.replay_response is not None:
+        # GateResponse is now a discriminated Union alias, not a class - it
+        # has no .model_validate of its own. Same dispatch-by-gate_type
+        # dict _gate_to_response uses, keyed off the cached body's own
+        # gate_type field instead of a live ApprovalGate row.
         _, cached_body = idempotency.replay_response
-        return GateResponse.model_validate(cached_body)
+        response_class = _GATE_TYPE_TO_RESPONSE_CLASS[cached_body["gate_type"]]
+        return cast(GateResponse, response_class.model_validate(cached_body))
 
     gate = await gate_service.get_gate(gate_id)
     if gate is None:

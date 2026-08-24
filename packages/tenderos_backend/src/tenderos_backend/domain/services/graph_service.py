@@ -189,13 +189,14 @@ async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -
         result = await session.run(
             match_clause + " "
             "OPTIONAL MATCH (n)-[r]-(neighbor) "
-            "RETURN n, collect({relationship: type(r), neighbor: neighbor}) AS neighbors",
+            "RETURN n, labels(n) AS node_labels, collect({relationship: type(r), "
+            "neighbor: neighbor, neighbor_labels: labels(neighbor)}) AS neighbors",
             nodeId=node_id,
             tenderId=tid,
         )
         record = await result.single()
         if record is None:
-            return {"node": None, "neighbors": []}
+            return {"node": None, "node_labels": [], "neighbors": []}
         return record.data()
 
 

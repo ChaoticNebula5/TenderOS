@@ -200,6 +200,39 @@ async def test_clean_tender_is_ready():
     assert result.blockers == []
 
 
+# B13/§8a: every test below only ever checks individual categories'
+# presence/absence in result.blockers - none of them pin the COMPLETE
+# counts key set schemas/readiness.py's ReadinessCounts is now typed
+# against. All 11 keys are set unconditionally in one pass
+# (readiness_service.py:184-319), so a clean tender's own report already
+# carries every key (just at 0) - no extra seeding needed to pin the set
+# itself, only to exercise individual values elsewhere in this file.
+_EXPECTED_COUNTS_KEYS = {
+    "requirements_total",
+    "requirements_completed",
+    "mandatory_requirements_unresolved",
+    "compliance_decisions_awaiting_approval",
+    "requirements_lacking_valid_evidence",
+    "critical_major_redteam_findings",
+    "missing_submission_artefacts",
+    "commercial_findings_open",
+    "resource_gaps",
+    "proposal_claims_needing_review",
+    "open_clarifications",
+}
+
+
+async def test_clean_tender_report_has_the_complete_counts_key_set():
+    _org_id, tender_id = await _org_and_tender("Clean Counts")
+    await _project(tender_id)
+
+    result = await readiness_service.evaluate_readiness(tender_id)
+
+    assert set(result.counts.keys()) == _EXPECTED_COUNTS_KEYS, (
+        "result.counts drifted from schemas/readiness.py's typed ReadinessCounts"
+    )
+
+
 # ----------------------------------------------------------------------
 # Blocker 1: unresolved mandatory requirement.
 # ----------------------------------------------------------------------

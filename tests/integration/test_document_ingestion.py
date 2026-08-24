@@ -91,6 +91,49 @@ async def test_upload_creates_document_and_outbox_event_without_parsing():
     assert [e.event_type for e in events] == ["DocumentUploaded"]
 
 
+async def test_organization_scoped_upload_fires_no_generic_document_uploaded_event():
+    """B13: create_document's own DocumentUploaded firing used to be
+    unconditional, regardless of caller - an organization-scoped upload
+    (tender_id=None; employee-master, certifications, resumes, capability
+    statements, all real routes/knowledge.py callers) fired it exactly
+    the same as a real tender document, and outbox_dispatcher always
+    routes that event type to parse_and_embed_document - the generic
+    tender-RAG pipeline, which has no idea what to do with a company
+    knowledge document (crashes outright on .csv; for .xlsx/.docx it
+    would silently create document_chunks/embeddings for a document with
+    no tender_id at all). reprocess_document (same file) already refused
+    to act when tender_id is None for the identical reason - create_
+    document is the sibling call site that never adopted that guard.
+    Caught live: uploading a real employee-master.csv through the actual
+    browser against the full Docker stack, not by inspection - see
+    KNOWN_LIMITATIONS.md.
+    """
+    org_id, _tender_id = await _make_tender()
+
+    document, is_new = await document_service.create_document(
+        tender_id=None,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="employees.csv",
+        content=b"Name\r\nDana\r\n",
+        mime_type="text/csv",
+        side="company",
+        doc_type="employee_master",
+    )
+
+    assert is_new is True
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == document.id)
+        )
+        events = result.scalars().all()
+    assert events == [], (
+        "an organization-scoped upload must not fire the tender-ingestion "
+        "DocumentUploaded event at all"
+    )
+
+
 async def test_duplicate_upload_is_safe():
     """Same bytes, same tender - returns the existing row, writes no second
     document and no second ingestion event."""

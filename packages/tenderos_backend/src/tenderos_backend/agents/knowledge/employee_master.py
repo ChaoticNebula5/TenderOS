@@ -1,3 +1,4 @@
+import csv
 import io
 from dataclasses import dataclass
 
@@ -47,19 +48,16 @@ class EmployeeMasterRow:
     status: str | None
 
 
-def parse_employee_master(content: bytes) -> list[EmployeeMasterRow]:
-    """Pure parsing, no DB access - mirrors ingestion/parse_xlsx.py's shape
-    (bytes in, structured records out). Persisting these as knowledge_items/
-    employees rows, including the decision of how a template's free-text
-    Status value ("active"/"removed"/...) maps to knowledge_items.status
-    ('active'/'expired'/'archived'/'unverified'), is the import service's
-    job, not this parser's - kept separate so this function stays a pure,
-    independently testable transform.
+def _rows_to_employee_master(raw_rows: list[tuple]) -> list[EmployeeMasterRow]:
+    """Shared header-validation + row-conversion, independent of source
+    format. raw_rows is [header_row, *data_rows] - each row already a
+    plain sequence of cell values (str for csv, whatever type xlsx cells
+    produced - openpyxl's own typed values, not pre-stringified) so this
+    function's own logic is identical either way.
     """
-    workbook = load_workbook(io.BytesIO(content), data_only=True)
-    sheet = workbook.active
-
-    header_cells = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    if not raw_rows:
+        raise EmployeeMasterValidationError("Employee-master file has no header row")
+    header_cells = raw_rows[0]
     headers = [str(cell).strip() if cell is not None else "" for cell in header_cells]
     normalized_headers = [header.lower() for header in headers]
 
@@ -90,9 +88,7 @@ def parse_employee_master(content: bytes) -> list[EmployeeMasterRow]:
         return value or None
 
     rows: list[EmployeeMasterRow] = []
-    for row_number, row in enumerate(
-        sheet.iter_rows(min_row=2, values_only=True), start=2
-    ):
+    for row_number, row in enumerate(raw_rows[1:], start=2):
         name = _cell(row, "name")
         if name is None:
             continue  # blank row - not a data-quality error, just skipped
@@ -106,3 +102,30 @@ def parse_employee_master(content: bytes) -> list[EmployeeMasterRow]:
             )
         )
     return rows
+
+
+def parse_employee_master(content: bytes) -> list[EmployeeMasterRow]:
+    """Pure parsing, no DB access - mirrors ingestion/parse_xlsx.py's shape
+    (bytes in, structured records out). Persisting these as knowledge_items/
+    employees rows, including the decision of how a template's free-text
+    Status value ("active"/"removed"/...) maps to knowledge_items.status
+    ('active'/'expired'/'archived'/'unverified'), is the import service's
+    job, not this parser's - kept separate so this function stays a pure,
+    independently testable transform.
+    """
+    workbook = load_workbook(io.BytesIO(content), data_only=True)
+    sheet = workbook.active
+    raw_rows = [row for row in sheet.iter_rows(values_only=True)]
+    return _rows_to_employee_master(raw_rows)
+
+
+def parse_employee_master_csv(content: bytes) -> list[EmployeeMasterRow]:
+    """G6: "Employee-master imports accept CSV or XLSX with a documented
+    template" - the CSV half. utf-8-sig strips a leading BOM (Excel's own
+    "Save As CSV" writes one; a plain utf-8 decode would leave it stuck to
+    the first header cell, e.g. '\\ufeffEmployee Code', silently failing
+    the header-recognition check below rather than raising a clear error).
+    """
+    text = content.decode("utf-8-sig")
+    raw_rows = [tuple(row) for row in csv.reader(io.StringIO(text))]
+    return _rows_to_employee_master(raw_rows)

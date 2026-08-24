@@ -1,0 +1,40 @@
+/* Design tokens - Part J's "function before visual polish" rule for B13
+   means these values are deliberately boring. The point of this file is
+   that it EXISTS and every component reads from it, not that the values
+   are final - B17 (UI Polish) restyles by changing values here plus
+   targeted swap-outs, not by rewriting 17 screens' worth of inline
+   styling. */
+
+:root {
+  /* Color - neutral, functional palette only */
+  --color-background: #ffffff;
+  --color-surface: #f5f5f5;
+  --color-border: #d4d4d4;
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #595959;
+
+  /* Color - semantic status (compliant/non-compliant, resolved/unresolved,
+     gate status - reused across every gate/finding/readiness screen) */
+  --color-success: #1a7f37;
+  --color-warning: #9a6700;
+  --color-danger: #cf222e;
+  --color-info: #0969da;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Type scale */
+  --font-size-1: 12px;
+  --font-size-2: 14px;
+  --font-size-3: 16px;
+  --font-size-4: 20px;
+  --font-size-5: 28px;
+  --font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}

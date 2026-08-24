@@ -42,6 +42,18 @@ class WorkflowRepository:
     async def get_run(self, run_id: uuid.UUID) -> WorkflowRun | None:
         return await self._session.get(WorkflowRun, run_id)
 
+    async def list_runs_for_tender(self, tender_id: uuid.UUID) -> list[WorkflowRun]:
+        # A list, not a single "current" run - a tender can have several
+        # runs over its life, and "current" is ambiguous once the last one
+        # is terminal or cancelled. Ordered newest-first so the most common
+        # caller need (the latest run) doesn't require the client to sort.
+        result = await self._session.execute(
+            select(WorkflowRun)
+            .where(WorkflowRun.tender_id == tender_id)
+            .order_by(WorkflowRun.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def update_run_status(self, run_id: uuid.UUID, status: str) -> None:
         run = await self._session.get(WorkflowRun, run_id)
         if run is None:

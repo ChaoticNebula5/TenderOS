@@ -164,10 +164,20 @@ async def import_employee_master_row(
     match is a normal outcome recorded on the import item (needs_review),
     not a raised error - only a genuine persistence failure propagates.
     """
+    source_ref = f"row_{row.row_number}"
     async with UnitOfWork() as uow:
+        # A retried worker job re-parses the same file and re-walks every
+        # row from the start - without this check, any row already
+        # committed by a prior attempt hits uq_knowledge_import_item_
+        # source_ref and crashes the retry outright, instead of resuming
+        # past whatever already succeeded. See KNOWN_LIMITATIONS.md.
+        existing = await uow.knowledge.get_import_item_by_source_ref(batch_id, source_ref)
+        if existing is not None:
+            return existing
+
         import_item = await uow.knowledge.create_import_item(
             batch_id=batch_id,
-            source_ref=f"row_{row.row_number}",
+            source_ref=source_ref,
             extracted_payload={
                 "employee_code": row.employee_code,
                 "name": row.name,
@@ -525,10 +535,19 @@ async def import_certification_row(
     document (required, not resolved here) - _create_synthetic_chunk below
     needs a real document to attach a chunk to.
     """
+    source_ref = f"row_{row.row_number}"
     async with UnitOfWork() as uow:
+        # Same retry-resume reasoning as import_employee_master_row. Named
+        # distinctly from `existing` below (the fingerprint-based dedup
+        # lookup, a KnowledgeItem | None) - same function, two different
+        # "does this already exist" checks against two different types.
+        existing_item = await uow.knowledge.get_import_item_by_source_ref(batch_id, source_ref)
+        if existing_item is not None:
+            return existing_item
+
         import_item = await uow.knowledge.create_import_item(
             batch_id=batch_id,
-            source_ref=f"row_{row.row_number}",
+            source_ref=source_ref,
             extracted_payload={
                 "cert_key": row.cert_key,
                 "employee_ref": row.employee_ref,
@@ -540,20 +559,71 @@ async def import_certification_row(
         )
 
         holder: uuid.UUID | None = None
-        if row.employee_ref:
-            employee = await uow.knowledge.get_employee_by_code(organization_id, row.employee_ref)
-            if employee is None:
-                updated = await uow.knowledge.update_import_item(
-                    import_item.id,
-                    status="needs_review",
-                    error_message=(
-                        f"no employee found with employee_code {row.employee_ref!r} "
-                        "in this organization"
-                    ),
-                )
-                await uow.commit()
-                return updated
-            holder = employee.knowledge_item_id
+        # TODO(human): handle a blank employee cell (row.employee_ref is
+        # None) - currently falls straight through the `if row.employee_ref`
+        # check below with holder left at None, which lets the function
+        # continue on to create an APPROVED certification with no holder at
+        # all (KNOWN_LIMITATIONS.md: "a certification row with a blank
+        # employee cell creates an approved, holderless certification
+        # instead of routing to review").
+        #
+        # Steps (plain-English, not code):
+        #   1. Before the `if row.employee_ref:` block below, check whether
+        #      row.employee_ref is falsy (None or blank - the parser already
+        #      collapses an empty cell to None, so a plain truthiness check
+        #      is enough).
+        #   2. If it is, decide the review outcome for this row and call
+        #      uow.knowledge.update_import_item(import_item.id, status=...,
+        #      error_message=...) - same call shape as the sibling
+        #      "employee_ref given but not found" branch a few lines below,
+        #      which you can use as a direct template.
+        #   3. await uow.commit() and return the updated item, same as that
+        #      sibling branch - do not fall through to the certification-
+        #      creation code further down.
+        #
+        # What's already available:
+        #   - `row: CertificationRow` - .employee_ref is None here (that's
+        #     why you're in this branch), plus .row_number, .name, etc.
+        #   - `import_item` - already created above, in this same open
+        #     transaction, not yet committed.
+        #   - `uow` - the same UnitOfWork the "not found" branch below uses.
+        #
+        # The specific edge case worth deciding by hand: the status
+        # vocabulary (Part C's CHECK constraint on knowledge_import_items.
+        # status) has no value more specific than "needs_review" - it
+        # cannot distinguish "no employee was ever specified" from
+        # "employee_ref was given but doesn't match anyone" at the status
+        # level. The only place that distinction CAN live is the
+        # error_message text, which means whether to preserve it (and how)
+        # is a real, not-obvious choice, not boilerplate - the "not found"
+        # branch's own message ("no employee found with employee_code...")
+        # would be actively misleading reused verbatim for a row that never
+        # had a code typed in at all.
+        if not row.employee_ref:
+            updated = await uow.knowledge.update_import_item(
+                import_item.id,
+                status="needs_review",
+                error_message=(
+                    "no employee reference given for this row - the certification "
+                    "holder cannot be identified"
+                ),
+            )
+            await uow.commit()
+            return updated
+
+        employee = await uow.knowledge.get_employee_by_code(organization_id, row.employee_ref)
+        if employee is None:
+            updated = await uow.knowledge.update_import_item(
+                import_item.id,
+                status="needs_review",
+                error_message=(
+                    f"no employee found with employee_code {row.employee_ref!r} "
+                    "in this organization"
+                ),
+            )
+            await uow.commit()
+            return updated
+        holder = employee.knowledge_item_id
 
         fingerprint = _fingerprint(
             str(organization_id),
@@ -593,6 +663,46 @@ async def import_certification_row(
         )
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item.id
+        )
+        await uow.commit()
+        return updated
+
+
+_BATCH_PARSE_FAILURE_SOURCE_REF = "_batch_parse_failure"
+
+
+async def record_batch_parse_failure(
+    batch_id: uuid.UUID, error_message: str
+) -> KnowledgeImportItem:
+    """Called when the parse step itself raises, before any per-row
+    knowledge_import_items row ever gets created - process_knowledge_
+    document_import's own try/except around parse_employee_master(_csv)/
+    parse_certifications. Without this, _compute_batch_progress sees
+    total=0 and reports "queued" forever (KNOWN_LIMITATIONS.md: "a failure
+    before any item row is created leaves no terminal state at all") -
+    indistinguishable from an import that simply hasn't started, with no
+    signal a human reviewer could act on. One synthetic failed item gives
+    _compute_batch_progress a real total>0/failed==total to compute
+    "failed" from, the same status a per-row failure already produces -
+    idempotent on retry via the same get_import_item_by_source_ref check
+    every per-row import function uses, since a retried job re-running the
+    same broken file would otherwise hit this function a second time and
+    collide with its own sentinel row.
+    """
+    async with UnitOfWork() as uow:
+        existing = await uow.knowledge.get_import_item_by_source_ref(
+            batch_id, _BATCH_PARSE_FAILURE_SOURCE_REF
+        )
+        if existing is not None:
+            return existing
+
+        import_item = await uow.knowledge.create_import_item(
+            batch_id=batch_id,
+            source_ref=_BATCH_PARSE_FAILURE_SOURCE_REF,
+            extracted_payload={},
+        )
+        updated = await uow.knowledge.update_import_item(
+            import_item.id, status="failed", error_message=error_message
         )
         await uow.commit()
         return updated

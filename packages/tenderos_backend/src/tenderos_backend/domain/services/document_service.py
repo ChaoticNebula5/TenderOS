@@ -72,17 +72,29 @@ async def create_document(
             mime_type=mime_type,
             file_size_bytes=len(content),
         )
-        await uow.outbox.create(
-            aggregate_type=AGGREGATE_DOCUMENT,
-            aggregate_id=document.id,
-            event_type=EVENT_DOCUMENT_UPLOADED,
-            payload=document_uploaded_payload(
-                document.id,
-                tender_id=tender_id,
-                organization_id=None if tender_id is not None else organization_id,
-            ),
-            idempotency_key=document_uploaded_idempotency_key(document.id),
-        )
+        # B13: only for a real tender document - see KNOWN_LIMITATIONS.md.
+        # DocumentUploaded's one consumer (outbox_dispatcher's own
+        # _document_uploaded_dispatch) always routes to parse_and_embed_
+        # document, the generic tender-RAG ingestion pipeline; it has no
+        # meaning for an organization-scoped knowledge upload (employee-
+        # master, certifications, resumes, capability statements), which
+        # already fires its own KnowledgeDocumentUploaded event via
+        # knowledge_service.queue_knowledge_document_import. reprocess_
+        # document (below) already refuses to act when tender_id is None
+        # for the identical reason - this call site is what never adopted
+        # that same guard.
+        if tender_id is not None:
+            await uow.outbox.create(
+                aggregate_type=AGGREGATE_DOCUMENT,
+                aggregate_id=document.id,
+                event_type=EVENT_DOCUMENT_UPLOADED,
+                payload=document_uploaded_payload(
+                    document.id,
+                    tender_id=tender_id,
+                    organization_id=None,
+                ),
+                idempotency_key=document_uploaded_idempotency_key(document.id),
+            )
         await uow.audit.create(
             organization_id=organization_id,
             actor_type="user",

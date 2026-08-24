@@ -4,6 +4,7 @@ import asyncpg
 import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
 
@@ -28,6 +29,16 @@ from tenderos_api.routes import (
 )
 
 app = FastAPI(title="TenderOS API")
+# The web app is a separate origin in every configuration this project has
+# (settings.web_base_url) - without this, every browser request's CORS
+# preflight fails before auth (Authorization header) is even considered.
+# allow_credentials is not needed - auth is a Bearer header, not cookies.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.web_base_url],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 register_exception_handlers(app)
 app.include_router(auth.router)
 app.include_router(organizations.router)

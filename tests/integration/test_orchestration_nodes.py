@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from _helpers import make_ready_run_inputs
 from langgraph.graph import END
@@ -82,6 +84,29 @@ def _base_state(run: WorkflowRun) -> dict:
 # "side effects before interrupt are not duplicated").
 
 
+# B13/§8a: the six gate_types' targets/summary shapes, pinned from every
+# real build_gate_payload(...) call site (requirement.py, compliance.py,
+# talent.py, commercial.py, redteam.py, final_gate.py) rather than assumed
+# uniform from reading only two of them - reading all six found five
+# plain all-int summaries (different key sets each) plus one structurally
+# different snapshot (final_readiness), matching schemas/gates.py's own
+# discriminated-union typing.
+_EXPECTED_SUMMARY_KEYS = {
+    "requirement_review": {
+        "requirement_count",
+        "mandatory_count",
+        "unverified_mandatory_count",
+        "submission_item_count",
+        "clarification_count",
+    },
+    "compliance_review": {"compliance_entry_count", "pending_count", "high_risk_count"},
+    "resource_selection": {"role_count", "candidate_count", "unselected_count"},
+    "commercial_approval": {"finding_count", "pending_count", "critical_count"},
+    "finding_resolution": {"open_finding_count", "critical_count"},
+    "final_readiness": {"ready", "blockers", "counts", "degraded_stages"},
+}
+
+
 @pytest.mark.parametrize(
     ("module", "node", "gate_type"),
     [
@@ -89,27 +114,60 @@ def _base_state(run: WorkflowRun) -> dict:
         (compliance, compliance.compliance_gate_node, "compliance_review"),
         (talent, talent.resource_selection_gate_node, "resource_selection"),
         (commercial, commercial.commercial_approval_gate_node, "commercial_approval"),
+        (redteam, redteam.finding_gate_node, "finding_resolution"),
         (final_gate, final_gate.final_gate_node, "final_readiness"),
     ],
 )
 async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
     module, node, gate_type, monkeypatch
 ):
+    """Also pins targets/summary shape (§8a) - the API layer's typed
+    GateResponse (schemas/gates.py) is only honest if what's asserted here
+    actually matches what these nodes persist. This pins DIRECT node
+    invocation, not a compiled-graph run: these functions are called here
+    exactly as written, outside any Send()-dispatched branch. B7's own
+    interrupt-replay bug (compliance_gate_node's docstring) is proof a
+    node can behave differently under a real Send()/interrupt() topology
+    than called directly - the full Playwright E2E scenario (§1) is what
+    actually exercises these nodes inside the compiled graph; this test
+    does not stand in for that.
+    """
     monkeypatch.setattr(module, "interrupt", lambda payload: {"decision": "approve", "notes": None})
     run = await _make_run()
+    # resource_selection is the cheapest gate_type to seed a REAL target
+    # row for (create_role_requirement needs only tender_id/role_name/
+    # content_fingerprint - no document/chunk FK chain like requirements
+    # or compliance_entries need). Seeding it here confirms the actual
+    # persisted {target_type, target_id} element shape against Postgres at
+    # least once; the other four gate types build their targets list
+    # through the exact same build_gate_payload(...) passthrough
+    # (orchestration/gates.py:52-70) and _gate_to_response's identical
+    # .get("targets", []) read (routes/gates.py), so one confirmed example
+    # plus that shared code path is the deliberate scope here, not a gap.
+    if gate_type == "resource_selection":
+        async with UnitOfWork() as uow:
+            await uow.talent.create_role_requirement(
+                tender_id=run.tender_id, role_name="Pin Role", content_fingerprint=uuid.uuid4().hex
+            )
+            await uow.commit()
     state = _base_state(run)
 
     first = await node(state)
     second = await node(state)
 
     # compliance_gate_node/resource_selection_gate_node/
-    # commercial_approval_gate_node deliberately write no "status" on
-    # approve (see compliance_gate_node's own docstring) - the next node in
-    # the same un-Send()'d continuation owns that transition, not the gate
-    # node itself.
+    # commercial_approval_gate_node/finding_gate_node deliberately write no
+    # "status" on approve (see compliance_gate_node's own docstring) - the
+    # next node in the same un-Send()'d continuation owns that transition,
+    # not the gate node itself.
     if gate_type == "final_readiness":
         expected = {"status": "ready"}
-    elif gate_type in ("compliance_review", "resource_selection", "commercial_approval"):
+    elif gate_type in (
+        "compliance_review",
+        "resource_selection",
+        "commercial_approval",
+        "finding_resolution",
+    ):
         expected = {}
     else:
         expected = {"status": "running_specialists"}
@@ -122,7 +180,20 @@ async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
                 ApprovalGate.gate_type == gate_type,
             )
         )
-    assert len(result.scalars().all()) == 1
+    gates_found = result.scalars().all()
+    assert len(gates_found) == 1
+    payload = gates_found[0].request_payload
+    assert set(payload["summary"].keys()) == _EXPECTED_SUMMARY_KEYS[gate_type], (
+        f"{gate_type}'s persisted summary keys drifted from schemas/gates.py's typed model"
+    )
+    if gate_type == "final_readiness":
+        assert payload["targets"] == [], "final_readiness never has per-target items"
+    else:
+        assert all(set(t.keys()) == {"target_type", "target_id"} for t in payload["targets"]), (
+            f"{gate_type}'s persisted target elements drifted from GateTargetRef's shape"
+        )
+    if gate_type == "resource_selection":
+        assert len(payload["targets"]) == 1, "the seeded role_requirement should be the one target"
 
 
 @pytest.mark.parametrize(

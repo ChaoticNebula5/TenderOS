@@ -45,9 +45,17 @@ async def create_workflow_run(
     return response
 
 
+@router.get("/tenders/{tender_id}/workflow-runs", response_model=list[WorkflowRunResponse])
+async def list_workflow_runs(
+    tender_id: UUID, current_user: User = Depends(require_permission("view_workflow"))
+) -> list[WorkflowRunResponse]:
+    runs = await workflow_service.list_workflow_runs(tender_id)
+    return [WorkflowRunResponse.model_validate(r, from_attributes=True) for r in runs]
+
+
 @router.get("/workflow-runs/{run_id}", response_model=WorkflowRunResponse)
 async def get_workflow_run(
-    run_id: UUID, current_user: User = Depends(require_permission("create_bid"))
+    run_id: UUID, current_user: User = Depends(require_permission("view_workflow"))
 ) -> WorkflowRunResponse:
     run = await workflow_service.get_workflow_run(run_id)
     if run is None:
@@ -57,7 +65,7 @@ async def get_workflow_run(
 
 @router.get("/workflow-runs/{run_id}/tasks", response_model=list[WorkflowTaskResponse])
 async def list_workflow_tasks(
-    run_id: UUID, current_user: User = Depends(require_permission("create_bid"))
+    run_id: UUID, current_user: User = Depends(require_permission("view_workflow"))
 ) -> list[WorkflowTaskResponse]:
     tasks = await workflow_service.list_tasks(run_id)
     return [WorkflowTaskResponse.model_validate(t, from_attributes=True) for t in tasks]
@@ -65,7 +73,7 @@ async def list_workflow_tasks(
 
 @router.get("/workflow-runs/{run_id}/events", response_model=list[AuditEventResponse])
 async def list_workflow_events(
-    run_id: UUID, current_user: User = Depends(require_permission("create_bid"))
+    run_id: UUID, current_user: User = Depends(require_permission("view_workflow"))
 ) -> list[AuditEventResponse]:
     events = await workflow_service.list_events(run_id)
     return [AuditEventResponse.model_validate(e, from_attributes=True) for e in events]

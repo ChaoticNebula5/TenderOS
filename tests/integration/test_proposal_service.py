@@ -100,6 +100,12 @@ def _section_draft(claims: list[ProposalClaimDraft]) -> ProposalSectionDraft:
 
 
 async def test_facts_from_compliance_only_includes_human_approved_entries():
+    # Pinned exactly (not just kind/count) - this is the drafting node's own
+    # grounded-context input, about to be refactored (evidence-gathering
+    # shared with _facts_from_team, both reused by get_proposal_trace's new
+    # currently_in_scope_evidence). This test is the "green before, green
+    # after, unchanged" proof that refactor doesn't change - run before AND
+    # after the refactor with no edits.
     org_id, tender_id = await _make_org_and_tender("Grounded Context Test")
     requirement_id, _ = await _make_approved_requirement_with_evidence(org_id=org_id, tender_id=tender_id)
 
@@ -108,8 +114,19 @@ async def test_facts_from_compliance_only_includes_human_approved_entries():
 
     requirement_facts = [f for f in facts if f.kind == "requirement"]
     evidence_facts = [f for f in facts if f.kind == "evidence"]
-    assert [f.requirement_id for f in requirement_facts] == [requirement_id]
+    assert len(requirement_facts) == 1
+    assert requirement_facts[0].requirement_id == requirement_id
+    assert requirement_facts[0].label == "requirement_1"
+    assert requirement_facts[0].excerpt == (
+        "The company must demonstrate three prior telecom migrations."
+    )
     assert len(evidence_facts) == 1
+    assert evidence_facts[0].label == "evidence_1"
+    assert evidence_facts[0].excerpt == (
+        "Delivered three telecom network migrations for prior clients."
+    )
+    assert evidence_facts[0].requirement_id is None
+    assert evidence_facts[0].employee_knowledge_item_id is None
 
 
 async def test_facts_from_compliance_excludes_unapproved_entries():
@@ -134,6 +151,87 @@ async def test_facts_from_compliance_excludes_unapproved_entries():
 
     async with UnitOfWork() as uow:
         facts = await proposal_service._facts_from_compliance(uow, tender_id, frozenset({"experience"}))
+
+    assert facts == []
+
+
+async def test_facts_from_team_only_includes_human_selected_matches():
+    # Same pinning purpose as test_facts_from_compliance_only_includes_
+    # human_approved_entries above, for the other half of the refactor.
+    # Proposed Team claims are one of the two categories this project's own
+    # (now-superseded) citation hypothesis named as a live candidate cause -
+    # this half of the refactor is the one most relevant to that open
+    # question, so it gets pinned by hand, not left to the compliance test
+    # alone to stand in for both.
+    org_id, tender_id = await _make_org_and_tender("Team Facts Test")
+    chunk_id = await _make_chunk_id(tender_id, org_id)
+    async with UnitOfWork() as uow:
+        knowledge_item, employee = await uow.knowledge.create_employee(
+            organization_id=org_id,
+            name="Dana Whitfield",
+            content_fingerprint=str(uuid.uuid4()),
+            title="Dana Whitfield",
+            current_title="Senior Network Engineer",
+        )
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Network Engineer", content_fingerprint=str(uuid.uuid4())
+        )
+        match = await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=knowledge_item.id
+        )
+        await uow.talent.update_role_match(match.id, human_selected=True)
+        evidence = await uow.compliance.create_evidence_link(
+            tender_id=tender_id,
+            source_kind="employee",
+            content_fingerprint=str(uuid.uuid4()),
+            source_chunk_id=chunk_id,
+            excerpt="Led network engineering on three prior telecom migrations.",
+            verified=True,
+            validity_status="valid",
+        )
+        await uow.talent.link_role_match_evidence(match.id, evidence.id, "technical_fit")
+        await uow.commit()
+
+    async with UnitOfWork() as uow:
+        facts = await proposal_service._facts_from_team(uow, tender_id)
+
+    employee_facts = [f for f in facts if f.kind == "employee"]
+    evidence_facts = [f for f in facts if f.kind == "evidence"]
+    assert len(employee_facts) == 1
+    assert employee_facts[0].employee_knowledge_item_id == knowledge_item.id
+    assert employee_facts[0].label == "employee_1"
+    assert employee_facts[0].excerpt == (
+        "Senior Network Engineer, selected for role: Network Engineer"
+    )
+    assert len(evidence_facts) == 1
+    assert evidence_facts[0].label == "evidence_1"
+    assert evidence_facts[0].excerpt == (
+        "Led network engineering on three prior telecom migrations."
+    )
+    assert evidence_facts[0].requirement_id is None
+    assert evidence_facts[0].employee_knowledge_item_id is None
+
+
+async def test_facts_from_team_excludes_unselected_matches():
+    org_id, tender_id = await _make_org_and_tender("Team Facts Unselected Test")
+    async with UnitOfWork() as uow:
+        knowledge_item, _ = await uow.knowledge.create_employee(
+            organization_id=org_id,
+            name="Unselected Candidate",
+            content_fingerprint=str(uuid.uuid4()),
+            title="Engineer",
+        )
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Engineer", content_fingerprint=str(uuid.uuid4())
+        )
+        # human_selected defaults False - never explicitly selected.
+        await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=knowledge_item.id
+        )
+        await uow.commit()
+
+    async with UnitOfWork() as uow:
+        facts = await proposal_service._facts_from_team(uow, tender_id)
 
     assert facts == []
 
@@ -318,6 +416,110 @@ async def test_get_proposal_trace_walks_claim_to_evidence_to_source():
     assert trace.section_name == "Relevant Experience"
     assert len(trace.evidence) == 1
     assert trace.evidence[0].evidence_link_id == real_links[0].id
+
+
+async def test_get_proposal_trace_shows_currently_in_scope_evidence_for_unsupported_claim():
+    # The concrete "thin vs. uncited" case this whole feature exists to
+    # distinguish: a real approved compliance entry + verified evidence
+    # link exists in this claim's own section, but the claim itself cites
+    # nothing (evidence_refs=[]). Before this change, get_proposal_trace's
+    # only evidence source was the junction rows a claim actually cites -
+    # zero for an unsupported claim by definition - so this case rendered
+    # as an unexplained empty list, indistinguishable from evidence
+    # genuinely never having existed.
+    org_id, tender_id = await _make_org_and_tender("Uncited Evidence Test")
+    _, entry_id = await _make_approved_requirement_with_evidence(
+        tender_id=tender_id, org_id=org_id, category="experience"
+    )
+    async with UnitOfWork() as uow:
+        real_links = await uow.compliance.list_evidence_for_compliance_entry(entry_id)
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="The company has extensive relevant experience.",
+                claim_type="experience",
+                is_factual=True,
+                evidence_refs=[],
+            )
+        ]
+    )
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Relevant Experience", draft, [], {}
+    )
+    async with UnitOfWork() as uow:
+        claims = await uow.proposal.list_proposal_claims_for_section(section.id)
+    assert claims[0].grounding_status == "unsupported"
+
+    trace = await proposal_service.get_proposal_trace(claims[0].id)
+
+    assert trace.evidence == []
+    assert len(trace.currently_in_scope_evidence) == 1
+    assert trace.currently_in_scope_evidence[0].evidence_link_id == real_links[0].id
+    assert trace.section_is_data_gated is True
+
+
+async def test_get_proposal_trace_currently_in_scope_evidence_excludes_already_cited():
+    org_id, tender_id = await _make_org_and_tender("No Double Counting Test")
+    _, entry_id = await _make_approved_requirement_with_evidence(
+        tender_id=tender_id, org_id=org_id, category="experience"
+    )
+    async with UnitOfWork() as uow:
+        real_links = await uow.compliance.list_evidence_for_compliance_entry(entry_id)
+    prepared = [
+        proposal_service.PreparedFact(
+            label="evidence_1",
+            kind="evidence",
+            excerpt="Delivered three telecom migrations.",
+            evidence_link_id=real_links[0].id,
+        )
+    ]
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="The company completed three telecom migrations.",
+                claim_type="experience",
+                is_factual=True,
+                evidence_refs=["evidence_1"],
+            )
+        ]
+    )
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Relevant Experience", draft, prepared, {}
+    )
+    async with UnitOfWork() as uow:
+        claims = await uow.proposal.list_proposal_claims_for_section(section.id)
+
+    trace = await proposal_service.get_proposal_trace(claims[0].id)
+
+    assert len(trace.evidence) == 1
+    assert trace.evidence[0].evidence_link_id == real_links[0].id
+    assert trace.currently_in_scope_evidence == [], (
+        "the one real evidence link this tender has is already cited - it "
+        "must not also appear as 'currently in scope but uncited'"
+    )
+
+
+async def test_get_proposal_trace_company_overview_is_not_data_gated():
+    org_id, tender_id = await _make_org_and_tender("Company Overview Trace Test")
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="General narrative statement about the company.",
+                claim_type="capability",
+                is_factual=False,
+            )
+        ]
+    )
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Company Overview", draft, [], {}
+    )
+    async with UnitOfWork() as uow:
+        claims = await uow.proposal.list_proposal_claims_for_section(section.id)
+
+    trace = await proposal_service.get_proposal_trace(claims[0].id)
+
+    assert trace.currently_in_scope_evidence == []
+    assert trace.section_is_data_gated is False
 
 
 async def test_update_section_content_writes_audit_event():

@@ -12,6 +12,7 @@ from tenderos_api.dependencies import require_permission
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.proposal import (
     PatchProposalSectionRequest,
+    ProposalClaimResponse,
     ProposalClaimTraceResponse,
     ProposalSectionResponse,
 )
@@ -82,6 +83,27 @@ async def generate_proposal(
     return response
 
 
+@router.get(
+    "/proposal/sections/{section_id}/claims", response_model=list[ProposalClaimResponse]
+)
+async def list_proposal_claims(
+    section_id: UUID, current_user: User = Depends(require_permission(_EDIT))
+) -> list[ProposalClaimResponse]:
+    """B13 addition - see proposal_service.list_claims_for_section's own
+    docstring. Decided, not left open: stays on _EDIT even now that
+    view_proposal_trace (§7 step 10) exists. Screen 13 (Proposal
+    workspace), this route's only caller, is itself gated to edit_proposal
+    end to end - a Talent/Commercial reviewer can't reach it to call this
+    route regardless of this route's own RBAC. The trace route needed
+    widening because it's reachable independently of that screen (a
+    claim_id can be opened directly from a red-team finding or the
+    readiness gate); this one has no equivalent standalone entry point, so
+    there's no real gap to close by widening it too.
+    """
+    claims = await proposal_service.list_claims_for_section(section_id)
+    return [ProposalClaimResponse.model_validate(c, from_attributes=True) for c in claims]
+
+
 @router.patch("/proposal/sections/{section_id}", response_model=ProposalSectionResponse)
 async def patch_proposal_section(
     section_id: UUID,
@@ -101,7 +123,7 @@ async def patch_proposal_section(
 
 @router.get("/proposal/claims/{claim_id}/trace", response_model=ProposalClaimTraceResponse)
 async def trace_proposal_claim(
-    claim_id: UUID, current_user: User = Depends(require_permission(_EDIT))
+    claim_id: UUID, current_user: User = Depends(require_permission("view_proposal_trace"))
 ) -> ProposalClaimTraceResponse:
     try:
         trace = await proposal_service.get_proposal_trace(claim_id)

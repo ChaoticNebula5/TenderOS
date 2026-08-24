@@ -79,7 +79,7 @@ async def approve_compliance(
 @router.get("/compliance/{compliance_id}/trace", response_model=ComplianceTraceResponse)
 async def trace_compliance(
     compliance_id: UUID,
-    current_user: User = Depends(require_permission("approve_compliance")),
+    current_user: User = Depends(require_permission("view_compliance_trace")),
 ) -> ComplianceTraceResponse:
     try:
         trace = await compliance_service.get_compliance_trace(compliance_id)

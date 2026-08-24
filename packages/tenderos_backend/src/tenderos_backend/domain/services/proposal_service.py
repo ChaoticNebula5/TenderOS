@@ -5,6 +5,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.proposal.draft_section import GroundedFactRef, draft_section
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
 from tenderos_backend.core.hashing import sha256_hex
+from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.proposal import ProposalClaim, ProposalSection
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -126,6 +127,44 @@ def to_llm_facts(prepared: list[PreparedFact]) -> list[GroundedFactRef]:
     return [GroundedFactRef(label=p.label, kind=p.kind, excerpt=p.excerpt) for p in prepared]
 
 
+def _prepare_evidence_facts(
+    links: list[EvidenceLink],
+    seen_evidence_ids: set[uuid.UUID],
+    start_index: int,
+) -> list[PreparedFact]:
+    """The one place that turns a candidate list of real EvidenceLink rows
+    into citable PreparedFacts - shared by _facts_from_compliance (evidence
+    attached to approved compliance_entries), _facts_from_team (evidence
+    attached to selected role_matches), and get_proposal_trace's
+    currently_in_scope_evidence (same filter, re-run at view time via
+    _build_grounded_context instead of a second copy of this logic). One
+    source for "what counts as offerable evidence" - see
+    KNOWN_LIMITATIONS.md's "a reader trusts a column its writer never keeps
+    current" standing pattern for why this isn't duplicated per caller.
+    `seen_evidence_ids` is mutated in place so callers share one dedup set
+    across multiple calls (e.g. per compliance entry, per role match).
+    """
+    prepared: list[PreparedFact] = []
+    for link in links:
+        # Re-filtered here, not trusted from the caller's own decision-time
+        # signals - evidence can expire between an approval/selection and a
+        # later drafting or trace-viewing run.
+        if not (link.verified and link.validity_status == "valid"):
+            continue
+        if link.id in seen_evidence_ids:
+            continue
+        seen_evidence_ids.add(link.id)
+        prepared.append(
+            PreparedFact(
+                label=f"evidence_{start_index + len(prepared)}",
+                kind="evidence",
+                excerpt=link.excerpt or "(no excerpt available)",
+                evidence_link_id=link.id,
+            )
+        )
+    return prepared
+
+
 async def _facts_from_compliance(
     uow: UnitOfWork, tender_id: uuid.UUID, categories: frozenset[str]
 ) -> list[PreparedFact]:
@@ -152,24 +191,9 @@ async def _facts_from_compliance(
         )
 
         links = await uow.compliance.list_evidence_for_compliance_entry(entry.id)
-        for link in links:
-            # Re-filtered at draft-time, not trusted from compliance's own
-            # decision-time signals - evidence can expire between
-            # compliance's approval and a later drafting run.
-            if not (link.verified and link.validity_status == "valid"):
-                continue
-            if link.id in seen_evidence_ids:
-                continue
-            seen_evidence_ids.add(link.id)
-            ev_i += 1
-            prepared.append(
-                PreparedFact(
-                    label=f"evidence_{ev_i}",
-                    kind="evidence",
-                    excerpt=link.excerpt or "(no excerpt available)",
-                    evidence_link_id=link.id,
-                )
-            )
+        new_evidence = _prepare_evidence_facts(links, seen_evidence_ids, start_index=ev_i + 1)
+        prepared.extend(new_evidence)
+        ev_i += len(new_evidence)
     return prepared
 
 
@@ -195,22 +219,17 @@ async def _facts_from_team(uow: UnitOfWork, tender_id: uuid.UUID) -> list[Prepar
                     employee_knowledge_item_id=match.employee_knowledge_item_id,
                 )
             )
-            for link_row in await uow.talent.list_evidence_for_role_match(match.id):
+            link_rows = await uow.talent.list_evidence_for_role_match(match.id)
+            links = []
+            for link_row in link_rows:
                 if link_row.evidence_link_id in seen_evidence_ids:
                     continue
                 link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
-                if link is None or not (link.verified and link.validity_status == "valid"):
-                    continue
-                seen_evidence_ids.add(link.id)
-                ev_i += 1
-                prepared.append(
-                    PreparedFact(
-                        label=f"evidence_{ev_i}",
-                        kind="evidence",
-                        excerpt=link.excerpt or "(no excerpt available)",
-                        evidence_link_id=link.id,
-                    )
-                )
+                if link is not None:
+                    links.append(link)
+            new_evidence = _prepare_evidence_facts(links, seen_evidence_ids, start_index=ev_i + 1)
+            prepared.extend(new_evidence)
+            ev_i += len(new_evidence)
     return prepared
 
 
@@ -566,6 +585,19 @@ async def list_proposal_sections_for_tender(tender_id: uuid.UUID) -> list[Propos
         return await uow.proposal.list_proposal_sections_for_tender(tender_id)
 
 
+async def list_claims_for_section(section_id: uuid.UUID) -> list[ProposalClaim]:
+    """B13 addition: the repository method (`list_proposal_claims_for_
+    section`) has existed since B9, but nothing above it ever exposed a way
+    to discover a section's claim ids - Part G's own G10 never documented a
+    list-claims route, and get_proposal_trace needs a claim_id handed to it
+    rather than discovering one. Screen 13 needs exactly this list to let a
+    human click a claim into its trace (screen 16), so it's wired the rest
+    of the way here rather than left as a repository-only capability.
+    """
+    async with UnitOfWork() as uow:
+        return await uow.proposal.list_proposal_claims_for_section(section_id)
+
+
 async def update_section_content(
     section_id: uuid.UUID, content: str, actor_user_id: uuid.UUID
 ) -> ProposalSection:
@@ -632,12 +664,69 @@ class ProposalClaimTrace:
     requirement_ids: list[uuid.UUID]
     employee_knowledge_item_ids: list[uuid.UUID]
     evidence: list[ClaimEvidenceTraceEntry]
+    # Re-derived at view time from the claim's own section, reusing exactly
+    # the same _build_grounded_context call the drafting node made (not a
+    # second, potentially-diverging copy of its scoping logic) - what's
+    # CURRENTLY in scope for this section, after whatever
+    # approvals/validity changes happened since drafting ran. Not a record
+    # of what was true when the model ran, and not filtered to a "relevant"
+    # claim_type either - evidence_links.source_kind and
+    # proposal_claims.claim_type are unrelated vocabularies with no mapping
+    # between them (see KNOWN_LIMITATIONS.md). Excludes anything already in
+    # `evidence` above, so cited and in-scope-but-uncited never overlap.
+    currently_in_scope_evidence: list[ClaimEvidenceTraceEntry]
+    # False for "Company Overview" (SECTION_TEMPLATES' one template that's
+    # deliberately never data-gated - KNOWN_LIMITATIONS.md's "[B9] Section
+    # templates are an interpretation" entry) and for any section name that
+    # doesn't match a known template. Lets the drawer render "this section
+    # isn't data-gated" instead of an unexplained empty list.
+    section_is_data_gated: bool
+
+
+async def _resolve_evidence_trace_entry(
+    uow: UnitOfWork, evidence_link_id: uuid.UUID
+) -> ClaimEvidenceTraceEntry | None:
+    link = await uow.compliance.get_evidence_link(evidence_link_id)
+    if link is None:
+        return None
+    knowledge_item = None
+    if link.knowledge_item_id is not None:
+        knowledge_item = await uow.knowledge.get_knowledge_item(link.knowledge_item_id)
+
+    document_id = None
+    document_filename = None
+    if link.source_chunk_id is not None:
+        chunk = await uow.documents.get_chunk(link.source_chunk_id)
+        if chunk is not None:
+            document_id = chunk.document_id
+            document = await uow.documents.get(chunk.document_id)
+            if document is not None:
+                document_filename = document.filename
+
+    return ClaimEvidenceTraceEntry(
+        evidence_link_id=link.id,
+        source_kind=link.source_kind,
+        excerpt=link.excerpt,
+        verified=link.verified,
+        validity_status=link.validity_status,
+        knowledge_item_id=link.knowledge_item_id,
+        knowledge_item_title=knowledge_item.title if knowledge_item else None,
+        document_id=document_id,
+        document_filename=document_filename,
+    )
 
 
 async def get_proposal_trace(claim_id: uuid.UUID) -> ProposalClaimTrace:
     """B9's own build-list wording, walked literally: claim -> evidence ->
     source, plus the requirement(s) and employee(s) the claim cites. Same
     per-evidence-link resolution shape as get_compliance_trace.
+
+    Also answers the question B9's own citation-correctness measurement
+    couldn't: for an unsupported claim, was evidence thin, or did evidence
+    exist and simply go uncited? currently_in_scope_evidence re-runs
+    _build_grounded_context for the claim's own section - the exact
+    function the drafting node called - rather than a parallel guess at
+    what "available" should mean.
     """
     async with UnitOfWork() as uow:
         claim = await uow.proposal.get_proposal_claim(claim_id)
@@ -651,38 +740,29 @@ async def get_proposal_trace(claim_id: uuid.UUID) -> ProposalClaimTrace:
         employee_links = await uow.proposal.list_employees_for_claim(claim.id)
         evidence_links = await uow.proposal.list_evidence_for_claim(claim.id)
 
+        cited_evidence_ids: set[uuid.UUID] = set()
         evidence_entries: list[ClaimEvidenceTraceEntry] = []
         for link_row in evidence_links:
-            link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
-            if link is None:
+            entry = await _resolve_evidence_trace_entry(uow, link_row.evidence_link_id)
+            if entry is None:
                 continue
-            knowledge_item = None
-            if link.knowledge_item_id is not None:
-                knowledge_item = await uow.knowledge.get_knowledge_item(link.knowledge_item_id)
+            cited_evidence_ids.add(entry.evidence_link_id)
+            evidence_entries.append(entry)
 
-            document_id = None
-            document_filename = None
-            if link.source_chunk_id is not None:
-                chunk = await uow.documents.get_chunk(link.source_chunk_id)
-                if chunk is not None:
-                    document_id = chunk.document_id
-                    document = await uow.documents.get(chunk.document_id)
-                    if document is not None:
-                        document_filename = document.filename
-
-            evidence_entries.append(
-                ClaimEvidenceTraceEntry(
-                    evidence_link_id=link.id,
-                    source_kind=link.source_kind,
-                    excerpt=link.excerpt,
-                    verified=link.verified,
-                    validity_status=link.validity_status,
-                    knowledge_item_id=link.knowledge_item_id,
-                    knowledge_item_title=knowledge_item.title if knowledge_item else None,
-                    document_id=document_id,
-                    document_filename=document_filename,
-                )
-            )
+        template = next((t for t in SECTION_TEMPLATES if t.name == section.section_name), None)
+        section_is_data_gated = template is not None and template.name != "Company Overview"
+        currently_in_scope_entries: list[ClaimEvidenceTraceEntry] = []
+        if template is not None:
+            facts = await _build_grounded_context(uow, section.tender_id, template)
+            in_scope_ids = {
+                f.evidence_link_id
+                for f in facts
+                if f.kind == "evidence" and f.evidence_link_id is not None
+            }
+            for link_id in in_scope_ids - cited_evidence_ids:
+                entry = await _resolve_evidence_trace_entry(uow, link_id)
+                if entry is not None:
+                    currently_in_scope_entries.append(entry)
 
     return ProposalClaimTrace(
         claim_id=claim.id,
@@ -695,4 +775,6 @@ async def get_proposal_trace(claim_id: uuid.UUID) -> ProposalClaimTrace:
         requirement_ids=[r.requirement_id for r in requirement_links],
         employee_knowledge_item_ids=[e.employee_knowledge_item_id for e in employee_links],
         evidence=evidence_entries,
+        currently_in_scope_evidence=currently_in_scope_entries,
+        section_is_data_gated=section_is_data_gated,
     )

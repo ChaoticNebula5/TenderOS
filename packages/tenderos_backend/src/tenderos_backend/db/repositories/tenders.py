@@ -59,6 +59,16 @@ class TenderRepository:
         if status is not None:
             tender.status = status
         await self._session.flush()
+        # updated_at is server-side (onupdate=func.now()) - flush() alone
+        # does not populate it back onto the in-memory object for an
+        # UPDATE the way it does for an INSERT's RETURNING. Without this
+        # refresh, the caller (tender_service.update_tender, then
+        # routes/tenders.py serializing TenderResponse *after* this
+        # UnitOfWork's session has closed) hits DetachedInstanceError
+        # trying to lazily load updated_at from a session that's gone -
+        # never caught before because no test exercised this route's real
+        # HTTP response serialization, only the service function directly.
+        await self._session.refresh(tender)
         return tender
 
     async def bump_state_version(self, tender_id: uuid.UUID) -> None:

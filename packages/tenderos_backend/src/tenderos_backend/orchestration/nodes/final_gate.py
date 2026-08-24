@@ -69,7 +69,13 @@ async def final_gate_node(state: TenderState) -> dict:
                 summary={
                     "ready": report.ready if report else False,
                     "blockers": report.blockers if report else [],
-                    "counts": report.counts if report else {},
+                    # None, not {} - B13: schemas.gates.FinalReadinessSummary
+                    # types this as ReadinessCounts | None specifically so
+                    # "no report ever ran" (this branch) stays distinguishable
+                    # from "a report ran and counted zero of everything." An
+                    # empty {} would have made the two indistinguishable to
+                    # whoever reads this gate's summary.
+                    "counts": report.counts if report else None,
                     "degraded_stages": state.get("degraded_stages", []),
                 },
             )

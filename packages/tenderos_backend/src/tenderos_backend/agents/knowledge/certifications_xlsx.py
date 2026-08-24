@@ -1,6 +1,6 @@
 import io
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from openpyxl import load_workbook
 
@@ -29,8 +29,29 @@ class CertificationRow:
     expiry_date: date | None
 
 
-def _parse_date(value: str | None, row_number: int, column: str) -> date | None:
-    if value is None:
+def _parse_date_cell(raw: object, row_number: int, column: str) -> date | None:
+    """A native Excel date/datetime cell arrives from openpyxl as an
+    already-typed datetime.datetime (or, less often, datetime.date) object,
+    not a string - openpyxl's own data_only=True evaluation returns the
+    real typed value for a date-formatted cell, not its display text.
+    Stringifying it first (str(a_datetime) -> "2024-01-15 00:00:00") and
+    only then handing that to date.fromisoformat breaks, because
+    date.fromisoformat rejects a time component - it wants exactly
+    YYYY-MM-DD. Checked here, before any stringification, so a real date
+    cell is read directly; a plain text cell (someone typed "2024-01-15"
+    into a General-formatted column) still falls through to the ISO-string
+    parse below exactly as before. datetime is checked before date since
+    datetime.datetime is itself a date subclass - reversing the order would
+    silently truncate every datetime's time component via the wrong branch.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, date):
+        return raw
+    value = str(raw).strip()
+    if not value:
         return None
     try:
         return date.fromisoformat(value)
@@ -62,11 +83,17 @@ def parse_certifications(content: bytes) -> list[CertificationRow]:
 
     column_index = {header: idx for idx, header in enumerate(normalized_headers)}
 
-    def _cell(row: tuple, header: str) -> str | None:
+    def _raw_cell(row: tuple, header: str) -> object:
         idx = column_index.get(header)
-        if idx is None or idx >= len(row) or row[idx] is None:
+        if idx is None or idx >= len(row):
             return None
-        value = str(row[idx]).strip()
+        return row[idx]
+
+    def _cell(row: tuple, header: str) -> str | None:
+        raw = _raw_cell(row, header)
+        if raw is None:
+            return None
+        value = str(raw).strip()
         return value or None
 
     rows: list[CertificationRow] = []
@@ -81,8 +108,12 @@ def parse_certifications(content: bytes) -> list[CertificationRow]:
                 employee_ref=_cell(row, "employee"),
                 name=name,
                 issuer=_cell(row, "issuer"),
-                issue_date=_parse_date(_cell(row, "issue date"), row_number, "Issue Date"),
-                expiry_date=_parse_date(_cell(row, "expiry date"), row_number, "Expiry Date"),
+                issue_date=_parse_date_cell(
+                    _raw_cell(row, "issue date"), row_number, "Issue Date"
+                ),
+                expiry_date=_parse_date_cell(
+                    _raw_cell(row, "expiry date"), row_number, "Expiry Date"
+                ),
             )
         )
     return rows

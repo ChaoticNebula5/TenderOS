@@ -815,8 +815,8 @@ Each entry:
      silently, per incidents 3-4) and the practice only being written down
      in response.
   6. **Container running and healthy, but its host port publish silently
-     missing - a new mechanism, not a repeat of incident 2/5's native-
-     process race.** During B12's CodeRabbit-fixes pass, `docker compose
+     missing - recurred a second time in B13 (incident 8 below); no longer
+     read as a one-off.** During B12's CodeRabbit-fixes pass, `docker compose
      up -d` first failed outright (`port is already allocated` - an
      unrelated project's own Postgres container, not this project's
      native-service history, had grabbed 5432 first) - the very port
@@ -846,6 +846,58 @@ Each entry:
      it appears, since incident 5's own SQL-identity check answers a
      different question (which server answered) than this one (did a
      server answer at all).
+  7. **The test-teardown trap, a third time in its exact documented shape -
+     this time destroying data explicitly meant to be preserved.** After
+     B12's own live-verification session ended (that session's own report
+     said its database was "not wiped... remains available for direct
+     inspection," deliberately breaking the pattern the second occurrence,
+     incident 4, had just failed to break), a later session ran `uv run
+     pytest tests/` against the same live `POSTGRES_DSN` - identical
+     mistake to incidents 3 and 4, a session removed. Confirmed via direct
+     Postgres inspection, not assumed: every ORM-mapped table (`tenders`,
+     `organizations`, `requirements`, `proposal_claims`, `evidence_links`,
+     ...) at zero rows; only LangGraph's own checkpoint tables (not
+     `Base.metadata`-managed, so outside `_clean_tables`' reach) survived.
+     What makes this the worst of the three: read-only forensics against
+     those surviving checkpoint tables (cross-validated against real
+     persisted rows in 3 threads) confirmed they hold no reconstructable
+     content for what was lost - `TenderState` is ids/counts/status only,
+     see the new entry below. Unlike incidents 3/4 (where the immediate
+     next live run could re-produce comparable data), this one destroyed
+     the specific run behind the project's largest known open quality gap
+     (the "[B9]/[B12] Drafting mostly produces ungrounded text" entry),
+     with no cached dump to fall back on. See that entry's own correction
+     for the full account.
+  8. **Incident 6's exact mechanism, a second time - now a confirmed
+     defect, not an incident.** B13 §7 step 2's verification run: Docker
+     Desktop itself restarted mid-session (unrelated to anything this
+     project's own containers did), and bringing the stack back up hit
+     incident 2/5's port-squatting trap first (an unrelated project's
+     container on 5432, stopped with the user's OK), then incident 6's
+     trap immediately after - `docker compose up -d` reported
+     `tenderos-postgres-1` "Healthy," but every host-side connection
+     (`uv run pytest`, a direct `asyncpg.connect`) failed with
+     `OSError: Connect call failed`. `docker port tenderos-postgres-1`
+     confirmed the same empty output incident 6 already documented -
+     `"5432/tcp": []` in `docker inspect`'s own `NetworkSettings.Ports`.
+     Identical fix (`docker compose up -d --force-recreate postgres`),
+     confirmed the same way (a real host-side `asyncpg.connect`, not
+     `docker exec`). **The actual root cause, named for the first time
+     rather than only described symptomatically:** the compose healthcheck
+     (`pg_isready`, Part A1's own `docker-compose.yml`) executes *inside*
+     the container's own network namespace - it can only ever observe
+     whether Postgres itself is accepting connections, never whether
+     Docker has actually programmed the host-side NAT/port-forwarding rule
+     that makes `localhost:5432` reach that same Postgres from outside the
+     container. Those are two independent mechanisms with no coupling
+     between them - a container can be genuinely, correctly "Healthy" by
+     every internal measure while being completely unreachable from the
+     host, and nothing in `docker compose`'s own status output says so.
+     Two occurrences of the identical failure, from two different
+     triggering circumstances (a CodeRabbit-fixes pass; an unrelated
+     Docker Desktop restart), is what makes this a defect in the
+     verification practice rather than a one-off worth another paragraph
+     of description.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -913,16 +965,53 @@ Each entry:
   difference so far looks like whether the check was still fresh/specific
   enough in mind at the moment it mattered, not whether the practice
   itself was sound.
-  Not done now, but this is a procedural trap a document can only warn
-  about, not enforce - if it recurs a fifth time, the actual fix is
-  structural, not another written reminder: point the test suite at a
-  dedicated database by default (a separate `POSTGRES_DSN`/database name
-  from whatever a live run or manual script uses), so `_clean_tables`
-  physically cannot reach live-run data regardless of what anyone
-  remembers to check.
-- **Test:** none automated (all six incidents are host-machine/Docker-
-  daemon/test-fixture state, not application code) - the incident
-  write-up above and the discipline it now dictates are the mitigation.
+  This entry's own prediction - "if it recurs a fifth time, the actual fix
+  is structural, not another written reminder: point the test suite at a
+  dedicated database by default... so `_clean_tables` physically cannot
+  reach live-run data regardless of what anyone remembers to check" - held.
+  It recurred a third time in this specific sub-shape (incident 7 above),
+  and the structural fix is now built, not just named: a session-scoped
+  `_guard_test_database` fixture in `tests/integration/conftest.py`
+  (B13-owned, added alongside the new traceability-drawer work) queries
+  `SELECT current_database()` on a real connection before `_schema`/
+  `_clean_tables` run, and refuses loudly unless the database name ends in
+  `_test`. `make test` points at a dedicated `tenderos_test` database by
+  default; `uv run pytest` alone against the dev/live DSN now fails
+  immediately with an explicit error instead of silently deleting
+  anything. This closes incident 3/4/7's specific mechanism (pytest
+  reaching a live database at all) - it does not address incidents 1/2/5/6
+  (image staleness, port-squatting), which remain open per points (1)-(3)
+  above. See the guard's own KNOWN_LIMITATIONS entry below for its one
+  known residual gap.
+  **Incident 6/8's own mechanism (healthy-but-unreachable) is a separate
+  gap from incidents 1/2/5, not covered by anything above - owner B16
+  (Reliability and Observability), not fixed now.** Points (1)-(3) are
+  manual discipline (rebuild explicitly, spot-check the connection,
+  prefer specific assertions); none of them would catch "Healthy" lying
+  about host reachability, because the lie is in Docker's own status
+  output, not in anything this project's own scripts choose to trust.
+  The real fix is a startup/verification check that doesn't stop at
+  `docker compose`'s own health status - a real host-side connection
+  attempt (the same `asyncpg.connect`/`SELECT version()` both occurrences
+  were actually caught with) run automatically after `up`, not left to
+  whoever happens to remember point (2) in the moment. B16's own build
+  list names reliability tests and Compose readiness explicitly (see the
+  separate "CI, schema verification, worker image, and Compose readiness"
+  entry below) - this is the same territory, not a new one: a real
+  `/health/ready`-style check run from the host, or a compose healthcheck
+  replaced with something that can't be satisfied by the container's own
+  internal view of itself.
+- **Test:** none automated for incidents 1/2/5/6/8 (host-machine/Docker-
+  daemon state, not application code) - the incident write-up above and
+  the discipline it dictates are the mitigation. Incident 3/4/7's own
+  mechanism now has a real regression check: running `pytest` with
+  `POSTGRES_DSN` pointed at the dev/live database name raises immediately,
+  verified directly this pass; running it against `tenderos_test` runs
+  normally. Incident 8 itself was caught and fixed live, the same way
+  incident 6 was (`docker port` diagnosis, `--force-recreate`, a real
+  host-side `asyncpg.connect` before trusting the next test run) - no
+  automated test exists for the underlying defect, which is exactly what
+  the new B16 ownership note above is for.
 
 ---
 
@@ -1265,6 +1354,32 @@ Each entry:
   (the test-teardown trap this project has now hit five times), so the
   raw data remains available for direct inspection - tender_id and
   run_id are in the B12 build session's own live-verification output.
+
+  **Correction (post-B12, next session): it was not preserved after
+  all.** A later `uv run pytest tests/` invocation against this same live
+  `POSTGRES_DSN`, outside the B12 build session itself, triggered
+  `_clean_tables` and wiped it - the seventh occurrence of the
+  environment-traps pattern below, not the sixth as this entry's own text
+  above still says (that text is left as written at the time, corrected
+  here rather than silently edited). Confirmed via direct Postgres
+  inspection: `tenders`, `organizations`, `requirements`,
+  `proposal_claims`, `evidence_links`, every ORM-mapped table, all at
+  zero rows. What survived: LangGraph's own checkpoint tables
+  (`checkpoints`/`checkpoint_blobs`/`checkpoint_writes`/
+  `checkpoint_migrations`), which `_clean_tables` doesn't touch (it only
+  iterates `Base.metadata.sorted_tables` - the checkpointer isn't a
+  SQLAlchemy model). Read-only forensics against those surviving tables,
+  cross-validated against real persisted rows in 3 threads, confirmed
+  they hold nothing that could reconstruct what was lost - see "LangGraph
+  checkpointer persists no reconstructable content" below. The specific
+  tender_id/run_id this entry names, and everything about that run's
+  actual claim/evidence data, cannot be recovered. This is the project's
+  largest known open quality gap, now sitting with zero supporting data
+  behind it - B13's own Playwright run is the next opportunity to
+  measure it, and its live-verification run is the first one built with
+  the structural fix (a session-scoped conftest guard, B13-owned) that
+  makes this specific failure impossible rather than merely
+  remembered-against.
 - **Test:** `tests/unit/test_claim_grounding.py` (7 cases, synthetic,
   pins the invariant's logic) + two independent live runs (B9: 1 grounded/
   18 unsupported; B12: 2 grounded/17 unsupported, same fixture package,
@@ -1305,17 +1420,40 @@ Each entry:
   call a real product/security review could reasonably override (e.g.
   restricting `trigger_graph_projection` further, or splitting
   contradiction-viewing from impact-viewing into separate actions).
-- **Status:** accepted interpretation. Both decisions are internally
-  consistent with locked invariants (PRD 27.13's accessibility invariant
-  for RBAC breadth; D5's own hop-bounding caution applied to the trace
-  query's lack of a caller-controlled depth) but neither is dictated by
-  either document, and both were caught and named as such during planning
-  rather than assumed silently.
-- **Test:** `tests/unit/test_graph_trace_labels.py` pins the trace
-  endpoint's label-allowlist behavior (a security fix, not a semantics
-  test) but nothing yet asserts the neighborhood-shape interpretation
-  itself is what a consuming UI actually needs - that can only be judged
-  once B13 has a real trace-view screen to build against.
+- **Status:** RBAC breadth remains an accepted interpretation, unchanged.
+  **The trace-shape question is resolved, §7 step 10, with an actual
+  verdict rather than left open until "B13 has a real trace-view
+  screen" (this entry's own prior text) - screen 17 now exists, and the
+  1-hop neighborhood shape was checked against it directly, not assumed
+  adequate.**
+
+  **Verdict: the 1-hop shape was inadequate for the plan's own chosen
+  click-to-expand design, confirmed by direct observation, not
+  reasoning from code.** Called `graph_service.get_graph_trace` directly
+  against real seeded data before building anything: the response
+  contained `n` (the requested node's properties) and `neighbors` (each
+  with `relationship` and `neighbor` properties) - **no label anywhere**
+  for either the node or any neighbor. Click-to-expand requires calling
+  `GET /graph/trace?node_label=X&node_id=Y` again for whichever neighbor
+  a human clicks, and the response gave no way to know what `node_label`
+  value that click should send - not "the shape is minimal but usable,"
+  a genuine functional gap for the one screen that needed it.
+  **Fixed, not worked around:** `get_graph_trace`'s Cypher now also
+  returns `labels(n)` as `node_labels` and `labels(neighbor)` as
+  `neighbor_labels` per collected neighbor (`graph_service.py`, one
+  `RETURN` clause changed). Re-pinned against the same real data after
+  the fix - `node_labels`/`neighbor_labels` now present and correct.
+  Screen 17 was built against the fixed shape, with real click-to-expand
+  (each neighbor's own label tells the frontend what to query next; a
+  small client-side constant mirroring `TENDER_SCOPED_LABELS`/
+  `SHARED_LABELS` decides whether to read that neighbor's `id` or
+  `knowledge_item_id` as the id to send).
+- **Test:** `tests/unit/test_graph_trace_labels.py` still pins the
+  label-allowlist behavior. `tests/route/test_graph_routes.py::
+  test_get_graph_trace_returns_the_real_requirement_node` now asserts
+  `node_labels == ["Requirement"]` and the real node id, not just a 200 -
+  the shape gap above would have shown up here as a missing key, not a
+  passing-but-uninformative test, had this assertion existed before B13.
 
 ---
 
@@ -1599,23 +1737,42 @@ Each entry:
 ### B13 (Functional UI) - already named as the owner of the adjacent import-review screen
 
 - **Knowledge imports are neither retryable nor accurately observable**
-  (major finding #10). The "not accurately observable" half is fixed as
-  of this pass (`ImportBatchProgress` computes live from items - see the
-  standing-pattern entry above). Still open: a partial retry collides
-  with `UNIQUE(batch_id, source_ref)` before resuming, and a failure
-  before any item row is created leaves no terminal state at all. Same
-  owning block this file already named for the sibling issue:
-  `[B6, re-confirmed B9] knowledge_import_batches.status never advances
-  past 'queued'` pointed at B6/B13 for exactly this "review queue" screen.
-- **Required knowledge-import inputs are broken** (major finding #11):
-  employee-master CSV is spec'd but rejected by upload validation with no
-  parser for it; native Excel date/datetime cells become strings
-  `date.fromisoformat()` can't parse; a certification row with a blank
-  employee cell creates an approved, holderless certification instead of
-  routing to review. All three are pure-function bugs (upload validation,
-  the xlsx date parser, the certification importer) - no live stack needed
-  to fix them, just not done in this pass. B13 is the closest fit since
-  it's the block that builds the screens these imports actually feed.
+  (major finding #10) - **resolved in B13.** The "not accurately
+  observable" half was already fixed pre-B12 (`ImportBatchProgress`
+  computes live from items - see the standing-pattern entry above). The
+  retry half is fixed now: `import_employee_master_row`/
+  `import_certification_row` check `get_import_item_by_source_ref` before
+  `create_import_item`, so a retried worker job resumes past rows a prior
+  attempt already committed instead of crashing on
+  `UNIQUE(batch_id, source_ref)`. A failure before any per-row item exists
+  (the parse step itself raising) now calls the new
+  `record_batch_parse_failure`, which writes one synthetic `failed` item so
+  `_compute_batch_progress` reports a real terminal state instead of
+  `queued` forever - both paths independently idempotent on their own
+  retry. Tests: `tests/integration/test_knowledge_service.py` (4 cases -
+  employee-master and certification retry-resume, parse-failure terminal
+  status, parse-failure idempotency).
+- **Required knowledge-import inputs are broken** (major finding #11) -
+  **resolved in B13.** Employee-master CSV: `parse_employee_master_csv`
+  added (`agents/knowledge/employee_master.py`, shared header-validation
+  logic extracted so xlsx/csv can't drift apart), `_validate_upload` now
+  accepts `.csv`/`text/csv`, and the upload route determines
+  `employee_master_csv` vs `_xlsx` from the actual uploaded filename
+  instead of always assuming xlsx. Native Excel date/datetime cells:
+  `_parse_date_cell` (`agents/knowledge/certifications_xlsx.py`) checks for
+  an already-typed `datetime`/`date` object before ever stringifying -
+  `datetime` checked first since it's a `date` subclass. Blank employee
+  cell: `import_certification_row` now routes to `needs_review` with a
+  message distinct from the "employee_ref given but not found" branch
+  (`TODO(human)`, filled in by the user - the specific edge case being
+  that the status vocabulary has no value more specific than
+  `needs_review`, so the "missing" vs. "not found" distinction can only
+  live in the error message text). Tests: `tests/unit/
+  test_employee_master_parser.py` (5 cases), `tests/unit/
+  test_certifications_parser.py` (5 cases, including a regression test
+  built from a real openpyxl `datetime` cell, not a string standing in for
+  one), `tests/integration/test_knowledge_service.py` (blank-employee-ref
+  routing).
 - **Knowledge selection lacks the required `Idempotency-Key`** (minor
   finding #1, `PUT /tenders/{tender_id}/knowledge-selections/
   {knowledge_item_id}`). Worth closing whenever B13 builds the selection
@@ -1942,67 +2099,179 @@ Each entry:
 
 ---
 
-## No route-level test coverage exists anywhere in this codebase - this is how a completely dead route survived twelve blocks
+## Route-level test coverage was uneven, not absent - `knowledge.py` specifically had none, which is how a completely dead route survived twelve blocks
 
 - **Discovered:** the entry directly above (`set_knowledge_selection`'s
-  stale 6-argument call site) is the symptom; this is the structural
-  cause, named as its own entry rather than folded into that one's own
-  "Test" note, per explicit instruction after B12's CodeRabbit-fixes
-  round. Confirmed by a targeted audit immediately after: every `await
-  <service>.<function>(...)` call site across all 15 route files
-  (`apps/api/src/tenderos_api/routes/`) was cross-checked against its
-  service function's real current signature. Result: exactly the two
-  already-known bugs (`set_knowledge_selection`, `set_candidate_selection`
-  - both already fixed) and nothing else. No third stale caller exists
-  today - but "none found this time" is not the same claim as "this class
-  of bug cannot happen," and nothing changed about *why* the first one
-  went undetected for however many commits it sat there.
-- **Behaviour:** every integration test in this codebase (B0 through B12,
-  ~305 tests) calls domain-service functions directly - `await
-  knowledge_service.set_knowledge_selection(...)`, never an HTTP request
-  through the route that's supposed to call it. This means the entire
-  HTTP layer - FastAPI dependency wiring (`require_permission` and its
-  variants), request/response schema validation, and critically, whether
-  a route's own service call site still matches that service function's
-  real signature - has never once been exercised by the automated suite,
-  for any route, in any block. The only thing that ever touches routes at
-  all is each block's own live Docker smoke test (B6 onward) - and those
-  are deliberately narrow, walking one vertical slice through however many
-  routes that block's own scenario happens to need, not a systematic pass
-  over the surface. `set_knowledge_selection`'s route was never on any
-  smoke test's path (every block's own knowledge-selection needs were
-  seeded directly via `UnitOfWork`, the same "bypass the parts out of
-  scope for what's being proven" pattern B10/B11's own smoke tests used
-  deliberately) - so a route that raised `TypeError` on literally every
-  call sat completely dead through B7 (or whichever block actually
-  changed the signature) all the way to B12, invisible to ~305 passing
-  tests and however many live smoke tests ran in between.
-- **Risk:** any future signature change to a service function with a real
-  route caller carries the same risk, silently, for every route not
-  specifically exercised by that block's own smoke test - which in
-  practice is most of them, since smoke tests are narrow by design. The
-  targeted audit just performed is a snapshot, not a standing guarantee;
-  it answers "is anything broken right now," not "will the next signature
-  change break something route-level tests would have caught immediately."
-- **Status:** not fixed - deliberately not attempted as a side effect of
-  a bug-fix pass (the user's own explicit instruction: report the
-  structural gap, don't build test infrastructure to close it here).
-  **Owner: B13 (Functional UI).** Not B12, not B16: B13 is the first block
-  in Part J's own build order whose own stop-gate ("the system can only be
-  demonstrated through direct database edits or Swagger" - the thing that
-  must NOT be true) requires exercising every gate/route a human would
-  actually click through, end to end, via its own Playwright scenario -
-  the first point in this project where anything systematically drives
-  the real HTTP surface rather than one block's own narrow vertical slice.
-  Adding FastAPI `TestClient` coverage as part of that same block's own
-  work is the natural, low-friction moment: the route inventory, the
-  request/response shapes, and the auth dependencies all have to be
-  understood anyway to build the UI against them. B16 (Full Evaluation,
-  Reliability, and Load Tests) is downstream of B13 in the build order and
-  would be auditing a UI that's already had to work around this gap by
-  then, not the place that closes it first.
-- **Test:** none - this entry names the gap; closing it is B13's own
-  work, not retroactively built here.
+  stale 6-argument call site) is the symptom; this entry originally named
+  the structural cause as "no route-level test coverage exists anywhere
+  in this codebase," per a targeted audit performed right after B12's
+  CodeRabbit-fixes round.
+- **Correction (B13 §7 step 5 planning, before writing more route tests):**
+  that claim was false as written, and had been false since before B13
+  started - not something that became true only once B13 began adding its
+  own `tests/route/` coverage. `tests/integration/test_documents_api.py`,
+  `test_workflow_api.py`, `test_cross_org_access.py`, `test_idempotency.py`,
+  and `test_requirements_api.py` all already drove the real ASGI app via
+  `httpx.AsyncClient`/`ASGITransport` - genuine HTTP-level tests, not
+  service-function calls - predating B13 entirely. B13's own original
+  planning inventory (§3a) checked route decorators and which screen
+  consumes which route, but never opened these test files' actual
+  contents, so it inherited this entry's overgeneralization instead of
+  correcting it. Found only once a full, deliberate re-audit was done
+  (grepping every test file for `ASGITransport`/`AsyncClient`/`TestClient`
+  usage and extracting every real path each one calls) rather than
+  rediscovering the gap module by module.
+- **The corrected picture, per module (71 routes, 15 modules):**
+  - **Fully covered already, before or independent of B13's own work:**
+    `documents.py` (4/4, `test_documents_api.py`), `requirements.py`
+    (6/6, `test_requirements_api.py`).
+  - **Fully covered, mixed pre-existing + B13:** `auth.py` (4/4, all
+    B13/`tests/route/`), `workflow.py` (5/5 - create+cancel pre-existing
+    in `test_workflow_api.py`, get/tasks/events added by B13),
+    `organizations.py` (3/3 - create_tender/list_tenders pre-existing,
+    `add_membership` net-new B13), `tenders.py` (2/2 - `get` pre-existing,
+    `patch` net-new B13 - and `patch` is where B13 found the
+    `DetachedInstanceError` 500-on-every-call bug, in a route this
+    project had never route-tested until then).
+  - **Partially covered, real gaps remain:** `gates.py` (1/3 - `POST
+    .../decision` covered by `test_workflow_api.py`; `GET
+    /workflow-runs/{id}/gates` and `GET /gates/{id}` have no HTTP
+    coverage anywhere), `graph.py` (1/5 - `POST .../graph/project`
+    covered by `test_idempotency.py`, idempotency-focused rather than
+    exhaustive; `status`/`impact`/`contradictions`/`trace` have none).
+  - **Zero coverage anywhere, confirmed by grep, not assumed:**
+    `compliance.py` (5), `talent.py` (3), `commercial.py` (4),
+    `proposal.py` (4 - including `PATCH /proposal/sections/{id}`, the
+    named suspect for the same `onupdate`/detached-session bug shape as
+    `tenders.py`'s), `redteam.py` (3), `readiness.py` (2), `knowledge.py`
+    (18 - **the module the actual dead route lived in**).
+  - Arithmetic: 26 of 71 routes had real HTTP coverage before this
+    correction (24 from fully-covered modules + the 2 partial hits in
+    gates/graph); 45 did not.
+- **Why `knowledge.py` specifically having none is the real explanation,
+  not "route testing doesn't happen here":** every other early-covered
+  module (documents, requirements, workflow, cross-org access,
+  idempotency) happens to be exactly the surface those five pre-existing
+  test files were written to prove something about - upload validation,
+  requirement review, workflow lifecycle, tenant isolation, idempotency
+  semantics. `knowledge.py` - a large, 18-route module - never had a test
+  file written with that same "drive it over real HTTP" intent, for
+  reasons this file has no record of. The dead route's own bug (a stale
+  6-argument call against a 5-argument function) could only have been
+  caught by a route-level test of `knowledge.py` specifically; the fact
+  that *other* modules had such tests never had any chance of catching it.
+- **Risk:** unchanged from the original entry - any future signature
+  change to a service function with a real route caller carries this risk
+  for every route not specifically exercised by a route-level test, and
+  the corrected inventory above shows that's still most of them (45 of
+  71) even after this correction.
+- **Status:** **owner still B13**, unchanged - the correction is to the
+  diagnosis, not the assignment. B13's own `tests/route/` work continues
+  against the corrected inventory above: build coverage for the 45
+  routes that genuinely lack it, not the ones that already have it via a
+  different (equally real) test file. Full-module scope stays the
+  standard - a module already fully covered by a pre-existing
+  `test_*_api.py` file needs no new `tests/route/` file of its own.
+
+  **Update, §7 step 6: `knowledge.py` now has real coverage (18/18,
+  `tests/route/test_knowledge_routes.py`), and it's worth recording why
+  full-module scope was the right call here specifically, not just
+  screen-driven. Building this file's own test fixtures hit a bug of the
+  identical shape to `set_candidate_selection`'s own old test** (this
+  entry's sibling above, `:2024`): a helper seeded `knowledge_import_
+  batches.created_by` with a bare `uuid.uuid4()` instead of a real
+  registered user's id - state no real caller could ever produce, since
+  `created_by` is a genuine FK to `users`. The difference is what caught
+  it: `set_candidate_selection`'s old test called the SERVICE function
+  directly with a hand-built argument, so nothing ever checked whether
+  that argument was real - the vacuous check passed silently for however
+  long it stood. This one went through the real HTTP route and real
+  Postgres constraints (`ForeignKeyViolationError` on the actual insert),
+  so it failed loudly on the first run instead of asserting nothing was
+  ever wrong. Route-level tests don't just cover more surface than
+  service-level ones - they can't accidentally launder a fake actor
+  through a real foreign key the way a hand-built service call can. Fixed
+  in the test itself (threaded `register_actor`'s own real `user_id`
+  through), not the product - this one was purely a test-fixture defect.
+
+  **Second update, same step: the live-browser check on screen 3 found
+  two real bugs that route-level coverage itself structurally cannot
+  reach.** `process_knowledge_document_import` (the worker job
+  `KnowledgeDocumentUploaded` dispatches to) had zero test coverage at
+  any level - not route, not integration, not unit - before this step,
+  and both bugs it turned out to have (the unconditional `DocumentUploaded`
+  firing in `document_service.create_document`, and its own unconditional
+  `parse_and_embed_document` call before branching on import type) sit
+  entirely past the HTTP boundary. `tests/route/test_knowledge_routes.py`
+  passing 19/19 the first time it was written proved every route accepts
+  a valid upload and returns the right shape - it says nothing about what
+  happens to that upload once a real worker, on a real queue, actually
+  processes it, because nothing in a route test's own contract reaches
+  that far. This block has now found real bugs in three distinct layers
+  by three distinct methods: route tests (test_knowledge_routes.py
+  itself - HTTP shape, RBAC wiring, request/response contracts),
+  browser-against-real-stack verification (this block's own CORS finding,
+  origin/preflight behavior no route test can exercise), and a real file
+  through a real worker (this pair of bugs - queue dispatch and worker-
+  side branching). None of the three is a superset of the others, and
+  none would have caught what the others did - which is the actual,
+  concrete argument for why B13's own stop-gate is the full Playwright
+  E2E scenario (§1) and not "the unit/integration/route suites all pass."
+  A green `uv run pytest` was true at every point during this bug's
+  entire lifetime, start to finish.
+
+  **Third update, §7 step 7: `compliance.py` (5/5), `talent.py` (3/3),
+  and `commercial.py` (4/4) now have real coverage** (`tests/route/
+  test_compliance_routes.py`/`test_talent_routes.py`/
+  `test_commercial_routes.py`) - all three previously zero. Unlike
+  `knowledge.py`, this pass found no bugs - all 21 tests passed on the
+  first run. Recorded plainly rather than only ever reporting the passes
+  that found something: a clean full-module pass is itself real
+  information (these three modules' routes wire correctly to their
+  services), not a sign the exercise wasn't worth doing - it was the only
+  way to know that, not an assumption going in.
+
+  **Fourth update, §7 step 8: `graph.py` (5/5) now has real coverage**
+  (`tests/route/test_graph_routes.py`) - previously 1/5 (only `POST
+  .../graph/project`, idempotency-focused). Both RBAC actions
+  (`view_graph`, `trigger_graph_projection`) were already correctly
+  scoped by B10 - checked, not assumed, no fix needed. This is also the
+  file that surfaced the Neo4j-driver event-loop entry immediately
+  above - real test-infrastructure work, not a product bug, but the
+  reason this module took real debugging to get to 5/5 rather than
+  passing clean like step 7's three modules did.
+
+  **Fifth update, §7 step 9: `proposal.py` (5/5, including B13's own new
+  claims-list route) now has real coverage** (`tests/route/
+  test_proposal_routes.py`) - previously 0/4. This module is also where
+  the DetachedInstanceError entry immediately below was found - the
+  fourth distinct real bug this block's route testing has caught (after
+  the four `request_id` duplicate-upload sites in §7 step 6, the two
+  live-browser-check bugs in `document_service.py`/`knowledge_import.py`,
+  and the Neo4j test-infrastructure issue in step 8 - this one, unlike
+  that last one, is a real product bug, not test-only).
+
+  **Sixth update, §7 step 10: `redteam.py` (3/3) and `readiness.py`
+  (2/2) now have real coverage** (`tests/route/test_redteam_routes.py`,
+  `tests/route/test_readiness_routes.py`) - both previously 0/3 and 0/2.
+  `redteam.py` is where the `GraphStaleError` crash entry below was
+  found - the fifth distinct real bug this block's route testing has
+  caught. `readiness.py` passed clean on its first run: `evaluate_
+  readiness` already caught the identical `GraphStaleError` correctly
+  (`readiness_service.py:322-329`, turning it into a real
+  `stale_graph_projection` blocker rather than crashing) - checked and
+  confirmed by the route test asserting that blocker category actually
+  appears on a fresh tender's generated report, not just that the route
+  returned 200. Also this step: `GET /proposal/claims/{id}/trace` and
+  `GET /compliance/{id}/trace` moved off `edit_proposal`/`approve_
+  compliance` onto the new `view_proposal_trace`/`view_compliance_trace`
+  (both 7-role) - both existing test modules gained a new test asserting
+  the *target* RBAC state (a role outside the old narrow action
+  succeeding on the trace route specifically), not just a re-run of the
+  existing admin-path tests.
+- **Test:** the inventory above is itself the audit; no automated test
+  asserts route coverage completeness (that would need something like a
+  coverage-of-coverage tool, not attempted here).
 
 ## [B12] Neither app calls `logging.basicConfig()` anywhere - every `logger.info()` call in the entire codebase is silently dropped
 
@@ -2119,3 +2388,1719 @@ Each entry:
   in B16 mirroring its own "Neo4j wiped and rebuilt" scenario: assert a
   request touching Neo4j fails within a bounded, deliberately-chosen
   time rather than whatever the library defaults happen to be.
+
+---
+
+## [B13-prep] LangGraph checkpointer persists no reconstructable content
+
+- **Discovered:** read-only forensics against the live `checkpoints`/
+  `checkpoint_blobs`/`checkpoint_writes` tables, done specifically to
+  characterize what was lost in incident 7 above (the B12 data wipe)
+  before concluding it was unrecoverable.
+- **Behaviour:** `TenderState` (`orchestration/state.py`) declares exactly
+  21 fields - ids (`tender_id`, `organization_id`, `workflow_run_id`,
+  `readiness_report_id`, ...), counts (`revision_count`,
+  `retry_budget_remaining`), a status string, and lists of ids
+  (`dispatch_task_ids`, `open_critical_finding_ids`, ...). No field of any
+  kind holds document text, drafted claim text, evidence excerpts, or the
+  grounded-context facts handed to the drafting model. Verified directly
+  against real persisted checkpoint rows in 3 separate threads (not
+  inferred from the schema declaration alone, using LangGraph's own
+  `JsonPlusSerializer` to decode the actual msgpack blobs): the
+  `proposal_drafting` node's own checkpoint write, in every thread
+  checked, touches exactly one channel - `branch:to:project_graph`, an
+  internal LangGraph routing marker with no relation to `TenderState` at
+  all. Every other field at that checkpoint held exactly what the schema
+  promises and nothing more.
+- **Risk:** this is not a gap that showed up as a symptom - it's a
+  structural fact about how much a "durable checkpoint" actually
+  preserves, worth naming explicitly because durability is easy to
+  over-read as "there's a forensic trail." There isn't one, for content.
+  Concretely: **a wiped Postgres database and a drafting run that never
+  happened are indistinguishable in this project.** The checkpoint history
+  that survived incident 7's wipe (12,700+ rows across 226 threads) could
+  not reconstruct one word of what the B12 run's drafting model actually
+  produced or was shown - only that some run with some ids happened, at
+  some step, reaching some status.
+- **Status:** accepted as a structural fact, not a bug - LangGraph's
+  checkpointer is doing exactly what its own design promises (durable
+  *state*, meaning the declared TypedDict fields, not an audit log of
+  every value a node ever touched). The absence of a separate audit
+  mechanism is the actual gap - see the next entry.
+- **Test:** none automated (this is a characterization of existing
+  behavior, not a regression to guard). The forensics session's own
+  cross-thread verification (3 threads, `proposal_drafting`'s write
+  checked in each) is the standing evidence.
+
+---
+
+## [B13-prep, owner B16] Nothing persists what the drafting model was actually shown, per section, per revision
+
+- **Discovered:** alongside the checkpointer-content finding above, while
+  designing the traceability drawer's `currently_in_scope_evidence` (this
+  pass) and recognizing it can only answer "what's in scope *now*," never
+  "what was *actually* handed to the model on the run that produced this
+  claim."
+- **Behaviour:** `_build_grounded_context` constructs a `list[PreparedFact]`
+  per section, per drafting run, and hands it to `draft_section` as prompt
+  content - then that list is discarded. Not written to Postgres, not
+  written to LangGraph state (confirmed by the entry above), not logged
+  anywhere. This is the exact uninstrumented middle step that made B9's
+  original citation-correctness question unanswerable from code alone: "18
+  of 22 claims unsupported - was the underlying evidence thin, or did the
+  model have it and not cite it?" has no way to be settled after the fact,
+  because the thing that would settle it (what the model was actually
+  shown) is never kept.
+- **Risk:** every future citation-correctness investigation hits the same
+  wall B9 and B12 both did - forced to re-derive "what would have been
+  offered" from current data (which may have changed since) rather than
+  read what was actually offered at the time. This pass's
+  `currently_in_scope_evidence` (re-derived at view time, explicitly
+  labeled as such - see the traceability-drawer entries) is the closest
+  thing to a substitute that exists today, and it is explicitly not a
+  record.
+- **Status:** not fixed - out of scope for a prep pass ahead of B13.
+  **Owner: B16 (Full Evaluation, Reliability, and Load Tests).** This
+  pass's own refactor (`_prepare_evidence_facts`, shared by
+  `_facts_from_compliance`/`_facts_from_team`/`get_proposal_trace`) is a
+  natural, cheap hook for B16 to add persistence to - one place that
+  already produces the exact fact list, rather than three. Not built now;
+  named so B16 doesn't have to rediscover where the hook belongs.
+- **Test:** none - nothing to test until the persistence mechanism exists.
+
+---
+
+## [B13-prep, owner B16] Unbounded LangGraph checkpoint growth
+
+- **Discovered:** while enumerating threads during the same forensics
+  session, to find the B12 run's own thread among the survivors.
+- **Behaviour:** 226 distinct `thread_id`s in `checkpoints`, totalling
+  ~12,700 rows across `checkpoints`/`checkpoint_blobs`/`checkpoint_writes`
+  as of this session (confirmed via direct count, not estimated). No code
+  path anywhere in `apps/worker`, `apps/api`, or `packages/tenderos_backend`
+  deletes, archives, or otherwise bounds these tables - every workflow run
+  this project has ever driven through Docker, live or test, has left its
+  full checkpoint history in place indefinitely.
+- **Risk:** purely operational, not a correctness bug - nothing reads stale
+  checkpoint data incorrectly. Left alone, storage grows without bound in
+  proportion to workflow-run volume, and (per the entry above) every one of
+  those rows holds only ids/status, so the growth buys no forensic value
+  in exchange for the space - a genuinely bad trade if it's ever measured
+  against retaining, say, the drafting-context log the entry above
+  describes instead.
+- **Status:** not fixed - out of scope for a prep pass. **Owner: B16**,
+  same reasoning as the entry above: B16's own reliability/load-test pass
+  is where retention policy for infrastructure tables like this belongs,
+  not a side effect of unrelated work.
+- **Test:** none - the count above (226 threads, ~12,700 rows) is the
+  standing evidence of the gap, not a regression check.
+
+---
+
+## [B13-prep, owner B13] Approver has no read path to proposal claim trace
+
+- **Discovered:** while verifying the traceability drawer's RBAC against
+  Part H rather than assuming the existing route's binding was adequate.
+- **Behaviour:** Part H (`TenderOS-Build-Guide.md`), quoted exactly: `|
+  Edit proposal | ✓ | ✓ | | | ✓ | | ✓ |` - Bid manager, Architect,
+  Proposal writer, Admin. Not Talent reviewer, Commercial reviewer, or
+  Approver. `routes/proposal.py`'s `_EDIT = "edit_proposal"` gates all of
+  G10, including `GET /proposal/claims/{claim_id}/trace` - the only
+  traceability-drawer route that exists. An Approver, the role that makes
+  the `final_gate` decision, has no way to open the trace drawer for a
+  claim they're being asked to approve.
+- **Why this is not read as an oversight in Part H:** Approver lacking
+  `edit_proposal` is coherent on its own terms - the role approves, it
+  does not author, and `edit_proposal` is named as an authoring action
+  (`PATCH /proposal/sections/{section_id}`, `POST
+  /tenders/{tender_id}/proposal/generate` share the same action). What's
+  arguably missing is a *read* action, a different, narrower thing than
+  adding Approver to an authoring one. PRD 27.13's own invariant
+  ("Traceability must be accessible from normal workflows, not hidden in
+  an admin-only screen") is arguably satisfied as written even without
+  Approver - 3 of the 4 roles `edit_proposal` grants are non-admin.
+- **Risk:** an approver approving a bid whose claims they structurally
+  cannot inspect sits directly against B13's own functional requirements
+  ("traceability is clickable," "no hidden auto-approval") once B13
+  actually builds the readiness screen and the `final_gate` approval
+  controls around this route. Not yet concrete - B13's UI doesn't exist
+  yet - but the gap is exact and named, not theoretical once it does.
+- **Status:** not fixed - Part H is locked, and amending a locked RBAC
+  table inside a prep pass for a test guard and a drawer field is a scope
+  jump this project's own build-order discipline doesn't allow. **Owner:
+  B13**, not left unassigned: B13 is the first block where this gap
+  becomes concrete (it builds the approval screens that would make an
+  Approver actually need this), the same reasoning that already assigned
+  the route-level-testing gap to B13. Candidate resolution named, not
+  decided: a narrower read-only `view_proposal_trace` action granted to
+  the current four roles plus Approver - Part H has precedent for an added
+  row (B10's Graph row, added where nothing existed to reuse). Whether to
+  do this, and how, is B13's own call when it designs the approval
+  screens.
+- **Test:** none - this is an RBAC gap, not a behavior to pin until B13
+  decides the resolution.
+
+---
+
+## [B13-prep] Test-database guard verifies a connection built from the same setting, not the connection that deletes
+
+- **Discovered:** during design review of `_guard_test_database`
+  (`tests/integration/conftest.py`), the fixture built to close incident 7
+  above - flagged before implementation, not found via testing.
+- **Behaviour:** `_schema` and `_clean_tables` each independently call
+  `create_async_engine(settings.postgres_dsn)` and dispose it locally -
+  confirmed by reading both; no shared engine or sessionmaker exists
+  between them. `_guard_test_database` opens a third, separately
+  constructed connection from the same DSN and asks Postgres directly
+  (`SELECT current_database()`) before either of the other two fixtures
+  runs - real verification, not a parse of the DSN string, and strictly
+  better than trusting config text alone. But it is still three
+  independently-constructed connections trusted to agree because they
+  share one config value, not one connection verified and then reused -
+  the same underlying shape as `set_candidate_selection`'s own two-resource
+  guard defect (see that standing pattern entry), scaled down to
+  "verifies A, trusts that B agrees with A" rather than "compares A to A."
+- **Risk:** low in practice for a plain Postgres connection with no
+  proxy/pooler in front of it - a connection's named database and
+  `SELECT current_database()` cannot actually diverge within that
+  connection's own lifetime, so the residual risk is architectural
+  (three separate connections that happen to agree) rather than a live
+  exploit path. Would matter more if a connection pooler doing
+  virtual-database routing were ever introduced in front of Postgres,
+  which nothing in this project's locked stack currently does.
+- **Status:** accepted, not fixed - closing it for real means
+  restructuring `conftest.py` so `_schema`/`_clean_tables`/the guard share
+  one session-scoped engine, out of scope for a guard whose only job is to
+  check before anything destructive runs. Named explicitly rather than
+  letting the guard read as fully closed when it isn't - the same standard
+  this file already holds `evaluate_evidence_coverage`'s "clean" verdict
+  correction to.
+- **Test:** `_guard_test_database`'s own behavior is verified directly
+  (refuses against the dev/live database name, passes against
+  `tenderos_test`) - see the environment-traps entry's own "Test" line
+  above. No test exists for the residual gap itself, since it isn't
+  reproducible against a plain single-instance Postgres setup.
+
+---
+
+## [B13] The test-database guard now exists in two files, with no single source of truth
+
+- **Discovered:** B13 §7 step 1, adding `tests/route/conftest.py`.
+  Route-level tests need the identical `_guard_test_database`/`_schema`/
+  `_clean_tables` protection `tests/integration/conftest.py` already has -
+  pytest's own import mode (neither directory has an `__init__.py`, so each
+  conftest-owning directory gets prepended to `sys.path` individually, not
+  the repo root) makes a shared `tests/_db_guard.py`-style import fragile
+  enough that duplicating the ~30 lines directly into
+  `tests/route/conftest.py` was the pragmatic choice at the time, made
+  explicitly rather than silently.
+- **Behaviour:** `_guard_test_database` (and `_schema`/`_clean_tables`
+  alongside it) is now real, working code in two separate files
+  (`tests/integration/conftest.py`, `tests/route/conftest.py`), not a
+  single function two directories both call. Both copies are correct
+  today - each was verified independently (refuses against `tenderos`,
+  passes against `tenderos_test`) - but nothing keeps them in sync going
+  forward.
+- **Risk:** a future edit to the guard's logic (the database-name
+  convention, the suffix check, anything about how it verifies the
+  connection) that lands in one file and not the other silently restores
+  the exact wipe risk this guard exists to close, but only for whichever
+  test directory's copy was missed - the same failure shape as this
+  file's own "a reader trusts a column its writer never keeps current"
+  standing pattern, just applied to test infrastructure instead of product
+  data. A third test directory added later (e.g. for B13's own component
+  tests, or a future block's tests) would need a third copy, tripling the
+  divergence surface.
+- **Status:** accepted, not fixed - this pass created the duplication
+  deliberately, for a real reason (import fragility), not as an oversight.
+  **Owner: B13**, since this pass is what created the second copy.
+  Mitigation until consolidated: whenever `_guard_test_database`'s logic
+  changes, grep for `_guard_test_database` across the whole `tests/` tree
+  and update every match, not just the one file being edited - if the two
+  definitions are ever found to disagree, *that* is the failure, not a
+  stylistic inconsistency to shrug off. A real fix (a shared fixture module
+  both conftest.py files import cleanly) would need either a `tests/
+  __init__.py` + explicit `pythonpath`/rootdir configuration in
+  `pyproject.toml`, or a pytest plugin - a deliberate test-tooling decision
+  for whoever next touches this, not a one-line fix bundled into an
+  unrelated change.
+- **Test:** each copy's own behavior is independently verified (see the
+  entry above and B13's own route-test harness verification) - no test
+  exists asserting the two copies stay identical, since that would just be
+  a second place for the same drift to hide.
+
+---
+
+## [B13] CORS was never configured - the entire browser-facing surface was unverified by construction through B12
+
+- **Discovered:** B13 §7 step 3's own browser verification (Playwright
+  against a locally-run API), required by this project's own "start the
+  dev server and use the feature in a browser" standard - the first time
+  in this project's history anything has driven the API from an actual
+  browser rather than curl, Swagger, or a direct service-function call.
+- **Behaviour:** `tenderos_api.main.app` had no `CORSMiddleware` and no
+  concept of the web app's origin anywhere. Every browser-originated
+  `fetch()` call - register, login, every future screen - failed the
+  browser's own CORS preflight check before authentication was even
+  considered, with no server-side error at all (the request never
+  completed; the browser blocked it client-side).
+- **The real finding, not just the fix:** this is a gap in this project's
+  *verification method*, not a missing feature nobody got to yet. Every
+  prior block's own "live Docker smoke test" standard (B1 through B12)
+  verified the running API via `curl`, Swagger's "Try it out", or a
+  script's direct HTTP client - and none of those three enforce browser
+  origin policy. CORS is specifically a *browser*-enforced mechanism;
+  a tool that isn't a browser making the request never triggers a
+  preflight check at all, so a stack that had genuinely never had CORS
+  configured could pass every single one of B1-B12's own live-verification
+  gates without that gap ever becoming visible. The entire browser-facing
+  surface was unverified by construction, not by omission - B13 is the
+  first block whose own verification method (an actual browser) is even
+  *capable* of catching this class of bug, which is the more durable
+  lesson than "add the middleware."
+- **Fix:** `CORSMiddleware` added to `tenderos_api.main.app`, reading a new
+  `web_base_url` setting (`tenderos_api/config.py`) from `.env`'s own
+  `WEB_BASE_URL` - already present since B0, never read by any Settings
+  class until now. Verified twice, deliberately not just once: first
+  against a locally-run `uvicorn` + Vite dev server, then again from the
+  real `tenderos-api-1`/`tenderos-web-1` Docker containers (rebuilt, not
+  restarted) - the configuration the eventual Playwright E2E gate (§1)
+  will actually run against, and not automatically the same thing a local
+  dev server proves.
+- **Status:** resolved-in-B13.
+- **Test:** no automated test - CORS is a browser-enforced policy that a
+  server-side `TestClient`/`curl`-based route test cannot exercise for the
+  same structural reason this bug survived twelve blocks (neither is a
+  browser). The only real coverage is the manual Playwright browser
+  verification performed this pass, against both local dev and the real
+  containers - worth remembering the next block that touches CORS
+  configuration, since a green test suite would not catch a regression
+  here.
+
+---
+
+## [B13] `updated_at` (`onupdate=func.now()`) not repopulated after an ORM-tracked UPDATE - `PATCH /tenders/{id}` 500'd on every call since introduction; a second, unfixed instance found by inspection
+
+- **Discovered:** B13 §7 step 3's own route-level test for
+  `PATCH /tenders/{tender_id}` - the first time this route was ever
+  exercised through real HTTP response serialization; every prior
+  integration test called `tender_service.update_tender` directly and
+  never touched the Pydantic response layer.
+- **The mechanism, named precisely since it can recur anywhere this shape
+  repeats:** `TenderRepository.update()` (and several sibling repository
+  methods elsewhere) fetch an ORM-mapped row, mutate its attributes with
+  plain `setattr`, then `await self._session.flush()`. For an INSERT,
+  SQLAlchemy's asyncpg dialect uses `RETURNING` to populate server-side
+  defaults (`onupdate=func.now()`, `server_default`) back onto the
+  in-memory object automatically. For an UPDATE via ORM attribute mutation,
+  it does **not** do this automatically - the column stays unpopulated in
+  memory unless the code explicitly calls `session.refresh()` afterward.
+  The bug only became visible once something tried to *read* the
+  unpopulated attribute *after* the owning `UnitOfWork`'s session had
+  already closed (`routes/tenders.py` serializing `TenderResponse`,
+  which includes `updated_at`, well outside `tender_service.update_tender`'s
+  own `async with UnitOfWork()` block) - triggering
+  `DetachedInstanceError` instead of a lazy DB round-trip, since there was
+  no live session left to do the round-trip against. Every service-level
+  test that called `update_tender` directly and only asserted on
+  `name`/`client_name`/etc. never touched `updated_at` and never saw it.
+- **Fix:** `TenderRepository.update()` now calls
+  `await self._session.refresh(tender)` immediately after `flush()`,
+  before returning - the object is fully populated while the session
+  that can still do the round-trip is open.
+- **Second instance found by inspection, not yet route-tested, not
+  fixed - a named suspect, not assumed fine:**
+  `ProposalRepository.update_proposal_section` (`db/repositories/
+  proposal.py`) has the identical shape - `session.get()`, a `setattr`
+  loop, `flush()`, return, no `refresh()` - against `ProposalSection`,
+  whose own `updated_at` also carries `onupdate=func.now()`
+  (`db/models/proposal.py`). `PATCH /proposal/sections/{section_id}`
+  returns `ProposalSectionResponse`, which includes `updated_at` -
+  the same failure is expected to reproduce there under the same
+  conditions. Not fixed now, deliberately: Proposal workspace's own
+  route-test module isn't due until §7 step 9 per this block's own
+  sequencing, and confirming it live (rather than fixing on inspection
+  alone) is exactly the "verify, don't assume" standard this project
+  holds itself to elsewhere. Flagged here so it's fixed as a *confirmation*
+  when that module comes up, not rediscovered as a surprise.
+- **Audited, not yet exhaustively checked:** every repository method with
+  `await self._session.flush()` was inventoried (grep, `db/repositories/
+  *.py`) - `compliance.py`, `knowledge.py`, and `requirements.py` each
+  already call `refresh()` in *some* of their own update-shaped methods
+  (inconsistently - not every flush site in those same files has one),
+  against models that also carry `onupdate=func.now()` columns
+  (`compliance.py`, `knowledge.py`, `requirement.py`, `proposal.py`,
+  `tender.py` models). Which specific methods are safe versus which share
+  this bug has only been confirmed for `tenders.py` (fixed) and
+  `proposal.py` (suspect, above) - the rest were not individually traced
+  end to end. Practice going forward, not a one-time audit: check this
+  specifically whenever a route-test module's own `PATCH`/update route is
+  reached, the same way step 3 found it - a passing service-level test
+  proves nothing about this shape, only a route-level test that actually
+  serializes the response does.
+- **Status:** resolved-in-B13 for `tenders.py`; **confirmed and resolved
+  in §7 step 9 for `proposal.py`** - the prediction held exactly as
+  named here: `test_patch_proposal_section_updates_content`'s first run
+  raised the identical `DetachedInstanceError`, same mechanism, same
+  fix (`session.refresh()` after `flush()`). See the dedicated step-9
+  entry below for the fix details; recorded here too so this entry
+  reads as closed, not as a stale open item. Unaudited elsewhere
+  (`compliance.py`, `knowledge.py`, `requirement.py` models still carry
+  the same risk in whichever of their own flush sites lack a
+  `refresh()` - not individually re-checked since this entry was
+  written).
+- **Test:** `tests/route/test_organizations_and_tenders_routes.py::
+  test_patch_tender_updates_the_named_fields` (tenders.py) and `tests/
+  route/test_proposal_routes.py::test_patch_proposal_section_updates_
+  content` (proposal.py) - the two confirmed instances of this shape.
+
+---
+
+## [B13] mypy baseline: 59 pre-existing errors, recorded so "no new errors" stays checkable
+
+- **Discovered:** B13 §7 step 3's own report claiming "no new mypy errors"
+  after the CORS/config changes - a claim that was only checkable by
+  memory (comparing against a number carried in the reporting session's
+  own context) until this entry existed.
+- **Behaviour:** `uv run mypy` reports 59 errors across 12 files as of
+  this pass, none introduced by B13's own work so far (confirmed by
+  content match against the pre-B13 baseline, not just count match, for
+  the errors re-observed in `apps/worker/src/tenderos_worker/jobs/
+  knowledge_import.py`). Pre-existing, not enumerated individually here -
+  this entry exists so the count itself is a durable, checkable fact
+  rather than something each future report has to re-assert from memory.
+- **Status:** accepted baseline, not fixed. Re-check this count (`uv run
+  mypy`, compare to 59) at the end of B13 rather than trusting "none new"
+  claims made along the way without a recorded number to check against.
+
+  **Re-checked, §7 step 5:** `uv run mypy .` now reports **63 errors
+  across 14 files** (up from 59/12). Verified directly, not assumed: zero
+  of the 63 are in any file this step touched (`schemas/gates.py`,
+  `schemas/readiness.py`, `rbac.py`, `orchestration/nodes/final_gate.py`
+  - all clean) - the one `routes/gates.py` error this step's own work sits
+  next to (`routes/gates.py:148`, the pre-existing `readiness.blockers if
+  readiness is not None else []` union-attr issue) was already present
+  before this step and is unchanged by it. The +4/+2-files delta is real
+  and NOT independently explained here - the 59-error baseline was never
+  enumerated file-by-file in this entry (only spot-confirmed by content
+  match for `knowledge_import.py`), so there is no stored list to diff
+  the current 63 against line-by-line. The new errors sit in
+  `redteam_service.py`, `rerank.py`, `retrieval.py`, `extract.py`, and
+  `routes/knowledge.py:234` (this last one in the exact module §7 step 6
+  is about to touch) - none of which any B13 session work (this one
+  included) has edited yet. Recorded honestly as an unexplained delta,
+  not attributed to a guessed cause - do not assume "pre-existing and just
+  never counted before" without checking, and do not assume "newly
+  introduced by something in this session" either.
+
+  **Re-checked again, §7 step 6:** still **63 errors across 14 files**
+  (303 source files checked, up from 301 - the two new test files this
+  step added are themselves clean). `routes/knowledge.py` was touched
+  extensively this step (the `request_id` fix, the new `GET /employees/
+  {id}` route) - its one pre-existing error (the `tuple[KnowledgeImportItem,
+  UUID]`/`tuple[UUID, UUID]` mismatch, now at line 253) is unchanged by
+  any of it. `document_service.py` and `knowledge_import.py` (both edited
+  for the live-browser-check bugs) are clean. Count stable at 63 across
+  two full steps of real editing in the exact files nearest the error
+  list - the delta from 59 remains unexplained, not newly grown.
+
+  **Re-checked again, §7 step 7:** still **63 errors across 14 files**
+  (306 source files checked, up from 303 - the three new route test
+  files this step added, `test_compliance_routes.py`/
+  `test_talent_routes.py`/`test_commercial_routes.py`, are themselves
+  clean). No product file touched this step (`schemas/compliance.py`
+  wasn't edited - compliance.py's routes/schema needed no changes) added
+  any new error either. Count stable at 63 across three full steps now.
+
+  **Re-checked again, §7 step 8:** still **63 errors across 14 files**
+  (307 source files checked, up from 306 - `client.ts`'s frontend
+  additions and `GateDecisionPanel.test.tsx` aren't mypy's concern; the
+  one new Python file this step's own scope touched directly,
+  `routes/knowledge.py`'s Idempotency-Key addition to
+  `set_knowledge_selection`, sits in the same file as the pre-existing
+  `tuple[KnowledgeImportItem, UUID]` error and doesn't add to it). Count
+  stable at 63 across four full steps now - the unexplained 59-to-63 delta
+  from step 5 remains exactly that, unexplained but not growing.
+
+  **Re-checked again, §7 step 9:** still **63 errors across 14 files**
+  (308 source files checked, up from 307 - `tests/route/
+  test_proposal_routes.py` is the only new Python file this step added,
+  and it's clean). The three product files this step actually edited
+  (`schemas/proposal.py`, `routes/proposal.py`, `domain/services/
+  proposal_service.py`, `db/repositories/proposal.py`) added zero new
+  errors - confirmed directly, not assumed, since this step also fixed a
+  real bug in `db/repositories/proposal.py`
+  (`update_proposal_section`'s `DetachedInstanceError`, see its own
+  KNOWN_LIMITATIONS entry) and mypy's static checker doesn't catch that
+  class of runtime error anyway, so a clean mypy pass on this file both
+  before and after the fix is expected, not evidence the fix was
+  unnecessary. Count stable at 63 across five full steps now.
+
+  **Re-checked again, §7 step 10:** still **63 errors across 14 files**
+  (310 source files checked, up from 308 - `tests/route/
+  test_redteam_routes.py` and `tests/route/test_readiness_routes.py`
+  are the two new Python files this step added, both clean). Every
+  product file this step touched (`rbac.py`, `routes/proposal.py`,
+  `routes/compliance.py`, `redteam_checks.py`, `graph_service.py`,
+  `tests/route/conftest.py`) added zero new errors. Count stable at 63
+  across six full steps now.
+- **Test:** none - this is a tooling-output count, not a behavior.
+
+---
+
+## [B13] `GateResponse.targets`/`.summary` and `ReadinessReportResponse.counts`/`.blockers` were untyped `dict`s - resolved
+
+- **Discovered:** B13 §7 step 5 planning, before the shared gate-control
+  component could be built against a real contract instead of a runtime
+  shape someone would otherwise have to read `gate_target_service.py` to
+  learn.
+- **Behaviour:** `schemas/gates.py`'s `GateResponse.targets: list[dict]`/
+  `.summary: dict` and `schemas/readiness.py`'s `ReadinessReportResponse.
+  counts: dict[str, Any]`/`.blockers: list[dict[str, Any]]` were an
+  interpretation of whatever the service happened to write, not a
+  contract the database enforced (both are plain JSONB columns). Read
+  every real producer directly rather than assuming uniformity from two
+  (`orchestration/nodes/compliance.py`, `talent.py`, `commercial.py`,
+  `requirement.py`, `redteam.py`, `final_gate.py`) - **six gate_types
+  exist, not the five the B13 plan's own §8a draft assumed** (
+  `finding_resolution`/`redteam.py:finding_gate_node` was missing from
+  that first pass) - worth recording as a hit for "don't generalize a
+  shape from two examples" rather than quietly absorbing. `targets` turned
+  out to be one shape everywhere (`{target_type: str, target_id: UUID}`);
+  `summary` is five plain all-int dicts (different key sets per gate_type)
+  plus one structurally different snapshot (`final_readiness`, carrying
+  `ready`/`blockers`/`counts`/`degraded_stages`). `ReadinessReportResponse.
+  counts` is exactly 11 always-present int keys; `.blockers` entries are
+  `{category, target_type, target_id, message}` with 8 fixed `category`
+  values (`readiness_service.py:31-38`).
+- **Why no live Docker/LangGraph run was used to pin this (a deviation
+  from §8a's own original text, confirmed with the user before
+  proceeding):** every one of these dicts is built by a single,
+  unconditional, literal Python expression - never assembled across
+  branches or filled from LLM-generated content - and passes through
+  `build_gate_payload`/`_gate_to_response` unchanged. That's a different
+  situation from the one this project's "suspect the tool, verify by
+  observation" standard was built for (LLM output, multi-branch runtime
+  state); here the source genuinely is the observation. Real DB-round-trip
+  pinning tests were still added (below) rather than trusting the
+  reasoning alone. **Caveat, on record rather than silently assumed:**
+  those pinning tests call gate node functions directly
+  (`interrupt()` monkeypatched), which is not the same as a compiled-graph
+  run - if a gate's targets were ever populated differently inside a
+  `Send()`-dispatched branch than under direct invocation, direct
+  invocation wouldn't show it, and this project already has one history of
+  exactly that divergence (B7's interrupt-replay bug, documented on
+  `compliance_gate_node`'s own docstring). One gate route test
+  (`tests/route/test_gates_routes.py`) does drive the real compiled graph
+  via `run_workflow`, for `requirement_review` specifically - the fuller
+  compiled-graph confirmation for the other five gate_types is what the
+  full Playwright E2E scenario (§1) provides, not this pinning pass.
+- **Status:** resolved-in-B13. `GateResponse` is now a discriminated union
+  of six subclasses (`schemas/gates.py`, keyed on `gate_type`) instead of
+  one flat model with `summary: dict`; `ReadinessReportResponse.counts`/
+  `.blockers` are typed against `ReadinessCounts`/`ReadinessBlocker`
+  (`schemas/readiness.py`). `GateDecisionRequest.decision` was narrowed
+  from `str` to `Literal["approve", "reject", "request_changes"]` in the
+  same pass, closing the pre-B12-audit minor finding "invalid gate
+  decisions produce a bare 500, not 422."
+- **Test:** `tests/integration/test_orchestration_nodes.py::
+  test_gate_node_opens_exactly_one_gate_even_when_rerun` (extended with
+  summary/targets shape assertions, now parametrized across all six
+  gate_types including `finding_resolution`); `tests/integration/
+  test_readiness_service.py::test_clean_tender_report_has_the_complete_
+  counts_key_set`; `tests/route/test_gates_routes.py` (real compiled-graph
+  confirmation for `requirement_review`).
+
+---
+
+## [B13] `list_gates`/`get_gate` were gated on `create_bid` - the fourth instance of a read action gated on a narrow authoring action
+
+- **Discovered:** while typing `GateResponse` for the shared gate-control
+  component (§7 step 5), not while looking for RBAC bugs - the same way
+  `view_workflow`'s own gap (this file's `updated_at`/CORS-adjacent B13
+  entries' sibling) was found while building screen 7, not through a
+  dedicated RBAC audit.
+- **Behaviour:** `GET /workflow-runs/{run_id}/gates` and `GET /gates/{gate_id}`
+  (`routes/gates.py`) were both gated on `require_permission("create_bid")`
+  - Bid manager/Admin only - hiding every gate's status from Architect,
+  Talent reviewer, Commercial reviewer, Proposal writer, and Approver, the
+  same five roles `view_workflow`'s own entry names. This is the fourth
+  occurrence of the identical shape (`view_graph` B10, `view_readiness`
+  B12, `view_workflow` B13, now `view_gates` B13) - see `rbac.py`'s own
+  comment on `view_workflow`, corrected in this pass from "third instance"
+  to "fourth." `POST /gates/{id}/decision` was never part of this bug - it
+  already used `require_gate_decision_permission`, which resolves the
+  correct per-gate-type action from `orchestration/gates.py`'s
+  `GATE_TYPE_ACTIONS`, not a fixed route-level permission.
+- **Status:** resolved-in-B13. New `view_gates` action added to
+  `rbac.py` (all seven roles, matching `view_workflow`'s breadth) and
+  `TenderOS-Build-Guide.md` Part H; both GET routes retrofitted.
+  **Separately noted, not fixed here:** Part H's table never actually
+  gained rows for `view_graph`/`view_readiness`/`view_workflow` when each
+  was added (B10/B12/B13) despite `rbac.py`'s own comments citing them as
+  precedent - only `view_gates` (this pass's own action) was added as a
+  row. `rbac.py`'s comments are authoritative for the other three until
+  someone does that backfill; not this entry's fix to make.
+- **Test:** `tests/route/test_gates_routes.py::
+  test_gate_routes_are_readable_by_every_role_that_is_a_real_member` (a
+  Commercial reviewer succeeds) and `::test_gate_routes_reject_a_non_member`
+  (a non-member is rejected - `view_gates`'s seven-role breadth leaves no
+  narrower real role to test rejection with, same shape `view_workflow`'s
+  own test file already documents).
+
+---
+
+## [B13] `resource_selection`'s gate targets advertise `role_requirement` ids that `target_updates` can never accept - accepted asymmetry, resolved at §7 step 7
+
+- **Discovered:** while writing `GateDecisionPanel.tsx` (§7 step 5's
+  TODO(human) 1), reading `gate_target_service.py` directly rather than
+  assuming the gate-control component could treat all six gate types'
+  `targets` lists the same way.
+- **Behaviour:** `resource_selection_gate_node`
+  (`orchestration/nodes/talent.py:142-152`) builds its gate's `targets`
+  list as `[{"target_type": "role_requirement", "target_id": str(r.id)}
+  for r in roles]` - the same shape `GateTargetRef` now types, and the
+  same shape a client would naturally read off the gate response and echo
+  back as `target_updates`. But `gate_target_service._KNOWN_TARGET_TYPES`
+  (`gate_target_service.py:21`) does not contain `"role_requirement"` -
+  only `"role_match"` is accepted, deliberately (that file's own comment:
+  *"role_match, not role_requirement, because select_candidate needs the
+  specific candidate row (a role_requirement can have several role_
+  matches)"*). The consequence that comment doesn't state: submitting a
+  `target_update` built from the gate's own `targets` list - exactly what
+  a caller does correctly for `compliance_review` (`compliance_entry`) and
+  `commercial_approval` (`pricing_finding`), the other two gate types
+  `_KNOWN_TARGET_TYPES` covers - hits `apply_target_updates`'s permissive-
+  on-unrecognized-type branch (`if target_type not in _KNOWN_TARGET_TYPES
+  ... continue`) and is silently skipped. No error, no ownership check, no
+  effect - the gate's own overall decision (approve/reject/etc.) still
+  proceeds normally, so nothing in the response signals that the
+  per-target update did nothing. This is worse than a clean rejection: a
+  caller who reasonably generalizes from the two gate types where the
+  gate's own targets ARE directly submittable has no signal they've hit
+  the one gate type where that assumption is false.
+  **What still works regardless:** the underlying capability isn't
+  missing - `POST /roles/{role_id}/select-candidate` (G8) is a real,
+  independent route that always works, needing only a role's real
+  `role_match` id (from `GET /roles/{role_id}/matches`). The gap is
+  narrower than "resource selection can't be approved per-item" - it's
+  "the `targets`/`target_updates` contract is internally inconsistent for
+  this one gate type," independent of any UI, since a UI can (and, per
+  the `GateDecisionPanel.tsx` design note, must) route around it via the
+  dedicated select-candidate route instead.
+- **Resolved at §7 step 7 (screen 11, Team workspace), checked against
+  the actual shipped frontend rather than decided in the abstract.**
+  `GateDecisionPanel.tsx` (built §7 step 5) never sends `target_updates`
+  at all - not for resource_selection, not for any gate type. Its
+  `handleDecide` call to `decideGate` passes only `decision`/`notes`/
+  `waive`; there is no `target_updates` field, and no prop through which
+  a parent screen could supply one. This wasn't a deliberate design
+  decision made in anticipation of this entry - it's a fact about the
+  component as already built, checked directly (`GateDecisionPanel.tsx:
+  48-60`) rather than assumed. Consequence: the two gate types where
+  `target_updates` genuinely WOULD work correctly (`compliance_review`/
+  `compliance_entry`, `commercial_approval`/`pricing_finding`) are
+  *also* unreachable through this UI, not just `resource_selection`'s
+  mismatched one - every per-item action in this frontend (compliance
+  approve, candidate select, commercial resolve) goes through its own
+  dedicated route (`POST /compliance/{id}/approve`, `POST /roles/{id}/
+  select-candidate`, `POST /pricing-findings/{id}/resolve`), uniformly,
+  with the gate's own decision always a separate, standalone call. That
+  makes the `role_requirement`/`role_match` mismatch doubly moot for this
+  codebase's real behavior, not just workarounded for one gate type -
+  worth stating plainly rather than leaving implicit, since it means
+  `target_updates` batch-approval is real, working backend capability
+  with zero current frontend consumer.
+  **Given that, treated as an accepted asymmetry, not fixed:** neither
+  of the two fix options this entry originally named (rebuilding
+  `resource_selection_gate_node`'s `targets` around `role_matches`, or
+  adding a `submittable_target_type` field) earns its cost against a
+  capability nothing calls. Both remain named here as the real options
+  if a future direct API consumer (not this UI) ever needs
+  `target_updates` to work uniformly across all three gate types it
+  currently half-covers.
+- **Status:** accepted asymmetry. Not fixed - the underlying
+  `targets`/`target_updates` contract inconsistency for `resource_
+  selection` still exists exactly as described above, for any caller
+  that isn't this project's own frontend. Screen 11 is built entirely
+  against `GET /roles/{tender_id}/roles`, `GET /roles/{id}/matches`, and
+  `POST /roles/{id}/select-candidate` directly - the gate's own `targets`
+  list is rendered for display only (via `GateDecisionPanel`'s typed
+  `ResourceSelectionSummary`), never round-tripped as a `target_update`.
+- **Test:** none dedicated to the mismatch itself (still a real, if
+  unreachable-through-this-UI, inconsistency) - `tests/route/
+  test_talent_routes.py` (§7 step 7) covers `select-candidate` through
+  its own real route instead, which is the path that actually matters
+  now.
+
+---
+
+## [B13] `target_updates` batch approval - revived by B12, given a real working backend path, and never called by anything - a decision, not a triage note
+
+- **Discovered:** as a consequence noted inside the entry immediately
+  above (`resource_selection`'s targets mismatch), while writing
+  `GateDecisionPanel.tsx` - broken out into its own entry because it's a
+  bigger finding than that one gate type's own inconsistency, and was at
+  real risk of being read as a footnote to it rather than what it
+  actually is.
+- **The history, stated plainly:** `target_updates` was declared on
+  `GateDecisionRequest` since B3, dead (never read by anything) through
+  B9 - the "[B7/B8/B9] Gate approval does not apply GateDecisionRequest.
+  target_updates" entry earlier in this file. B12 did real, deliberate
+  engineering to revive it: `gate_target_service.apply_target_update(s)`,
+  the cross-tenant ownership check, the whole-batch atomicity fix (no
+  partial writes when one entry in a batch is foreign), all built and
+  tested (`tests/integration/test_gate_target_service.py`) specifically
+  so a reviewer could batch-approve individual targets in the same call
+  that decides the gate. B13's frontend is the first UI this project has
+  built that could actually call it. It doesn't. `GateDecisionPanel.tsx`
+  (`:48-60`) sends `decision`/`notes`/`waive` only, for every gate type,
+  with no `target_updates` field and no prop for a parent screen to
+  supply one. **The feature B12 spent real work reviving is dead again,
+  this time with a working backend path and zero callers** - a
+  meaningfully different, and more pointed, fact than "resource_
+  selection's targets happen to be the wrong id space."
+- **The actual design question, answered rather than left open:** is
+  per-target batch approval something this UI should do for the two gate
+  types where it genuinely works (`compliance_review`/`compliance_entry`,
+  `commercial_approval`/`pricing_finding`), or is per-item approval
+  through each domain's own dedicated route the real, intended design,
+  with `target_updates` understood as backend-only surface (a direct API
+  consumer, a future bulk/admin tool - not this web UI)?
+  **Decided here: per-item approval through the dedicated routes is the
+  real design for this UI. `target_updates` is accepted as backend-only
+  surface, not adopted.** Reasoning, not a default: of the six gate
+  types, three are forced into per-item-only by construction, not
+  choice - `requirement_review` and `finding_resolution` were never in
+  `_KNOWN_TARGET_TYPES` at all (their own KNOWN_LIMITATIONS entry above),
+  and `resource_selection` is the mismatched one this entry's sibling
+  describes. `final_readiness` has no per-item targets to approve at all.
+  That leaves exactly two of six gate types - `compliance_review`,
+  `commercial_approval` - where batch approval is even possible. Building
+  a second, different interaction pattern (select targets, submit one
+  atomic batch-plus-gate-decision call) for only those two, while the
+  other four necessarily use simple per-item dedicated-route clicks,
+  would make the gate-control surface inconsistent across screens for a
+  capability that can't extend uniformly to begin with - a worse UX
+  tradeoff than the atomicity `target_updates` buys back for exactly two
+  screens. The per-item routes already exist, are already real, already
+  tested, and give simpler, immediate per-click feedback.
+- **Owner:** this decision belongs to B13 - made here, in this pass, not
+  deferred. No future block is currently scheduled to revisit it. If a
+  genuine direct API consumer other than this project's own web UI ever
+  needs atomic batch-approval-plus-gate-decision, `target_updates`
+  already works for `compliance_entry`/`role_match`/`pricing_finding` and
+  needs no further backend change - only then would adopting it in this
+  UI (or building a second one) be worth reopening.
+- **Status:** accepted, backend-only surface. Not a bug, not scheduled
+  for frontend adoption.
+- **Test:** `tests/integration/test_gate_target_service.py` (B12) is the
+  real, standing proof the backend path itself still works - this entry
+  is about the absence of a caller, not a defect to regress-test.
+
+---
+
+## [B13] Why `requirement`/`redteam_finding` aren't in `_KNOWN_TARGET_TYPES` - a plausible inference, not a documented decision
+
+- **Discovered:** same pass as the entry above, prompted by the same
+  question in reverse - `_KNOWN_TARGET_TYPES` accepts exactly three
+  target types (`compliance_entry`, `role_match`, `pricing_finding`); the
+  other two gate types with real per-target items
+  (`requirement_review`/`requirement`, `finding_resolution`/
+  `redteam_finding`) were never candidates for inclusion at all, and
+  nothing in this codebase's comments says why.
+- **Checked and found silent:** Part G's G4 spec (`:2489-2505`) - generic
+  `target_updates: []` example, no gate-type/target-type scoping stated.
+  Part E (Agent Contracts) - no mention of gate target types at all, not
+  the right part of the spec for this question. The PRD - zero hits for
+  `target_updates`/`role_match`/"batch approv[al]". The B7-B12
+  `target_updates` history in this file (the "Resolved in B12" entry
+  above) documents *what* B12 built (the three-type set) and *why*
+  `role_match` was chosen over `role_requirement` for one of the three,
+  but never states why only these three gate types were in scope to begin
+  with - `_KNOWN_TARGET_TYPES`'s own comment calls it "Q1's chosen
+  target_type set" without Q1 itself being recorded anywhere still
+  readable in this repo.
+- **The one relevant fact that IS on record, supporting a plausible but
+  unconfirmed inference:** every gate type with real per-target items has
+  its own independent, dedicated per-item route, regardless of
+  `target_updates` coverage - `requirement_review` has had `POST
+  /requirements/{id}/verify` since long before B12; `finding_resolution`
+  has had `POST /redteam-findings/{id}/resolve` since B11. Both predate
+  B12's `target_updates` work. By contrast, the B12 entry above states
+  plainly that `compliance_review`/`resource_selection`/
+  `commercial_approval` had **"zero existing write path"** for per-item
+  approval before B12 - `human_approved`/`human_selected`/`resolved`
+  could only ever be set through `target_updates` never actually being
+  wired (the B7-B9 gap this file already tracks at length above). Reading
+  those two facts together, the plausible story is: B12 scoped
+  `target_updates` to the three gate types that had NO other way to
+  record a per-item decision, not to all five - `requirement_review`/
+  `finding_resolution` weren't omitted from something meant to be
+  universal, they were simply never broken in the first place. **This is
+  this entry's own inference, built from the same code+history evidence
+  cited above, not a decision anyone wrote down at B12 time** - the B12
+  entry itself never states this as its reasoning, and no other document
+  in this repo does either.
+- **Status:** open. Recorded as a plausible reading of the evidence, not
+  a confirmed design decision - if `requirement_review`/`finding_
+  resolution` were ever meant to gain `target_updates` coverage too, this
+  entry is where that intention would have been recorded, and it wasn't
+  found. Worth a direct answer next time someone who'd know is available
+  to confirm or correct the inference above, rather than treating it as
+  settled because it's plausible.
+- **Test:** none - there's no behavior to test here, only a documentation
+  gap.
+
+---
+
+## [B13] `make test`'s host-DSN override only patches Postgres - Redis/Neo4j/S3 still point at Docker-internal hostnames, hanging any test that touches them
+
+- **Discovered:** running the full suite for §7 step 5's own numbers.
+  `POSTGRES_DSN=...localhost.../tenderos_test uv run pytest` stalled for
+  minutes with zero output on the very first document-upload test it hit,
+  after 8 pure-auth tests (no storage/graph/cache dependency) had already
+  passed in seconds. A fourth category of the "Standing pattern: local
+  dev/test environment state can silently invalidate a real verification"
+  entry above (`:721`) - related, not a duplicate: that entry's three
+  categories are all "which server is actually being reached" (stale
+  image, port-squatting, wrong-database-teardown); this one is "the
+  configured address cannot be reached from where the test process runs,
+  categorically, regardless of which server is listening where."
+- **Behaviour:** `.env` sets `S3_ENDPOINT_URL=http://minio:9000`,
+  `REDIS_URL=redis://redis:6379/0`, and `NEO4J_URI=bolt://neo4j:7687` -
+  all three Docker-Compose-internal service names, resolvable only from
+  inside the Compose network. The `Makefile`'s own `test` target
+  overrides exactly one of the four service URLs for host execution
+  (`POSTGRES_DSN=...localhost...`) - `S3_ENDPOINT_URL`/`REDIS_URL`/
+  `NEO4J_URI` are left untouched, still pointing at hostnames that plain
+  `getaddrinfo` confirms do not resolve from the host at all (`minio`:
+  `gaierror [Errno 11001] getaddrinfo failed`, ~2.7s to fail). The
+  consequence isn't a fast, loud error, though: `db/storage.py`'s
+  `ObjectStorage` wraps a synchronous `boto3` client in
+  `asyncio.to_thread`, and botocore's own default retry/backoff policy
+  turns one fast DNS failure into several, compounding into a stall of a
+  minute or more per call before anything raises - confirmed directly by
+  probing `storage._ensure_bucket()` in isolation, which still hadn't
+  completed after 10s even wrapped in `asyncio.wait_for` (the underlying
+  blocking thread keeps running past the async timeout, since cancelling
+  the `to_thread` wrapper doesn't stop the OS thread inside it). Any test
+  that uploads a document (`document_service.create_document` ->
+  `storage.put`) - which is most of `tests/integration/` and a growing
+  share of `tests/route/` - hits this. Tests that reach Neo4j
+  (`graph_service.project_tender`/`check_freshness`, several of
+  `test_readiness_service.py`'s own blocker tests) or Redis (the LLM
+  cache layer, though most node tests route around it via
+  `FakeLLMClient`) would hit the identical shape for the same reason,
+  unverified individually here but following from the same root cause.
+  All three ports ARE published to the host by `docker-compose.yml`
+  (confirmed directly: `localhost:9000`/`:7687`/`:6379` all accept a raw
+  TCP connect) - this is purely a missing environment-variable override,
+  not a networking or Compose-config problem.
+- **Not attributable to Gemini rate limits, checked directly rather than
+  assumed:** every LLM-touching orchestration node test in this suite
+  (11 files) explicitly monkeypatches `_build_llm_client` to
+  `FakeLLMClient` - grepped and confirmed, no test constructs a real
+  `GeminiClient`. Worth recording because it was the first, reasonable
+  hypothesis raised for the stall and is directly ruled out by this
+  suite's own established no-real-Gemini-in-tests convention, not by
+  guesswork.
+- **A real process-management gap surfaced investigating this, kept
+  separate from the root cause above because it's a different mechanism:**
+  stopping the first hung run via the harness's own background-task-stop
+  did not terminate the underlying Windows process - a second run was
+  launched before noticing, briefly running two `pytest` processes
+  against the same live `tenderos_test` database at once (each with its
+  own autouse `_clean_tables` teardown, capable of wiping the other's
+  in-progress test's rows). Resolved by verifying each process's actual
+  service connections directly (`Get-NetTCPConnection`) rather than
+  assuming the stop succeeded - no data corruption found, the two runs
+  never actually collided on the same table at the same instant, but this
+  was verified after the fact, not guaranteed by anything before it. Not
+  reproduced deliberately, not root-caused (Windows process-tree signal
+  delivery for a `uv`-wrapped subprocess is the likely mechanism, not
+  confirmed) - recorded so a future stopped-and-relaunched background
+  test run is verified the same way rather than trusted by default.
+- **Status:** open, not fixed - `Makefile`'s `test` target needs
+  `S3_ENDPOINT_URL`/`REDIS_URL`/`NEO4J_URI` overridden to `localhost`
+  alongside its existing `POSTGRES_DSN` override, matching the ports
+  `docker-compose.yml` already publishes. Worked around this pass by
+  passing all four as inline env vars to `uv run pytest` directly rather
+  than editing the Makefile - a real fix belongs to whichever block owns
+  local dev tooling (not decided here), and should be a small, mechanical
+  change once made.
+- **Test:** none - this is a test-harness configuration gap, not
+  application behavior. The full suite (361 tests) passes cleanly once
+  all four URLs are host-reachable, confirmed this pass in 117.98s.
+
+---
+
+## [B13] `queue_knowledge_document_import` callers that omit `request_id` collide on re-upload/duplicate content - resolved, all four call sites
+
+- **Discovered:** §7 step 6's own route-level pass on `knowledge.py` (18
+  routes, previously zero HTTP coverage anywhere - the exact module
+  `set_knowledge_selection`'s own dead-route bug lived in). First-attempt
+  run of `tests/route/test_knowledge_routes.py::
+  test_upload_resumes_creates_one_batch_for_multiple_files`, which
+  uploads two files built from the same helper (so byte-identical
+  content) - not a contrived edge case, a realistic one (a candidate's
+  resume accidentally selected twice in a multi-file picker).
+- **Behaviour:** `routes/knowledge.py`'s `_upload_batch_document` calls
+  `document_service.create_document(...)` then unconditionally
+  `knowledge_service.queue_knowledge_document_import(document.id,
+  batch_id)` - the second call with no `request_id`, defaulting to
+  `None`. `create_document`'s own org+hash dedup (`documents.
+  uq_org_document_hash`) means a second byte-identical file in the same
+  batch resolves to the SAME `document.id` as the first, not a new row.
+  `queue_knowledge_document_import`'s idempotency key
+  (`knowledge_document_uploaded_idempotency_key`) is built from
+  `document_id` + `request_id` alone - with both calls sharing the same
+  `document_id` and the same `request_id=None`, the second `outbox.
+  create` collides with the first on `outbox_events`' own unique
+  idempotency-key constraint and raises `IntegrityError`, uncaught,
+  surfacing as a bare 500 for the entire `POST .../import-batches/
+  resumes` request - not just skipping the duplicate file, the whole
+  batch (including the first, legitimate file) fails to commit, per
+  `UnitOfWork`'s own rollback-on-exception behavior.
+- **The pattern, not just the one bug:** the correct fix already existed
+  in this exact file - `replace_employee_resume` passes a fresh
+  `request_id=uuid.uuid4()` specifically to avoid this collision, and its
+  own docstring names the mechanism explicitly. `_upload_batch_document`
+  was a sibling call site that never adopted it. Checked whether that was
+  the only one, rather than assuming it: grepped every call site of
+  `queue_knowledge_document_import` and found three more in this same
+  file - `upload_employee_master`, `upload_certifications`, and
+  `upload_knowledge_document` - all making the identical mistake, all
+  with a MORE ordinary trigger than the resumes case: simply re-uploading
+  the same employee-master/certifications/capability-statement file a
+  second time (to start a fresh import batch - an entirely normal
+  action, not a client bug) reuses the deduped `document.id` and collides
+  with the FIRST upload's event, because the idempotency key never varied
+  by `batch.id` at all. This is the same general shape `readiness_
+  service.py`'s own comment names elsewhere in this codebase - "the same
+  'guard that looks complete' shape this project has hit three times
+  already" (a correct mechanism that exists, but doesn't cover every
+  place it needs to) - here the mechanism isn't a guard but an
+  idempotency convention, and the gap is between sibling call sites in
+  one file rather than across the whole codebase, but the root shape is
+  identical: a correct pattern that one call site follows and its
+  neighbours silently don't.
+- **Status:** resolved-in-B13, all four call sites. Every caller of
+  `queue_knowledge_document_import` in `routes/knowledge.py` now passes a
+  fresh `request_id=uuid.uuid4()` unconditionally - matching
+  `replace_employee_resume`'s own "simpler than branching, harmless for
+  the genuinely-new-document case" reasoning, not branching on
+  `create_document`'s `_is_new` return value anywhere.
+- **Test:** `tests/route/test_knowledge_routes.py::
+  test_upload_resumes_creates_one_batch_for_multiple_files` (the
+  duplicate-file-in-one-batch case, the one that surfaced this) and
+  `::test_uploading_the_same_employee_master_file_twice_starts_a_second_batch`
+  (the broader re-upload case, added once the other three call sites were
+  found) - both failed against the unfixed routes, both pass now.
+
+---
+
+## [B13] Part G's G6 list never named a single-employee GET - resolved, and the third Part G/code drift this block has found
+
+- **Discovered:** §7 step 6, building screen 4 (employee profile
+  detail/verification) against Part G's own G6 route list (Build Guide
+  `:2524-2548`). That list has exactly two employee-adjacent GETs: `GET
+  /knowledge/{knowledge_item_id}` (generic - `title`/`status` only, no
+  employee fields) and `GET /organizations/{org_id}/employees`
+  (bid-eligible-only, by its own repository-level filter -
+  `eligible_for_bid=true AND profile_review_status='verified'`). Neither
+  can serve screen 4's actual job: a reviewer verifying a profile is, by
+  definition, looking at one that is NOT yet eligible/verified - the one
+  case `list_bid_eligible_employees` structurally excludes.
+- **Behaviour:** confirmed by grep, not assumed - no route anywhere in
+  `routes/knowledge.py` returned a single employee's full profile
+  (email, `current_title`, `years_experience`, `availability_status`,
+  `eligible_for_bid`, `profile_review_status`, `resume_document_id`) by
+  id. The capability already existed internally, though -
+  `knowledge_service.get_employee(knowledge_item_id)` and the
+  `EmployeeResponse` schema are both used by `patch_employee_profile`/
+  `verify_employee`/`replace_employee_resume` (each fetches through
+  `get_employee` before mutating) - this was a genuinely missing route,
+  not missing capability.
+- **RBAC, checked rather than defaulted to the recent precedent:** the
+  new `GET /employees/{knowledge_item_id}` route uses the same
+  `manage_organization_knowledge` action every other route in this
+  module already uses (4 roles: bid_manager, solution_architect,
+  talent_reviewer, admin) - deliberately NOT a new `view_*` action, and
+  deliberately NOT matching `view_workflow`/`view_graph`/`view_readiness`/
+  `view_gates`'s 7-role breadth. Those four were all the same real bug
+  (a workflow-transparency READ wrongly gated behind a narrow AUTHORING
+  action, hiding process state from roles actively working the tender).
+  This is a different shape: personnel data, not workflow status, and
+  `list_bid_eligible_employees` already returns this exact
+  `EmployeeResponse` shape under this exact 4-role action with no prior
+  finding that the scope is wrong - reusing it is consistency with this
+  module's own existing design, not an oversight to fix.
+- **The third Part G/code drift this block has found, not an isolated
+  miss:** `POST /tenders/{tender_id}/impact-preview` (G6) was documented
+  but never built (the real capability lives at `POST .../graph/impact`
+  instead - drift in the doc-ahead-of-code direction); `POST
+  /tenders/{tender_id}/redteam/run` is real, load-bearing code with no
+  line in G11 at all (drift in the code-ahead-of-doc direction); this
+  route is the same code-ahead-of-doc shape as `redteam/run` - the
+  capability (`get_employee`/`EmployeeResponse`) existed in code before
+  this pass, Part G's own route list just never caught up to it. Three
+  finds in one block, in both directions, is worth recording as evidence
+  Part G's route lists need a real audit against `apps/api/src/
+  tenderos_api/routes/*.py`'s actual decorators at some point - not
+  attempted here, and not this entry's fix to make. The other two
+  (`impact-preview`, `redteam/run`) get their own KNOWN_LIMITATIONS
+  entries when their owning screens (10 and 14 respectively) are built,
+  not written up in full here ahead of that work.
+- **Status:** resolved-in-B13. Route added; Part G itself not edited (a
+  living spec correction is a bigger, separate call than this one route
+  addition, and is better made once alongside the other two drift finds
+  above, not piecemeal here).
+- **Test:** `tests/route/test_knowledge_routes.py::
+  test_get_employee_returns_the_full_profile_even_when_unverified` (the
+  case that motivated this - an unverified profile is fetchable) and
+  `::test_get_employee_404s_for_an_unknown_id`.
+
+---
+
+## [B13] Every knowledge-document upload crashed or silently mis-ingested - two distinct bugs, found only by a live browser upload; zero test coverage existed for this code path at any level before this pass
+
+- **Discovered:** the live-browser check on screen 3 (§7 step 6's own
+  verification step, explicitly requested rather than trusting build/
+  lint/route-tests alone) - uploading a real, valid `employees.csv`
+  through the actual UI against the full rebuilt Docker stack. Every
+  automated check this block had already run (`uv run pytest`, `tsc`,
+  `eslint`, `mypy`) was clean; this bug lived entirely in a code path
+  none of them exercise - the worker job layer, which
+  `process_knowledge_document_import` had **zero test coverage at any
+  level, anywhere, before this pass** (confirmed by grep - no unit,
+  integration, or route test ever called it or drove a real upload far
+  enough to trigger it). This is the same category of gap the B13 plan's
+  own §3a inventory was built to close for HTTP routes - it just hadn't
+  been extended to the worker job layer yet, and this pass is the first
+  time anything reached that deep.
+- **Bug 1 - a spurious generic-ingestion event fired for every
+  organization-scoped upload.** `document_service.create_document` fired
+  `DocumentUploaded` (outbox_dispatcher's own trigger for
+  `parse_and_embed_document`, the generic tender-RAG pipeline)
+  **unconditionally**, regardless of caller - including every
+  `routes/knowledge.py` upload (employee-master, certifications, resumes,
+  capability statements), which are organization-scoped (`tender_id=
+  None`) and already fire their own, correct `KnowledgeDocumentUploaded`
+  event separately. `reprocess_document`, in the same file, already
+  refused to act when `tender_id is None` for exactly this reason - the
+  same "correct pattern exists at one call site, the sibling never
+  adopted it" shape as this pass's own `request_id`/duplicate-upload
+  finding above, now found a second time in the same file in the same
+  session. Fixed: `create_document` now only fires `DocumentUploaded`
+  when `tender_id is not None`.
+- **Bug 2 - real, independent of bug 1: `process_knowledge_document_import`
+  itself calls `parse_and_embed_document` unconditionally, before
+  branching on import type.** Its own docstring explains why: it's meant
+  to be self-sufficient regardless of which of the two outbox events
+  dispatches first (a real, reasonable defensive design for the two
+  import types that genuinely need chunks - `bulk_resumes`/`manual`,
+  whose `_process_resume`/`_process_capability_statement` both read
+  `document_chunks` directly for LLM extraction). But it applied that
+  same unconditional call to `employee_master_csv`/`employee_master_xlsx`/
+  `certification_documents` too - all three parse deterministically off
+  raw spreadsheet bytes and never touch `document_chunks` at all
+  (`import_certification_row` builds its own single synthetic chunk
+  internally, independent of this function entirely). Bug 1 alone would
+  have stopped this from double-firing via the outbox, but this call site
+  runs regardless of the outbox - it's inside the function bug 1's fix
+  never touches. For `.csv` this crashed outright
+  (`_extract_blocks` has no CSV handling - confirmed live:
+  `ValueError: Unsupported document extension: '.csv'`); for `.xlsx`
+  employee-master/certifications uploads it would not have crashed, but
+  would have silently chunked and embedded the spreadsheet as if it were
+  generic prose/pricing content - the worse of the two outcomes, since it
+  fails quietly instead of loudly. Fixed: the `parse_and_embed_document`
+  call moved into only the two branches that need it
+  (`bulk_resumes`, `manual`).
+- **Why both, not just one:** fixing bug 1 alone would have stopped the
+  crash for a *first* upload of a given file (no more spurious
+  `DocumentUploaded` firing means no ingestion job races the knowledge
+  one) - but `process_knowledge_document_import` would still have called
+  `parse_and_embed_document` on itself and still crashed the exact same
+  way, just from a single instead of double trigger. Confirmed this
+  directly by observing the crash recur, unchanged, against a rebuilt
+  stack with only bug 1's fix applied, before finding and fixing bug 2 -
+  not inferred from reading the code alone.
+- **Status:** resolved-in-B13, both. Re-verified against a freshly
+  rebuilt Docker stack after both fixes: a real `employees.csv` upload
+  through the actual browser now reaches `completed` (2/2 items,
+  `approved`, both real employee rows visible in the review queue and in
+  the talent library), with a full round-trip through `PATCH .../profile`
+  and `POST .../verify` also exercised live, no console errors.
+- **Test:** `tests/integration/test_document_ingestion.py::
+  test_organization_scoped_upload_fires_no_generic_document_uploaded_event`
+  (bug 1) and the new `tests/integration/test_knowledge_import_worker_job.py`
+  - `test_employee_master_csv_import_creates_real_items_without_ingestion`
+  and `test_certification_documents_import_builds_its_own_chunk_without_
+  generic_ingestion` (bug 2, and the first automated coverage
+  `process_knowledge_document_import` has ever had for any batch type).
+
+---
+
+## [B13] The Neo4j driver singleton breaks under `tests/route/`'s per-call event loops - a fourth environment-trap category, test-infrastructure this time
+
+- **Discovered:** §7 step 8, writing the first `tests/route/` file to
+  touch Neo4j at all (`test_graph_routes.py`). First attempt, with no
+  workaround, failed 6 of 8 tests with `RuntimeError: ... Future ...
+  attached to a different loop` raised from inside the neo4j driver
+  itself, during session close.
+- **Behaviour:** `graph_projection/driver.py`'s `driver` is a module-level
+  singleton, explicitly documented as "same 'module-level singleton,
+  long-lived and pooled' shape as `db/session.py`'s own `engine`" - and
+  it has the identical problem that `engine` had before
+  `_no_pooling_for_the_app_engine` (this file's own earlier entry): its
+  connection pool binds to whichever event loop is running the first
+  time it's used. `tests/integration/` never surfaces this (one shared
+  `httpx.AsyncClient`/event loop for the whole test). `tests/route/`'s
+  `TestClient` does - and worse than the Postgres case: it's not just
+  that each TEST gets its own loop, each individual `client.get()`/
+  `.post()` call runs the ASGI app through its own `anyio` blocking
+  portal, so two calls inside the SAME test function can each land on a
+  DIFFERENT loop. A single fresh driver swapped in once per test (tried
+  first, matching `_no_pooling_for_the_app_engine`'s own shape exactly)
+  still failed all 8 tests the same way - the driver's own internal pool
+  held a connection opened on one call's loop and tried to reset it from
+  a later call's different loop.
+- **The fix, and why the obvious one didn't work:** `NullPool` for
+  SQLAlchemy has no direct neo4j-driver equivalent, so "swap the
+  singleton for a fresh instance" (correct in shape for Postgres) isn't
+  enough here - the fix has to match what `NullPool` actually *does*,
+  not just look like it: open a brand-new driver, use it for exactly one
+  session, close both, on **every call**, never holding anything across
+  a loop boundary. `graph_service.py`'s own `get_neo4j_session` (a
+  direct `from ...driver import get_session as get_neo4j_session`
+  function-object import, bound into `graph_service`'s own namespace at
+  import time) is what actually needed patching - patching
+  `graph_projection.driver.get_session` itself does nothing, since
+  `graph_service.py`'s already-bound name doesn't re-resolve through the
+  original module at call time. Caught by checking, not assumed: the
+  first (wrong) patch target left the exact same error unchanged.
+- **Status:** resolved, test-side only, scoped locally to
+  `test_graph_routes.py` (matching `_clean_neo4j`'s own established
+  per-file scoping in `test_graph_projection.py`, not added to the
+  shared `tests/route/conftest.py` - no other route test file touches
+  Neo4j yet). Real product code (`graph_projection/driver.py`) is
+  unchanged - a real uvicorn process has exactly one event loop for its
+  whole life, so this was never a production bug, the same conclusion
+  `_no_pooling_for_the_app_engine`'s own entry reached for the identical
+  shape. The next `tests/route/` file that touches Neo4j will need the
+  same fixture - worth lifting into `tests/route/conftest.py` at that
+  point rather than a third copy-paste, not done now since exactly one
+  file needs it today.
+- **Test:** `tests/route/test_graph_routes.py` itself - all 8 tests fail
+  immediately without this fixture, all 8 pass with it.
+
+---
+
+## [B13] Missing Idempotency-Key on the knowledge-selection PUT - resolved (§3c)
+
+- **Discovered:** B13's own original planning pass (§3c) - Part I1 names
+  "knowledge selection change" as one of exactly six operations requiring
+  `Idempotency-Key`; `PUT /tenders/{tender_id}/knowledge-selections/
+  {knowledge_item_id}` was the one of the six never wired up. Deferred
+  from earlier steps to §7 step 8, since it's the route screen 10
+  (Knowledge selections) is built directly against.
+- **Status:** resolved-in-B13. Same `required=True` shape `select_
+  candidate`/`decide_gate`/`create_workflow_run` already use - operation
+  name `knowledge_selection_change`, matching Part I1's own phrase.
+  Every existing caller updated to the new contract: three
+  `tests/route/test_knowledge_routes.py` PUT calls and one in `tests/
+  route/test_graph_routes.py`'s own staleness fixture now pass a real
+  key; `tests/integration/test_knowledge_service.py`'s tests call the
+  service function directly and were correctly unaffected.
+- **Test:** `tests/route/test_knowledge_routes.py::
+  test_set_knowledge_selection_requires_idempotency_key` (new) plus the
+  four updated call sites above, all passing.
+
+## [B13] No route ever exposed a proposal section's claim ids - resolved
+
+- **Discovered:** §7 step 9, while building screen 13 (Proposal
+  workspace). The plan's own §2 table marked this screen's row "None" for
+  gaps, written without checking whether a human could actually discover
+  which claims exist in a drafted section to click into a trace - `GET
+  /proposal/claims/{claim_id}/trace` needs a `claim_id` handed to it, and
+  nothing in G10 ever returns one. The repository method that would serve
+  this, `list_proposal_claims_for_section`, has existed since B9
+  (`db/repositories/proposal.py:128`) but was never called from
+  `proposal_service.py`, let alone exposed as a route - a capability-
+  exists-underneath, never-wired-to-the-surface gap, the same shape as
+  the `GET /employees/{id}` and `view_gates` gaps found earlier in this
+  block.
+- **Considered and rejected:** parsing `ProposalSection.content` for
+  claim-text substrings client-side, to avoid a new route. Checked
+  directly against `agents/schemas/proposal.py::ProposalClaimDraft` and
+  `ProposalSectionDraft` (`content` and `claims` are two independently
+  LLM-generated fields from the same call, no documented or enforced
+  invariant that `claim_text` is a verbatim substring of `content`) -
+  building a highlight-matcher on that assumption would have been exactly
+  the kind of unverified inference this project has repeatedly flagged
+  elsewhere, not a shortcut worth taking.
+- **Status:** resolved-in-B13. Added `GET /proposal/sections/{section_id}
+  /claims` (`routes/proposal.py`), backed by a new thin service wrapper
+  `list_claims_for_section` (`proposal_service.py`, mirrors `list_
+  proposal_sections_for_tender`'s own shape) and a new list-item schema
+  `ProposalClaimResponse` (`schemas/proposal.py`). Stays on the existing
+  `edit_proposal` action, matching the other three G10 routes - **decided
+  in §7 step 10, not left open:** now that `view_proposal_trace` exists
+  (see its own entry below), it was checked rather than assumed that this
+  route should widen with it. Screen 13 (Proposal workspace), this
+  route's only caller, is itself gated to `edit_proposal` end to end, so
+  a Talent/Commercial reviewer can't reach it regardless of this route's
+  own RBAC - unlike the trace route, which is independently reachable (a
+  claim_id can be opened directly from a red-team finding or the
+  readiness gate), this one has no standalone entry point, so there's no
+  real gap widening it would close. Not added to `TenderOS-Build-Guide.md`
+  Part G, matching
+  the precedent set by the `GET /employees/{id}` addition (code-only,
+  recorded here rather than in the spec text).
+- **Test:** `tests/route/test_proposal_routes.py::
+  test_list_proposal_claims_returns_the_real_claim`.
+
+## [B13] `PATCH /proposal/sections/{id}` raised `DetachedInstanceError` on every call - resolved (predicted, then confirmed)
+
+- **Discovered:** not a fresh discovery - this was a **named suspect**,
+  flagged by inspection in §7 step 3's own `updated_at`/`onupdate`
+  entry above, specifically because that step's `tenders.py` fix made
+  the failure shape recognizable and `update_proposal_section` was
+  checked against it and found to share it, on inspection, before this
+  route had ever been tested. That entry deliberately did not fix it
+  early ("confirming it live... is exactly the 'verify, don't assume'
+  standard this project holds itself to"), named §7 step 9 as the owner,
+  and predicted it would reproduce under the same conditions once
+  `test_proposal_routes.py` existed. §7 step 9's first run of
+  `test_patch_proposal_section_updates_content` reproduced it exactly as
+  predicted - the value here isn't that a bug was found, it's that the
+  earlier by-inspection prediction was correct, which is itself the
+  argument for naming suspects by inspection rather than only ever
+  waiting for a test to surface them cold (matching this file's own
+  `set_knowledge_selection` precedent for how much a route going
+  untested can hide, just caught one step earlier this time).
+- **Behaviour:** `ProposalRepository.update_proposal_section` (`db/
+  repositories/proposal.py`) updated the row and called `flush()`, then
+  returned the ORM object directly. `proposal_sections.updated_at` carries
+  `onupdate=func.now()` - a server-computed value a plain `flush()` does
+  not pull back into the Python object. By the time `patch_proposal_
+  section` (`routes/proposal.py`) tried to read `.updated_at` to build the
+  response, the owning `UnitOfWork`'s session had already closed (the
+  route runs after the `async with UnitOfWork()` block that produced the
+  object has exited), so SQLAlchemy raised `DetachedInstanceError`
+  instead of lazily reloading it.
+- **Root cause note, not just "fixed":** this is not a novel bug shape -
+  `ComplianceRepository.update_compliance_entry` and `Requirement
+  Repository.update_fields` both hit the identical problem earlier in
+  this project and both already carry a `session.refresh()` call plus a
+  comment naming exactly this concern. `ProposalRepository.
+  update_proposal_section` is structurally the same kind of update (a
+  `**fields` patch on a row with an `onupdate` timestamp, returned across
+  a session boundary) but was written without the fix the other two
+  already needed - a known pattern not applied consistently, not a new
+  class of mistake.
+- **Status:** resolved-in-B13. Added the same `await self._session.
+  refresh(section)` call after `flush()`, with a comment cross-referencing
+  the two prior instances so a fourth repository method doesn't repeat
+  this.
+- **Test:** `tests/route/test_proposal_routes.py::
+  test_patch_proposal_section_updates_content` - failed with the real
+  `DetachedInstanceError` traceback before the fix, passes after.
+
+## [B13] Traceability drawer (screen 16) verified as an instrument - not yet pointed at real citation data
+
+- **Discovered:** §7 step 9's own live-browser check, and the framing
+  correction the user gave immediately after reading the first report of
+  it - the original report risked being read as "step 9 made progress on
+  the citation gap," which it did not.
+- **What the live check actually established:** both rendering branches
+  of `TraceabilityDrawer.tsx` are correct against the real API, real
+  Postgres data, and a real Gemini-drafted proposal (not just
+  `FakeLLMClient`'s scripted route test). The empty branch ("No
+  additional in-scope evidence") rendered on real claims from a real
+  drafting run. The non-empty branch (the `role="alert"` warning box)
+  rendered correctly - real count, real evidence fields - after one
+  `evidence_link` was inserted directly into Postgres by hand for this
+  check and linked to the tender's existing compliance entry.
+- **What it did NOT establish, stated plainly so this isn't
+  over-claimed later:** neither observation is evidence about whether
+  *real drafting* leaves *real* evidence uncited. The empty-branch
+  claims were traced on a tender with **zero `evidence_links` at all**
+  (confirmed directly: `SELECT count(*) FROM evidence_links WHERE
+  tender_id = ...` returned 0 before the check) - "empty" there follows
+  necessarily from the data having nothing to be in-scope in the first
+  place, not from any drafting-time citation decision. The non-empty
+  branch was produced by a hand-inserted row created specifically to
+  exercise the rendering path, not evidence the drafting model actually
+  had available and skipped during a real run. Both are checks of the
+  drawer's own correctness, not samples of the citation-correctness
+  question B9/B12 opened.
+- **Why this matters going forward, not just as a correction:** §4 of
+  this block's own plan already warned that an empty
+  `currently_in_scope_evidence` result, seen for the first time during
+  the eventual Playwright E2E run, "is not, by itself, a finding about
+  the data" and told the runner to suspect the instrument before the
+  data. That caution now cuts the other way too: the instrument (the
+  drawer's rendering logic, for both branches) is now checked and
+  confirmed correct, on real data shapes, independent of the Playwright
+  scenario. So when the real sample eventually comes from the Playwright
+  E2E run's own "inspect claim trace" step (§4's own rule for where the
+  real sample has to come from - a tender that went through real
+  extraction, real compliance/team/commercial approval, and real
+  drafting, not hand-seeded fixture rows), an empty or non-empty result
+  there will mean something real about that run's own citation behavior,
+  not leave open the question of whether the drawer itself can be
+  trusted to show it correctly.
+- **Status:** instrument verified; citation-correctness question itself
+  remains open, unchanged by this step. Owner: whichever pass runs the
+  full Playwright E2E scenario (§7 step 11 of this block's own plan).
+- **Test:** none automated - this was a manual live-browser check, not a
+  regression test. The hand-inserted `evidence_link`/`compliance_
+  evidence` rows were left in the dev database (`tenderos`, not
+  `tenderos_test`) as accumulated fixture state, matching this session's
+  established practice for other "*-check" org data, not cleaned up.
+
+## Standing pattern: API surface lagging the service/repository layer - now four instances this block
+
+- **Discovered:** named explicitly after §7 step 9's claims-list gap,
+  once it was clear this was the same shape as two earlier B13 findings,
+  not a one-off. Extended to a fourth instance during §7 step 11b's live
+  E2E run - see the dedicated submission-item entry below for the full
+  writeup; noted here only because it fits this exact shape, with one
+  real difference from the first three: instances 1-3 were each fixed
+  the same pass they were found, because a screen already under
+  construction needed them. The fourth was found with no screen under
+  construction to need it - nothing in Part J's own 17-screen list ever
+  named one - so it's recorded as an open gap, not resolved-in-B13 like
+  the others.
+- **The pattern, stated precisely so a fourth instance is recognized
+  faster:** a capability already exists correctly one or two layers down
+  (a repository method, a domain-service function, sometimes both) but
+  was never exposed - or was exposed with the wrong RBAC action - at the
+  route layer a UI screen actually calls. This is a different shape from
+  this file's other standing pattern ("a reader trusts a column its
+  writer never keeps current," see the test-database-guard-duplication
+  entry above) - that one is about state going stale after being wired
+  up; this one is about the wiring never having been finished in the
+  first place. Nothing was broken by drift here; nothing was ever
+  connected.
+- **The four instances, all found this block:**
+  1. `GET /employees/{knowledge_item_id}` - Employee is a KnowledgeItem
+     subtype; the generic item fetch existed, a dedicated one didn't,
+     found building screen 4. Resolved-in-B13.
+  2. `view_gates` - `list_gates`/`get_gate` existed and worked, gated on
+     `create_bid` (a narrow authoring action) instead of a real read
+     action, found building the shared gate-control component ahead of
+     screen 8. Resolved-in-B13.
+  3. `GET /proposal/sections/{section_id}/claims` - the repository
+     method (`list_proposal_claims_for_section`) has existed since B9;
+     nothing above it ever called it, found building screen 13.
+     Resolved-in-B13.
+  4. `SubmissionRepository.update_submission_item` - has existed since
+     B5, zero callers anywhere in either app, found not by building a
+     screen but by the live E2E run reaching final readiness and finding
+     it permanently blocked. Open - see the dedicated entry below for
+     why this one isn't B13's to close.
+- **Why this is worth naming as a pattern:** the first three were each
+  found by the same mechanism (a UI block trying to do something a
+  screen genuinely needs and discovering the route doesn't exist or is
+  mis-scoped) and each fixed the same pass. The fourth confirms the
+  earlier prediction that this wasn't a closed list, but breaks the
+  "found while building, fixed while building" shape - nothing in Part
+  J's 17 screens ever needed it, so nothing ever went looking. Worth
+  remembering for whichever block eventually builds a submission-item
+  screen: check this pattern first, the repository method is very
+  likely still there and still correct.
+- **Status:** instances 1-3 resolved-in-B13. Instance 4 open, owner
+  named in its own dedicated entry below.
+- **Test:** none - this is a naming/recognition entry, not a behavior;
+  see each instance's own entry for its test coverage.
+
+## [B13] `POST /tenders/{id}/redteam/run` crashed with an unhandled `GraphStaleError` whenever the graph wasn't freshly projected - resolved
+
+- **Discovered:** §7 step 10's own first route test for this endpoint
+  (`tests/route/test_redteam_routes.py::
+  test_trigger_red_team_runs_clean_on_a_fresh_tender`) - a real,
+  reproducible crash, not a hypothetical, on the most ordinary possible
+  input: a brand-new tender that has never had a graph projection run.
+- **Behaviour:** `run_red_team`'s 5-step check list (`redteam_service.py`)
+  includes `check_graph_contradictions` (`redteam_checks.py`), which calls
+  `graph_service.find_contradictions_for_redteam` → `find_contradictions`
+  → `check_freshness` unconditionally. `check_freshness` raises
+  `GraphStaleError` whenever the latest completed projection doesn't match
+  the tender's current `state_version` - "including when no successful
+  projection has ever run" (its own docstring). Nothing between that call
+  and `routes/redteam.py`'s `trigger_red_team` route caught it, so it
+  propagated as an unhandled exception (an unstyled 500, not the
+  documented 409 GRAPH_STALE contract `routes/graph.py`'s own read routes
+  correctly return for the identical exception).
+- **Why this wasn't caught earlier:** `run_red_team` is also invoked
+  automatically by the LangGraph `red_team` node, and that path is
+  genuinely safe - traced directly in `orchestration/graph.py`, not
+  assumed: `red_team`'s only incoming edge is `project_graph → red_team`
+  (`graph.py:104`, unconditional), and the bounded revision loop
+  (`targeted_replan → ... → proposal_drafting → project_graph → red_team`)
+  always re-enters through `project_graph` too - there is no path into
+  `red_team` that skips a fresh projection. The manual trigger route
+  (`POST .../redteam/run`, itself an interpretation beyond G11's locked
+  3-route list, added specifically so a human can re-run red-team review
+  on demand "independent of the full graph's automatic timing" - see its
+  own routes/redteam.py comment) has no such guarantee, and nothing
+  exercised it against an unprojected tender until this step's route test
+  existed.
+- **Fix:** `check_graph_contradictions` now catches `GraphStaleError`
+  around the graph query specifically and returns `[]` - this one check
+  contributing nothing this pass, not the whole run failing. Deliberately
+  not fixed by making `trigger_red_team` return 409 GRAPH_STALE instead:
+  the other 4 deterministic checks and the LLM critique have no graph
+  dependency and can always produce useful findings, so aborting the
+  entire red-team pass over one check's unmet precondition would throw
+  away real, available information for a graph-unrelated reason. Contrast
+  deliberately preserved: `routes/graph.py`'s own read routes are
+  *answering a question about the graph itself*, where staleness is a
+  real answer worth a 409; `run_red_team` is answering a broader "what can
+  Red Team find right now," where a stale graph is just one input being
+  temporarily unavailable.
+- **Test:** `tests/route/test_redteam_routes.py::
+  test_trigger_red_team_runs_clean_on_a_fresh_tender` - failed with the
+  real `GraphStaleError` traceback before the fix, passes after.
+
+## [B13] §1's own dependency analysis missed that step 7 ("select candidate"), not only the added 14th step, needs a pre-seeded company-knowledge item
+
+- **Discovered:** the §7 step 11 pre-flight, checking fixture
+  prerequisites before triggering any billed run - looking for the
+  company-knowledge seed §1 already names, and finding it was scoped
+  narrower than the scenario actually needs.
+- **Behaviour:** §1's own text states the added 14th step (knowledge-
+  selection impact preview) "needs at least one company-knowledge item
+  pre-seeded in the test fixture's organization to select against...
+  the fixture data has to carry this, not a live import step." True, but
+  incomplete: step 7 of Part J's own 13 named steps ("select candidate")
+  has the identical dependency - `check_role_qualification_gaps` and the
+  whole talent-matching flow need a real, verified `KnowledgeItem`
+  (employee) in the org before any role can be matched against one, and
+  nothing about step 7 was ever flagged as needing this in §1's own
+  per-step dependency notes, only the 14th step was.
+- **Why it was missed, stated plainly rather than left as "just an
+  oversight":** at the time §1 was written (early B13 planning, before
+  §7 step 6 had built screens 2/3/4), the knowledge-import UI surface
+  didn't exist yet to trace this dependency against - §1's own
+  reasoning for the 14th step's fixture need was itself derived from
+  reading `knowledge_service.set_knowledge_selection`'s docstring and
+  `graph_projection/queries.py`, code that existed then; step 7's
+  matching dependency on the same underlying data was equally real at
+  that time but nothing in that planning pass traced talent-matching's
+  own prerequisites with the same care. A real miss in the plan's own
+  dependency analysis, not a new gap introduced later - worth recording
+  as that, not softened to "an area that later became relevant."
+- **Status:** resolved as part of planning §7 step 11a (the Playwright
+  spec itself, not yet written at the time this entry was added) - the
+  spec's own setup phase drives real import → approve → verify for at
+  least one employee through the actual UI (screens 2/3/4), before the
+  13 named steps begin, serving both step 7 and the 14th step's
+  identical dependency from one real setup pass rather than two.
+- **Test:** none yet - the spec this entry's fix lives in hadn't been
+  written when this entry was added; see §7 step 11a's own plan.
+
+## [B13, owner B16] `settings.llm_provider` is dead configuration - 8 sites construct `GeminiClient` directly, bypassing the provider-neutral interface it exists to select
+
+- **Discovered:** §7 step 11's own pre-run pre-flight - checking
+  whether `FakeLLMClient` (already every automated test's own LLM
+  double) could be swapped in on the running `api`/`worker` containers
+  via env var, to make a full selector/harness rehearsal of the E2E
+  spec free before spending real Gemini calls on it.
+- **Behaviour:** `config.py`'s `llm_provider: str = "gemini"` carries a
+  comment stating it "selects which `agents/llm/*_adapter.py`
+  implementation gets constructed." Grepped for every read of
+  `settings.llm_provider` across both apps: zero matches, anywhere.
+  The comment describes behaviour the field does not have. Every actual
+  construction site hardcodes `GeminiClient(...)` directly, in 8
+  separate places across two apps, each with its own local
+  `_build_llm_client()`-shaped function: `orchestration/nodes/
+  requirement_extraction.py`, `compliance.py`, `talent.py`,
+  `commercial.py`, `proposal.py`, `redteam.py` (the 6 automatic
+  LangGraph nodes), plus `apps/worker/.../jobs/knowledge_import.py` and
+  `verification.py`. (A further 3 route-level `_build_llm_client()`
+  functions in `apps/api/.../routes/proposal.py`/`redteam.py`/
+  `commercial.py` exist too, for the manual on-demand triggers - not
+  counted separately above since they're the same pattern, just a
+  smaller fraction of a full run's total LLM cost than the 6 automatic
+  nodes.) A2's own locked stack decision is "a provider-neutral
+  `LLMClient` interface with model IDs supplied purely as
+  configuration" - the interface exists and is honored (every
+  construction site returns something satisfying `LLMClient`), but the
+  "purely as configuration" half never got wired past `GeminiClient`
+  itself. Confirmed directly this pass, not assumed: even if
+  `llm_provider` *were* read somewhere, swapping it to `FakeLLMClient`
+  bare (no scripted responses) would not produce thin/empty output as a
+  naive reader might expect - `FakeLLMClient` is deliberately built to
+  raise loudly on the first unscripted call ("fails loudly at the call
+  site, not as a confusing downstream assertion failure," its own
+  docstring), so real wiring would also need generously-sized generic
+  scripted responses queued at container startup for every distinct
+  agent name in the pipeline, not just a flag flip.
+- **Consequence, stated plainly since it's the part future blocks need
+  to know, not just this one:** there is no way to run the system
+  end-to-end against the real stack without spending real, billed LLM
+  calls. §7 step 11's own pre-run idea (exercise every selector/wait/
+  navigation for free, save the real Gemini spend for one confirming
+  run) was not possible for exactly this reason, and had to be dropped
+  in favor of running the real spec once, live cost accepted. This is a
+  real, structural constraint on every future block that wants to
+  exercise the full path cheaply or repeatedly - not unique to B13's
+  own E2E spec.
+- **Status:** not fixed - real work (wiring 8 call sites plus sized
+  fake-response scripts per agent name), correctly declined for this
+  pass rather than built as a side effect of a pre-flight check.
+  **Owner: B16 (Full Evaluation, Reliability, and Load Tests)** - this
+  is exactly the kind of full-stack, repeated-run infrastructure a
+  reliability/load-test block needs and would very likely have to build
+  anyway to run its own suite affordably; B13's own E2E spec is a
+  smaller, one-shot consumer of the same capability, not its natural
+  owner. B15 was considered and set aside without a documented reason
+  strong enough to prefer it here - nothing in this session traced B15's
+  own scope closely enough to argue it fits better, so the choice is
+  B16 on the strength of the evaluation/reliability match, not a
+  comparison actually made between the two.
+- **Test:** none - this is dead-configuration characterization, not a
+  regression to guard yet.
+
+## [B13] No screen manages submission-item status - final readiness is unreachable through the UI by construction, independent of every other blocker
+
+- **Discovered:** §7 step 11b's own live E2E run - the first time
+  anything drove this tender through requirement extraction to a real
+  readiness check, and the first time this gap had a chance to become
+  visible. `readiness_service.py`'s blocker 4
+  (`missing_mandatory_submission_item`) fired for every mandatory
+  submission item on the tender (14 of them, real ones: signed cover
+  letter, tax clearance certificate, technical proposal, and others
+  extracted from the real synthetic RFP package) - all still at their
+  extraction-time default status.
+- **Behaviour, checked precisely rather than assumed:**
+  `submission_items.status` (Part C's own schema) has four values -
+  `missing`, `present`, `needs_review`, `not_applicable` - and a
+  `matched_document_id` column, suggesting the original design intent
+  included automatic matching against uploaded documents. In practice,
+  extraction creates every item at `status='missing'`
+  (`db/models/requirement.py`'s own default) and nothing anywhere ever
+  moves it: `SubmissionRepository.update_submission_item` exists (since
+  B5) but has zero callers in either app - confirmed by grep, not
+  assumed - and no API route exposes submission items at all, not even
+  a read-only `GET`. This is the fourth instance of this block's own
+  "API surface lagging the repository layer" standing pattern (see
+  above), the one instance nothing was building toward when it was
+  found.
+- **Consequence, stated plainly:** with every mandatory submission item
+  starting and staying at `missing`, blocker 4 fires on every real
+  tender with at least one mandatory submission item extracted -
+  independent of and in addition to whatever else is or isn't resolved.
+  `final_readiness_approval`'s own gate can still be reached and waived
+  (`GateDecisionPanel`'s waiver checkbox exists for exactly this), but
+  the honest, unwaived `ready: true` state PRD 10.13 and Build Guide
+  Part J both describe is unreachable through any of the 17 screens as
+  they exist today, on any tender with a real submission checklist -
+  not a corner case, the default extraction outcome.
+- **Checked before naming an owner, per this project's own PRD-vs-Build-
+  Guide conflict rule (CLAUDE.md):** the PRD names "Submission checklist"
+  as an in-scope tracked capability three separate times (§5's own list
+  of what a bid tracks, §6.2's document-type list, §10's capability
+  list) and asks "which submission artefacts are missing" as a
+  user-facing question (§4, §10.13) - but never once describes a human
+  action for marking an item received or complete. The Build Guide's own
+  B5 build list scopes "Submission-item extraction" only (read/create,
+  not update), and Part J's own 17-screen enumeration never names a
+  submission-checklist screen at all. Both documents are silent on the
+  same point, not in conflict with each other - this is a genuine gap in
+  what either spec asked for, not a Build-Guide omission of a PRD
+  requirement. Flagged as such rather than resolved silently, per
+  CLAUDE.md's own instruction for exactly this shape of ambiguity.
+- **Status:** open, no owner named. Not B13's - Part J's own 17 screens
+  never asked for this one, so building it now would be scope B13 was
+  never given, not a bug B13 introduced. Whoever scopes the next block
+  touching readiness or submission tracking should treat this as a real,
+  load-bearing gap - final readiness cannot be honestly reached without
+  it - not a nice-to-have.
+- **Test:** none - `tests/route/` has no submission-item coverage
+  because no route exists to cover.
+
+## [B13] §1's own stale-graph reasoning was correct for the automatic path and silently applied to the manual one - a conflation, not a stale-data bug
+
+- **Discovered:** §7 step 11b's real readiness result -
+  `stale_graph_projection` fired as one of the blockers, which the
+  plan's own §1 had explicitly reasoned should NOT happen at this point
+  in the scenario.
+- **The two facts, both independently true, wrongly treated as one:**
+  §1 argued (correctly, and confirmed correct by tracing the actual
+  graph edges in `orchestration/graph.py`) that `project_graph` runs
+  unconditionally, automatically, immediately before
+  `readiness_generation` in the LangGraph topology - so a readiness
+  check reached by letting the automatic workflow run to completion is
+  guaranteed a fresh projection. Separately, and also correctly: the
+  E2E spec's own step 13 calls the *manual*
+  `POST /tenders/{id}/readiness/generate` route (the same button screen
+  15 exposes to a human), which calls `readiness_service.evaluate_
+  readiness` directly - a standalone function with no graph-projection
+  step of its own ahead of it, by design (it has to be independently
+  callable, including from a tender with no live workflow run at all).
+  §1's own guarantee is real and holds - for the automatic path only.
+  It does not extend to the manual route, and nothing in §1, the
+  pre-flight, or the spec's own review ever checked whether the
+  scenario was actually going to exercise the automatic path or the
+  manual one at that exact moment.
+- **Why this is named as a shared miss, not a planning-only one:** this
+  reasoning was written into §1, restated in the §7 step 11 pre-flight's
+  own step-13 prediction, and approved at each point - by the plan's own
+  author and by the reviewer, in the same conversation, without either
+  catching that "the automatic path is safe" and "the spec uses the
+  manual path" are two different claims. The 14th step's own
+  knowledge-selection change bumps `state_version` after the last
+  automatic projection (from whatever automatic pass, if any, already
+  ran earlier in the workflow) with nothing re-projecting before the
+  manual readiness check reads it - a real, mechanical staleness, not a
+  false positive.
+- **Status:** accepted, not fixed - the blocker firing here is `readiness_
+  service.py` working exactly as designed (blocker 7 is supposed to
+  catch a stale graph; it did). What's recorded here is the reasoning
+  error, so it isn't repeated: a guarantee proven for the automatic
+  workflow path is not a guarantee for a manual route that calls the
+  same underlying function, even when both eventually reach the same
+  code. Anyone re-deriving "X can't happen here" for a scenario mixing
+  automatic workflow continuation with manual UI-button triggers should
+  check which path is actually live at that point, not assume the
+  topology's own guarantees travel with the function name.
+- **Test:** none - this is a reasoning-error record, not a behavior to
+  guard.
+
+## [B13] E2E harness bug: premature navigation cancelled in-flight requests, twice
+
+- **Discovered:** §7 step 11b, runs 1 and 2 of the E2E spec.
+- **Behaviour:** two call sites in `full-flow.spec.ts` navigated
+  (`page.reload()` or `page.goto()`) immediately after clicking
+  something whose own handler was an in-flight async request - the
+  setup phase's resume upload (`handleResumesUpload`'s
+  `uploadResumes(...)` call) and, separately, every gate-approval click
+  (`GateDecisionPanel`'s `decideGate(...)` call) immediately followed by
+  navigating to the next screen. A browser cancels an in-flight
+  fetch/XHR on navigation - `setInputFiles`/`.click()` only wait for the
+  DOM event to fire, never for an async handler's own request to
+  complete, so both call sites had a real chance of navigating away
+  before the request ever reached the server. Confirmed directly, not
+  assumed: run 1's own DB state showed zero `knowledge_import_batches`
+  rows after repeated reloads, despite the file input showing the
+  correct selected file moments earlier in the trace.
+- **Fix:** wait for the real DOM signal that confirms the async handler
+  completed, before navigating - the resumes input's own `disabled`
+  attribute clearing, or (for gate decisions) the "Approve" button
+  itself disappearing once `gate.status` flips off `pending`. Both
+  fixes are the same shape: don't infer "the request is done" from an
+  action's own return; wait for its actual, observable effect.
+- **Test:** none automated - this is a spec-writing lesson, not a
+  product regression. Anyone writing the next Playwright scenario
+  against this app should assume every button click that triggers a
+  `fetch` needs an explicit post-click wait before any navigation, not
+  just the obviously-slow ones.
+
+## [B13] E2E harness bug: `page.reload()` does not wait for React's own data-fetching effects - the one that will bite B14's SSE work
+
+- **Discovered:** §7 step 11b, run 3 - the Commercial approval gate
+  wait failed after the full 300s budget, even though the gate had
+  opened server-side within 11 seconds of the previous gate's approval
+  (confirmed via `approval_gates.requested_at`). Run 3's own trace
+  showed why: every `queryCount` check landed ~170-200ms after its
+  preceding `page.reload()`, reading the DOM before
+  `listWorkflowRuns`/`listGates` (sequential awaited fetches inside a
+  `useEffect`) had resolved - every single time, for the entire window.
+- **Behaviour, the part worth naming precisely:**
+  `page.reload({waitUntil: "load"})` resolves once the page's own
+  HTML/JS/CSS finish loading and React has completed its first render -
+  it does not and cannot wait for `useEffect`-triggered API calls fired
+  *after* that first render, because those are asynchronous work with
+  no correlation to the browser's own "load" event. Three of this
+  block's four gate-waits happened to win that race often enough across
+  ~250 retries (a new reload every ~1.2s) to succeed within budget
+  anyway - not because the pattern was safe, but because polling
+  frequently enough gave chance enough opportunities. The fourth did
+  not. This was never a per-gate problem; it was a structural property
+  of every `page.reload()` in the file immediately followed by a
+  one-shot DOM read (`queryCount`, `textContent`), as opposed to an
+  auto-retrying Playwright assertion (`expect(locator).toHaveCount(...)`,
+  which does not have this problem, because it keeps re-querying until
+  it passes or times out on its own).
+- **Fix:** a shared `reloadAndSettle(page)` helper -
+  `page.reload()` followed by `page.waitForLoadState("networkidle")` -
+  used everywhere a polling loop reloads before reading state.
+  `networkidle` (no in-flight requests for 500ms) is discouraged for
+  general Playwright use, but is the correct, narrow tool for exactly
+  this need: confirming a page's own initial data-fetching effects have
+  actually settled, which nothing else in Playwright's public API
+  observes directly.
+- **Why this matters beyond this one spec:** any future Playwright
+  scenario against this app that reloads a page and then reads state
+  without either an auto-retrying assertion or an explicit settle-wait
+  has this exact latent bug, whether or not a given run happens to win
+  the race. B14 (SSE/real-time updates) is named specifically because
+  it will change several of these screens' own fetch-then-render timing
+  - a spec relying on lucky timing today could start failing, or
+  worse, start silently under-testing, once that lands, for reasons
+  that would look unrelated to the actual change.
+- **Test:** none automated. `full-flow.spec.ts`'s own `reloadAndSettle`
+  helper and its docstring are the durable record of this; any new
+  polling loop added to that file (or a future E2E spec) should use it
+  rather than a bare `page.reload()`.
+
+## [B13, owner B14] Every screen in this UI is a snapshot - the system keeps running after a human looks away, and nothing tells them
+
+- **Discovered:** §7 step 11b's real E2E run, diagnosing why 3 red-team
+  findings were still unresolved at step 13 despite step 12's own
+  resolve-loop clicking every `Resolve` button visible when it ran. The
+  diagnosis (see the run's own record) confirmed the loop missed
+  nothing on screen - `agent_traces` shows four separate
+  `redteam_critique` calls for one tender, not one, meaning `run_red_
+  team` executed at least four times: once from this spec's own single
+  manual trigger, and at least once more afterward with no further
+  human action - almost certainly B11's own bounded revision loop
+  (`route_after_red_team` → `targeted_replan` → back through drafting →
+  `project_graph` → `red_team` again) continuing to run automatically in
+  the background.
+- **The finding, stated at the right level - not "the test's loop
+  missed one":** the scenario navigated away from the red-team screen
+  once it looked clear, exactly as a real reviewer would. The workflow
+  kept working after that. Ten seconds later it produced new, real
+  findings that nothing - not the scenario, not a human doing the same
+  thing - would ever see without either staying on that screen
+  indefinitely or happening to reload it again at the right moment. A
+  human who approved the commercial gate, watched red-team run once,
+  saw the list empty out, and moved on to generate the proposal would
+  have done everything asked of them and still acted on a screen that
+  had already gone stale behind their back. This is not a test
+  artifact - the scenario is a faithful stand-in for that human, and it
+  was fooled the same way.
+- **Cross-referenced against `usePolling`'s own design note
+  (`apps/web/src/hooks/usePolling.ts`), not assumed adjacent to it:**
+  polling already exists in this codebase, and does not cover this case
+  - `usePolling` answers "is the specific thing I'm already watching
+  done yet" (functional requirement 5, `UploadAndProcessingStatus.tsx`'s
+  own task list, an open resource on a screen currently being viewed).
+  It has no mechanism for "something changed on a resource I'm not
+  currently polling, or that didn't exist when this screen last
+  fetched." More frequent polling everywhere would not fix this either
+  - the actual gap is a screen having no way to know work is continuing
+  *elsewhere*, not that it's polling too slowly wherever it does poll.
+- **Status:** open. **Owner: B14** - not by default assignment, but
+  because B14's own scope (SSE progress streaming, replacing
+  `usePolling`'s interval with a push subscription per `usePolling`'s
+  own docstring: "Progress updates through polling initially; SSE by
+  B14") is specifically the mechanism that answers "work is still in
+  flight," which is exactly what this gap needs and nothing already
+  built provides. Recorded as the first concrete demonstration of why
+  B14 exists, not a theoretical nicety it happens to also cover - this
+  block found a real, reproducible case of a human (or a faithful
+  stand-in for one) being shown a false "done" state by a live system,
+  not a hypothetical one.
+- **Test:** none - the E2E run's own timestamped DB state
+  (`redteam_findings.created_at`, `agent_traces` for `redteam_critique`)
+  is the evidence trail; no automated test exists for "did the UI miss
+  background work" because nothing in the current architecture could
+  make one pass without B14's own mechanism first.

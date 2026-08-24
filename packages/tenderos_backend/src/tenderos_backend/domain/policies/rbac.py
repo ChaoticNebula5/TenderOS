@@ -110,4 +110,108 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     "generate_readiness": frozenset(
         {Role.BID_MANAGER, Role.SOLUTION_ARCHITECT, Role.PROPOSAL_WRITER, Role.APPROVER, Role.ADMIN}
     ),
+    # B13 (G3): GET /workflow-runs/{id}, .../tasks, .../events, and the new
+    # GET /tenders/{id}/workflow-runs had all been gated on create_bid
+    # (Bid manager/Admin only) since B3 - wrong, not merely inconsistent:
+    # create_bid is an authoring action, and gating a READ of run status
+    # behind it hides that status from Architect/Talent reviewer/
+    # Commercial reviewer/Proposal writer/Approver - five roles actively
+    # working the tender - which sits directly against B13's own "no
+    # hidden auto-approval" functional requirement (a human can't watch
+    # for a problem in a process they can't see). Retrofitted to full
+    # 7-role breadth, matching view_graph/view_readiness's own precedent,
+    # rather than adding this one action correctly while leaving the
+    # three existing routes on the old one - the same asymmetry the
+    # set_knowledge_selection/set_candidate_selection cross-tenant fix
+    # rejected in the opposite direction (a fix applied to one call site
+    # and assumed to cover its sibling). Cheap to fix now; expensive once
+    # B14's SSE subscription lands on list_events and inherits whichever
+    # RBAC shape this action still has then.
+    #
+    # This is the FOURTH instance of the same shape - view_graph (B10),
+    # view_readiness (B12), view_workflow (B13), and view_gates (B13,
+    # immediately below - found in the very same pass as this one, in a
+    # module this fix hadn't even touched yet) - which makes it a
+    # pattern worth naming, not unrelated coincidences: Part H's matrix
+    # was written around eleven AUTHORING actions (create, upload,
+    # approve, select, resolve, edit, manage) and has never once named a
+    # read action. Every read-only surface built since B10 has had to
+    # invent one from scratch, each time discovered only when a block
+    # happened to look. No later block should assume a route it's
+    # building has legitimate RBAC just because it reuses an
+    # already-named action from Part H - checking whether that action's
+    # own *shape* (authoring vs. reading) actually matches what the new
+    # route does is what view_graph/view_readiness/view_workflow/
+    # view_gates all eventually had to do the hard way.
+    "view_workflow": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
+    # B13 (gates.py): GET /workflow-runs/{id}/gates and GET /gates/{id}
+    # were both gated on create_bid too - the fourth instance of the
+    # exact shape documented above, found while typing GateResponse for
+    # the shared gate-control component, not while looking for RBAC bugs.
+    # Deciding a gate (POST .../decision) already uses a different,
+    # correctly narrow dependency - require_gate_decision_permission,
+    # which dispatches per gate_type via orchestration/gates.py's own
+    # GATE_TYPE_ACTIONS - so only the two reads needed this action, not
+    # the decision route too.
+    "view_gates": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
+    # B13 (§7 step 10, item e of the B13 plan): GET /proposal/claims/{id}/
+    # trace was gated on edit_proposal (4 roles); GET /compliance/{id}/
+    # trace was gated on approve_compliance (4 roles, a different 4 -
+    # Approver instead of Proposal writer). Both are the fifth and sixth
+    # instances of the same shape named at view_workflow's own comment
+    # above (a read gated on a narrow authoring action) - found this time
+    # not by inspection but because Screen 15 (Readiness) makes it
+    # concrete: the Approver deciding final_gate has no way to open the
+    # drawer explaining why a claim/compliance finding is unsupported, and
+    # resolve_redteam_finding (already 7-role) can target either a claim
+    # or a compliance entry (redteam_findings.target_type is free-form
+    # TEXT, no CHECK constraint - confirmed against Part C), so any of the
+    # seven roles resolving a finding may need to inspect what it targets,
+    # not just Approver. Both widened to the full 7-role breadth,
+    # matching resolve_redteam_finding's own precedent for "any role might
+    # need this, don't restrict by specialism." Every other G7/G10 route
+    # (list/patch/approve/generate) stays on its existing authoring
+    # action, unchanged - only these two read paths move.
+    "view_proposal_trace": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
+    "view_compliance_trace": frozenset(
+        {
+            Role.BID_MANAGER,
+            Role.SOLUTION_ARCHITECT,
+            Role.TALENT_REVIEWER,
+            Role.COMMERCIAL_REVIEWER,
+            Role.PROPOSAL_WRITER,
+            Role.APPROVER,
+            Role.ADMIN,
+        }
+    ),
 }

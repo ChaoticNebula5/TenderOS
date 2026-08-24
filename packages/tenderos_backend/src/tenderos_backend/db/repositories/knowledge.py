@@ -82,6 +82,25 @@ class KnowledgeRepository:
     async def get_import_item(self, item_id: uuid.UUID) -> KnowledgeImportItem | None:
         return await self._session.get(KnowledgeImportItem, item_id)
 
+    async def get_import_item_by_source_ref(
+        self, batch_id: uuid.UUID, source_ref: str
+    ) -> KnowledgeImportItem | None:
+        """Lets a per-row import function check "was this row already
+        processed" before calling create_import_item, so a retried worker
+        job (the same rows, re-parsed from the same file) can resume past
+        whatever uq_knowledge_import_item_source_ref already committed
+        instead of crashing on the first duplicate (batch_id, source_ref)
+        it re-attempts. See KNOWN_LIMITATIONS.md's "neither retryable nor
+        accurately observable" entry.
+        """
+        result = await self._session.execute(
+            select(KnowledgeImportItem).where(
+                KnowledgeImportItem.batch_id == batch_id,
+                KnowledgeImportItem.source_ref == source_ref,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_import_items_for_batch(self, batch_id: uuid.UUID) -> list[KnowledgeImportItem]:
         result = await self._session.execute(
             select(KnowledgeImportItem).where(KnowledgeImportItem.batch_id == batch_id)

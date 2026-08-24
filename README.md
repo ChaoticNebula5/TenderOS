@@ -21,3 +21,16 @@ uv run alembic upgrade head # apply migrations
 ```
 
 See the `Makefile` for the equivalent `lint` / `typecheck` / `format` / `test` targets.
+
+Backend tests run against a dedicated `tenderos_test` database, never the
+dev/live `tenderos` one - `tests/integration/conftest.py`'s own `_clean_tables`
+fixture deletes every row in every table after each test, and a session-scoped
+guard refuses to run at all against a database not named `*_test`. One-time
+setup, once the Postgres container is up:
+
+```
+docker exec tenderos-postgres-1 psql -U tenderos -d tenderos -c "CREATE DATABASE tenderos_test"
+```
+
+`make test` points `POSTGRES_DSN` at it automatically; `uv run pytest` alone
+does not, and will refuse to run against `.env`'s default DSN.

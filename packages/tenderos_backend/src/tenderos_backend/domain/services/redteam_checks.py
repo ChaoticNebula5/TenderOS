@@ -188,7 +188,24 @@ _GRAPH_TARGET_TYPE: dict[str, str] = {
 
 
 async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindingDraft]:
-    rows = await graph_service.find_contradictions_for_redteam(tender_id)
+    """One of run_red_team's 5 independent checks - the other 4 have no
+    graph dependency and can always contribute findings, so this one being
+    unable to run yet (no projection has succeeded since the tender's last
+    change - GraphStaleError, `graph_service.check_freshness`'s documented
+    behaviour for the never-projected case too) must not crash the other
+    4 or the LLM critique step alongside it. Contrast with routes/graph.py's
+    own read routes, which correctly surface GraphStaleError as 409
+    GRAPH_STALE to the caller - those routes exist specifically to answer
+    "what does the graph say right now," so staleness IS the answer.
+    run_red_team's callers (in particular the manual POST .../redteam/run
+    trigger, routes/redteam.py) are asking a broader question ("what can
+    Red Team find right now"), where a stale graph just means this one
+    check has nothing to add this pass, not that the whole run should fail.
+    """
+    try:
+        rows = await graph_service.find_contradictions_for_redteam(tender_id)
+    except graph_service.GraphStaleError:
+        return []
     drafts: list[RedteamFindingDraft] = []
     for row in rows:
         category = row["category"]

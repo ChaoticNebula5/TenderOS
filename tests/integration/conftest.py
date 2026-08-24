@@ -16,9 +16,41 @@ if sys.platform == "win32":
     # aren't affected by this policy since they run inside Linux containers.
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+_TEST_DB_SUFFIX = "_test"
+
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def _schema():
+async def _guard_test_database():
+    # This suite's own _clean_tables fixture below deletes every row in
+    # every table after each test - it has now wiped a live/dev database
+    # seven times (KNOWN_LIMITATIONS.md's environment-traps entry) because
+    # nothing stopped pytest from running against whatever POSTGRES_DSN
+    # happened to be configured. Verified directly against a real
+    # connection (SELECT current_database()), not a parse of the DSN
+    # string, so a genuinely wrong-looking connection fails loudly here
+    # rather than being trusted on the strength of matching config text -
+    # see KNOWN_LIMITATIONS.md's own "two-resource guard" standing pattern
+    # for why a comparison against an unverified assumption is the wrong
+    # shape. This still does not verify _clean_tables' own separately
+    # constructed connection resolves identically - see this fixture's own
+    # KNOWN_LIMITATIONS entry for that residual.
+    engine = create_async_engine(settings.postgres_dsn)
+    async with engine.connect() as conn:
+        db_name = (await conn.execute(text("SELECT current_database()"))).scalar_one()
+    await engine.dispose()
+    if not db_name.endswith(_TEST_DB_SUFFIX):
+        raise RuntimeError(
+            f"refusing to run: connected to database {db_name!r}, which does "
+            f"not look like a test database (must end in {_TEST_DB_SUFFIX!r}). "
+            f"This suite's _clean_tables fixture deletes every row in every "
+            f"table after each test. Point POSTGRES_DSN at a database ending "
+            f"in '_test' before running pytest - do not run it against the "
+            f"dev/live database. `make test` does this for you."
+        )
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _schema(_guard_test_database):
     engine = create_async_engine(settings.postgres_dsn)
     async with engine.begin() as conn:
         # These tests build the schema from the ORM models rather than by
