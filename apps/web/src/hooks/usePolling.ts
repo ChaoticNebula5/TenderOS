@@ -17,6 +17,7 @@ export function usePolling<T>(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     async function tick() {
       try {
@@ -27,14 +28,20 @@ export function usePolling<T>(
         }
       } catch (err) {
         if (!cancelled) setError(err);
+      } finally {
+        // Chained, not setInterval - a fetch slower than intervalMs
+        // would otherwise overlap with the next tick, and a slower
+        // request resolving after a faster later one can overwrite
+        // fresher data with stale data. Scheduling the next tick only
+        // once this one is fully settled makes that ordering impossible.
+        if (!cancelled) timeoutId = setTimeout(() => void tick(), intervalMs);
       }
     }
 
     void tick();
-    const id = setInterval(() => void tick(), intervalMs);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     };
   }, [intervalMs, enabled]);
 

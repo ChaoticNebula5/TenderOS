@@ -68,3 +68,21 @@ def test_parse_employee_master_csv_skips_blank_rows():
     rows = parse_employee_master_csv(content)
 
     assert [r.name for r in rows] == ["Dana Whitfield", "Sam Okafor"]
+
+
+def test_parse_employee_master_csv_rejects_invalid_encoding():
+    # A real path, not a contrived one: Excel's own "Save As CSV" under a
+    # non-English Windows locale writes cp1252/latin-1, not UTF-8. Before
+    # this test, content.decode("utf-8-sig") raised a bare
+    # UnicodeDecodeError here - a type knowledge_import.py's worker job
+    # never caught, so the job died without calling
+    # record_batch_parse_failure and the batch stayed "queued" forever
+    # (KNOWN_LIMITATIONS.md). Asserting EmployeeMasterValidationError
+    # specifically, not just "raises," is what actually pins the fix.
+    content = "Name\r\nDaña Whïtfield\r\n".encode("latin-1")
+
+    try:
+        parse_employee_master_csv(content)
+        raise AssertionError("expected EmployeeMasterValidationError")
+    except EmployeeMasterValidationError as exc:
+        assert "utf-8" in str(exc).lower()

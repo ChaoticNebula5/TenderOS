@@ -145,6 +145,11 @@ async def test_gate_routes_are_readable_by_every_role_that_is_a_real_member(
 
 
 async def test_gate_routes_reject_a_non_member(client: TestClient, register_actor, monkeypatch):
+    # outsider_headers below is a real Admin (a permitted view_gates role)
+    # of a SEPARATE organization, not an unauthenticated stranger -
+    # register_actor always creates a full org+ADMIN membership. This is
+    # already the cross-org proof (org-A member -> 403 on org-B's gate),
+    # same shape as view_workflow's own equivalent test.
     admin_headers, _, org_id = register_actor()
     _tender_id, run_id = await _tender_with_open_requirement_gate(
         client, admin_headers, org_id, monkeypatch

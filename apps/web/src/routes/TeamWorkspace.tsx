@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -27,6 +27,11 @@ export function TeamWorkspace() {
   const [matches, setMatches] = useState<RoleMatchResponse[]>([]);
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The last role a candidate fetch was actually requested for - lets
+  // handleSelectRole tell whether ITS OWN listMatches response is still
+  // the current one by the time it resolves, or whether the user has
+  // since clicked a different role.
+  const latestRequestedRoleId = useRef<string | null>(null);
 
   useEffect(() => {
     if (!tenderId) return;
@@ -63,11 +68,20 @@ export function TeamWorkspace() {
 
   async function handleSelectRole(roleId: string) {
     setSelectedRoleId(roleId);
+    setMatches([]);
     setError(null);
+    latestRequestedRoleId.current = roleId;
     try {
-      setMatches(await listMatches(roleId));
+      const result = await listMatches(roleId);
+      // A slower fetch for a role the user has since clicked away from
+      // must not overwrite the matches for whichever role they're
+      // looking at now - only apply this response if it's still the
+      // most recently requested one.
+      if (latestRequestedRoleId.current === roleId) setMatches(result);
     } catch {
-      setError("Failed to load candidates for this role");
+      if (latestRequestedRoleId.current === roleId) {
+        setError("Failed to load candidates for this role");
+      }
     }
   }
 

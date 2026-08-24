@@ -6,9 +6,14 @@ specific reviewer judgment, the same shape talent.py's select_resource
 and commercial.py's resolve_commercial_finding already use, not the
 pure-workflow-transparency shape that drove the four view_* fixes -
 left as-is here, checked rather than reflexively widened.
-`GET /compliance/{id}/trace`'s own RBAC-widening question (Talent/
-Commercial reviewer/Proposal writer access, matching the proposal-trace
-fix) is a separate, already-named TODO for §7 step 9 - not this file's.
+`GET /compliance/{id}/trace` DOES use the wider view_compliance_trace
+action (7 roles) rather than approve_compliance's 4 - see
+test_trace_compliance_is_accessible_to_a_role_outside_approve_compliance
+below. (A prior version of this docstring called that widening a
+still-open TODO for a later step; it had already landed by the time this
+file was finished, and the sentence never got corrected - the exact
+"describes a not-yet-true future state that became true" bug CodeRabbit's
+review separately caught in test_proposal_routes.py's docstring.)
 
 Fixture setup goes through real service/repository calls, not a live
 extraction pipeline - a requirement needs a real document_chunk (a real
@@ -207,3 +212,30 @@ async def test_trace_compliance_is_accessible_to_a_role_outside_approve_complian
 
     assert response.status_code == 200, response.text
     assert response.json()["compliance_entry_id"] == entry_id
+
+
+async def test_trace_compliance_rejects_an_entry_from_another_organization(
+    client: TestClient, register_actor
+):
+    # CodeRabbit review of this block (2 reviews, 27 comments) flagged
+    # the four view_* actions (view_workflow/view_gates/
+    # view_proposal_trace/view_compliance_trace) as having "no
+    # target-organization authorization." True of the route bodies, but
+    # incomplete: require_permission("view_compliance_trace")'s own
+    # _resolve_organization_id (dependencies.py) resolves
+    # compliance_id's REAL owning org and checks membership there before
+    # this route ever runs - traced by reading dependencies.py, not
+    # previously proven by a real request. The test right above this one
+    # proves role BREADTH within one org; this proves org isolation: an
+    # Admin of org B (a real, permitted view_compliance_trace role - just
+    # in the wrong org) must not reach org A's compliance entry.
+    admin_headers, _, org_id = register_actor()
+    tender_id, document_id = await _make_tender_with_document(client, admin_headers, org_id)
+    _req_id, entry_id = await _requirement_and_compliance_entry(tender_id, document_id)
+
+    other_admin_headers, _, _other_org_id = register_actor()
+
+    response = client.get(f"/compliance/{entry_id}/trace", headers=other_admin_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

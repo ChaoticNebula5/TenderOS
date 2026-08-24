@@ -140,15 +140,21 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await page.locator("form").getByRole("button", { name: "Create organization" }).click();
   await expect(page).toHaveURL("/");
 
-  // 0b. Import all 5 resumes the fixture provides, not just one.
+  // 0b. Import all 4 distinct-candidate resumes the fixture provides
+  // (resume_dana_whitfield_resubmit.docx is a resubmission of the same
+  // person, not a 5th candidate - tender_a has exactly 4 real people).
   // Originally scoped to "at least one employee" (§1's own literal
-  // minimum) - revised while writing this spec after tracing readiness
-  // blocker 6 (role_with_no_selected_candidate, readiness_service.py):
-  // it fires per ROLE with no selected candidate, and tender_a seeds 5
-  // staffing requirements. One employee, matched against 5 roles by
-  // real talent-matching logic, has no guarantee of covering all 5 -
-  // importing all 5 provided resumes is the version that actually gives
-  // step 7 a real chance to clear every role, not just one.
+  // minimum), then widened while writing this spec after tracing
+  // readiness blocker 6 (role_with_no_selected_candidate,
+  // readiness_service.py) - but the comment here previously overstated
+  // why. Coverage was never the risk: talent_analysis_node
+  // (orchestration/nodes/talent.py) scores every extracted role against
+  // every pool candidate unconditionally (a full cross-product, no
+  // threshold), so with 4 candidates every one of tender_a's 5 roles
+  // still gets 4 RoleMatch rows, and step 7 below always has a
+  // candidate to select for every role regardless of candidate count.
+  // Importing every provided resume is still right - more real data,
+  // not "just enough" - just not for the reason originally written here.
   await page.goto("/talent/import");
   const resumeFiles = [
     "resume_dana_whitfield.docx",
@@ -196,7 +202,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       },
       {
         timeout: 120_000,
-        message: "waiting for the resume import batch to finish processing all 5 items",
+        message: "waiting for the resume import batch to finish processing all 4 items",
       },
     )
     .toBe(true);
@@ -210,6 +216,17 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   const itemRows = page
     .locator("section", { has: page.getByRole("heading", { name: "Items" }) })
     .locator("tbody tr");
+  // click() only waits for the DOM click event, not the async fetch it
+  // triggers - a bare .count() read here can land before the items
+  // table populates and see 0 rows, silently skipping every approval
+  // below instead of failing. Same class of race already fixed for the
+  // resume upload above; this call site was simply never touched.
+  await expect
+    .poll(async () => await itemRows.count(), {
+      timeout: 30_000,
+      message: "waiting for the import items table to load",
+    })
+    .toBeGreaterThan(0);
   const itemCount = await itemRows.count();
   for (let i = 0; i < itemCount; i++) {
     const row = itemRows.nth(i);
@@ -375,9 +392,17 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   const reqRows = page.locator("table").first().locator("tbody tr");
   const reqCount = await reqRows.count();
   for (let i = 0; i < reqCount; i++) {
-    const confirmButton = reqRows.nth(i).getByRole("button", { name: "Confirm" });
+    const row = reqRows.nth(i);
+    const confirmButton = row.getByRole("button", { name: "Confirm" });
     if ((await confirmButton.count()) > 0) {
       await confirmButton.click();
+      // click() only waits for the DOM event, not handleConfirm's own
+      // async PATCH - waiting for the "Reviewed" cell (index 5) to flip
+      // to "yes", which patchRequirement's action:"confirm" sets
+      // server-side, is what actually confirms this row's mutation
+      // landed before the next iteration or the gate Approve click
+      // below can fire against a still-in-flight request.
+      await expect(row.locator("td").nth(5)).toHaveText("yes", { timeout: 15_000 });
     }
   }
   {
@@ -417,11 +442,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     const requirementId = (await row.locator("td").first().textContent()) ?? `row-${i}`;
     const select = row.locator("select");
     const currentStatus = await select.inputValue();
+    // Both branches below mutate this row asynchronously (selectOption's
+    // onChange and the Approve click both fire a PATCH); the row's own
+    // Approve button only renders while !human_approved (ComplianceMatrix.
+    // tsx), so waiting for it to hide is the observable confirmation
+    // either mutation actually persisted - same class of race as the
+    // requirement-confirm loop above, at a call site that fix never
+    // touched.
+    const approveButton = row.getByRole("button", { name: "Approve" });
     if (AFFIRMATIVE_COMPLIANCE_STATUSES.has(currentStatus)) {
       alreadyAffirmativeEntries.push(`${requirementId} (already ${currentStatus})`);
-      const approveButton = row.getByRole("button", { name: "Approve" });
       if ((await approveButton.count()) > 0) {
         await approveButton.click();
+        await expect(approveButton).toBeHidden({ timeout: 15_000 });
       }
     } else {
       overriddenEntries.push(`${requirementId} (was ${currentStatus})`);
@@ -429,6 +462,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       // (compliance_service.override_compliance_entry's own documented
       // behaviour) - no separate Approve click needed for these rows.
       await select.selectOption("fully_compliant");
+      await expect(approveButton).toBeHidden({ timeout: 15_000 });
     }
   }
   await test.info().attach("step-6-compliance-entries-touched", {
@@ -450,11 +484,15 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // ------------------------------------------------------------------
   // 7. Select candidate - every role, every match set gets its first
   // available candidate selected (not "select the first role only").
-  // Residual risk, named rather than hidden: with 5 real employees for
-  // 5 staffing requirements, this does NOT mathematically guarantee
-  // every role has a match - real talent-matching may still leave a
-  // role with zero candidates, which would surface honestly as blocker
-  // 6 at step 13, not a bug in this test.
+  // Not a coverage gamble: talent_analysis_node scores every extracted
+  // role against every pool candidate unconditionally (a full
+  // cross-product, no threshold - orchestration/nodes/talent.py), so
+  // with 4 real employees every one of tender_a's 5 roles gets 4
+  // RoleMatch rows regardless of headcount, and blocker 6
+  // (role_with_no_selected_candidate) can only fire here if the
+  // candidate pool itself came back empty - already ruled out by the
+  // 0-failures assertion on the resume import batch above. The
+  // "No candidates found" branch below is defensive, not expected.
   // ------------------------------------------------------------------
   await waitForGateToOpen(page, `/tenders/${tenderId}/team`, "Resource selection gate", 300_000);
   const roleRows = page.locator("table").first().locator("tbody tr");
@@ -464,6 +502,14 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     const roleRow = page.locator("table").first().locator("tbody tr").nth(i);
     const roleName = (await roleRow.locator("td").first().textContent()) ?? `role-${i}`;
     await roleRow.getByRole("button", { name: "View candidates" }).click();
+    // handleSelectRole's own listMatches(roleId) call is async, and
+    // TeamWorkspace.tsx doesn't clear the previous role's matches before
+    // it resolves (see KNOWN_LIMITATIONS.md) - a bare read right after
+    // click() can observe the PREVIOUS role's candidates, or select a
+    // candidate for the wrong role. The section shows no role name or
+    // busy indicator to poll for instead, so networkidle is what
+    // actually confirms this role's own fetch has landed.
+    await page.waitForLoadState("networkidle");
     const candidateSection = page.locator("section", {
       has: page.getByRole("heading", { name: "Candidates" }),
     });
@@ -474,8 +520,22 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       rolesWithNoCandidate.push(roleName);
       continue;
     }
-    const firstSelectButton = candidateSection.getByRole("button", { name: "Select" }).first();
+    // Scoped to the first candidate ROW, not a global "first Select
+    // button" locator - every candidate for this role starts as
+    // "Select" (talent_analysis_node scores the whole pool per role, so
+    // several rows can carry that name at once), and a role+name
+    // locator re-resolves live: if it weren't row-scoped, waiting for
+    // it to hide after clicking would just re-point at the NEXT
+    // still-unselected candidate's button instead of confirming this
+    // click's own effect.
+    const firstCandidateRow = candidateSection.locator("tbody tr").first();
+    const firstSelectButton = firstCandidateRow.getByRole("button", { name: "Select" });
     await firstSelectButton.click();
+    // handleSelectCandidate's PATCH flips this row's own button to
+    // "Deselect" on success - waiting for that (rather than just the
+    // DOM click event) before the loop advances to the next role avoids
+    // the same in-flight-cancellation risk fixed elsewhere in this file.
+    await expect(firstSelectButton).toBeHidden({ timeout: 15_000 });
   }
   await test.info().attach("step-7-roles-with-no-candidate", {
     body: JSON.stringify(rolesWithNoCandidate, null, 2),

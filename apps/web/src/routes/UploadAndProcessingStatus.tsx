@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   ApiError,
   createWorkflowRun,
+  getWorkflowRun,
   listDocuments,
   listWorkflowRuns,
   listWorkflowTasks,
@@ -34,6 +35,18 @@ export function UploadAndProcessingStatus() {
   // last time" note, shown next to the "Start processing" button rather
   // than instead of it.
   const [lastRunStatus, setLastRunStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    // workflowRunId/lastRunStatus otherwise carry over from whichever
+    // tender was previously showing - React Router keeps this component
+    // instance mounted across a tenderId-only route change, and the
+    // lookup effect below skips itself whenever workflowRunId is
+    // already set. Without this reset, navigating tender A -> tender B
+    // would keep polling and displaying tender A's run.
+    setWorkflowRunId(null);
+    setLastRunStatus(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenderId]);
 
   useEffect(() => {
     if (!tenderId || workflowRunId !== null) return;
@@ -131,6 +144,24 @@ export function UploadAndProcessingStatus() {
     3000,
     workflowRunId !== null,
   );
+  // Polls the RUN itself (not just its tasks) so the screen can notice
+  // when it finishes - nothing previously watched for that, so
+  // workflowRunId stayed set forever once a run started, leaving this
+  // screen stuck on the task list with no way back to "Start
+  // processing" after the run actually completed, failed, or was
+  // cancelled.
+  const { data: activeRun } = usePolling(
+    () => getWorkflowRun(workflowRunId as string),
+    3000,
+    workflowRunId !== null,
+  );
+
+  useEffect(() => {
+    if (activeRun && !NON_TERMINAL_STATUSES.has(activeRun.status)) {
+      setLastRunStatus(activeRun.status);
+      setWorkflowRunId(null);
+    }
+  }, [activeRun]);
 
   return (
     <main>

@@ -104,15 +104,30 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
         placeholder="Notes (optional)"
       />
       <div>
-        <button type="button" onClick={() => handleDecide("approve")} disabled={submitting}>
-          Approve
-        </button>
-        <button type="button" onClick={() => handleDecide("request_changes")} disabled={submitting}>
-          Request changes
-        </button>
-        <button type="button" onClick={() => handleDecide("reject")} disabled={submitting}>
-          Reject
-        </button>
+        {(
+          [
+            ["approve", "Approve"],
+            ["request_changes", "Request changes"],
+            ["reject", "Reject"],
+          ] as const
+        )
+          // gate.allowed_decisions is always all three today -
+          // orchestration/gates.py's ALLOWED_DECISIONS is one fixed
+          // tuple for every gate_type, not yet varied per type - but the
+          // field exists on the schema specifically to allow that later,
+          // and rendering a decision the backend would reject is a
+          // silent dead end for whoever clicks it.
+          .filter(([decision]) => gate.allowed_decisions.includes(decision))
+          .map(([decision, label]) => (
+            <button
+              key={decision}
+              type="button"
+              onClick={() => handleDecide(decision)}
+              disabled={submitting}
+            >
+              {label}
+            </button>
+          ))}
       </div>
     </section>
   );

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { ApiError, login, register, setTokens } from "../api/client";
+import { login, register, setTokens } from "../api/client";
+import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
 
 // Screen 1 (Part J). Covers both login and signup - auth_service.register
@@ -45,15 +46,7 @@ export function Login() {
       await refresh();
       navigate("/", { replace: true });
     } catch (err) {
-      if (err instanceof ApiError) {
-        const detail =
-          typeof err.body === "object" && err.body !== null && "detail" in err.body
-            ? String((err.body as { detail: unknown }).detail)
-            : `Request failed (${err.status})`;
-        setError(detail);
-      } else {
-        setError("Could not reach the server. Please try again.");
-      }
+      setError(formatErrorDetail(err));
     } finally {
       setSubmitting(false);
     }

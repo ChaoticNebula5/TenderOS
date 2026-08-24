@@ -125,7 +125,20 @@ def parse_employee_master_csv(content: bytes) -> list[EmployeeMasterRow]:
     "Save As CSV" writes one; a plain utf-8 decode would leave it stuck to
     the first header cell, e.g. '\\ufeffEmployee Code', silently failing
     the header-recognition check below rather than raising a clear error).
+
+    A non-UTF-8 CSV (e.g. Excel's own "Save As CSV" under a non-English
+    Windows locale, which writes cp1252/latin-1) raises UnicodeDecodeError
+    here, not EmployeeMasterValidationError - caught and re-raised as the
+    latter so every caller of this parser (knowledge_import.py's worker
+    job included) only ever has one exception type to handle for "this
+    file couldn't be parsed," matching parse_certifications' own single-
+    exception-type contract.
     """
-    text = content.decode("utf-8-sig")
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise EmployeeMasterValidationError(
+            f"Employee-master CSV is not valid UTF-8 text: {exc}"
+        ) from exc
     raw_rows = [tuple(row) for row in csv.reader(io.StringIO(text))]
     return _rows_to_employee_master(raw_rows)

@@ -1752,6 +1752,28 @@ Each entry:
   retry. Tests: `tests/integration/test_knowledge_service.py` (4 cases -
   employee-master and certification retry-resume, parse-failure terminal
   status, parse-failure idempotency).
+
+  **Correction, found by CodeRabbit's review of this same diff:** the
+  "calls `record_batch_parse_failure`" claim above was true only for
+  `EmployeeMasterValidationError` specifically, not for every way the
+  parse step could fail. `parse_employee_master_csv`'s own
+  `content.decode("utf-8-sig")` raises a bare `UnicodeDecodeError` on a
+  non-UTF-8 file (a real path, not contrived - Excel's own "Save As CSV"
+  under a non-English Windows locale writes cp1252/latin-1), which
+  `knowledge_import.py`'s `except EmployeeMasterValidationError` never
+  caught - the worker job died without calling
+  `record_batch_parse_failure`, and the batch stayed `queued` forever,
+  the exact failure mode this entry claimed was already closed. An entry
+  marked resolved that overstates what actually closed is worse than
+  leaving it open, since it stops anyone from looking again. Fixed now,
+  for real: `parse_employee_master_csv` catches the decode failure
+  itself and re-raises it as `EmployeeMasterValidationError`, so every
+  caller (this worker job included) still only has one exception type to
+  handle - not a second exception type added to `knowledge_import.py`'s
+  own catch clause, which would have left the next parser that can fail
+  in a new way free to reproduce the same gap. Test:
+  `tests/unit/test_employee_master_parser.py::
+  test_parse_employee_master_csv_rejects_invalid_encoding`.
 - **Required knowledge-import inputs are broken** (major finding #11) -
   **resolved in B13.** Employee-master CSV: `parse_employee_master_csv`
   added (`agents/knowledge/employee_master.py`, shared header-validation
@@ -1808,6 +1830,31 @@ Each entry:
   #4, `idempotency.py`): concurrent requests with the same key can both
   observe "no existing record" and both proceed, or race into the unique
   constraint. `expires_at` is stored but never consulted by any read path.
+- **`knowledge_service.py`'s own import-row idempotency has the same
+  select-then-insert shape, at three call sites, not the one above's**
+  (found by CodeRabbit's review of B13's own diff). `import_employee_
+  master_row`, `import_certification_row`, and the resume-import path
+  each do `get_import_item_by_source_ref` then `create_import_item` as
+  two separate awaits, not one atomic operation. The retry-resume fix
+  this pass made (KNOWN_LIMITATIONS.md's own "Knowledge imports are
+  neither retryable nor accurately observable," resolved-in-B13) covers
+  SEQUENTIAL retries correctly - a worker job re-processing the same
+  batch after a crash resumes past already-committed rows. It does not
+  cover TRUE CONCURRENT delivery of the same batch (two RQ workers, or
+  one worker's retry racing a still-running original attempt): both
+  could observe "no existing item" before either inserts, and the loser
+  crashes on `uq_knowledge_import_item_source_ref` instead of returning
+  the winner's row. Same root cause as the entry directly above, real
+  under this project's own RQ at-least-once delivery model, not yet
+  reproduced live (would need two genuinely concurrent deliveries of the
+  same batch, not just code reading, to confirm). **Owner: B16.** Not
+  B13's own fix, for the same reason the entry above is B16's and not
+  the pass that touched `idempotency.py`: an atomic insert-or-return
+  (Postgres `INSERT ... ON CONFLICT`, or `IntegrityError` recovery
+  inside a savepoint) is a real design decision about how this
+  project's concurrency-hardening pass wants to handle every
+  select-then-insert site at once, not a one-file patch to make
+  quietly during an unrelated block.
 - **Tender creation and idempotency-record completion are two separate
   commits** (major finding #7): a crash between them lets a retry create
   a second tender. Real for `create_tender` specifically; some other

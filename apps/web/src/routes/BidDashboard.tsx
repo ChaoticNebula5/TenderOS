@@ -13,7 +13,14 @@ export function BidDashboard() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!organizationId) return;
+    if (!organizationId) {
+      // AuthProvider sets organizationId to null when the user has no
+      // membership at all - without this, tenders stays null forever
+      // and the screen shows "Loading..." permanently instead of an
+      // explanation.
+      setError("No organization is linked to this account.");
+      return;
+    }
     let cancelled = false;
     listTenders(organizationId)
       .then((result) => {

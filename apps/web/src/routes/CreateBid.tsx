@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { ApiError, createTender } from "../api/client";
+import { createTender } from "../api/client";
+import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
 
 // Screen 6 (Part J). Navigates to the dashboard on success - screen 7
@@ -30,15 +31,7 @@ export function CreateBid() {
       });
       navigate("/", { replace: true });
     } catch (err) {
-      if (err instanceof ApiError) {
-        const detail =
-          typeof err.body === "object" && err.body !== null && "detail" in err.body
-            ? String((err.body as { detail: unknown }).detail)
-            : `Request failed (${err.status})`;
-        setError(detail);
-      } else {
-        setError("Could not reach the server. Please try again.");
-      }
+      setError(formatErrorDetail(err));
     } finally {
       setSubmitting(false);
     }

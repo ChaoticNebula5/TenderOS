@@ -1,10 +1,11 @@
 """Route-level coverage for proposal.py (G10, plus B13's own claims-list
 addition) - 5 routes now, zero HTTP-level coverage anywhere before this
-file. All five share one action (edit_proposal, 4 roles: bid_manager/
-solution_architect/proposal_writer/admin) - checked against rbac.py, not
-assumed. §3e's view_proposal_trace widening (moving the trace route off
-edit_proposal onto a 7-role read action) is scheduled for §7 step 10 with
-screen 15, not this file - trace stays gated to edit_proposal here.
+file. Four of the five share one action (edit_proposal, 4 roles:
+bid_manager/solution_architect/proposal_writer/admin) - checked against
+rbac.py, not assumed - except GET /proposal/claims/{id}/trace, which
+§7 step 10 moved onto the wider 7-role view_proposal_trace action (see
+test_trace_proposal_claim_is_accessible_to_a_role_outside_edit_proposal
+below).
 
 generate_proposal is this module's own LLM-touching route -
 _build_llm_client (routes/proposal.py's own local one) is monkeypatched to
@@ -242,3 +243,58 @@ async def test_trace_proposal_claim_is_accessible_to_a_role_outside_edit_proposa
 
     assert response.status_code == 200, response.text
     assert response.json()["claim_id"] == claim_id
+
+
+async def test_list_proposal_claims_rejects_a_section_from_another_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    # CodeRabbit review of this block (2 reviews, 27 comments) flagged
+    # list_proposal_claims as having "no org check" because the route
+    # body itself never resolves section->org. That's true of the route
+    # body, but incomplete: require_permission(_EDIT)'s own
+    # _resolve_organization_id (dependencies.py) resolves section_id's
+    # REAL owning org and checks membership there before this route ever
+    # runs - traced by reading dependencies.py, not previously proven by
+    # a real request. This is that proof: an Admin of org B (a real,
+    # permitted edit_proposal role - just in the wrong org) must not
+    # reach org A's claims.
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 9"}, headers=admin_headers
+    ).json()
+    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+
+    other_admin_headers, _, _other_org_id = register_actor()
+
+    response = client.get(
+        f"/proposal/sections/{sections[0]['id']}/claims", headers=other_admin_headers
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_trace_proposal_claim_rejects_a_claim_from_another_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    # Same proof as test_list_proposal_claims_rejects_a_section_from_
+    # another_organization, for view_proposal_trace specifically - the
+    # existing "accessible to a role outside edit_proposal" test above
+    # proves role BREADTH within one org, not org isolation; this is the
+    # property CodeRabbit's review asked to see verified with a real
+    # request rather than trusted from tracing dependencies.py alone.
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 10"}, headers=admin_headers
+    ).json()
+    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+    claim_id = client.get(
+        f"/proposal/sections/{sections[0]['id']}/claims", headers=admin_headers
+    ).json()[0]["id"]
+
+    other_admin_headers, _, _other_org_id = register_actor()
+
+    response = client.get(f"/proposal/claims/{claim_id}/trace", headers=other_admin_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

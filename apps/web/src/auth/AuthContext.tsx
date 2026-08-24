@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { clearTokens, getAccessToken, me } from "../api/client";
+import { ApiError, clearTokens, getAccessToken, me } from "../api/client";
 import type { MeResponse } from "../api/client";
 import { AuthContext } from "./authContextValue";
 
@@ -14,10 +14,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       setMeResponse(await me());
-    } catch {
-      // Expired/invalid token - treat as logged out rather than surfacing
-      // a raw fetch error on app load.
-      clearTokens();
+    } catch (err) {
+      // Only a real auth rejection (401/403) means the token itself is
+      // bad - clear it and treat as logged out. Any other failure
+      // (network drop, a 500) keeps the token, so a later retry/refresh
+      // can still succeed instead of forcing a re-login for an outage
+      // that had nothing to do with the session.
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        clearTokens();
+      }
       setMeResponse(null);
     }
   }, []);

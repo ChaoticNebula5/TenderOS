@@ -65,8 +65,16 @@ async function handleResponse<T>(response: Response): Promise<T> {
     }
     throw new ApiError(response.status, parsedBody);
   }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  // 204 is the only status this used to special-case, but
+  // uploadKnowledgeDocument documents a real 202-with-no-body response
+  // (extraction hasn't run yet) - awaiting .json() on an empty body
+  // throws a SyntaxError, failing every successful call. Checking the
+  // body text itself, not a fixed status list, covers that and any
+  // other no-content 2xx response without hard-coding which statuses
+  // the API happens to use that way today.
+  const text = await response.text();
+  if (text === "") return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // Not exported - every route gets its own named function below (or in a

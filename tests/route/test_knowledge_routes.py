@@ -359,6 +359,30 @@ async def test_get_employee_404s_for_an_unknown_id(client: TestClient, register_
     assert response.status_code == 404, response.text
 
 
+async def test_get_employee_rejects_an_employee_from_another_organization(
+    client: TestClient, register_actor
+):
+    # CodeRabbit review of this block (2 reviews, 27 comments) flagged
+    # get_employee as having "no org check" because the route body itself
+    # never resolves the employee's org or takes current_user. That's
+    # true of the route body, but incomplete: require_permission(_MANAGE)'s
+    # own _resolve_organization_id (dependencies.py) resolves
+    # knowledge_item_id's REAL owning org and checks membership there
+    # before this route ever runs - traced by reading dependencies.py,
+    # not previously proven by a real request. This is that proof: an
+    # Admin of org B (a real, permitted manage_organization_knowledge
+    # role - just in the wrong org) must not reach org A's employee.
+    _headers, _, org_id = register_actor()
+    item_id = await _seed_employee(org_id, name="Org A Employee")
+
+    other_headers, _, _other_org_id = register_actor()
+
+    response = client.get(f"/employees/{item_id}", headers=other_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
 async def test_list_bid_eligible_employees_excludes_unverified_profiles(
     client: TestClient, register_actor
 ):

@@ -24,12 +24,13 @@ export function CommercialFindings() {
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
 
-  async function refreshFindings() {
+  async function refreshFindings(isCancelled: () => boolean) {
     if (!tenderId) return;
     try {
-      setFindings(await listPricingFindings(tenderId));
+      const result = await listPricingFindings(tenderId);
+      if (!isCancelled()) setFindings(result);
     } catch {
-      setError("Failed to load pricing findings");
+      if (!isCancelled()) setError("Failed to load pricing findings");
     }
   }
 
@@ -43,7 +44,7 @@ export function CommercialFindings() {
       .catch(() => {
         if (!cancelled) setError("Failed to load pricing documents");
       });
-    void refreshFindings();
+    void refreshFindings(() => cancelled);
     return () => {
       cancelled = true;
     };
@@ -53,6 +54,10 @@ export function CommercialFindings() {
   useEffect(() => {
     if (!tenderId) return;
     let cancelled = false;
+    // A stale gate from the PREVIOUS tender must not stay visible (and
+    // actionable) while this tender's own lookup is still in flight, or
+    // if this tender turns out to have no matching gate at all.
+    setGate(null);
     listWorkflowRuns(tenderId)
       .then(async (runs) => {
         if (cancelled || runs.length === 0) return;
@@ -73,7 +78,7 @@ export function CommercialFindings() {
     setValidating(true);
     try {
       await validatePricingDocument(pricingDocumentId);
-      await refreshFindings();
+      await refreshFindings(() => false);
     } catch (err) {
       setError(err instanceof ApiError ? `Validation failed (${err.status})` : "Validation failed");
     } finally {

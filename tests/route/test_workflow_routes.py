@@ -182,8 +182,16 @@ async def test_workflow_run_routes_are_readable_by_every_role_that_is_a_real_mem
 async def test_workflow_run_routes_reject_a_non_member(client: TestClient, register_actor):
     # view_workflow's real seven-role breadth means there is no role left
     # to test rejection with - all seven roles that exist are in the set.
-    # The only rejection left is someone who isn't a member of the
-    # organization at all.
+    # The only rejection left is someone who isn't a member of THIS
+    # organization - which register_actor's own second call proves as a
+    # genuine cross-org case, not an unauthenticated stranger:
+    # auth_service.register always creates a full org+ADMIN membership
+    # together, so outsider_headers below belongs to a real Admin (a
+    # permitted role) of a DIFFERENT organization. This is the same
+    # "target-org authorization for the broad view actions" property
+    # CodeRabbit's review asked to have verified with a real request
+    # rather than trusted from reading dependencies.py's
+    # _resolve_organization_id/_check_permission chain alone.
     admin_headers, _, org_id = register_actor()
     tender_id = await _tender_with_parsed_document(client, admin_headers, org_id)
     created = client.post(

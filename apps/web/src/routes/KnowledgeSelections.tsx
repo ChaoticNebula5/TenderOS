@@ -54,7 +54,11 @@ export function KnowledgeSelections() {
   }
 
   useEffect(() => {
-    void refreshSelections();
+    // Unguarded before this - a rejected listKnowledgeSelections left
+    // `selections` at its initial [], which isSelected reads as "every
+    // item unselected" (wrong state, not a visible failure) rather than
+    // showing the error.
+    refreshSelections().catch(() => setError("Failed to load the current selections"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
