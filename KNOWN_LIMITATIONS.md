@@ -2891,6 +2891,33 @@ Each entry:
   `routes/compliance.py`, `redteam_checks.py`, `graph_service.py`,
   `tests/route/conftest.py`) added zero new errors. Count stable at 63
   across six full steps now.
+
+  **The 59-to-63 delta, actually explained (post-B13, CodeRabbit-fix
+  pass):** never a real drift, and not still unexplained - the six
+  "stable" re-checks above were carrying forward a step-5 invocation
+  change nobody noticed. `pyproject.toml`'s own `[tool.mypy] files =
+  ["apps/api/src", "apps/worker/src", "packages/tenderos_backend/src"]`
+  is what CLAUDE.md's documented `uv run mypy` (bare, no path argument)
+  actually scans - 234 source files, 59 errors, 12 files, reproduced
+  exactly by running it fresh just now. Step 3's original 59/12 baseline
+  used that bare command. Step 5's re-check used `uv run mypy .` instead
+  - the literal `.` argument overrides `files` and scans the whole repo
+  from cwd, including `tests/` and the top-level `scripts/` directory,
+  neither of which the config's own `files` list names. Reproduced
+  exactly too: `uv run mypy .` returns 63/14/310, matching every
+  "still 63" re-check through step 10 to the digit. The extra 4 errors
+  are `scripts/run_retrieval_eval.py`/`run_compliance_eval.py` (2 files,
+  2 errors each, an `EmployeeMasterRow`/`CertificationRow` mix-up in
+  both eval scripts) - real errors, just outside the scope
+  `uv run mypy` was ever supposed to check, and never part of the
+  59-error baseline to begin with. **Canonical baseline going forward:
+  59 errors, 12 files, via bare `uv run mypy`** - the command CLAUDE.md
+  actually documents. `uv run mypy .`'s wider 63/14 is a real, separate,
+  also-stable number for the whole-repo scope (including the two eval
+  scripts), not a second baseline to reconcile against this one -
+  whichever command a future check runs, name it, so the count is
+  checkable against the matching invocation rather than compared across
+  two different scopes as if they were the same measurement.
 - **Test:** none - this is a tooling-output count, not a behavior.
 
 ---
@@ -4096,6 +4123,79 @@ Each entry:
   helper and its docstring are the durable record of this; any new
   polling loop added to that file (or a future E2E spec) should use it
   rather than a bare `page.reload()`.
+
+## [B13] E2E harness bug: waiting for "at least one" instead of the real expected count silently truncated the candidate pool - and produced a wrong finding about why
+
+- **Discovered:** CodeRabbit's review of this block's diff flagged the
+  setup phase's own resume count (4 files imported, a comment claimed 5)
+  as a documentation mismatch. Fixing that comment required explaining
+  *why* importing every resume mattered, which cited readiness blocker 6
+  (`role_with_no_selected_candidate`) firing at step 13 as the risk this
+  guarded against - a claim nobody had actually checked against the real
+  run's own data before writing it down. Checked, by query against the
+  real post-run `pg_dump` (not by reading more code, per explicit
+  instruction): blocker 6 *did* fire once, on Project Manager, and the
+  first-pass explanation for it ("candidate headcount vs. role count")
+  was wrong.
+- **Behaviour, established by direct query, not assumption:**
+  `role_matches` for Project Manager had exactly one row (Dana
+  Whitfield, score 0.2), not zero - `talent_analysis_node`'s
+  cross-product matching (`orchestration/nodes/talent.py`) worked
+  correctly and did produce a real candidate. `human_selected` on that
+  row was `false`. Cross-checked against `employees`: of the four
+  imported people, only Dana had `eligible_for_bid=true`/
+  `profile_review_status='verified'` - the other three were still at
+  `needs_review`. Cross-checked against `knowledge_items.created_at`:
+  the four employees appeared in the database at 04:11:06, 04:11:19,
+  04:12:31, and 04:12:45 - real, sequential, per-resume LLM extraction,
+  not a batch that lands atomically. Cross-checked against
+  `audit_events`: exactly one `employee_verify` event exists for this
+  org, at 04:11:09 - three seconds after Dana's own row was created, and
+  well before any of the other three existed. The setup phase's own
+  employee-discovery poll (`full-flow.spec.ts`, right after the resume
+  import) waited only for `count() > 0` before snapshotting
+  `employeeHrefs` and verifying each one - it caught Dana, the first to
+  appear, verified only her, and never went back for the other three,
+  who arrived over the next ~95 seconds. Every downstream role's
+  candidate pool was silently capped at one person, not four, for the
+  entire rest of the run - not because matching has a threshold (it
+  doesn't), but because the pool it drew from was truncated upstream.
+- **Why blocker 6 fired on exactly one role and not all five:** with
+  Dana as the only ever-eligible candidate, every role's real candidate
+  list was `[Dana]` by the time step 7 (select candidate) ran - so the
+  pre-fix version of that loop's own async-race bug (a separate,
+  already-recorded finding: `TeamWorkspace.tsx` doesn't clear the
+  previous role's matches before its own fetch resolves) was almost
+  always harmless here, because a stale read and a fresh read named the
+  same person. The one role processed *first* in that loop had no stale
+  data to fall back on - its read landed against the component's true
+  initial empty state, which renders identically to "this role really
+  has no candidates." Four roles, four rolls of the same race; one came
+  up wrong.
+- **The finding this replaces:** `full-flow.spec.ts`'s own comments
+  (both at the resume-import step and at step 7) previously reasoned
+  from code alone that candidate headcount couldn't be the risk given
+  `talent_analysis_node`'s cross-product shape, and treated blocker 6 as
+  a `ready: true`-compatible "residual risk... not a bug in this test."
+  Both statements needed correcting once weighed against what the run
+  actually produced, not reconciled by picking one: the cross-product
+  claim was correct as a description of the matching algorithm; the
+  "not a bug in this test" label was not - a live-run finding blocker 6
+  legitimately caught was misattributed to the fixture instead of the
+  harness that fed it.
+- **Fix:** the employee-discovery poll now waits for the real expected
+  count (`resumeFiles.length`, matching the document-upload loop's own
+  `toHaveCount(expectedDocCount, ...)` discipline a few steps above)
+  instead of `toBeGreaterThan(0)`. With all four employees verified
+  before step 7 runs, every role gets its real four-candidate pool, and
+  `ready: true` is the correct expectation again - no fixture change
+  needed, and no reason to assert the blocker as expected behavior
+  instead.
+- **Test:** none automated - not re-run against the live stack as part
+  of this pass (that would be a new billed E2E run, not a review-fix
+  pass). The corrected poll condition and this entry are the record;
+  the fix should be confirmed the next time `full-flow.spec.ts` runs for
+  real.
 
 ## [B13, owner B14] Every screen in this UI is a snapshot - the system keeps running after a human looks away, and nothing tells them
 

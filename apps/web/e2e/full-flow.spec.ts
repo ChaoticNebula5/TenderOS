@@ -146,15 +146,26 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // Originally scoped to "at least one employee" (§1's own literal
   // minimum), then widened while writing this spec after tracing
   // readiness blocker 6 (role_with_no_selected_candidate,
-  // readiness_service.py) - but the comment here previously overstated
-  // why. Coverage was never the risk: talent_analysis_node
+  // readiness_service.py).
+  //
+  // Two passes at "why" this matters, the first one wrong in a way a
+  // real run caught. Pass 1 (code-reading only): talent_analysis_node
   // (orchestration/nodes/talent.py) scores every extracted role against
-  // every pool candidate unconditionally (a full cross-product, no
-  // threshold), so with 4 candidates every one of tender_a's 5 roles
-  // still gets 4 RoleMatch rows, and step 7 below always has a
-  // candidate to select for every role regardless of candidate count.
-  // Importing every provided resume is still right - more real data,
-  // not "just enough" - just not for the reason originally written here.
+  // every pool candidate unconditionally - a real cross-product, no
+  // threshold - so this looked like coverage could never be the risk.
+  // That claim about the MATCHING MECHANISM was correct; what it missed
+  // is that "every pool candidate" is find_candidate_pool's own result,
+  // which hard-filters on eligible_for_bid - and a real E2E run's own
+  // post-run DB dump showed blocker 6 firing on Project Manager with
+  // exactly one RoleMatch row, not four, because only Dana Whitfield
+  // (the first of the four employees to finish real, sequential LLM
+  // extraction) had actually been verified/made eligible by that point -
+  // the OTHER THREE arrived on /talent 13-95 seconds later, after the
+  // setup step below had already moved on. So the real risk was never
+  // "the matching mechanism can't cover 5 roles with 4 candidates" - it
+  // was "the setup step below can silently verify fewer than 4 people if
+  // it stops waiting too early," which it did. Fixed at that step, not
+  // here - see its own comment.
   await page.goto("/talent/import");
   const resumeFiles = [
     "resume_dana_whitfield.docx",
@@ -252,6 +263,22 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // Employee names are LLM-extracted from real resume content, not
   // derivable from the filenames ahead of time - iterating every
   // employee-type row rather than matching by name sidesteps that.
+  //
+  // toBeGreaterThan(0) here (not the real expected count) was the actual
+  // root cause of a live-run finding: the resume-import batch finishing
+  // (readSoleBatchRow's own poll above) only means every import ITEM is
+  // approved, not that every Employee/KnowledgeItem row has been created
+  // and is visible on /talent yet - profile extraction runs per resume,
+  // sequentially, and each employee's own row appears at whatever real
+  // moment its own extraction finishes (confirmed against a real run's
+  // knowledge_items.created_at: the four employees appeared 13s, 85s,
+  // and 14s apart, not atomically). A poll that stops at "at least one"
+  // captures only the FIRST employee to appear, verifies just that one,
+  // and moves on - the other three stay unverified/ineligible for the
+  // rest of the run, silently short-changing every downstream role's
+  // candidate pool. Waiting for the real expected count, matching the
+  // document-upload loop's own toHaveCount(expectedDocCount, ...)
+  // discipline a few steps above, is what actually closes this.
   await page.goto("/talent");
   await expect
     .poll(
@@ -260,11 +287,11 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
         return await page.locator('a[href^="/talent/employees/"]').count();
       },
       {
-        timeout: 30_000,
-        message: "waiting for imported employees to appear in the knowledge library",
+        timeout: 60_000,
+        message: `waiting for all ${resumeFiles.length} imported employees to appear in the knowledge library`,
       },
     )
-    .toBeGreaterThan(0);
+    .toBe(resumeFiles.length);
   const employeeHrefs = await page
     .locator('a[href^="/talent/employees/"]')
     .evaluateAll((links) => links.map((l) => (l as HTMLAnchorElement).getAttribute("href")));
@@ -484,15 +511,21 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // ------------------------------------------------------------------
   // 7. Select candidate - every role, every match set gets its first
   // available candidate selected (not "select the first role only").
-  // Not a coverage gamble: talent_analysis_node scores every extracted
-  // role against every pool candidate unconditionally (a full
-  // cross-product, no threshold - orchestration/nodes/talent.py), so
-  // with 4 real employees every one of tender_a's 5 roles gets 4
-  // RoleMatch rows regardless of headcount, and blocker 6
-  // (role_with_no_selected_candidate) can only fire here if the
-  // candidate pool itself came back empty - already ruled out by the
-  // 0-failures assertion on the resume import batch above. The
-  // "No candidates found" branch below is defensive, not expected.
+  // talent_analysis_node scores every extracted role against every POOL
+  // candidate unconditionally (a full cross-product, no threshold -
+  // orchestration/nodes/talent.py) - but "pool candidate" means
+  // eligible_for_bid=true, and that's a real gate a real run can fail to
+  // clear for everyone: a live run's own DB dump showed exactly this -
+  // blocker 6 fired on Project Manager because the setup step's employee
+  // loop above had only verified 1 of 4 employees (fixed there now, see
+  // its own comment), leaving every role's pool artificially down to
+  // one candidate instead of four. The "0 failures" assertion on the
+  // import batch earlier proves the IMPORT succeeded; it says nothing
+  // about how many of the imported employees later got VERIFIED, which
+  // is what actually determines this loop's real candidate pool. The
+  // "No candidates found" branch below stays defensive on purpose - not
+  // because it's expected now, but because "the pool came back non-empty"
+  // turned out to be a claim worth actually checking, not assuming.
   // ------------------------------------------------------------------
   await waitForGateToOpen(page, `/tenders/${tenderId}/team`, "Resource selection gate", 300_000);
   const roleRows = page.locator("table").first().locator("tbody tr");

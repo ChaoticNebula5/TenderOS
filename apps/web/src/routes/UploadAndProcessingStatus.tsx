@@ -45,7 +45,6 @@ export function UploadAndProcessingStatus() {
     // would keep polling and displaying tender A's run.
     setWorkflowRunId(null);
     setLastRunStatus(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
   useEffect(() => {
