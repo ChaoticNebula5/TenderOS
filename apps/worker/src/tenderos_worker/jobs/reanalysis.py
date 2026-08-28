@@ -60,10 +60,19 @@ def _affected_ids(rows: list[dict]) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
         node_id = affected.get("id")
         if node_id is None:
             continue
+        try:
+            parsed_id = uuid.UUID(str(node_id))
+        except (ValueError, AttributeError, TypeError):
+            # A malformed id from the graph must not abort every OTHER
+            # requirement/claim this job would otherwise reanalyze - same
+            # posture as the per-item try/except below, just one step
+            # earlier (CodeRabbit review).
+            logger.warning("reanalysis: unparseable affected node id %r", node_id)
+            continue
         if "Requirement" in labels:
-            requirement_ids.add(uuid.UUID(node_id))
+            requirement_ids.add(parsed_id)
         elif "ProposalClaim" in labels:
-            claim_ids.add(uuid.UUID(node_id))
+            claim_ids.add(parsed_id)
     return requirement_ids, claim_ids
 
 
@@ -115,30 +124,41 @@ async def reanalyze_knowledge_selection_change(
 
     client = _build_llm_client()
     for requirement_id in requirement_ids:
+        # The outbox write is INSIDE this same try/except, not after it
+        # (CodeRabbit review) - the claims loop below already had this
+        # shape right; this loop didn't, and a failed uow.outbox.create/
+        # commit() would otherwise abort every REMAINING requirement, not
+        # just this one, the identical "one sibling diverges from the
+        # other" shape this project has hit repeatedly.
         try:
             entry = await evaluate_compliance_for_requirement(
                 client, settings.reasoning_model, requirement_id
             )
+            async with UnitOfWork() as uow:
+                await uow.outbox.create(
+                    aggregate_type=AGGREGATE_COMPLIANCE_ENTRY,
+                    aggregate_id=entry.id,
+                    event_type=EVENT_COMPLIANCE_CHANGED,
+                    payload=compliance_changed_payload(
+                        entry.id, requirement_id, tid, entry.status
+                    ),
+                    idempotency_key=compliance_changed_idempotency_key(
+                        requirement_id, state_version
+                    ),
+                )
+                await uow.commit()
         except Exception:
-            # One requirement's reevaluation failing (a transient provider
-            # error, say) should not block reanalysis of the other affected
-            # requirements or claims - same posture requirement_extraction_
-            # node's own mandatory-verification loop already takes.
+            # One requirement's reevaluation (or its own outbox write)
+            # failing should not block reanalysis of the other affected
+            # requirements or claims - same posture requirement_
+            # extraction_node's own mandatory-verification loop already
+            # takes.
             logger.exception(
                 "reanalysis: compliance evaluation failed for requirement %s "
                 "(tender=%s, knowledge_item=%s)",
                 requirement_id, tid, kid,
             )
             continue
-        async with UnitOfWork() as uow:
-            await uow.outbox.create(
-                aggregate_type=AGGREGATE_COMPLIANCE_ENTRY,
-                aggregate_id=entry.id,
-                event_type=EVENT_COMPLIANCE_CHANGED,
-                payload=compliance_changed_payload(entry.id, requirement_id, tid, entry.status),
-                idempotency_key=compliance_changed_idempotency_key(requirement_id, state_version),
-            )
-            await uow.commit()
 
     for claim_id in claim_ids:
         try:

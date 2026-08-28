@@ -1310,8 +1310,15 @@ Each entry:
   evidence thin, or was it available and uncited - needs a fresh live run
   (with the resulting database left untouched afterward) to close, not
   further reasoning from code alone.
-- **B12 update - both leading hypotheses now eliminated. Cause still
-  unknown. This is the project's largest known open quality gap.**
+- **B12 update - the two tested causes did not explain the result; the
+  underlying cause remains unconfirmed. This is the project's largest
+  known open quality gap, now partially resolved in one narrow sense
+  only: the two originally-named candidate mechanisms are fixed and
+  measured, not merely suspected, so the investigation has ruled two
+  things out - it has not found what the real cause is, does not show
+  evidence was available for the still-uncited claims, and does not
+  isolate the model's own citation behavior. Read the two claims below
+  as exactly that: two live, real results, not a closed case.**
   B12's own live verification drove the identical `synthetic_tender_a.py`
   package through the real pipeline a second time, with every gate
   approved via real `target_updates` batch-approval through the actual
@@ -1508,8 +1515,11 @@ Each entry:
   drafted claims unsupported) is present in a live run. The one existing
   data point in this codebase for that condition (B9's live run) predates
   red-team's existence entirely, so it was never checked against it.
-- **Status:** closed by B12's own live verification, exactly the way this
-  entry said it would need to be. B12 drove the real
+- **Status:** `check_unsupported_claims` specifically confirmed on
+  organic output - closed for that one check, not for this entry as a
+  whole. The other 4 checks remain unconfirmed on organic output (see
+  below) - read this as "1 of 5 detectors proven live," not "detection
+  on organic output proven." B12 drove the real
   `synthetic_tender_a.py` package (65 requirements, matching this entry's
   own "substantive fixture" requirement) all the way through to
   `red_team`, and inspected `redteam_findings` directly before anything
@@ -4705,3 +4715,118 @@ Each entry:
   produce one next.
 - **Test:** none - a live-run observation, not a code path with a
   missing test.
+
+---
+
+## [tooling finding] A CodeRabbit pass against the B14 commit mostly re-reported already-fixed B13 findings - suspect the tooling, confirmed by git history, not assumed
+
+- **Discovered:** triaging a CodeRabbit review pasted for the B14 commit
+  (`85e1124`), same four-bucket process as B13's own two "Fix CodeRabbit's
+  B13 findings" passes (`9e4cc72`, `89fd66a`). Of roughly 26 findings, 14
+  described code that was already correct - several with the fix's own
+  comment still in place explaining exactly what CodeRabbit had already
+  caught and closed once before. That ratio was the reason to check the
+  review's own base, not the individual findings a second time.
+- **Confirmed directly via git history, not inferred from the ratio
+  alone** (no `gh`/remote access in this environment to read the actual
+  PR/review metadata, so this is the strongest check available): `git
+  log -S "No organization is linked to this account" -- apps/web/src/
+  routes/BidDashboard.tsx` and the equivalent search for `client.ts`'s
+  202-handling fix both land on `9e4cc72` - the *first* of the two
+  "Fix CodeRabbit's B13 findings" commits, already an ancestor of
+  `HEAD` by the time this review ran. `readiness_service.py`'s N+1 fix
+  goes back further still, to `07aae27`, predating B13 entirely. This
+  pass re-flagged all three as unfixed.
+- **What this does and doesn't establish:** confirms this specific
+  review's own findings for these files describe a state at least one,
+  and in one case several, commits behind what was actually reviewed -
+  enough to explain the 14/26 ratio without needing every individual
+  finding independently re-verified against a stale-base hypothesis.
+  Does not pin the *exact* mechanism (a single stale base commit vs.
+  CodeRabbit's own UI carrying forward unresolved comment threads from
+  an earlier review round that the later fix commits never explicitly
+  resolved) - either explanation is consistent with the evidence found,
+  and distinguishing them needs the review's own metadata, not available
+  here.
+- **Risk - the real one, not the obvious one:** wasted re-verification
+  effort is not the actual danger here; the real danger is the opposite
+  direction. Once a pass looks mostly stale, the fast, natural move is
+  to start pattern-matching - "this one's probably already fixed too" -
+  and wave the rest through. That is exactly how a genuinely new,
+  currently-real finding sitting in the SAME pass gets triaged away
+  without ever being checked, on the strength of every OTHER finding's
+  staleness rather than its own. This pass had two: the reanalysis.py
+  fixes and the CommercialFindings.tsx bug were real, live findings,
+  found only because each item was still checked individually against
+  current code, not because the stale-base pattern was already known.
+  The mitigation is upstream of triage, not a more careful read of each
+  finding: confirm the review's own base commit *before* triaging
+  starts, so a stale pass is known to be stale going in, rather than
+  discovered findings-verified-one-at-a-time and then trusted by
+  pattern for whatever's left.
+- **Why this belongs next to this file's own measurement-tooling
+  standing pattern, not as a one-off:** the same shape as B5's ground-
+  truth generator, B6's unscoped eval query, and B7's cache-key
+  collision - a clean-looking signal (here, "14 real bugs") that traces
+  back to the tool, not the code, once actually checked. The real,
+  confirmed findings from this same pass (the two reanalysis.py fixes,
+  the CommercialFindings.tsx bug below) are unaffected by this - the
+  tooling being stale for SOME findings doesn't make every finding in
+  the same pass suspect, which is exactly why each one still needed
+  individual verification rather than a blanket dismissal once the
+  pattern was noticed.
+- **Status:** accepted as a standing operational note, not something to
+  fix - there's no code defect here, only a review-tooling process gap.
+  Concrete practice for next time: before triaging a CodeRabbit pass,
+  confirm what base it actually diffed against (the PR's own base ref,
+  if reachable) rather than assuming it's `HEAD`'s immediate parent -
+  cheap to check first, expensive to discover by re-verifying findings
+  one at a time as this pass did.
+- **Test:** none - a process note about review tooling, not application
+  behavior.
+
+---
+
+## [owner: B17] `CommercialFindings.tsx`'s `handleValidate` hardcodes its own stale-write guard to never fire
+
+- **Discovered:** the same CodeRabbit pass as the tooling-finding entry
+  above, and unlike most of that pass, confirmed real against current
+  code, not stale - `handleValidate` (`:77-86`) calls `await
+  refreshFindings(() => false)` after `validatePricingDocument`
+  resolves. `refreshFindings`'s own signature (`:27-35`) takes an
+  `isCancelled: () => boolean` callback specifically so a caller can
+  detect "the component has moved on since this async work started" and
+  skip `setFindings` accordingly - the mount effect right above (`:47`)
+  uses it correctly, passing the real, live `() => cancelled` closure.
+  `handleValidate`'s own call passes a callback that can never return
+  true, defeating the guard by construction: if a user navigates from
+  tender A to tender B while `validatePricingDocument`/`refreshFindings`
+  are still in flight, tender A's stale findings get written into a
+  screen now showing tender B.
+- **The same class of bug this exact file has already been fixed for
+  multiple times**, not a novel shape: this file's own mount-effect
+  guard (`cancelled`) and its `setGate(null)`-on-tender-change guard
+  (this session's own CodeRabbit triage confirmed that one already
+  correct) are both instances of the identical "don't let a stale async
+  result overwrite what the current tender should show" concern -
+  `handleValidate` is the one call site in this file that still gets it
+  wrong, the same "correct pattern at some call sites, not all" shape
+  this project's history is full of.
+- **Risk:** low-probability (needs a validate-then-navigate-away
+  sequence within the request's own latency window) but real, and the
+  failure is silent - a reviewer looking at tender B's commercial
+  findings could be looking at tender A's data with no indication
+  anything is wrong.
+- **Status:** open. **Owner: B17 (UI Polish, Observability, and
+  Deployment)** - no currently-scoped block owns general frontend
+  correctness sweeps, and this is exactly the class of finding that
+  block's own pass should catch systematically (the same stale-write
+  guard shape recurring across screens) rather than one file at a time
+  as each gets individually reviewed. Not B14's - this file is untouched
+  by that block. Fix is mechanical once picked up: pass the same
+  `cancelled`-style closure `handleValidate` already has access to
+  (or restructure `refreshFindings` to own its own cancellation token),
+  matching the pattern the rest of this file already uses correctly.
+- **Test:** none - not yet reproduced live (would need a real
+  navigate-during-request race, not just code reading, to confirm the
+  actual write lands where this analysis says it does).
