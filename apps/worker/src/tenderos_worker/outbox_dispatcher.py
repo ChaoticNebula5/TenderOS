@@ -11,11 +11,13 @@ from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_SELECTION,
     AGGREGATE_REQUIREMENT,
     AGGREGATE_WORKFLOW_RUN,
     EVENT_DOCUMENT_UPLOADED,
     EVENT_GATE_DECISION_RECORDED,
     EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
+    EVENT_KNOWLEDGE_SELECTION_CHANGED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
@@ -23,6 +25,7 @@ from tenderos_backend.domain.events.outbox_events import (
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.knowledge_import import process_knowledge_document_import
 from tenderos_worker.jobs.placeholder import process_outbox_event
+from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
 from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
 from tenderos_worker.settings import settings
@@ -138,6 +141,34 @@ def _knowledge_document_uploaded_dispatch(
     )
 
 
+def _knowledge_selection_changed_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    tender_id = event.payload["tender_id"]
+    knowledge_item_id = event.payload["knowledge_item_id"]
+    state_version = event.payload["state_version"]
+    return (
+        # "workflow", not a new "projection"/"evaluation" queue - this job's
+        # own shape (a Neo4j reprojection, then a real evaluate_compliance_
+        # for_requirement/reground_claim loop making LLM calls) matches
+        # _knowledge_document_uploaded_dispatch's own reasoning, not
+        # ingestion's parse-only one.
+        "workflow",
+        reanalyze_knowledge_selection_change,
+        (tender_id, knowledge_item_id, state_version),
+        # I3's own example is project:{tender_id}:{state_version}; reused
+        # here (underscores, not colons, for the same RQ job_id constraint
+        # every other dispatch function in this file already works around)
+        # since this job's first step is a reprojection at exactly that
+        # state_version. Keyed on state_version, not knowledge_item_id -
+        # two different items deselected in quick succession are two
+        # different state_versions and so two different jobs, matching the
+        # outbox event's own idempotency_key (both derived from the same
+        # tender mutation - see outbox_events.py).
+        f"reanalyze_{tender_id}_{state_version}",
+    )
+
+
 # (aggregate_type, event_type) -> a function building (queue_name, job_fn,
 # job_args, job_id) for that event. Anything not listed here falls back to
 # _default_dispatch (maintenance queue, generic process_outbox_event) - same
@@ -156,6 +187,10 @@ _ROUTES: dict[
         AGGREGATE_REQUIREMENT,
         EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     ): _requirement_verification_requested_dispatch,
+    (
+        AGGREGATE_KNOWLEDGE_SELECTION,
+        EVENT_KNOWLEDGE_SELECTION_CHANGED,
+    ): _knowledge_selection_changed_dispatch,
 }
 
 

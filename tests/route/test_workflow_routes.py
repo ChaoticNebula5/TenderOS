@@ -210,3 +210,19 @@ async def test_workflow_run_routes_reject_a_non_member(client: TestClient, regis
         response = client.get(path, headers=outsider_headers)
         assert response.status_code == 403, f"{path}: {response.text}"
         assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_stream_workflow_events_rejects_a_missing_token(client: TestClient):
+    # The real streaming-delivery case (a real task.created event arriving
+    # over the open connection) needs true incremental reads, which this
+    # file's own sync TestClient fixture doesn't support against an
+    # infinite generator - see test_workflow_api.py::
+    # test_stream_workflow_events_delivers_a_real_task_created_event,
+    # which uses this project's own httpx.AsyncClient/ASGITransport pattern
+    # instead. This one 401 check doesn't need streaming at all - the
+    # dependency rejects before the route body, let alone the generator,
+    # ever runs - so it stays here with every other RBAC/auth check in
+    # this file.
+    response = client.get(f"/workflow-runs/{uuid.uuid4()}/events/stream")
+
+    assert response.status_code == 401, response.text

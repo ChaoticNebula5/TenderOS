@@ -1,7 +1,8 @@
 """domain/services/proposal_service.py against real Postgres - the grounded
 context builder, persist_section_and_claims' idempotency and versioning,
-the state_version bump, get_proposal_trace, and update_section_content's
-audit trail. enforce_claim_grounding's own policy is pinned separately in
+the state_version bump, get_proposal_trace, update_section_content's
+audit trail, and reground_claim (B14) against a real drafted claim.
+enforce_claim_grounding's own policy is pinned separately in
 tests/unit/test_claim_grounding.py; these tests exercise it end-to-end
 against real persisted rows rather than re-pinning the same rules."""
 
@@ -13,6 +14,7 @@ import pytest
 from sqlalchemy import select
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
 from tenderos_backend.db.models.audit import AuditEvent
+from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
@@ -546,3 +548,97 @@ async def test_update_section_content_writes_audit_event():
     assert len(events) == 1
     assert events[0].action == "proposal_section_edit"
     assert events[0].actor_id == str(actor_id)
+
+
+async def _draft_one_grounded_claim(
+    tender_id: uuid.UUID, entry_id: uuid.UUID, real_evidence_link_id: uuid.UUID
+) -> uuid.UUID:
+    prepared = [
+        proposal_service.PreparedFact(
+            label="evidence_1",
+            kind="evidence",
+            excerpt="Delivered three telecom migrations.",
+            evidence_link_id=real_evidence_link_id,
+        )
+    ]
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="The company completed three telecom migrations.",
+                claim_type="experience",
+                is_factual=True,
+                evidence_refs=["evidence_1"],
+            )
+        ]
+    )
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Relevant Experience", draft, prepared, {}
+    )
+    async with UnitOfWork() as uow:
+        claims = await uow.proposal.list_proposal_claims_for_section(section.id)
+    assert claims[0].grounding_status == "grounded"
+    return claims[0].id
+
+
+async def test_reground_claim_is_a_no_op_when_evidence_is_unchanged():
+    # The pin: kept even though the reconstruction risk this test was
+    # originally written to guard against turned out smaller than planned
+    # (enforce_claim_grounding reads only .is_factual/.claim_type off the
+    # real persisted row - no ProposalClaimDraft reconstruction happens at
+    # all). Still worth pinning byte-for-byte, because the one piece that
+    # genuinely re-derives - _prepare_evidence_facts' verified/
+    # validity_status filter, re-run here against current state rather than
+    # the draft-time snapshot - could in principle behave differently on a
+    # second pass even with nothing changed. It doesn't; this proves it.
+    org_id, tender_id = await _make_org_and_tender("Reground No-Op Test")
+    _, entry_id = await _make_approved_requirement_with_evidence(
+        tender_id=tender_id, org_id=org_id, category="technical"
+    )
+    async with UnitOfWork() as uow:
+        real_links = await uow.compliance.list_evidence_for_compliance_entry(entry_id)
+    claim_id = await _draft_one_grounded_claim(tender_id, entry_id, real_links[0].id)
+
+    async with UnitOfWork() as uow:
+        result = await proposal_service.reground_claim(uow, claim_id)
+        await uow.commit()
+
+    assert result.status == "grounded"
+    assert result.evidence_link_ids_considered == [real_links[0].id]
+    async with UnitOfWork() as uow:
+        reloaded = await uow.proposal.get_proposal_claim(claim_id)
+    assert reloaded.grounding_status == "grounded", (
+        "regrounding against unchanged evidence must be a true no-op"
+    )
+
+
+async def test_reground_claim_becomes_unsupported_when_its_evidence_goes_invalid():
+    # The concrete case B14 exists for: a knowledge-selection deselection
+    # (or a certification expiring) invalidates evidence a claim already
+    # cites. No repository write path exists for mutating an evidence
+    # link's own validity_status today (real invalidation happens
+    # elsewhere - a reevaluation, an expiry check - not through
+    # proposal_service), so this test reaches past the repository to
+    # simulate that external change directly, the same way a real
+    # deselection would leave the link behind it.
+    org_id, tender_id = await _make_org_and_tender("Reground Invalidated Evidence Test")
+    _, entry_id = await _make_approved_requirement_with_evidence(
+        tender_id=tender_id, org_id=org_id, category="technical"
+    )
+    async with UnitOfWork() as uow:
+        real_links = await uow.compliance.list_evidence_for_compliance_entry(entry_id)
+    claim_id = await _draft_one_grounded_claim(tender_id, entry_id, real_links[0].id)
+
+    async with get_session() as session:
+        link = await session.get(EvidenceLink, real_links[0].id)
+        link.validity_status = "expired"
+        await session.commit()
+
+    async with UnitOfWork() as uow:
+        result = await proposal_service.reground_claim(uow, claim_id)
+        await uow.commit()
+
+    assert result.status == "unsupported"
+    assert result.evidence_link_ids_considered == []
+    async with UnitOfWork() as uow:
+        reloaded = await uow.proposal.get_proposal_claim(claim_id)
+    assert reloaded.grounding_status == "unsupported"

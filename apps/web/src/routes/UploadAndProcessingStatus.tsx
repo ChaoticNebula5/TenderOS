@@ -11,7 +11,7 @@ import {
   uploadDocument,
 } from "../api/client";
 import type { DocumentResponse, WorkflowTaskResponse } from "../api/client";
-import { usePolling } from "../hooks/usePolling";
+import { useEventStream } from "../hooks/useEventStream";
 
 // Module-level, not inside the component: this Set never changes, so
 // creating it once here (instead of on every render) is both cheaper and
@@ -20,8 +20,10 @@ import { usePolling } from "../hooks/usePolling";
 // with identical contents, so React can't tell it's safe to skip.
 const NON_TERMINAL_STATUSES = new Set(["queued", "running", "waiting_for_human"]);
 
-// Screen 7 (Part J). Functional requirement 5: progress via polling
-// (usePolling; SSE arrives in B14 without this component changing).
+// Screen 7 (Part J). Functional requirement 5: progress via SSE
+// (useEventStream, B14) - was usePolling; that hook's own docstring
+// promised this swap wouldn't need this component to change, and it
+// didn't, beyond the import and the two call sites below.
 export function UploadAndProcessingStatus() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -138,20 +140,20 @@ export function UploadAndProcessingStatus() {
     }
   }
 
-  const { data: tasks } = usePolling<WorkflowTaskResponse[]>(
+  const { data: tasks } = useEventStream<WorkflowTaskResponse[]>(
     () => listWorkflowTasks(workflowRunId as string),
-    3000,
+    workflowRunId as string,
     workflowRunId !== null,
   );
-  // Polls the RUN itself (not just its tasks) so the screen can notice
+  // Watches the RUN itself (not just its tasks) so the screen can notice
   // when it finishes - nothing previously watched for that, so
   // workflowRunId stayed set forever once a run started, leaving this
   // screen stuck on the task list with no way back to "Start
   // processing" after the run actually completed, failed, or was
   // cancelled.
-  const { data: activeRun } = usePolling(
+  const { data: activeRun } = useEventStream(
     () => getWorkflowRun(workflowRunId as string),
-    3000,
+    workflowRunId as string,
     workflowRunId !== null,
   );
 

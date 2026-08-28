@@ -4251,3 +4251,457 @@ Each entry:
   is the evidence trail; no automated test exists for "did the UI miss
   background work" because nothing in the current architecture could
   make one pass without B14's own mechanism first.
+
+---
+
+## [B14] SSE transport decision: outbox + direct API-side poll, not Redis pub/sub or LISTEN/NOTIFY - a design decision, not a triage note
+
+- **Discovered:** B14 planning, while resolving what `GET /workflow-runs/
+  {run_id}/events/stream`'s underlying data source should be. Recorded
+  here as the decision itself, with its rejected alternatives and why -
+  not a limitation to fix later, the same shape as this file's own
+  "`target_updates` batch approval... a decision, not a triage note"
+  entry above.
+- **The real starting facts, checked rather than assumed:** the write
+  volume behind this decision is small - `create_task`/
+  `mark_task_completed`/`mark_task_failed` are bounded by task *type*
+  (~4-6 per run; `requirement_extraction_node`'s own docstring says
+  "runs once per workflow run" - one task, an internal loop over every
+  requirement, not one task per requirement), and `sync_run_status`'s
+  ~19 real per-run calls on a happy path with 2 revision passes
+  cross-validated exactly against live B13 data pulled from Postgres
+  this session (3 `graph_projection_runs` rows, matching 3
+  `projecting_graph` status writes for that tender). ~25-30 total writes
+  across a 20-40 minute run - not a hot path under any of the three
+  options priced below. The worker's `outbox_dispatcher.py` polls every
+  `POLL_INTERVAL_SECONDS = 5` (`:33,205`); `apps/api/main.py` has no
+  `lifespan`/startup hook (grepped, zero matches) - no long-lived
+  connection exists anywhere in the API process today.
+- **Redis pub/sub - rejected.** `PUBLISH` has no transactional coupling
+  to Postgres. A publish issued before a commit that then fails delivers
+  a notification for a state change that never happened; the only fix
+  (publish strictly after a successful commit) is a scattered,
+  convention-only discipline across the ~11 real call sites
+  (`db/repositories/workflow.py`'s 4 methods, called from ~11 places
+  across `orchestration/nodes/`), with no structural enforcement. This
+  project's own history - `set_candidate_selection`'s vacuous
+  self-comparison check, the stale-column patterns already logged above
+  - is specifically about conventions that hold everywhere except the
+  one place nobody checked; no reason to expect this one holds
+  indefinitely across 11 sites either.
+- **Postgres `LISTEN`/`NOTIFY` - real, viable, deliberately deferred, not
+  dropped.** asyncpg (`pyproject.toml:7`) has first-class support, and a
+  `NOTIFY` issued inside a transaction is deferred by Postgres itself
+  until commit and dropped on rollback - atomically correct by
+  construction, the same guarantee the outbox gives, with no durable row
+  required. Not adopted now because it needs genuinely new
+  infrastructure this codebase doesn't have (a raw `asyncpg` connection
+  held per open SSE stream, bypassing the SQLAlchemy engine/session
+  layer entirely - nothing to reroute, has to be built from scratch),
+  and even built, it has zero reconnect-replay on its own (a `NOTIFY`
+  fired while nobody is listening is simply gone) - a complete design
+  would still want the outbox underneath it for that, so `LISTEN`/
+  `NOTIFY` alone was never a self-sufficient answer even if the new
+  connection-handling code were written.
+- **Decision:** the outbox, written in the same transaction as each of
+  the 4 `WorkflowRepository` choke points (`update_run_status`,
+  `create_task`, `mark_task_completed`, `mark_task_failed` -
+  `db/repositories/workflow.py:57-131`), matching the existing
+  `DocumentUploaded`/`KnowledgeDocumentUploaded` pattern exactly - safe
+  on rollback by construction, free reconnect-replay for an SSE client
+  that drops and reconnects. Delivery is the SSE route polling the
+  outbox table directly at ~1s, deliberately bypassing the dispatcher's
+  own, separate 5s tick (routing through the dispatcher would add a
+  second, unnecessary cross-process hop on top of its own 5s floor -
+  the dispatcher and the API run as separate containers). Treated as a
+  wake-up signal only, not the payload - G13's own payload is
+  metadata-only text and says not to stream real content
+  (`TenderOS-Build-Guide.md:2640-2652`), so on seeing a new row the
+  route re-queries `workflow_tasks`/`workflow_runs` (the same tables
+  `listWorkflowTasks`/`getWorkflowRun` already read) for current state
+  rather than serializing task/run state into the outbox payload itself
+  - avoids a second copy of the same fact with its own chance to drift,
+  matching `evaluate_readiness`'s own "recompute at read time"
+  precedent.
+- **Honest characterization, on record so the next person doesn't have
+  to re-derive it:** this is server-side polling of the outbox,
+  re-emitted as a client-facing push stream - not database-level push.
+  It solves the actual requirement (no human reload) but isn't "SSE" in
+  the strictest sense underneath. If ~1s ever proves inadequate in
+  practice, `LISTEN`/`NOTIFY` is the named path to genuine push, not a
+  redesign from scratch - the outbox-write half of this decision stays
+  exactly as built either way.
+- **Status:** accepted, decided, and now built and verified live - not
+  revisited unless ~1s latency is measured as inadequate against a real
+  stop-gate run. The 4 choke-point outbox writes, the SSE route's own
+  wake-up-then-re-query design, and the honest polling-not-push docstring
+  are all in place (`routes/workflow.py::_workflow_progress_stream`,
+  `db/repositories/workflow.py`). Live-verified in a real browser (local
+  dev server, not yet the Docker rebuild) - a `WorkflowTask` row written
+  directly against Postgres appeared on an already-open Upload and
+  Processing screen with zero reload or navigation, confirmed via two new
+  `GET /workflow-runs/{id}` / `.../tasks` requests firing automatically in
+  the browser's own network log seconds after the write, no console
+  errors.
+- **Test:** `tests/integration/test_workflow_repository_outbox.py` (the 4
+  choke points each write the correct outbox row, and a repeat status
+  change doesn't collide on `idempotency_key`); `tests/integration/
+  test_workflow_events_stream.py` (the SSE generator itself - a heartbeat
+  when nothing's changed, a real `task.created` message once a task
+  exists, and cross-run isolation - a second run's event never leaks into
+  the first's stream); `tests/integration/test_workflow_api.py::
+  test_stream_workflow_events_rejects_a_caller_outside_the_organization`
+  (real HTTP, real RBAC). See the ASGITransport testing-limitation entry
+  below for why the full HTTP *delivery* path (not just the auth
+  rejection) has no automated test and is instead covered by the live
+  browser check above.
+
+---
+
+## [B14] SSE auth: existing JWT as a query param, not a header - a decision, not a workaround
+
+- **Discovered:** B14 build, writing `GET /workflow-runs/{run_id}/events/
+  stream`. `EventSource` has no way to send a custom `Authorization`
+  header, and this app authenticates purely via a `localStorage`-held JWT
+  bearer token (`apps/web/src/api/client.ts:11,89,108,129` - no cookies
+  anywhere), confirmed by reading the client directly before assuming
+  either cookie-based auth (which would make this a non-issue) or header
+  auth (which would make EventSource unusable outright).
+- **Three options priced, not defaulted into one:**
+  1. **The existing access token as a query parameter** (`?access_token=
+     ...`) - zero new dependencies, zero new backend token-minting
+     infrastructure. Real, accepted exposure: the token appears in server
+     access logs and browser history for its `jwt_access_minutes` (15)
+     life.
+  2. **A fetch-based SSE library** (e.g. `@microsoft/fetch-event-source`)
+     - avoids the token-in-URL exposure entirely (the existing
+     `Authorization`-header auth just works over a normal `fetch()`), at
+     the cost of this project's first SSE dependency and losing native
+     `EventSource`'s own reconnect behavior, which would then need
+     reimplementing by hand.
+  3. **A short-lived, single-use SSE-only ticket**, minted by its own new
+     endpoint - the actually-correct production pattern, deliberately not
+     built here: it's real token-minting infrastructure, and B15
+     (Security and Prompt-Injection Hardening) owns auth hardening: this
+     block would be making a decision that block should make itself.
+  Decided: **option 1.** `apps/api/src/tenderos_api/dependencies.py`'s
+  `get_current_user_for_sse`/`require_permission_for_sse` accept the
+  token from either the header (curl/Swagger/non-browser callers keep
+  working) or the query param (what a real `EventSource` connection
+  actually uses) - same decode-and-lookup as `get_current_user`, via a
+  shared `_user_from_token` helper, not a separate auth policy.
+- **The real, accepted exposure, named precisely:** the access token
+  sits in `GET` request URLs for up to 15 minutes per connection -
+  visible to anything that logs server access logs, browser history, or
+  a `Referer` header from that page. Not fixed here; option 3 above is
+  the named correct fix and is B15's, not this block's.
+- **The UX consequence of choosing this over option 3, stated plainly
+  since it's a real, user-facing gap, not just a security one:** once
+  the 15-minute token expires, `EventSource`'s own automatic reconnect
+  reuses the exact same (now-expired) URL - the browser's own retry gets
+  a fatal, non-retryable HTTP error from the server and `EventSource`
+  stops retrying on its own, `readyState` becomes `CLOSED`. `apps/web/
+  src/hooks/useEventStream.ts` detects this and sets its own `error`
+  state - but nothing currently reads it: `UploadAndProcessingStatus.tsx`
+  (this hook's only consumer) destructures only `{ data: tasks }`/
+  `{ data: activeRun }`, the same way it already ignored `usePolling`'s
+  own `error` return before this swap. So the concrete failure mode is
+  **silent staleness, not a visible error**: a workflow run open in a
+  browser tab for more than 15 minutes (plausible - B13's own full E2E
+  run took ~40 minutes) stops updating with no indication anything is
+  wrong. This is not a new gap `useEventStream` introduces - it's the
+  exact same pre-existing `usePolling`-consumer gap (a throwing fetcher
+  was equally invisible), now reachable by an ordinary session length
+  instead of requiring a fetch to literally throw. Fixing the *consumer*
+  to render `error` is a real, separate, small fix with no dependency on
+  B15's own ticket-minting work - not done here, since it's a UI-polish
+  concern outside this block's own scope, but flagged so it isn't
+  mistaken for something B15's fix would also close (it wouldn't -
+  option 3 removes the *token-expiry* trigger, not the *ignored-error*
+  gap underneath it).
+- **Status:** accepted, decided. Revisit if a real reviewer session is
+  observed hitting this in practice, or when B15/a UI-polish pass wires
+  `error` into this component.
+- **Test:** `get_current_user_for_sse`'s dual-path behavior is exercised
+  live (header path: every other route's own tests; query-param path:
+  `tests/integration/test_workflow_api.py::
+  test_stream_workflow_events_rejects_a_caller_outside_the_organization`
+  and the live browser check above, both authenticate via the query
+  param). No test exists for the token-expiry-mid-stream behavior itself
+  - would need a token minted with a sub-second expiry to observe
+  live, not attempted here.
+
+---
+
+## [B14] httpx.ASGITransport cannot test an unbounded StreamingResponse at all - a structural test-tooling limit, not a route bug
+
+- **Discovered:** B14 build, writing the first automated test for `GET
+  /workflow-runs/{run_id}/events/stream`. A route-level test using this
+  project's own established `httpx.AsyncClient`/`ASGITransport` pattern
+  (`test_workflow_api.py`'s pre-existing convention) hung indefinitely -
+  first tried against `fastapi.testclient.TestClient` (60s+, no
+  response), then again against `AsyncClient` directly after switching
+  to avoid `TestClient`'s own sync/thread-hop concerns (still hung,
+  properly bounded by `asyncio.wait_for` this time rather than left to
+  hang unbounded a second time).
+- **Root-caused directly, not assumed:** a minimal, isolated repro (a
+  bare FastAPI app, one route returning `StreamingResponse(gen())` with
+  an infinite `while True` generator, no other code involved) reproduced
+  the identical hang - `AsyncClient.stream()`'s own `__aenter__` never
+  returns. The traceback shows why: `ASGITransport.handle_async_request`
+  awaits the ASGI `app()` call to completion before it hands anything
+  back to the httpx client; Starlette's own `StreamingResponse.__call__`
+  runs the body generator and a concurrent `listen_for_disconnect` task
+  (awaiting `receive()`) side by side, and `ASGITransport`'s own mock
+  `receive()` only resolves on a real client disconnect signal - which
+  never arrives in-process, because there is no real client to send one.
+  A *finite* generator (the same repro with `for i in range(3)` instead
+  of `while True`) completes and returns normally - the hang is
+  specifically about *unbounded* generators, which is exactly this
+  route's own shape by design (an SSE stream is meant to stay open
+  until the client disconnects).
+- **Risk:** this is not new to B14 - any future route returning an
+  unbounded `StreamingResponse` will hit the identical wall the moment
+  someone writes an `AsyncClient`/`ASGITransport` test for its actual
+  content delivery, not just its opening handshake. The failure mode is
+  a hang, not a clean error, which is a worse failure to debug cold than
+  a clear "unsupported" message would be - worth recognizing on sight
+  the next time, rather than re-discovering it the same way this entry
+  did.
+- **What this project's test suite actually covers instead, and why
+  that's a real, not partial, substitute:** the SSE *generator itself*
+  is tested directly, bypassing HTTP entirely (`tests/integration/
+  test_workflow_events_stream.py`, calling `_workflow_progress_stream`
+  as a plain async generator against real Postgres) - genuine coverage
+  of the actual logic, not weaker than an HTTP-level test for that
+  purpose. The HTTP *layer* (auth, RBAC, that the route is wired
+  correctly) is tested for real, over real HTTP, at the one point that
+  doesn't need incremental reads - a *rejected* connection returns
+  immediately and never touches the generator at all
+  (`test_workflow_api.py::
+  test_stream_workflow_events_rejects_a_caller_outside_the_organization`,
+  `test_workflow_routes.py::test_stream_workflow_events_rejects_a_missing_token`).
+  What remains genuinely untested by any automated test is the full,
+  successful HTTP delivery path end to end (a real 200, a real client
+  reading real bytes as the server writes them) - closed instead by a
+  live browser check (Playwright, local dev server) confirmed as part of
+  this same block: a `WorkflowTask` row written directly against
+  Postgres appeared on an already-open screen with zero reload, network
+  log showing the two refetch requests firing automatically.
+- **Status:** accepted as a structural test-tooling boundary, not
+  something to work around with a differently-shaped test. A future
+  block wanting real automated coverage of the full delivery path would
+  need either a real running server (actual TCP, e.g. `uvicorn` in a
+  background thread/process, not `ASGITransport`) or a bounded test-only
+  variant of the generator (e.g. an injectable max-iteration count) -
+  neither attempted here, since the live browser check already closes
+  the actual risk (does delivery work) more directly than either would.
+- **Test:** the isolated repro itself is the standing evidence (not
+  committed - a throwaway script, reproducible from this entry's own
+  description if ever needed again). No automated regression test exists
+  for the ASGITransport behavior itself, since it's third-party library
+  behavior, not this project's own code.
+
+---
+
+## [B14] `preview_impact` can only ever show something for a knowledge item that already has a `USED_IN` edge - and nothing before the 14th step ever creates one
+
+- **Discovered:** live E2E runs 2 and 3 of the extended 14th step
+  (`full-flow.spec.ts`), both failing at the step's own discovery loop
+  with zero qualifying rows - the second run even after relaxing the
+  loop's own criterion from "names both a Requirement and a
+  ProposalClaim" down to "names a Requirement alone." Traced to the real
+  cause by reading the projector directly, not by guessing at a third
+  relaxation: `preview_impact`'s own Cypher (`graph_projection/
+  queries.py:63-65`) hard-requires `MATCH (fact)-[u:USED_IN]->(:Tender
+  {id: $tenderId})` as its literal first match clause, before any further
+  traversal happens - and `used_in_rows` (`graph_projection/
+  projector.py:400-412`) is built *only* from `tender_knowledge_
+  selections` rows (`for sel in selections if sel.knowledge_item_id in
+  resolved`). Nothing in `full-flow.spec.ts` calls the knowledge-
+  selection PUT before the 14th step - every row on that screen has no
+  selection row at all yet, hence no `USED_IN` edge, hence an empty
+  `preview_impact` result regardless of what real compliance evidence
+  that knowledge item backs in Postgres.
+- **Why this is structural, not a fixture gap:** B7's own compliance
+  evidence retrieval is deliberately *not* gated by
+  `tender_knowledge_selections` (`compliance_service.py`'s own comment:
+  "`selected_only` is deliberately not used here... retrieves evidence
+  straight from the org's knowledge base with no prior 'select knowledge
+  for this tender' step"). This means the set of knowledge items that
+  actually back real compliance decisions and the set of knowledge items
+  with a `USED_IN` edge in the graph are two genuinely independent sets -
+  overlapping only for whatever a human (or this spec) has explicitly
+  selected at least once. An item can be exactly what a compliance
+  decision cites and still show "No downstream facts would be affected"
+  in impact preview forever, until someone selects it.
+- **The fix, in the spec:** the 14th step now selects a candidate first
+  (creating its `USED_IN` edge and triggering one real reanalysis pass),
+  previews it again, and only then decides whether to use it as the
+  deselection target - not a discovery loop over passive preview calls,
+  which can never show real impact for an item nobody has ever selected.
+- **Correction to this file's own prior record: "Tax Clearance
+  Certificate" is not a valid target for this spec, at all - not merely
+  "not guaranteed twice."** Queried directly against the live B13 tender's
+  own organization (`dedf113a-74ce-4c8b-a20e-5c8b9da9c543`): exactly 4
+  knowledge items exist, all `item_type='employee'` (Dana Whitfield,
+  Marcus Ilori, Priya Ostrowski, Tomás Reyes) - zero certifications.
+  `full-flow.spec.ts`'s own setup phase imports resumes only, never
+  `certifications.xlsx` - the B9/B12 runs that observed "Tax Clearance
+  Certificate"/"PMP" grounded used a different import path this spec's
+  own setup never exercises. An earlier version of this plan named that
+  certification as the empirically-best target for this exact spec; that
+  was wrong, not merely optimistic - the row cannot exist here, so it
+  would have failed the same way run 2 did, only after spending the
+  selection/reanalysis cost first. Fixture gap, not a code gap: this
+  spec's own setup phase has no certification-import step at all, and
+  no live run of it has ever exercised the certification path B9/B12
+  both did.
+- **Status:** the `USED_IN` mechanism finding is accepted as correct,
+  structural behavior (not a bug - selections genuinely are what scopes
+  a tender's own graph, by design). The spec fix (select-then-preview) is
+  implemented and confirmed working as designed - live run 4 completed
+  the discovery loop over all 4 employees with no errors and attached
+  real findings for each. **Result: none of the 4 showed any impact at
+  all (`labels: []` for all four)** - not a fixture-targeting miss, but
+  a downstream consequence of two separate, real, pre-existing bugs this
+  run's own data exposed (see the two entries immediately below). The
+  select-then-preview mechanism itself is verified correct; there was
+  simply nothing real for it to find in this run, for reasons unrelated
+  to knowledge selection.
+- **Test:** none dedicated - this is a mechanism finding about existing
+  code (`projector.py`, `queries.py`), not new behavior to pin. The
+  spec's own live run is the standing verification.
+
+---
+
+## [product bug, golden path - found during B14 live verification] Candidate selection (`role_select`) intermittently never persists, despite the UI click, the button-hide, and every test assertion reporting success
+
+- **Discovered:** B14 live run 4, investigating why all 4 employees
+  showed zero graph impact after being selected (the entry above).
+  `role_matches` for that run's tender (`415b2da2-037c-47bb-a438-
+  10c60e9827ed`) has 16 real rows (4 roles × 4 candidates, real scores
+  from `talent_analysis_node`) - every one `human_selected = false`, and
+  `audit_events` for that tender has zero `role_select` actions at all,
+  across all 4 roles - despite `full-flow.spec.ts`'s own step 7 loop
+  clicking "Select" and asserting the button hides
+  (`:562-577`) once per role, every time, without that assertion ever
+  failing.
+- **Not a permanent break - confirmed intermittent, not assumed:** the
+  B13 tender's own audit trail (`dedf113a-74ce-4c8b-a20e-5c8b9da9c543`,
+  queried the same way) shows 3 real `role_select` actions - the
+  mechanism worked, partially, in that run. Run 4 shows 0 of 4. This is
+  a real, live product bug in the golden path, not an artifact of the
+  E2E harness or something B14 introduced - it happens with or without
+  B14's own changes anywhere near this code, and by these two data
+  points alone, intermittently rather than always.
+- **The same shape as two other findings already in this file:** the UI
+  reports success (button flips to "Deselect"), the test's own
+  `.toBeHidden()` assertion passes, and nothing actually persisted
+  server-side - the identical "looks like it works, doesn't" pattern as
+  `PATCH /tenders/{id}` (silently 500ing on every call until B13's own
+  route-level test finally exercised real HTTP serialization) and
+  `knowledge.py`'s dead `set_knowledge_selection` route (a stale
+  6-argument call, invisible because nothing tested the route layer).
+  **This is also the third distinct real issue found in this exact
+  function's own history**, not a first occurrence: `set_candidate_
+  selection` already had a genuinely vacuous cross-tenant authorization
+  check found and fixed once (this file's own "Standing pattern: a
+  two-resource guard..." entry, instance 2), found NOT actually fixed
+  and fixed again during B12 (same entry, corrected). This is a third,
+  different failure mode in the same area - not the same bug recurring,
+  but a third reason not to trust this call path without direct,
+  server-confirmed verification.
+- **Not yet root-caused - which layer is unknown:** the click event, the
+  PATCH request, the route, or `set_candidate_selection` itself.
+  Deliberately not traced further here, per this project's own "verify
+  before fixing" standard, and because this is not B14's own bug to fix
+  under this project's build-order discipline. Also not the already-
+  documented `TeamWorkspace.tsx` stale-candidates race (this file's own
+  earlier note, `full-flow.spec.ts:544-550`) - that race would select
+  the WRONG candidate for a role, still leaving SOME row `human_selected
+  = true`; this run left all 16 false, pointing at the request never
+  landing, not landing on the wrong target.
+- **Risk:** a real bid run through this exact golden path can reach
+  "resource selection gate: approved" with zero roles genuinely staffed,
+  and nothing in the current UI or test suite would show it - the same
+  "confidently wrong, not obviously broken" shape this project has
+  repeatedly named. `full-flow.spec.ts`'s own `.toBeHidden()` assertion
+  is provably insufficient proof of persistence (it passed both times,
+  once when the mutation worked and once when it didn't) - it should
+  check server-confirmed state (a reload showing "Deselect," or the
+  audit trail), not just the clicked button's own re-render.
+- **Status:** open. Owner named honestly, not force-fit: no block in
+  Part J's current B12-B17 list has a stop-gate that touches
+  `select_candidate`/`TeamWorkspace.tsx` specifically, so this is left
+  unassigned rather than attached to a block whose own gate doesn't
+  actually depend on it - matching this file's own "a home that isn't
+  real is worse than an honest 'unassigned'" standard (the no-clean-
+  owning-block triage entry, pre-B12). Real, reproducible, confirmed via
+  direct Postgres/audit-log inspection on two independent runs, not
+  inferred.
+- **Test:** none - the bug itself has none (that's the finding). A real
+  fix should also tighten `full-flow.spec.ts`'s own step 7 assertion to
+  check server-confirmed state, so a future regression of this exact
+  shape fails loudly instead of passing silently a third time.
+
+---
+
+## [joins the "[B9]/[B12] Drafting mostly produces ungrounded text" cluster] Two independent live runs both show ~0/94-98 compliance entries reaching an LLM-affirmed decision - evidence essentially never reaches compliance_entries at all, not just claims
+
+- **Discovered:** B14 live run 4's own tender
+  (`415b2da2-037c-47bb-a438-10c60e9827ed`): 98 `compliance_entries`, 98
+  `human_approved = true`, but `audit_events` shows all 98 arrived via
+  `compliance_override` (step 6's "not already affirmative" branch,
+  `full-flow.spec.ts:486-498`) - zero via the "already affirmative,
+  click Approve" branch. `evidence_links` for the whole tender: 1 row.
+  `compliance_evidence` (the junction actually attaching evidence to a
+  decision): 0 rows - that one link isn't attached to anything.
+  **Independently confirmed against the B13 tender's own surviving data**
+  (`dedf113a-74ce-4c8b-a20e-5c8b9da9c543`, requested specifically as a
+  second, zero-cost data point before filing this): 94 `compliance_
+  entries`, 94 via `compliance_override`, 0 via affirmative approval,
+  1 `evidence_link` for the whole tender, 0 attached. Same shape, same
+  near-total absence, two runs of the same fixture, at two different
+  points in this project's history.
+- **Why this joins the existing citation-gap cluster rather than
+  standing alone, and the hypothesis it raises - stated plainly as a
+  hypothesis, not asserted as confirmed:** the B9/B12 entries measured
+  citation correctness on DRAFTED PROPOSAL CLAIMS (1/19, 2/19 grounded
+  across two runs) - a claim citing no evidence, but the underlying
+  COMPLIANCE DECISION it might draw on could still have had real
+  evidence behind it, in principle. These two runs show the earlier
+  stage is *also* affected, at a comparable or worse rate: the LLM's own
+  compliance PROPOSAL (E4's `ComplianceProposal.status`) came back
+  something other than `fully_compliant`/`partially_compliant` for
+  essentially every requirement, in both runs, and cited real evidence
+  in essentially none of them. **If evidence largely isn't reaching
+  compliance entries in the first place, then a claim later having
+  nothing to cite may be upstream of drafting entirely - the ~1-in-10
+  claims-level citation rate could be a symptom of this earlier gap
+  rather than a separate, independent problem at the drafting stage.**
+  Not established here which - genuinely unknown, same "cause is
+  elsewhere and unknown" posture the B9/B12 entry already holds for its
+  own layer - but two independent runs landing on the same near-zero
+  number is enough to name the hypothesis explicitly rather than leave
+  it implicit for whoever investigates next.
+- **Risk:** if `override_compliance_entry` - a path E4/E7 describe as the
+  exception for when automated evaluation gets it wrong - is functioning
+  as the ONLY real path compliance decisions take in practice, almost
+  none of them are evidence-backed regardless of which knowledge item
+  backs what. This makes B14's own reanalysis cascade (compliance
+  reopens when evidence disappears) structurally unable to demonstrate
+  itself on a fresh live run of this fixture: there is no real evidence
+  for any knowledge-item deselection to invalidate, independent of
+  whether knowledge-selection or role-selection mechanics work.
+- **Status:** open, no owner named - not B14's own bug, and two runs
+  showing the same number is a real, replicated pattern, not something
+  to chase inside this block per this project's own build-order
+  discipline. Two data points, not yet a proven cause - worth a
+  deliberate, preserved-database measurement (the `scripts/verify_
+  req073_074_divergence.py` precedent: a live run, results left
+  untouched afterward, not run through `_clean_tables`) rather than a
+  third opportunistic observation from whatever live run happens to
+  produce one next.
+- **Test:** none - a live-run observation, not a code path with a
+  missing test.

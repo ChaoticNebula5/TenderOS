@@ -12,10 +12,16 @@ import { fileURLToPath } from "node:url";
 // Covers, in order: a setup phase (not one of Part J's 13 named steps,
 // but a real dependency both step 7 and the added 14th step share - see
 // KNOWN_LIMITATIONS.md's "§1's own dependency analysis missed..." entry),
-// then the 13 named steps, with the 14th step (knowledge-selection
-// impact preview, §1) inserted where §1 places it - right after
-// extraction, before the requirement/compliance/team/commercial review
-// steps that follow it in the golden path.
+// then the 13 named steps, then the 14th step (knowledge-selection
+// impact preview + B14's own reanalysis-cascade assertions) last, after
+// step 12's findings are resolved and immediately before step 13's
+// readiness check - not "right after extraction" as an earlier version
+// of this comment claimed (stale; corrected during B14, checked against
+// the actual code position directly, not reworded from assumption - see
+// KNOWN_LIMITATIONS.md's B14 §1 placement finding). This ordering is
+// exactly what B14 needs: real drafted claims and real compliance
+// decisions already exist by this point in the run, which is the
+// precondition its own reanalysis-cascade assertions depend on.
 //
 // Because setup drives real import -> approve -> verify through screens
 // 2/3/4, this run exercises 5 screens Part J's own 13 named steps never
@@ -659,8 +665,41 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   });
 
   // ------------------------------------------------------------------
-  // 11. Run red team
+  // 11. Run red team, plus B14's own no-reload live-progress assertion.
+  //
+  // This reproduces a real, previously-observed failure, not a
+  // hypothetical: a prior live run of this exact scenario cleared the
+  // red-team screen, then 3 new findings appeared 10s later from the
+  // bounded revision loop (targeted_replan -> proposal_drafting ->
+  // project_graph -> red_team) still running in the background with zero
+  // human interrupt() in between - nothing told the reviewer watching it
+  // (KNOWN_LIMITATIONS.md, "[B13, owner B14] Every screen in this UI is a
+  // snapshot"). §5a of this block's own plan names that finding as B14's
+  // concrete justification for building SSE at all.
+  //
+  // A second tab left open on the Upload/Processing screen
+  // (UploadAndProcessingStatus.tsx, useEventStream's one real consumer)
+  // is the direct test: trigger red team on the FIRST tab, then assert -
+  // on the SECOND tab, with zero page.reload()/reloadAndSettle() calls
+  // on it from this point forward - that a genuinely new network request
+  // actually fires, driven by the live tab's own SSE connection noticing
+  // one of db/repositories/workflow.py's 4 choke-point writes (red_team_
+  // node's own sync_run_status call, at minimum). Asserting on a real,
+  // falsifiable signal (a new request arriving) rather than "the tab
+  // didn't error" or "some text looked different" - a rendered value
+  // that happens not to visibly change (e.g. the coarse run status
+  // staying "running" across the whole revision loop) would make a DOM-
+  // content assertion here pass for the wrong reason, the same
+  // unfalsifiable shape this project has been burned by before.
   // ------------------------------------------------------------------
+  const liveProgressTab = await page.context().newPage();
+  await liveProgressTab.goto(`/tenders/${tenderId}`);
+  await liveProgressTab.waitForLoadState("networkidle");
+  const liveTaskListRefetch = liveProgressTab.waitForRequest(
+    (req) => req.method() === "GET" && /\/workflow-runs\/[^/]+\/tasks$/.test(req.url()),
+    { timeout: 60_000 },
+  );
+
   await page.goto(`/tenders/${tenderId}/redteam`);
   await page.getByRole("button", { name: "Run red team" }).click();
   // Same reasoning as proposal generation above - 5 deterministic checks
@@ -669,6 +708,11 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect(page.getByRole("button", { name: "Run red team" })).toBeEnabled({
     timeout: 180_000,
   });
+
+  // Fails (times out), not passes, if the live tab never receives a
+  // push-triggered refetch - the falsifiable half of this assertion.
+  await liveTaskListRefetch;
+  await liveProgressTab.close();
 
   // ------------------------------------------------------------------
   // 12. Resolve seeded issue - decided as "all," not "one" (§7 step 11's
@@ -710,13 +754,75 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   }
 
   // ------------------------------------------------------------------
-  // §1's added 14th step: knowledge-selection impact preview, including
-  // the 409 GRAPH_STALE -> project -> retry path. This tender has never
-  // had a graph projection run at this point in the scenario, so the
-  // staleness branch fires organically here, same as verified live
-  // against the real stack before step 9 (screen 10's own live-browser
-  // check) - not re-verified at the network level here, just exercised
-  // end to end through the UI as the golden path's own real trigger.
+  // §1's added 14th step: knowledge-selection deselection and B14's own
+  // reanalysis-cascade assertions - Part J's own scenario for this block
+  // (TenderOS-Build-Guide.md:3554-3565): deselect -> impact preview ->
+  // confirm -> projection refresh -> evidence coverage=0 -> compliance
+  // task reopens -> claim becomes needs_review -> readiness blocker
+  // appears.
+  //
+  // A completed graph projection already exists by this point in the
+  // run - confirmed directly against real Postgres data from a prior
+  // live run of this exact scenario, not assumed (KNOWN_LIMITATIONS.md's
+  // B14 §1 placement finding: graph_projection_runs had 3 completed rows,
+  // all well before this step's own position in the flow). The 409
+  // GRAPH_STALE this step's own project-then-retry path exercises
+  // reflects ordinary one-version staleness - the tender's state has
+  // moved past the last completed projection's version - not "no
+  // projection has ever run," which was this comment's own earlier,
+  // incorrect claim.
+  //
+  // Which item to deselect is discovered, not hardcoded, and requires
+  // SELECTING first - corrected across three live runs, not assumed
+  // correct from reading code alone. preview_impact's own Cypher hard-
+  // requires a USED_IN edge as its literal first match clause
+  // (graph_projection/queries.py:63-65: MATCH (fact)-[u:USED_IN]->
+  // (:Tender)), and the projector only ever creates USED_IN from
+  // tender_knowledge_selections rows (graph_projection/projector.py:
+  // 400-412) - never from evidence_links directly, even though B7's own
+  // compliance evidence retrieval is deliberately NOT gated by selections
+  // (compliance_service.py's own comment: "retrieves evidence straight
+  // from the org's knowledge base with no prior 'select knowledge for
+  // this tender' step"). Nothing before this step ever calls the
+  // selection PUT, so every row here starts with no USED_IN edge - a
+  // passive preview-only discovery loop (runs 2 and 3's own approach)
+  // can never show real impact for an item nobody has ever selected,
+  // regardless of what it actually backs in Postgres. Confirmed live,
+  // not assumed: run 3's loop found zero qualifying rows even after
+  // relaxing its own criterion to "names a Requirement alone."
+  //
+  // Also corrected: an earlier version targeted a specific certification
+  // name ("Tax Clearance Certificate") observed grounded in two
+  // independent past live runs (B9, B12) - checked directly against this
+  // spec's own actual data before trusting that again, and it doesn't
+  // hold: this spec's own setup phase imports resumes only, never
+  // certifications.xlsx, so no certification knowledge item exists here
+  // at all (KNOWN_LIMITATIONS.md's own corrected entry). The 4 imported
+  // employees are the only real candidates, with no empirical precedent
+  // either way for whether any of them backs a claim that actually cites
+  // its evidence, given this project's own well-documented low grounding
+  // rate (historically ~1 in 10 claims cite real evidence).
+  //
+  // So: select every employee once (creating each one's own USED_IN edge
+  // and triggering one real reanalysis pass each - a bounded, known
+  // cost, not an open-ended loop), record what each one's impact preview
+  // actually shows, and use the first one that names a real Requirement
+  // as the deselection target. If none does, fail here, loudly, with
+  // what was actually observed attached - asserting a cascade against an
+  // item with no real downstream effect would be the same unfalsifiable
+  // shape this file's own reload-race and readiness-assumption bugs
+  // already were.
+  //
+  // A claim being graph-connected to the SAME item is not required
+  // (corrected during run 1's own failure): enforce_claim_grounding has
+  // two separate downgrade paths (proposal_service.py) - a claim whose
+  // OWN cited evidence disappears becomes unsupported, not needs_review;
+  // needs_review is the OTHER path, firing for any compliance-type claim
+  // citing a requirement whose compliance status just turned non-
+  // affirmative, regardless of whether that claim is itself graph-
+  // connected to the deselected item. The needs_review assertion below
+  // is intentionally count-based across the whole proposal, not tied to
+  // this specific item, for exactly this reason.
   // ------------------------------------------------------------------
   await page.goto(`/tenders/${tenderId}/knowledge-selections`);
   await expect
@@ -731,48 +837,204 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       },
     )
     .toBeGreaterThan(0);
-  await page
+
+  const selectionRows = page.locator("table").first().locator("tbody tr");
+  const selectionRowCount = await selectionRows.count();
+  const candidateFindings: { title: string; labels: string[] }[] = [];
+  let affectedRequirementId: string | null = null;
+
+  for (let i = 0; i < selectionRowCount; i++) {
+    const row = selectionRows.nth(i);
+    const title = (await row.locator("td").first().textContent())?.trim() ?? `row-${i}`;
+
+    // Not yet selected - previewing here is expected to show nothing
+    // (no USED_IN edge exists yet), which is why this loop doesn't
+    // bother reading it: the real read happens after selecting, below.
+    await row.getByRole("button", { name: "Preview impact" }).click();
+    await expect(page.getByRole("heading", { name: "Impact preview" })).toBeVisible({
+      timeout: 30_000,
+    });
+    const preSelectConfirm = page.getByRole("button", { name: "Confirm select" });
+    await expect(preSelectConfirm).toBeVisible({ timeout: 30_000 });
+    await preSelectConfirm.click();
+    await expect(page.getByRole("heading", { name: "Impact preview" })).toBeHidden({
+      timeout: 10_000,
+    });
+
+    // Now selected - re-preview the same row. KnowledgeSelections.tsx's
+    // own handlePreview already retries once through a real project-
+    // then-retry cycle on 409 GRAPH_STALE (Part I4), so this reflects
+    // the just-created USED_IN edge without this test needing to wait
+    // for this row's own background reanalysis job separately - that
+    // job's real effect (compliance reopening, claim regrounding) is
+    // what the downstream assertions below poll for, generously, after
+    // the real deselection.
+    await row.getByRole("button", { name: "Preview impact" }).click();
+    await expect(page.getByRole("heading", { name: "Impact preview" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect
+      .poll(
+        async () =>
+          (await page.locator("li").count()) +
+          (await page.getByText("No downstream facts would be affected.").count()),
+        { timeout: 60_000 },
+      )
+      .toBeGreaterThan(0);
+    const impactTexts = await page.locator("ul li").allTextContents();
+    const labels = impactTexts.flatMap((t) => {
+      try {
+        return (JSON.parse(t) as { labels?: string[] }).labels ?? [];
+      } catch {
+        return [];
+      }
+    });
+    candidateFindings.push({ title, labels: [...new Set(labels)] });
+
+    if (affectedRequirementId === null) {
+      const requirementRowText = impactTexts.find((t) => t.includes('"Requirement"'));
+      if (requirementRowText) {
+        const parsed = JSON.parse(requirementRowText) as { affected?: { id?: string } };
+        affectedRequirementId = parsed.affected?.id ?? null;
+      }
+    }
+
+    // Close this row's preview panel without deselecting (Confirm select
+    // already fired above; the target is chosen and deselected in a
+    // separate pass below, once every candidate's own findings are in) -
+    // clicking the NEXT row's own "Preview impact" button does this
+    // naturally (handlePreview unconditionally resets previewedItemId),
+    // so nothing extra is needed here except when this is the last row.
+  }
+
+  // The durable output of this discovery pass, per the plan: which of
+  // the 4 real employees actually shows real Requirement/Claim impact on
+  // this fixture - attached regardless of outcome, not just on failure,
+  // so a future run can target directly instead of re-discovering this.
+  await test.info().attach("step-14-knowledge-item-impact-findings", {
+    body: JSON.stringify(candidateFindings, null, 2),
+    contentType: "application/json",
+  });
+  expect(
+    affectedRequirementId,
+    "expected at least one of the 4 imported employees to show a real Requirement in its " +
+      `impact preview after being selected - none did. Findings: ${JSON.stringify(candidateFindings, null, 2)}`,
+  ).not.toBeNull();
+
+  const preDeselectNeedsReviewCount = await (async () => {
+    const proposalTab = await page.context().newPage();
+    await proposalTab.goto(`/tenders/${tenderId}/proposal`);
+    await proposalTab.waitForLoadState("networkidle");
+    const count = await proposalTab.locator("li", { hasText: "/ needs_review]" }).count();
+    await proposalTab.close();
+    return count;
+  })();
+
+  // The real tested action: deselect the chosen candidate (already
+  // selected above). Every other candidate is left selected - deselecting
+  // them back would cost another real reanalysis pass each for no
+  // assertion this step makes, and nothing downstream depends on their
+  // selection state.
+  const targetTitle = candidateFindings.find((f) => f.labels.includes("Requirement"))?.title;
+  const chosenRow = page
     .locator("table")
     .first()
     .locator("tbody tr")
-    .first()
-    .getByRole("button", { name: "Preview impact" })
-    .click();
-  await expect(page.getByRole("heading", { name: "Impact preview" })).toBeVisible({
-    timeout: 30_000,
-  });
+    .filter({ has: page.locator("td", { hasText: targetTitle ?? "" }) })
+    .first();
+  await chosenRow.getByRole("button", { name: "Preview impact" }).click();
   const confirmButton = page.getByRole("button", { name: /^Confirm (select|deselect)$/ });
   await expect(confirmButton).toBeVisible({ timeout: 30_000 });
+  await expect(confirmButton).toHaveText("Confirm deselect", { timeout: 10_000 });
   await confirmButton.click();
   await expect(page.getByRole("heading", { name: "Impact preview" })).toBeHidden({
     timeout: 10_000,
   });
 
+  // Compliance reopens: persist_compliance_decision (already built, B7/
+  // pre-B12) clears a stale human_approved when reevaluation changes the
+  // entry's status - reanalyze_knowledge_selection_change (apps/worker/
+  // jobs/reanalysis.py) just has to call evaluate_compliance_for_
+  // requirement for this to fire, not reimplement it. Generous timeout:
+  // the outbox dispatcher's own 5s poll, then a real LLM call, sit
+  // between the confirm click above and this becoming true.
+  await page.goto(`/tenders/${tenderId}/compliance`);
+  await expect
+    .poll(
+      async () => {
+        await reloadAndSettle(page);
+        const rows = page.locator("table").first().locator("tbody tr");
+        const count = await rows.count();
+        for (let i = 0; i < count; i++) {
+          const row = rows.nth(i);
+          if ((await row.locator("td").first().textContent()) === affectedRequirementId) {
+            return (await row.locator("td").nth(3).textContent())?.trim();
+          }
+        }
+        return null;
+      },
+      {
+        timeout: 180_000,
+        message: `waiting for requirement ${affectedRequirementId}'s compliance entry to reopen (human_approved -> no)`,
+      },
+    )
+    .toBe("no");
+
+  // Claim becomes needs_review: count-based, not id-based - the proposal
+  // screen's own rendering (step 10, above) has no claim id in the DOM to
+  // correlate against GraphImpactRow's own affected.id, and ProposalClaim
+  // nodes carry no claim_text property either (graph_projection/
+  // projector.py) to match by content instead. A real, falsifiable
+  // assertion still holds without claim-level identity: the count of
+  // needs_review claims must increase from the pre-deselection snapshot
+  // above, not merely be non-zero (which could already have been true
+  // before this step ran).
+  await expect
+    .poll(
+      async () => {
+        await reloadAndSettle(page);
+        return await page.locator("li", { hasText: "/ needs_review]" }).count();
+      },
+      {
+        timeout: 60_000,
+        message: "waiting for at least one additional claim to become needs_review",
+      },
+    )
+    .toBeGreaterThan(preDeselectNeedsReviewCount);
+
   // ------------------------------------------------------------------
-  // 13. Inspect readiness - the honest assertion. Expected: ready: true,
-  // following from steps 5/6/7/12 each having been scripted to resolve
-  // everything shown, not "unless there happen to be more findings."
-  // If it fails, the real blockers list is attached to the failure
-  // output (and to the compliance/role instrumentation above) so the
-  // cause is diagnosable from the run's own artifacts, not a second
-  // DB session.
+  // 13. Inspect readiness - flipped for B14, deliberately, not a
+  // regression. Steps 5/6/7/12 leave the tender clean enough that this
+  // check would have read "Ready" before the 14th step ran (that was
+  // this file's own pre-B14 assertion) - but the 14th step's own
+  // deselection just reopened a compliance decision and put a claim back
+  // to needs_review on purpose, so the honest final state of this whole
+  // scenario is now "not ready, with a real blocker," matching Part J's
+  // own scenario text ending on "readiness blocker appears," not
+  // "ready: true." The blockers list is always attached as an artifact
+  // (not just on failure) so the specific category reached is visible
+  // in the run's own output either way.
   // ------------------------------------------------------------------
   await page.goto(`/tenders/${tenderId}/readiness`);
   await page.getByRole("button", { name: "Generate readiness report" }).click();
   await expect(page.locator("strong")).toBeVisible({ timeout: 30_000 });
   const readyText = (await page.locator("strong").first().textContent())?.trim();
-  if (readyText !== "Ready") {
-    const blockers = await page
-      .locator("h2", { hasText: "Blockers" })
-      .locator("xpath=following-sibling::ul[1]/li")
-      .allTextContents();
-    await test.info().attach("step-13-readiness-blockers", {
-      body: JSON.stringify({ readyText, blockers }, null, 2),
-      contentType: "application/json",
-    });
-    throw new Error(
-      `Expected readiness "Ready", got "${readyText}". Blockers: ${JSON.stringify(blockers, null, 2)}`,
-    );
-  }
-  expect(readyText).toBe("Ready");
+  const blockers = await page
+    .locator("h2", { hasText: "Blockers" })
+    .locator("xpath=following-sibling::ul[1]/li")
+    .allTextContents();
+  await test.info().attach("step-13-readiness-blockers", {
+    body: JSON.stringify({ readyText, blockers }, null, 2),
+    contentType: "application/json",
+  });
+  expect(
+    readyText,
+    `Expected readiness NOT "Ready" (B14's own deselection reopened a compliance decision ` +
+      `and reground a claim) - got "${readyText}" with zero blockers, meaning the cascade's ` +
+      `own effects never reached readiness_service. Blockers: ${JSON.stringify(blockers, null, 2)}`,
+  ).not.toBe("Ready");
+  expect(
+    blockers.length,
+    "expected at least one real blocker attached to the non-ready result",
+  ).toBeGreaterThan(0);
 });

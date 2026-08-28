@@ -145,3 +145,163 @@ def knowledge_document_uploaded_idempotency_key(
     # for the plain DocumentUploaded event.
     suffix = f":{request_id}" if request_id is not None else ""
     return f"knowledge_document_uploaded:{document_id}{suffix}"
+
+
+# B14. set_knowledge_selection's own docstring has named this flow
+# aspirationally since B6 ("outbox ImpactReanalysisRequested"), but Part J's
+# own B14 build list names the event KnowledgeSelectionChanged - that literal
+# name is used here, since it's the one actually naming this specific event
+# in the block that owns building it, not a paraphrase in an older
+# docstring. See KNOWN_LIMITATIONS.md for the B14 outbox-vocabulary
+# inventory this event is the one real, wired instance of.
+EVENT_KNOWLEDGE_SELECTION_CHANGED = "KnowledgeSelectionChanged"
+
+AGGREGATE_KNOWLEDGE_SELECTION = "knowledge_selection"
+
+
+def knowledge_selection_changed_payload(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, selected: bool, state_version: int
+) -> dict:
+    return {
+        "tender_id": str(tender_id),
+        "knowledge_item_id": str(knowledge_item_id),
+        "selected": selected,
+        "state_version": state_version,
+    }
+
+
+def knowledge_selection_changed_idempotency_key(tender_id: uuid.UUID, state_version: int) -> str:
+    # Keyed on the tender's own new state_version, not the selection row's
+    # id - state_version already uniquely identifies this specific mutation
+    # (Part C's own state-version invariant), and reusing it here ties this
+    # outbox row to the same identifier the reanalysis job's own RQ job_id
+    # uses (reanalyze_{tender_id}_{state_version}, outbox_dispatcher.py)
+    # rather than inventing a second one for the same event.
+    return f"knowledge_selection_changed:{tender_id}:{state_version}"
+
+
+# The two "outcome" events the reanalysis job (apps/worker/jobs/
+# reanalysis.py) emits per affected requirement/claim it reevaluates -
+# durable, inspectable records of what the job actually did, matching this
+# project's own outbox-as-source-of-truth pattern (KNOWN_LIMITATIONS.md's
+# B14 SSE-transport decision). Not currently routed to an RQ job by
+# outbox_dispatcher.py - falls to _default_dispatch, the same "declared,
+# no real consumer yet" shape TenderCreated has always used. Idempotency
+# keys include state_version for the same reason
+# knowledge_selection_changed's own does: two different selection changes
+# affecting the same requirement/claim must not collide on the same key.
+EVENT_COMPLIANCE_CHANGED = "ComplianceChanged"
+EVENT_PROPOSAL_CHANGED = "ProposalChanged"
+
+AGGREGATE_COMPLIANCE_ENTRY = "compliance_entry"
+AGGREGATE_PROPOSAL_CLAIM = "proposal_claim"
+
+
+def compliance_changed_payload(
+    compliance_entry_id: uuid.UUID, requirement_id: uuid.UUID, tender_id: uuid.UUID, status: str
+) -> dict:
+    return {
+        "compliance_entry_id": str(compliance_entry_id),
+        "requirement_id": str(requirement_id),
+        "tender_id": str(tender_id),
+        "status": status,
+    }
+
+
+def compliance_changed_idempotency_key(requirement_id: uuid.UUID, state_version: int) -> str:
+    return f"compliance_changed:{requirement_id}:{state_version}"
+
+
+def proposal_changed_payload(
+    claim_id: uuid.UUID,
+    tender_id: uuid.UUID,
+    grounding_status: str,
+    evidence_link_ids_considered: list[uuid.UUID],
+) -> dict:
+    return {
+        "claim_id": str(claim_id),
+        "tender_id": str(tender_id),
+        "grounding_status": grounding_status,
+        "evidence_link_ids_considered": [str(i) for i in evidence_link_ids_considered],
+    }
+
+
+def proposal_changed_idempotency_key(claim_id: uuid.UUID, state_version: int) -> str:
+    return f"proposal_changed:{claim_id}:{state_version}"
+
+
+# B14's own workflow-task/run progress events - what the SSE route (GET
+# .../events/stream, apps/api/routes/workflow.py) actually polls the outbox
+# for. Written from inside db/repositories/workflow.py's own 4 methods
+# (update_run_status, create_task, mark_task_completed, mark_task_failed),
+# not from each of their ~36 real call sites across orchestration/nodes/ -
+# see that repository's own module docstring for why. None of these four
+# have a natural version counter the way tenders.state_version does
+# (KnowledgeSelectionChanged/ComplianceChanged/ProposalChanged all key off
+# it above), so every idempotency_key here includes a fresh uuid4 suffix -
+# true dedup isn't needed for a repeatable wake-up ping, and a same-key
+# collision on a legitimate retry would raise IntegrityError inside the
+# same transaction as the real state write these events describe, which
+# must never happen. WorkflowTaskCreated is the one exception - task.id is
+# always genuinely fresh when create_task's own body runs (callers check
+# get_task_by_key first), so no suffix is needed there.
+EVENT_WORKFLOW_RUN_STATUS_CHANGED = "WorkflowRunStatusChanged"
+EVENT_WORKFLOW_TASK_CREATED = "WorkflowTaskCreated"
+EVENT_WORKFLOW_TASK_COMPLETED = "WorkflowTaskCompleted"
+EVENT_WORKFLOW_TASK_FAILED = "WorkflowTaskFailed"
+
+AGGREGATE_WORKFLOW_TASK = "workflow_task"
+
+
+def workflow_run_status_changed_payload(workflow_run_id: uuid.UUID, status: str) -> dict:
+    # status is informational (visible on the row for debugging), same
+    # "not load-bearing" posture document_uploaded_payload's own
+    # tender_id/organization_id already take - the SSE route re-queries
+    # workflow_runs for current status rather than trusting this copy.
+    return {"workflow_run_id": str(workflow_run_id), "status": status}
+
+
+def workflow_run_status_changed_idempotency_key(workflow_run_id: uuid.UUID) -> str:
+    return f"workflow_run_status_changed:{workflow_run_id}:{uuid.uuid4()}"
+
+
+def workflow_task_created_payload(
+    workflow_run_id: uuid.UUID, task_id: uuid.UUID, task_type: str
+) -> dict:
+    return {
+        "workflow_run_id": str(workflow_run_id),
+        "task_id": str(task_id),
+        "task_type": task_type,
+    }
+
+
+def workflow_task_created_idempotency_key(task_id: uuid.UUID) -> str:
+    return f"workflow_task_created:{task_id}"
+
+
+def workflow_task_completed_payload(
+    workflow_run_id: uuid.UUID, task_id: uuid.UUID, task_type: str
+) -> dict:
+    return {
+        "workflow_run_id": str(workflow_run_id),
+        "task_id": str(task_id),
+        "task_type": task_type,
+    }
+
+
+def workflow_task_completed_idempotency_key(task_id: uuid.UUID) -> str:
+    return f"workflow_task_completed:{task_id}:{uuid.uuid4()}"
+
+
+def workflow_task_failed_payload(
+    workflow_run_id: uuid.UUID, task_id: uuid.UUID, task_type: str
+) -> dict:
+    return {
+        "workflow_run_id": str(workflow_run_id),
+        "task_id": str(task_id),
+        "task_type": task_type,
+    }
+
+
+def workflow_task_failed_idempotency_key(task_id: uuid.UUID) -> str:
+    return f"workflow_task_failed:{task_id}:{uuid.uuid4()}"

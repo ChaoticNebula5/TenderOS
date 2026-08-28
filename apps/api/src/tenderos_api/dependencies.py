@@ -3,7 +3,7 @@ from typing import NamedTuple
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenderos_backend.core.enums import Role
@@ -19,6 +19,11 @@ from tenderos_api.errors import OrgAccessDeniedError
 from tenderos_api.schemas.requirements import MergeRequirementsRequest
 
 _bearer_scheme = HTTPBearer()
+# auto_error=False: get_current_user_for_sse (below) needs to try the
+# header first and fall back to a query param, which means a missing
+# header must not raise on its own - only get_current_user_for_sse decides
+# that, once it's also checked the query param.
+_bearer_scheme_optional = HTTPBearer(auto_error=False)
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
@@ -26,11 +31,9 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
-) -> User:
+async def _user_from_token(raw_token: str) -> User:
     try:
-        payload = decode_token(credentials.credentials)
+        payload = decode_token(raw_token)
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
@@ -46,6 +49,42 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive"
             )
         return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+) -> User:
+    return await _user_from_token(credentials.credentials)
+
+
+async def get_current_user_for_sse(
+    access_token: str | None = Query(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme_optional),
+) -> User:
+    """EventSource cannot send a custom Authorization header, so
+    GET .../events/stream (routes/workflow.py) is the one route in this
+    app that needs a token from somewhere other than the header - the
+    header path stays available too (curl/Swagger/a future non-browser
+    client), the query param is what a real EventSource connection
+    actually uses. Same decode-and-look-up as get_current_user, via the
+    shared _user_from_token - no separate auth policy, just a second place
+    the token can arrive from.
+
+    Real, accepted exposure, not silently carried: the token appears in
+    server access logs and browser history for its jwt_access_minutes
+    (15) life. The correct fix - a short-lived, single-use SSE-only
+    ticket, minted by its own endpoint - is deliberately not built here;
+    it's real token-minting infrastructure and B15 (Security and Prompt-
+    Injection Hardening) owns auth hardening, not this block. See
+    KNOWN_LIMITATIONS.md's B14 SSE-auth entry.
+    """
+    raw_token = credentials.credentials if credentials is not None else access_token
+    if raw_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token or access_token",
+        )
+    return await _user_from_token(raw_token)
 
 
 async def _resolve_organization_id(request: Request) -> UUID:
@@ -370,6 +409,22 @@ def require_permission(action: str) -> Callable[..., Awaitable[User]]:
     """
 
     async def _dependency(request: Request, current_user: User = Depends(get_current_user)) -> User:
+        organization_id = await _resolve_organization_id(request)
+        await _check_permission(organization_id, current_user, action)
+        return current_user
+
+    return _dependency
+
+
+def require_permission_for_sse(action: str) -> Callable[..., Awaitable[User]]:
+    """Same resolve-and-check as require_permission(action), sourcing
+    current_user from get_current_user_for_sse instead of get_current_user -
+    the one difference GET .../events/stream needs, since EventSource can't
+    send the header every other route's auth relies on."""
+
+    async def _dependency(
+        request: Request, current_user: User = Depends(get_current_user_for_sse)
+    ) -> User:
         organization_id = await _resolve_organization_id(request)
         await _check_permission(organization_id, current_user, action)
         return current_user

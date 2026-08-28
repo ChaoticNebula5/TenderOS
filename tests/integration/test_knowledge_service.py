@@ -13,8 +13,10 @@ import uuid
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
+from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import document_service, knowledge_service
 from tenderos_backend.domain.services.auth_service import register
@@ -56,6 +58,36 @@ async def test_set_knowledge_selection_bumps_tender_state_version():
     async with UnitOfWork() as uow:
         after_version = (await uow.tenders.get(tender_id)).state_version
     assert after_version == before_version + 1
+
+
+async def test_set_knowledge_selection_writes_a_knowledge_selection_changed_outbox_event():
+    # B14: the outbox row this project's own reanalysis job (apps/worker/
+    # jobs/reanalysis.py) is dispatched from. Asserted directly against the
+    # real row, not just "the call didn't raise" - the same standard this
+    # file's own state_version test already holds itself to.
+    _org_id, tender_id, knowledge_item_id, actor_id = await _org_tender_and_employee()
+
+    updated = await knowledge_service.set_knowledge_selection(
+        tender_id, knowledge_item_id, True, actor_id
+    )
+
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        result = await uow.session.execute(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == updated.id)
+        )
+    events = result.scalars().all()
+    assert len(events) == 1
+    event = events[0]
+    assert event.aggregate_type == "knowledge_selection"
+    assert event.event_type == "KnowledgeSelectionChanged"
+    assert event.payload == {
+        "tender_id": str(tender_id),
+        "knowledge_item_id": str(knowledge_item_id),
+        "selected": True,
+        "state_version": tender.state_version,
+    }
+    assert event.idempotency_key == f"knowledge_selection_changed:{tender_id}:{tender.state_version}"
 
 
 async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_organization():

@@ -9,11 +9,54 @@ from tenderos_backend.db.models.workflow import (
     WorkflowTask,
     WorkflowTaskDependency,
 )
+from tenderos_backend.db.repositories.outbox import OutboxRepository
+from tenderos_backend.domain.events.outbox_events import (
+    AGGREGATE_WORKFLOW_RUN,
+    AGGREGATE_WORKFLOW_TASK,
+    EVENT_WORKFLOW_RUN_STATUS_CHANGED,
+    EVENT_WORKFLOW_TASK_COMPLETED,
+    EVENT_WORKFLOW_TASK_CREATED,
+    EVENT_WORKFLOW_TASK_FAILED,
+    workflow_run_status_changed_idempotency_key,
+    workflow_run_status_changed_payload,
+    workflow_task_completed_idempotency_key,
+    workflow_task_completed_payload,
+    workflow_task_created_idempotency_key,
+    workflow_task_created_payload,
+    workflow_task_failed_idempotency_key,
+    workflow_task_failed_payload,
+)
 
 
 class WorkflowRepository:
+    """update_run_status/create_task/mark_task_completed/mark_task_failed
+    each also write a sibling outbox row, in the same session and
+    transaction as the state change itself - a deliberate exception to this
+    codebase's usual "repository touches only its own table, the service
+    layer orchestrates cross-table writes" shape (see document_service.py's
+    create_document for that usual shape). Chosen deliberately, not by
+    default: these 4 methods are called directly from ~36 sites across
+    orchestration/nodes/ with no shared service-layer wrapper in between
+    (sync_run_status is the one partial exception, and even it just calls
+    update_run_status once). This project's own history is a long list of a
+    correct pattern applied at one call site and silently not its siblings
+    (request_id at 4 of 5 knowledge-import callers, session.refresh() in 2
+    repository methods but not a third, create_document's unconditional
+    event where a sibling branched correctly - see KNOWN_LIMITATIONS.md).
+    Writing the outbox row inside these 4 methods means every one of those
+    ~36 call sites is covered by construction, not by 36 individually-
+    correct edits nobody can guarantee stays correct as new callers are
+    added. The notification therefore can never commit without the state
+    change it describes - if a future caller wraps one of these in a
+    transaction that then rolls back, the outbox row rolls back with it,
+    same guarantee every other outbox write in this codebase already has.
+    Do not "clean this up" into a separate service-layer call without
+    re-solving the coverage problem this shape exists to close.
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._outbox = OutboxRepository(session)
 
     async def create_run(
         self,
@@ -64,6 +107,13 @@ class WorkflowRepository:
         if status in ("completed", "failed", "cancelled"):
             run.completed_at = datetime.now(UTC)
         await self._session.flush()
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_RUN,
+            aggregate_id=run_id,
+            event_type=EVENT_WORKFLOW_RUN_STATUS_CHANGED,
+            payload=workflow_run_status_changed_payload(run_id, status),
+            idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
+        )
 
     async def list_tasks(self, workflow_run_id: uuid.UUID) -> list[WorkflowTask]:
         result = await self._session.execute(
@@ -103,6 +153,13 @@ class WorkflowRepository:
         )
         self._session.add(task)
         await self._session.flush()
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_TASK,
+            aggregate_id=task.id,
+            event_type=EVENT_WORKFLOW_TASK_CREATED,
+            payload=workflow_task_created_payload(workflow_run_id, task.id, task_type),
+            idempotency_key=workflow_task_created_idempotency_key(task.id),
+        )
         return task
 
     async def add_task_dependency(self, task_id: uuid.UUID, depends_on_task_id: uuid.UUID) -> None:
@@ -119,6 +176,15 @@ class WorkflowRepository:
         task.output_refs = output_refs
         task.completed_at = datetime.now(UTC)
         await self._session.flush()
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_TASK,
+            aggregate_id=task_id,
+            event_type=EVENT_WORKFLOW_TASK_COMPLETED,
+            payload=workflow_task_completed_payload(
+                task.workflow_run_id, task_id, task.task_type
+            ),
+            idempotency_key=workflow_task_completed_idempotency_key(task_id),
+        )
 
     async def mark_task_failed(self, task_id: uuid.UUID, error_code: str) -> None:
         task = await self._session.get(WorkflowTask, task_id)
@@ -129,3 +195,10 @@ class WorkflowRepository:
         task.attempt_count += 1
         task.completed_at = datetime.now(UTC)
         await self._session.flush()
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_TASK,
+            aggregate_id=task_id,
+            event_type=EVENT_WORKFLOW_TASK_FAILED,
+            payload=workflow_task_failed_payload(task.workflow_run_id, task_id, task.task_type),
+            idempotency_key=workflow_task_failed_idempotency_key(task_id),
+        )

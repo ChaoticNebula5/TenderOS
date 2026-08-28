@@ -180,3 +180,39 @@ async def test_gate_decision_via_http_uses_the_gate_types_own_rbac_action(monkey
         )
         assert replay_resp.status_code == 200
         assert replay_resp.json()["gate_id"] == gate_id
+
+
+async def test_stream_workflow_events_rejects_a_caller_outside_the_organization():
+    # The route's own dependency chain (require_permission_for_sse) rejects
+    # before _workflow_progress_stream's generator ever starts - this
+    # exercises real HTTP + real RBAC without needing an incremental read
+    # of a live stream, which httpx.ASGITransport cannot do for this route
+    # at all (see the generator-level test in test_workflow_events_stream.py
+    # for why, and for the real, direct proof the stream itself works).
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-sse-403-owner@example.com", "WF API SSE 403 Org"
+        )
+        run_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={"Authorization": f"Bearer {owner_token}", "Idempotency-Key": "sse-403-1"},
+        )
+        run_id = run_resp.json()["id"]
+
+        outsider = await client.post(
+            "/auth/register",
+            json={
+                "email": "wf-api-sse-403-outsider@example.com",
+                "password": "hunter2",
+                "organization_name": "WF API SSE 403 Outsider Org",
+            },
+        )
+        outsider_token = outsider.json()["access_token"]
+
+        response = await client.get(
+            f"/workflow-runs/{run_id}/events/stream",
+            params={"access_token": outsider_token},
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

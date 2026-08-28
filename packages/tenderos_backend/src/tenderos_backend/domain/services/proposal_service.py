@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass
+from typing import Protocol
 
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.proposal.draft_section import GroundedFactRef, draft_section
@@ -304,6 +305,29 @@ class GroundingResult:
     reason: str
 
 
+class GroundableClaim(Protocol):
+    """What enforce_claim_grounding actually reads off its first argument -
+    is_factual and claim_type, nothing else. Both ProposalClaimDraft
+    (draft-time, agents/schemas/proposal.py, whose own claim_type is a
+    narrower Literal[...] than plain str) and the persisted ProposalClaim
+    row (reground_claim, below, plain str) carry these two fields with the
+    same meaning, so both satisfy this structurally without either needing
+    to know about the other. Declared as read-only properties, not plain
+    attributes - Protocol attribute matching is invariant by default, which
+    would reject ProposalClaimDraft's narrower Literal claim_type against a
+    plain str field even though every Literal member is a str; read-only
+    members check covariantly instead, matching how this function actually
+    uses them (read-only, never assigned). Narrower than typing the
+    parameter as ProposalClaimDraft, which would be accidentally coupling
+    this function to a shape it never actually depends on beyond these two
+    fields."""
+
+    @property
+    def is_factual(self) -> bool: ...
+    @property
+    def claim_type(self) -> str: ...
+
+
 # TODO(human): implement enforce_claim_grounding.
 #
 # Steps (plain-English, not code):
@@ -367,7 +391,7 @@ class GroundingResult:
 # well-evidenced claim can still assert something the tender's own
 # compliance record disagrees with, undetected.
 def enforce_claim_grounding(
-    claim: ProposalClaimDraft,
+    claim: GroundableClaim,
     resolved_requirement_ids: list[uuid.UUID],
     resolved_evidence_link_ids: list[uuid.UUID],
     compliance_status_by_requirement: dict[uuid.UUID, str],
@@ -777,4 +801,87 @@ async def get_proposal_trace(claim_id: uuid.UUID) -> ProposalClaimTrace:
         evidence=evidence_entries,
         currently_in_scope_evidence=currently_in_scope_entries,
         section_is_data_gated=section_is_data_gated,
+    )
+
+
+# ----------------------------------------------------------------------
+# Reanalysis (B14): re-grounding an already-persisted claim
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RegroundingResult:
+    status: str
+    reason: str
+    evidence_link_ids_considered: list[uuid.UUID]
+
+
+async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingResult:
+    """Re-runs enforce_claim_grounding for an already-persisted claim against
+    CURRENT evidence/compliance state, instead of the draft-time snapshot
+    persist_section_and_claims used when the claim was first written.
+
+    No ProposalClaimDraft reconstruction needed, and none is attempted:
+    enforce_claim_grounding only ever reads .is_factual/.claim_type off its
+    first argument (never claim_text/requirement_refs/evidence_refs, which
+    belong to materialize_claim_links, a separate function called once, only
+    at draft time) - both are real columns on the persisted ProposalClaim
+    row already, copied across verbatim when the row was created. Passing
+    the real row straight through is correct, not an approximation of a
+    draft.
+
+    What genuinely needs re-deriving is narrower: which of the claim's
+    linked evidence is still verified/valid (_prepare_evidence_facts' own
+    check, reused here rather than re-implemented, so there is exactly one
+    place "what counts as offerable evidence" is decided - see that
+    function's own docstring and KNOWN_LIMITATIONS.md's "a reader trusts a
+    column its writer never keeps current" standing pattern for why a
+    second copy of this filter would be a real risk, not a style
+    preference), and each linked requirement's current compliance status
+    (_compliance_status_by_requirement, the same function draft-time
+    grounding already uses).
+
+    Writes back grounding_status only when it actually changed, mirroring
+    persist_section_and_claims's own materially_changed gate - a
+    regrounding call against unchanged evidence is a no-op write, not a
+    forced update. Does not bump tenders.state_version and does not emit
+    anything itself: B14's reanalysis job (the caller) owns the outbox
+    write, using evidence_link_ids_considered below to record what this
+    call actually saw - the free instrument this project's own citation-
+    correctness investigation has been missing since B9/B12.
+    """
+    claim = await uow.proposal.get_proposal_claim(claim_id)
+    if claim is None:
+        raise ProposalClaimNotFoundError()
+    section = await uow.proposal.get_proposal_section(claim.section_id)
+    if section is None:
+        raise ProposalSectionNotFoundError()
+
+    requirement_links = await uow.proposal.list_requirements_for_claim(claim_id)
+    resolved_requirement_ids = [r.requirement_id for r in requirement_links]
+
+    linked_evidence = await uow.proposal.list_evidence_for_claim(claim_id)
+    candidate_links: list[EvidenceLink] = []
+    for link_row in linked_evidence:
+        link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
+        if link is not None:
+            candidate_links.append(link)
+    still_valid = _prepare_evidence_facts(candidate_links, seen_evidence_ids=set(), start_index=1)
+    resolved_evidence_link_ids = [
+        fact.evidence_link_id for fact in still_valid if fact.evidence_link_id is not None
+    ]
+
+    compliance_status = await _compliance_status_by_requirement(uow, section.tender_id)
+
+    grounding = enforce_claim_grounding(
+        claim, resolved_requirement_ids, resolved_evidence_link_ids, compliance_status
+    )
+
+    if claim.grounding_status != grounding.status:
+        await uow.proposal.update_proposal_claim(claim_id, grounding_status=grounding.status)
+
+    return RegroundingResult(
+        status=grounding.status,
+        reason=grounding.reason,
+        evidence_link_ids_considered=resolved_evidence_link_ids,
     )

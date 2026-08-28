@@ -32,9 +32,13 @@ from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_SELECTION,
     EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
+    EVENT_KNOWLEDGE_SELECTION_CHANGED,
     knowledge_document_uploaded_idempotency_key,
     knowledge_document_uploaded_payload,
+    knowledge_selection_changed_idempotency_key,
+    knowledge_selection_changed_payload,
 )
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 from tenderos_backend.ingestion.chunk import normalize_text
@@ -1153,16 +1157,15 @@ async def set_knowledge_selection(
     """G6's PUT /tenders/{tender_id}/knowledge-selections/{knowledge_item_id}.
     The Build Guide's full selection-change flow (impact preview -> confirm
     -> update selection -> bump state version -> outbox
-    ImpactReanalysisRequested -> projection -> targeted re-evaluation) needs
-    graph projection (B10) and targeted re-evaluation (B7+/B11) to exist
-    first - impact preview and targeted re-evaluation are still out of scope
-    here. But the state-version bump itself only depended on graph
-    projection existing (B10, so the freshness comparison it feeds has
-    somewhere to compare against) - that dependency is resolved now, so
-    "knowledge selection change" (Part C's own state-version invariant list)
-    gets wired in this same transaction, same as the other three listed
-    mutation types already are. See KNOWN_LIMITATIONS.md for which of the
-    six still have no bump call site.
+    ImpactReanalysisRequested -> projection -> targeted re-evaluation) needed
+    graph projection (B10) and targeted re-evaluation (B14) to exist first -
+    both now do. B14 wires the last two steps in: this call writes a
+    KnowledgeSelectionChanged outbox event in the same transaction as the
+    state_version bump below (Part C's own state-version invariant list -
+    see KNOWN_LIMITATIONS.md for which of the six mutation types still have
+    no bump call site), which outbox_dispatcher.py routes to
+    reanalyze_knowledge_selection_change - the actual projection +
+    targeted-reevaluation job, apps/worker/jobs/reanalysis.py.
 
     Verifies actor_user_id's own membership+role against tender_id's real
     organization_id, fetched right here - it does not take organization_id
@@ -1222,6 +1225,21 @@ async def set_knowledge_selection(
             tender_id, knowledge_item_id, selected, actor_user_id, change_reason
         )
         await uow.tenders.bump_state_version(tender_id)
+        # tender is the same ORM instance bump_state_version's own
+        # uow.session.get(Tender, tender_id) call resolved (one session,
+        # one identity map for this whole UnitOfWork) - its state_version
+        # already reflects the increment above with no extra query needed.
+        await uow.outbox.create(
+            aggregate_type=AGGREGATE_KNOWLEDGE_SELECTION,
+            aggregate_id=updated.id,
+            event_type=EVENT_KNOWLEDGE_SELECTION_CHANGED,
+            payload=knowledge_selection_changed_payload(
+                tender_id, knowledge_item_id, selected, tender.state_version
+            ),
+            idempotency_key=knowledge_selection_changed_idempotency_key(
+                tender_id, tender.state_version
+            ),
+        )
         await uow.commit()
         return updated
 
