@@ -5528,15 +5528,17 @@ Each entry:
   checks the `Content-Length` header and rejects (413) before `call_next`
   - and therefore before routing/multipart-parsing ever starts - reusing
   `max_upload_size_mb` as a blanket per-request ceiling, not an
-  upload-route-specific one. **Residual gap, on record:** this trusts the
-  declared `Content-Length` - a client that lies (declares it small, sends
-  more; or omits it entirely via chunked transfer-encoding) is not caught
-  here. Closing that fully would mean inspecting the ASGI `receive()`
-  stream's actual byte count as it arrives, a materially larger change
-  than a header check; not built here, the honest case (every real
-  browser/HTTP client) is what this closes.
-- **Status:** resolved-in-B15, all four, plus the multipart-buffering
-  addendum above.
+  upload-route-specific one. **Residual gap, filed as its own open item,
+  not just a code comment:** this trusts the declared `Content-Length` - a
+  client that lies, or omits it entirely via chunked transfer-encoding, is
+  not caught here. See the separate `## [B15] Content-Length pre-check
+  residual gap` entry below for the mechanism, what is and isn't caught,
+  and the owner decision - not restated in full here to avoid two entries
+  drifting apart on the same fact.
+- **Status:** resolved-in-B15 for file-type validation, size enforcement,
+  archive-bomb defenses, and secure headers. The multipart-buffering
+  addendum's own fix is resolved for the honest-client case; its residual
+  gap is open, filed separately, not folded into this "resolved" line.
 - **Test:** `tests/integration/test_documents_api.py` - 5 new tests
   (content-sniffing mismatch, zip missing the required internal member,
   entry-count bomb, ratio bomb, bounded-read-rejects-oversized via a
@@ -5555,6 +5557,67 @@ Each entry:
   route needing to exist; an ordinary small request is unaffected). Full
   suite: 510/510 passing. `uv run mypy`: 59 errors/12 files/239 scanned,
   unchanged from the canonical baseline.
+
+---
+
+## [B15] Content-Length pre-check residual gap - a lying declared size or chunked transfer-encoding still bypasses it; unassigned, not B16's build scope
+
+- **Discovered:** CodeRabbit pass on this same block, while fixing the
+  multipart-buffering gap named in the "File-type validation, size
+  enforcement, archive-bomb defenses, secure headers - resolved" entry
+  above (`main.py::_max_body_size`, the middleware built to fix it). This
+  entry is that fix's own residual gap, filed on its own rather than left
+  as a comment in `main.py`, so it has a real status and owner instead of
+  needing to be rediscovered by reading code.
+- **What the middleware catches:** `_max_body_size` reads the
+  `Content-Length` header and rejects (413) before `call_next` runs -
+  therefore before Starlette's own routing/multipart-parsing starts - for
+  any request whose declared size exceeds `max_upload_size_mb`. This is
+  the honest-client case: every real browser and HTTP client sends an
+  accurate `Content-Length` for a request built from an in-memory/on-disk
+  file, so this closes the practical DoS vector for ordinary use, with
+  zero body bytes read.
+- **What it does not catch, named precisely:** a client that (a) declares
+  a small `Content-Length` and then sends more bytes than declared, or
+  (b) omits `Content-Length` entirely via chunked transfer-encoding.
+  Neither is inspected - this middleware only reads the header, never the
+  actual byte count arriving on the ASGI `receive()` stream. Either path
+  could still force Starlette to spool an arbitrarily large body (memory,
+  then disk past `SpooledTemporaryFile`'s threshold) before anything in
+  this codebase gets a chance to reject it - the exact resource-
+  exhaustion shape the header check exists to prevent, reached by a
+  different path.
+  **Reach, stated precisely so severity isn't overstated:** every route
+  this applies to requires authentication, and the actual upload routes
+  additionally require a real RBAC permission (`upload_client_docs` or
+  equivalent) - not an anonymous/public attack surface, it requires an
+  already-vetted account with some organization's real access. Comparable
+  in shape and severity to this same block's own archive-bomb residual
+  gap (a crafted local-file-header/central-directory mismatch, also
+  authenticated-only, also not built here, recorded in the entry above) -
+  not treated as a P0 blocker for that reason, the same judgment already
+  applied to that comparable gap in the same pass.
+- **What closing it fully would require:** a wrapping ASGI `receive()`
+  that counts bytes as they actually arrive and raises once a ceiling is
+  crossed, mid-stream - a materially larger change than a header check.
+  Nothing in this codebase's ASGI layer does that today; not built here.
+- **Owner: unassigned, not silently attached to B16 by default.** B16
+  ("Full Evaluation, Reliability, and Load Tests") is a gate/evaluation
+  block - its own release gate reads "no P0 security issue remains" - not
+  a block that names building new streaming-body enforcement as its own
+  scope. Same reasoning this file's own "Cross-tenant route coverage"
+  entry already applied to a structurally similar gap: a home that isn't
+  real is worse than an honest unassigned. **Not fully separate from B16
+  either, though:** whoever runs B16's "no P0 security issue remains"
+  review should re-examine this specific gap on its own facts (the
+  authenticated-only reach above, the comparable archive-bomb precedent)
+  and make the real call then - accept as-is, or promote it to a block of
+  its own - rather than this entry silently deciding that by omission.
+- **Status:** open, unassigned, explicitly flagged for reconsideration at
+  B16's own gate-check rather than left to be rediscovered there.
+- **Test:** none needed for what isn't built - `tests/route/
+  test_max_body_size.py` (see the entry above) covers exactly what the
+  middleware does catch; it takes no position on this gap.
 
 ---
 
