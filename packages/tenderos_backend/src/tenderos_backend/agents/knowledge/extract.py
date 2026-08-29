@@ -3,13 +3,17 @@ import uuid
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.knowledge import (
     CapabilityStatementExtraction,
     ExtractedEmployeeProfile,
 )
 from tenderos_backend.db.models.document import DocumentChunk
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services.knowledge_service import ResolvedCapability, ResolvedPastProject
+from tenderos_backend.domain.services.knowledge_service import (
+    ResolvedCapability,
+    ResolvedPastProject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +70,13 @@ async def extract_employee_profile(
     # ingestion/parse_docx.py tracks as heading_path, not body text. Without
     # this prefix the LLM never sees the candidate's name at all, since
     # every resume in this template puts it nowhere else.
+    # B15: chunk.chunk_text is raw resume document text. heading_path is
+    # structural provenance this system's own parser derived, not document
+    # prose - kept as a trusted label, same as every other [label] header.
     user_prompt = "\n\n".join(
-        f"[{' > '.join(chunk.heading_path)}]\n{chunk.chunk_text}"
+        wrap_untrusted_content(" > ".join(chunk.heading_path), chunk.chunk_text)
         if chunk.heading_path
-        else chunk.chunk_text
+        else wrap_untrusted_content("resume", chunk.chunk_text)
         for chunk in resume_chunks
     )
 
@@ -132,8 +139,10 @@ async def extract_capability_statement(
     """
     system_prompt = load_prompt("capability_statement_extraction")
     labels = [f"chunk_{i + 1}" for i in range(len(document_chunks))]
+    # B15: chunk.chunk_text is raw capability-statement document text.
     user_prompt = "\n\n".join(
-        f"[{label}]\n{chunk.chunk_text}" for label, chunk in zip(labels, document_chunks, strict=True)
+        wrap_untrusted_content(label, chunk.chunk_text)
+        for label, chunk in zip(labels, document_chunks, strict=True)
     )
 
     agent_name = "capability_statement_extraction"

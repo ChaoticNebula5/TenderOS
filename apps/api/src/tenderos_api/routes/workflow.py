@@ -17,9 +17,11 @@ from tenderos_api.errors import DocumentsNotReadyError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.workflow import (
     AuditEventResponse,
+    SSETicketResponse,
     WorkflowRunResponse,
     WorkflowTaskResponse,
 )
+from tenderos_api.sse_tickets import TICKET_TTL_SECONDS, mint_sse_ticket
 
 router = APIRouter(tags=["workflow"])
 
@@ -115,6 +117,30 @@ async def stream_workflow_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+# Not in Part G's locked route list - added code-first, same precedent as
+# GET /employees/{id} (KNOWN_LIMITATIONS.md): a real gap found building
+# against the spec, not a documented capability implemented late.
+@router.post("/workflow-runs/{run_id}/events/ticket", response_model=SSETicketResponse)
+async def mint_workflow_events_ticket(
+    run_id: UUID, current_user: User = Depends(require_permission("view_workflow"))
+) -> SSETicketResponse:
+    """B15: mints the short-lived, single-use ticket GET .../events/stream
+    accepts in place of the real access JWT - see sse_tickets.py's own
+    module docstring for why, and KNOWN_LIMITATIONS.md's B14/B15 SSE-auth
+    entries for the history.
+
+    Same view_workflow action as the stream route itself and every other
+    plain GET on this run, not a new action - deliberately, not by
+    reflex: minting answers the identical "can this user watch this run's
+    progress" question the stream route's own require_permission_for_sse
+    already asks, just once, up front, instead of on every reconnect. A
+    dedicated action would gate that one question under two different
+    names for no real distinction.
+    """
+    ticket = await mint_sse_ticket(current_user.id, run_id)
+    return SSETicketResponse(ticket=ticket, expires_in_seconds=TICKET_TTL_SECONDS)
 
 
 @router.post(

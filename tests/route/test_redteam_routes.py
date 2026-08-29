@@ -22,11 +22,10 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from tenderos_api.routes import redteam
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.db.unit_of_work import UnitOfWork
-
-from tenderos_api.routes import redteam
 
 pytestmark = pytest.mark.asyncio
 
@@ -120,12 +119,57 @@ async def test_redteam_routes_reject_a_non_member(client: TestClient, register_a
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Redteam Route Test Bid 4"}, headers=headers
     ).json()
-    finding_id = await _seed_finding(tender["id"])
+    await _seed_finding(tender["id"])
 
     outsider_headers, _, _ = register_actor()
 
     response = client.get(f"/tenders/{tender['id']}/redteam-findings", headers=outsider_headers)
     assert response.status_code == 403, response.text
+
+
+async def test_trigger_red_team_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Redteam Route Test Bid 5"},
+        headers=headers,
+    ).json()
+
+    fake_client = FakeLLMClient()
+    fake_client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
+    monkeypatch.setattr(redteam, "_build_llm_client", lambda: fake_client)
+
+    outsider_headers, _, _ = register_actor()
+
+    response = client.post(f"/tenders/{tender['id']}/redteam/run", headers=outsider_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_resolve_redteam_finding_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Redteam Route Test Bid 6"},
+        headers=headers,
+    ).json()
+    finding_id = await _seed_finding(tender["id"])
+
+    outsider_headers, _, _ = register_actor()
+
+    response = client.post(
+        f"/redteam-findings/{finding_id}/resolve",
+        json={"resolution_note": "Should not be allowed."},
+        headers=outsider_headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
 
     response = client.post(
         f"/redteam-findings/{finding_id}/resolve", json={}, headers=outsider_headers

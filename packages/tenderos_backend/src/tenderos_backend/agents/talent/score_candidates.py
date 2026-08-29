@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.talent import CandidateScoring
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -71,7 +72,13 @@ def _render_candidate(
     if evidence:
         lines.append("Evidence:")
         for e in evidence:
-            lines.append(f"- {e.label} [{e.source_kind}]: {e.excerpt}")
+            # B15: e.excerpt is knowledge-base-sourced (resume/certification
+            # text) - short structured fields above (title, location,
+            # availability) are already-normalized labels, not raw document
+            # prose, and are left unwrapped to avoid repeating the wrapper's
+            # own instruction text on every short field.
+            wrapped = wrap_untrusted_content(e.label, e.excerpt)
+            lines.append(f"- {e.label} [{e.source_kind}]: {wrapped}")
     else:
         lines.append("Evidence: (no candidate evidence was retrieved)")
     return "\n".join(lines)

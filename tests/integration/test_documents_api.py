@@ -2,10 +2,12 @@
 file validation, and the 202-without-parsing contract."""
 
 import io
+import zipfile
 
 import docx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from openpyxl import Workbook
 from tenderos_api.main import app
 
 pytestmark = pytest.mark.asyncio
@@ -37,6 +39,22 @@ def _docx_bytes() -> bytes:
     document.add_paragraph("Bidders must hold a valid tax clearance certificate.")
     buf = io.BytesIO()
     document.save(buf)
+    return buf.getvalue()
+
+
+def _xlsx_bytes() -> bytes:
+    workbook = Workbook()
+    workbook.active["A1"] = "Item"
+    buf = io.BytesIO()
+    workbook.save(buf)
+    return buf.getvalue()
+
+
+def _zip_bytes(members: dict[str, bytes], compression: int = zipfile.ZIP_DEFLATED) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=compression) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
     return buf.getvalue()
 
 
@@ -120,10 +138,16 @@ async def test_generic_octet_stream_content_type_is_accepted():
         )
         assert resp.status_code == 202, resp.text
 
-        # And with no content-type asserted at all.
+        # And with no content-type asserted at all. Real xlsx bytes now,
+        # not a hand-written b"PK\x03\x04 minimal" placeholder - B15 added
+        # real content sniffing (documents.py::_sniff_and_check_archive),
+        # which correctly rejects that placeholder as not a real archive.
+        # This test's own point (an unasserted Content-Type is accepted)
+        # is unrelated to that check and still needs a genuinely valid file
+        # to prove it against.
         resp = await client.post(
             f"/tenders/{tender_id}/documents",
-            files={"file": ("other.xlsx", b"PK\x03\x04 minimal", None)},
+            files={"file": ("other.xlsx", _xlsx_bytes(), None)},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 202, resp.text
@@ -214,3 +238,97 @@ async def test_reprocess_requeues_and_marks_document_queued():
 
         assert resp.status_code == 202
         assert resp.json()["parse_status"] == "queued"
+
+
+async def test_content_that_does_not_match_the_claimed_type_is_rejected():
+    """B15 real content sniffing: extension AND Content-Type header can both
+    be correct while the bytes themselves are not actually a docx - this is
+    exactly the gap the old extension/header-only check could never catch."""
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "docs-api-sniff-1@example.com", "Docs API Sniff Org 1"
+        )
+
+        resp = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("fake.docx", b"not actually a zip archive at all", _DOCX_TYPE)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 415, resp.text
+
+
+async def test_a_real_zip_missing_the_expected_internal_structure_is_rejected():
+    """PK\\x03\\x04 magic bytes alone aren't enough - any zip has those.
+    A real docx must contain word/document.xml specifically."""
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "docs-api-sniff-2@example.com", "Docs API Sniff Org 2"
+        )
+
+        plain_zip = _zip_bytes({"readme.txt": b"just an ordinary zip, not a docx"})
+        resp = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("fake.docx", plain_zip, _DOCX_TYPE)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 415, resp.text
+
+
+async def test_archive_with_too_many_entries_is_rejected():
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "docs-api-bomb-entries@example.com", "Docs API Bomb Entries Org"
+        )
+
+        members = {"word/document.xml": b"<w:document/>"}
+        members.update({f"junk/{i}.txt": b"x" for i in range(1001)})
+        bomb = _zip_bytes(members)
+        resp = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("bomb.docx", bomb, _DOCX_TYPE)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 413, resp.text
+
+
+async def test_archive_with_an_excessive_compression_ratio_is_rejected():
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "docs-api-bomb-ratio@example.com", "Docs API Bomb Ratio Org"
+        )
+
+        # Highly repetitive text compresses far past the 200x ceiling
+        # (real docx/xlsx content tops out around 24x - see documents.py's
+        # own measured-fixture comment). 5MB of a single repeated byte is
+        # enough to clear 200x under DEFLATE without a slow multi-second
+        # test fixture.
+        members = {
+            "word/document.xml": b"A" * 5_000_000,
+        }
+        bomb = _zip_bytes(members, compression=zipfile.ZIP_DEFLATED)
+        resp = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("bomb.docx", bomb, _DOCX_TYPE)},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 413, resp.text
+
+
+async def test_oversized_upload_is_rejected_before_being_fully_read(monkeypatch):
+    """Confirms the bounded-read fix (documents.py::_read_bounded): a file
+    over the limit is rejected via the same 413 path, not read unbounded
+    first. max_upload_size_mb is monkeypatched down so this doesn't need a
+    real 50MB fixture to exercise the boundary."""
+    monkeypatch.setattr("tenderos_api.routes.documents.settings.max_upload_size_mb", 1)
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "docs-api-oversized@example.com", "Docs API Oversized Org"
+        )
+
+        oversized = b"a,b,c\r\n" * 200_000  # well over 1 MB
+        resp = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("big.csv", oversized, "text/csv")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 413, resp.text

@@ -238,6 +238,11 @@ async def test_get_graph_trace_rejects_an_unallowed_label(client: TestClient, re
 
 
 async def test_graph_routes_reject_a_non_member(client: TestClient, register_actor):
+    # Covers status/contradictions/project (trigger) - impact and trace
+    # need their own real fixture data (a knowledge item, a real
+    # requirement id) and are proven separately below, not because they're
+    # any different in kind, only because they need more setup than a
+    # shared loop over bare GETs/one POST can hold cleanly.
     headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Graph Route Test Bid 8"}, headers=headers
@@ -262,3 +267,55 @@ async def test_graph_routes_reject_a_non_member(client: TestClient, register_act
         headers={**outsider_headers, "Idempotency-Key": "project-8-outsider"},
     )
     assert trigger_response.status_code == 403, trigger_response.text
+
+
+async def test_preview_graph_impact_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    headers, user_id, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Graph Route Test Bid 9"}, headers=headers
+    ).json()
+    employee_id = await _selected_employee(org_id, tender["id"], user_id)
+    client.post(
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-9"},
+    )
+
+    outsider_headers, _, _ = register_actor()
+
+    response = client.post(
+        f"/tenders/{tender['id']}/graph/impact",
+        json={"knowledge_item_id": employee_id},
+        headers=outsider_headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_get_graph_trace_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Graph Route Test Bid 10"},
+        headers=headers,
+    ).json()
+    requirement_id = await _requirement(tender["id"])
+    client.post(
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-10"},
+    )
+
+    outsider_headers, _, _ = register_actor()
+
+    response = client.get(
+        f"/tenders/{tender['id']}/graph/trace",
+        params={"node_label": "Requirement", "node_id": requirement_id},
+        headers=outsider_headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

@@ -164,3 +164,32 @@ async def test_gate_routes_reject_a_non_member(client: TestClient, register_acto
         response = client.get(path, headers=outsider_headers)
         assert response.status_code == 403, f"{path}: {response.text}"
         assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_decide_gate_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    # The third gates.py route - list_gates/get_gate already had this
+    # proof (test_gate_routes_reject_a_non_member above); decide_gate uses
+    # a different dependency (require_gate_decision_permission, which
+    # resolves its action dynamically from the gate's own gate_type) and
+    # had no equivalent proof that its own org resolution is real, not
+    # just its role resolution.
+    admin_headers, _, org_id = register_actor()
+    _tender_id, run_id = await _tender_with_open_requirement_gate(
+        client, admin_headers, org_id, monkeypatch
+    )
+    gate_id = client.get(f"/workflow-runs/{run_id}/gates", headers=admin_headers).json()[0][
+        "gate_id"
+    ]
+
+    outsider_headers, _, _ = register_actor()
+
+    response = client.post(
+        f"/gates/{gate_id}/decision",
+        json={"decision": "approve"},
+        headers={**outsider_headers, "Idempotency-Key": "decide-outsider-1"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

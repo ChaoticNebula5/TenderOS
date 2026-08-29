@@ -6,6 +6,7 @@ from enum import StrEnum
 from tenderos_backend.agents.knowledge.dedup import normalize_employee_name
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.knowledge import (
     ExtractedProjectMention,
     RelationshipExtractionOutput,
@@ -161,8 +162,12 @@ async def extract_worked_on(
     """
     system_prompt = load_prompt("worked_on_extraction")
     resume_text = "\n\n".join(chunk.chunk_text for chunk in resume_chunks)
+    # B15: resume_text is raw document text. candidate_projects (rendered by
+    # _render_candidates below) is this organization's own already-persisted
+    # canonical project list, not raw document text - left unwrapped.
     user_prompt = (
-        f"RESUME:\n{resume_text}\n\nCANDIDATE PROJECTS:\n{_render_candidates(candidate_projects)}"
+        f"RESUME:\n{wrap_untrusted_content('resume', resume_text)}\n\n"
+        f"CANDIDATE PROJECTS:\n{_render_candidates(candidate_projects)}"
     )
 
     agent_name = "worked_on_extraction"

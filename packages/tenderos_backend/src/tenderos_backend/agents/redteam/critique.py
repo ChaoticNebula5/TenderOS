@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -59,10 +60,20 @@ def _format_claims(claims: list[ClaimForCritique]) -> str:
         return "(no proposal claims exist yet for this tender)"
     lines = []
     for c in claims:
-        req = c.requirement_text or "(not tied to a specific requirement)"
+        # B15: requirement_text is tender-document-sourced. claim_text is
+        # this system's own drafted output (proposal_drafting_node), one
+        # step removed from raw document text - wrapped anyway as defense
+        # in depth, since a claim can only be as trustworthy as whatever
+        # earlier stage produced it, and this is the last LLM step before
+        # a human reviews the result.
+        req = (
+            wrap_untrusted_content(f"{c.label}_requirement", c.requirement_text)
+            if c.requirement_text
+            else "(not tied to a specific requirement)"
+        )
         lines.append(
             f"- {c.label} [{c.claim_type}, grounding={c.grounding_status}]\n"
-            f"  CLAIM: {c.claim_text}\n"
+            f"  CLAIM: {wrap_untrusted_content(c.label, c.claim_text)}\n"
             f"  REQUIREMENT: {req}"
         )
     return "\n".join(lines)

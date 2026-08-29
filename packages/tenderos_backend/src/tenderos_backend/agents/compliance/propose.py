@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -63,8 +64,11 @@ def _format_candidates(candidates: list[EvidenceCandidateRef]) -> str:
         return "(no candidate evidence was retrieved for this requirement)"
     lines = []
     for c in candidates:
+        # B15: c.excerpt is knowledge-base-sourced text (a resume, a
+        # certification document, a company document excerpt).
         lines.append(
-            f"- {c.label} [{c.source_kind}, validity={c.validity_status}]: {c.excerpt}"
+            f"- {c.label} [{c.source_kind}, validity={c.validity_status}]: "
+            f"{wrap_untrusted_content(c.label, c.excerpt)}"
         )
     return "\n".join(lines)
 
@@ -90,8 +94,11 @@ async def propose_compliance(
     provider answered.
     """
     system_prompt = load_prompt(_AGENT_NAME)
+    # B15: requirement_text is tender-document-sourced (extracted from the
+    # buyer's own RFP) - the same untrusted-content category as
+    # requirements/extract.py's own chunk text.
     user_prompt = (
-        f"REQUIREMENT:\n{requirement_text}\n\n"
+        f"REQUIREMENT:\n{wrap_untrusted_content('requirement', requirement_text)}\n\n"
         f"CANDIDATE EVIDENCE:\n{_format_candidates(candidates)}"
     )
     try:

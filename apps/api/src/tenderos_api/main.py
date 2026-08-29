@@ -1,15 +1,25 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 
 import asyncpg
 import httpx
 import redis.asyncio as redis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
+from tenderos_backend.core.log_redaction import install_log_redaction
 
 from tenderos_api.config import settings
 from tenderos_api.errors import register_exception_handlers
+from tenderos_api.rate_limit import (
+    GLOBAL_LIMIT,
+    GLOBAL_WINDOW_SECONDS,
+    LOGIN_LIMIT,
+    LOGIN_WINDOW_SECONDS,
+    check_rate_limit,
+    client_key,
+)
 from tenderos_api.routes import (
     auth,
     commercial,
@@ -28,6 +38,12 @@ from tenderos_api.routes import (
     workflow,
 )
 
+# B15: real, process-wide (this module loads once per uvicorn process),
+# so this covers every route/service call this process ever makes - see
+# log_redaction.py's own module docstring for what this does and doesn't
+# cover.
+install_log_redaction()
+
 app = FastAPI(title="TenderOS API")
 # The web app is a separate origin in every configuration this project has
 # (settings.web_base_url) - without this, every browser request's CORS
@@ -39,6 +55,84 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# B15: secure headers - nothing set these before. This is a pure JSON API
+# (no HTML views of its own) except for FastAPI's auto-generated /docs and
+# /redoc, which need to load their own JS/CSS - a blanket
+# `default-src 'none'` CSP would break Swagger UI, so those two paths (plus
+# the /openapi.json they both fetch) are exempt from CSP specifically, not
+# from the other headers below, which are safe everywhere regardless of
+# content type.
+_CSP_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def _security_headers(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    # Every route in this app is Bearer-token-authenticated with no cookie
+    # session, so no CSRF-relevant Referer information needs to travel at
+    # all - and this app also has a real, accepted case (the SSE stream)
+    # where a live token currently rides in the URL query string, which
+    # Referer would otherwise leak to any cross-origin resource a response
+    # page might load.
+    response.headers["Referrer-Policy"] = "no-referrer"
+    # Harmless to set unconditionally - browsers only honor HSTS over a
+    # real HTTPS connection, so this has no effect on local HTTP dev/test
+    # traffic.
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    if request.url.path not in _CSP_EXEMPT_PATHS:
+        response.headers["Content-Security-Policy"] = "default-src 'none'"
+    return response
+
+
+# B15: registered after _security_headers (Starlette wraps middleware in
+# the reverse of add order - the first one added is outermost), so an
+# early 429 returned here without ever calling call_next still passes
+# back out through _security_headers and picks up the same header set
+# every other response gets, rather than skipping it.
+@app.middleware("http")
+async def _rate_limit(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    if not settings.rate_limit_enabled:
+        return await call_next(request)
+
+    redis_client = redis.from_url(settings.redis_url)
+    ip = client_key(request.client.host if request.client else None)
+
+    allowed, retry_after = await check_rate_limit(
+        redis_client, f"ratelimit:global:{ip}", GLOBAL_LIMIT, GLOBAL_WINDOW_SECONDS
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"error": {"code": "RATE_LIMITED", "message": "Too many requests."}},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # A tighter, dedicated limit on the one route a credential-stuffing/
+    # brute-force attempt would actually hit - checked in addition to,
+    # not instead of, the global limit above.
+    if request.url.path == "/auth/login":
+        allowed, retry_after = await check_rate_limit(
+            redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
+        )
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": {"code": "RATE_LIMITED", "message": "Too many login attempts."}
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return await call_next(request)
+
+
 register_exception_handlers(app)
 app.include_router(auth.router)
 app.include_router(organizations.router)

@@ -323,6 +323,19 @@ export function listWorkflowTasks(runId: string): Promise<WorkflowTaskResponse[]
   return apiFetch<WorkflowTaskResponse[]>(`/workflow-runs/${runId}/tasks`);
 }
 
+// B15: not in Part G's locked route list (same precedent as getEmployee
+// above) - mints the short-lived, single-use ticket useEventStream.ts uses
+// in place of the real access JWT, which used to ride in the SSE URL's own
+// query string for its full 15-minute life (KNOWN_LIMITATIONS.md).
+export interface SSETicketResponse {
+  ticket: string;
+  expires_in_seconds: number;
+}
+
+export function mintWorkflowEventsTicket(runId: string): Promise<SSETicketResponse> {
+  return apiFetch<SSETicketResponse>(`/workflow-runs/${runId}/events/ticket`, { method: "POST" });
+}
+
 // ----------------------------------------------------------------------
 // G4. Gates - mirrors apps/api/src/tenderos_api/schemas/gates.py's
 // discriminated union exactly, gate_type by gate_type. TypeScript narrows

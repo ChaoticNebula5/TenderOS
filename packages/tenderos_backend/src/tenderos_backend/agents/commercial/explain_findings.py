@@ -2,6 +2,7 @@ import uuid
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.pricing_checks import PricingFindingDraft
@@ -20,7 +21,12 @@ def _render_finding(finding: PricingFindingDraft) -> str:
         lines.append("Actual value: known, read directly from the workbook")
     if finding.delta is not None:
         lines.append("A non-zero difference exists between the two")
-    lines.append(f"Note: {finding.note}")
+    # B15: finding.note embeds row.description verbatim in at least one
+    # code path (pricing_checks.py's "{row.description!r} has no unit cost
+    # recorded.") - row.description is a free-text cell read directly from
+    # the uploaded pricing workbook, not a code-only string like the lines
+    # around it.
+    lines.append(f"Note: {wrap_untrusted_content('finding_note', finding.note)}")
     lines.append(f"Suggested default severity: {finding.default_severity}")
     return "\n".join(lines)
 

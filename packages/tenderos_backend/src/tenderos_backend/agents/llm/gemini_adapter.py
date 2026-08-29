@@ -30,6 +30,23 @@ def _cache_key(model: str, system_prompt: str, user_prompt: str, schema_name: st
     return f"llm_cache:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
+def _redacted_validation_summary(exc: ValidationError) -> str:
+    """B15: ValidationError's own __str__ embeds each error's input_value
+    verbatim - the raw text that failed schema validation, which is
+    source-derived (a document chunk, an evidence excerpt) rather than
+    ever fabricated, and has no reason to leave this adapter. Built from
+    exc.errors() instead of str(exc) - field location, error type, and
+    message are enough for a human operator or call_with_repair's own
+    retry prompt (client.py, which interpolates MalformedOutputError's
+    message directly into a follow-up LLM call) to act on; the actual
+    failing value is not carried forward into either.
+    """
+    return "; ".join(
+        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']} [{err['type']}]"
+        for err in exc.errors(include_url=False)
+    )
+
+
 class GeminiClient:
     """First concrete LLMClient adapter (this project's own choice - A2's
     literal locked-choice cell names Anthropic; flagged in the B5 plan and
@@ -78,9 +95,16 @@ class GeminiClient:
         try:
             parsed = response_schema.model_validate_json(response_text)
         except ValidationError as exc:
+            # `from None`, not `from exc` - chaining would still attach the
+            # original ValidationError (and its own unredacted input_value)
+            # to this exception's traceback, visible to anything that later
+            # logs it via logger.exception(), even though this exception's
+            # own message is now safe. See _redacted_validation_summary's
+            # own docstring for what it strips and why.
             raise MalformedOutputError(
-                f"{agent_name}: response did not match {response_schema.__name__}: {exc}"
-            ) from exc
+                f"{agent_name}: response did not match {response_schema.__name__}: "
+                f"{_redacted_validation_summary(exc)}"
+            ) from None
 
         usage = response.usage_metadata
         await self._redis.set(cache_key, response_text, ex=self._cache_ttl_seconds)

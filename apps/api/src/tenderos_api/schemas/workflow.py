@@ -32,6 +32,15 @@ class AuditEventResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SSETicketResponse(BaseModel):
+    """B15: minted by POST /workflow-runs/{run_id}/events/ticket, consumed
+    by GET .../events/stream in place of the real access JWT - see
+    sse_tickets.py's own module docstring."""
+
+    ticket: str
+    expires_in_seconds: int
+
+
 class WorkflowTaskResponse(BaseModel):
     id: UUID
     workflow_run_id: UUID

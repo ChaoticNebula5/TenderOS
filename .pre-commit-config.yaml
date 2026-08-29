@@ -33,3 +33,9 @@ repos:
         language: system
         files: ^apps/web/
         pass_filenames: false
+
+      - id: detect-secrets
+        name: detect secrets
+        entry: uv run detect-secrets-hook --baseline .secrets.baseline
+        language: system
+        exclude: ^(\.venv/|apps/web/node_modules/|apps/web/playwright-report/|KNOWN_LIMITATIONS\.md)

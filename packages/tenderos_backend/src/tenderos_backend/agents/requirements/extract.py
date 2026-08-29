@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.requirements.batch import ExtractionBatch, build_batches
 from tenderos_backend.agents.requirements.mandatory_classifier import (
     MandatoryClassification,
@@ -31,7 +32,15 @@ class ExtractionResult:
 
 
 def _render_batch_prompt(batch: ExtractionBatch) -> str:
-    return "\n\n".join(f"[{ref.label}]\n{ref.text}" for ref in batch.chunk_refs)
+    # B15: ref.text is raw text from an uploaded tender document - the
+    # single most directly attacker-reachable content in this whole
+    # pipeline (a bidder never controls resumes/knowledge-base content,
+    # but the buyer's own RFP is exactly what this function batches). Routed
+    # through wrap_untrusted_content instead of the old bare
+    # f"[{label}]\n{text}" interpolation - see that module's own docstring.
+    return "\n\n".join(
+        wrap_untrusted_content(ref.label, ref.text) for ref in batch.chunk_refs
+    )
 
 
 def _resolve_mandatory(llm_mandatory: bool, classification: MandatoryClassification) -> bool:

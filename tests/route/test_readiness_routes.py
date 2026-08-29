@@ -101,3 +101,27 @@ async def test_generate_readiness_rejects_a_role_outside_generate_readiness(
     # different gates, not both narrow or both wide by accident.
     view_response = client.get(f"/tenders/{tender['id']}/readiness", headers=member_headers)
     assert view_response.status_code == 404, view_response.text  # allowed through RBAC, no report yet
+
+
+async def test_readiness_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Readiness Route Test Bid 5"},
+        headers=admin_headers,
+    ).json()
+    client.post(f"/tenders/{tender['id']}/readiness/generate", headers=admin_headers)
+
+    outsider_headers, _, _ = register_actor()
+
+    generate_response = client.post(
+        f"/tenders/{tender['id']}/readiness/generate", headers=outsider_headers
+    )
+    assert generate_response.status_code == 403, generate_response.text
+    assert generate_response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    view_response = client.get(f"/tenders/{tender['id']}/readiness", headers=outsider_headers)
+    assert view_response.status_code == 403, view_response.text
+    assert view_response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

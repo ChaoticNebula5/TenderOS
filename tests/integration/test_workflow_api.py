@@ -5,6 +5,7 @@ import docx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from tenderos_api.main import app
+from tenderos_api.sse_tickets import consume_sse_ticket
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.requirements import ExtractionOutput
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -189,6 +190,13 @@ async def test_stream_workflow_events_rejects_a_caller_outside_the_organization(
     # of a live stream, which httpx.ASGITransport cannot do for this route
     # at all (see the generator-level test in test_workflow_events_stream.py
     # for why, and for the real, direct proof the stream itself works).
+    #
+    # B15: the outsider's token now travels via the Authorization header,
+    # not the old access_token query param (removed - see sse_tickets.py).
+    # The header path is what a non-browser caller (curl/Swagger) still
+    # uses, and it exercises the identical require_permission_for_sse RBAC
+    # check this test is actually about. The browser-realistic path (can an
+    # outsider even mint a ticket for this run) is its own test below.
     async with await _client() as client:
         owner_token, tender_id = await _register_and_create_tender(
             client, "wf-api-sse-403-owner@example.com", "WF API SSE 403 Org"
@@ -211,8 +219,135 @@ async def test_stream_workflow_events_rejects_a_caller_outside_the_organization(
 
         response = await client.get(
             f"/workflow-runs/{run_id}/events/stream",
-            params={"access_token": outsider_token},
+            headers={"Authorization": f"Bearer {outsider_token}"},
         )
 
         assert response.status_code == 403, response.text
         assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_mint_events_ticket_rejects_a_caller_outside_the_organization():
+    """The real, browser-realistic cross-org check for B15's ticket flow -
+    an outsider can't even mint a ticket for a run they can't view, before
+    the stream route's own ticket-consuming check ever runs."""
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-ticket-403-owner@example.com", "WF API Ticket 403 Org"
+        )
+        run_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={"Authorization": f"Bearer {owner_token}", "Idempotency-Key": "ticket-403-1"},
+        )
+        run_id = run_resp.json()["id"]
+
+        outsider = await client.post(
+            "/auth/register",
+            json={
+                "email": "wf-api-ticket-403-outsider@example.com",
+                "password": "hunter2",
+                "organization_name": "WF API Ticket 403 Outsider Org",
+            },
+        )
+        outsider_token = outsider.json()["access_token"]
+
+        response = await client.post(
+            f"/workflow-runs/{run_id}/events/ticket",
+            headers={"Authorization": f"Bearer {outsider_token}"},
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_minted_ticket_resolves_to_the_real_user_and_is_single_use():
+    """The mint endpoint is a normal POST (safe over real HTTP). The stream
+    endpoint's SUCCESS path is not: it opens an unbounded StreamingResponse,
+    and httpx.ASGITransport hangs on that regardless of status code -
+    confirmed directly, see test_workflow_events_stream.py's own docstring.
+    A REJECTED stream request returns immediately (auth fails before the
+    generator starts) and is safe to call over real HTTP, which is what
+    every other ticket test in this file does. To verify a valid ticket
+    actually authenticates without triggering that hang, this test calls
+    sse_tickets.consume_sse_ticket directly - the exact function the stream
+    route itself calls internally - then proves single-use over real HTTP
+    by attempting the (now-already-consumed) ticket against the real route
+    and expecting the fast 401 rejection path.
+    """
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-ticket-happy@example.com", "WF API Ticket Happy Org"
+        )
+        run_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={"Authorization": f"Bearer {owner_token}", "Idempotency-Key": "ticket-happy-1"},
+        )
+        run_id = run_resp.json()["id"]
+        me_resp = await client.get("/auth/me", headers={"Authorization": f"Bearer {owner_token}"})
+        owner_user_id = me_resp.json()["user"]["id"]
+
+        mint_resp = await client.post(
+            f"/workflow-runs/{run_id}/events/ticket",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert mint_resp.status_code == 200, mint_resp.text
+        ticket = mint_resp.json()["ticket"]
+        assert mint_resp.json()["expires_in_seconds"] > 0
+
+        resolved = await consume_sse_ticket(ticket)
+        assert resolved is not None
+        resolved_user_id, resolved_run_id = resolved
+        assert str(resolved_user_id) == owner_user_id
+        assert str(resolved_run_id) == run_id
+
+        second_use = await client.get(
+            f"/workflow-runs/{run_id}/events/stream", params={"ticket": ticket}
+        )
+        assert second_use.status_code == 401, second_use.text
+
+
+async def test_ticket_minted_for_one_run_is_rejected_against_another():
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-ticket-scope@example.com", "WF API Ticket Scope Org"
+        )
+        headers = {"Authorization": f"Bearer {owner_token}"}
+        run_a_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={**headers, "Idempotency-Key": "ticket-scope-a"},
+        )
+        run_a_id = run_a_resp.json()["id"]
+        run_b_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={**headers, "Idempotency-Key": "ticket-scope-b"},
+        )
+        run_b_id = run_b_resp.json()["id"]
+
+        mint_resp = await client.post(
+            f"/workflow-runs/{run_a_id}/events/ticket", headers=headers
+        )
+        ticket = mint_resp.json()["ticket"]
+
+        cross_run_resp = await client.get(
+            f"/workflow-runs/{run_b_id}/events/stream", params={"ticket": ticket}
+        )
+        assert cross_run_resp.status_code == 401, cross_run_resp.text
+
+
+async def test_garbage_ticket_is_rejected():
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-ticket-garbage@example.com", "WF API Ticket Garbage Org"
+        )
+        run_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={
+                "Authorization": f"Bearer {owner_token}",
+                "Idempotency-Key": "ticket-garbage-1",
+            },
+        )
+        run_id = run_resp.json()["id"]
+
+        response = await client.get(
+            f"/workflow-runs/{run_id}/events/stream", params={"ticket": "not-a-real-ticket"}
+        )
+        assert response.status_code == 401, response.text

@@ -16,12 +16,11 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from tenderos_api.routes import commercial
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import commercial_service, document_service
-
-from tenderos_api.routes import commercial
 
 pytestmark = pytest.mark.asyncio
 
@@ -164,3 +163,48 @@ async def test_commercial_routes_reject_a_role_outside_resolve_commercial_findin
         f"/pricing-findings/{finding_id}/resolve", headers=member_headers
     )
     assert finding_response.status_code == 403, finding_response.text
+
+
+async def test_commercial_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    # The role-breadth test above proves resolve_commercial_finding's own
+    # 4-role set is enforced WITHIN one org - this proves org isolation: a
+    # real Commercial reviewer (a genuinely permitted role) of a DIFFERENT
+    # organization must still be rejected. All 4 of this module's routes
+    # had zero cross-org coverage before this test - confirmed by grep,
+    # not assumed, since three sibling modules (gates/graph/redteam) turned
+    # out to already have partial coverage under a name this project's own
+    # earlier search missed (singular "reject" vs "rejects").
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Commercial Route Test Bid 6"},
+        headers=admin_headers,
+    ).json()
+    pricing_document_id = await _ingest_pricing_sheet(
+        org_id, tender["id"], "pricing_schedule_1.xlsx"
+    )
+    finding_id = await _make_pricing_finding(tender["id"])
+
+    outsider_headers, _, _ = register_actor()
+
+    list_docs = client.get(f"/tenders/{tender['id']}/pricing-documents", headers=outsider_headers)
+    assert list_docs.status_code == 403, list_docs.text
+    assert list_docs.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    validate = client.post(
+        f"/pricing-documents/{pricing_document_id}/validate", headers=outsider_headers
+    )
+    assert validate.status_code == 403, validate.text
+    assert validate.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    list_findings = client.get(
+        f"/tenders/{tender['id']}/pricing-findings", headers=outsider_headers
+    )
+    assert list_findings.status_code == 403, list_findings.text
+    assert list_findings.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    resolve = client.post(f"/pricing-findings/{finding_id}/resolve", headers=outsider_headers)
+    assert resolve.status_code == 403, resolve.text
+    assert resolve.json()["error"]["code"] == "ORG_ACCESS_DENIED"

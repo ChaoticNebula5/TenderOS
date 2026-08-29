@@ -17,6 +17,7 @@ from tenderos_backend.orchestration.gates import action_for_gate_type
 
 from tenderos_api.errors import OrgAccessDeniedError
 from tenderos_api.schemas.requirements import MergeRequirementsRequest
+from tenderos_api.sse_tickets import consume_sse_ticket
 
 _bearer_scheme = HTTPBearer()
 # auto_error=False: get_current_user_for_sse (below) needs to try the
@@ -58,33 +59,56 @@ async def get_current_user(
 
 
 async def get_current_user_for_sse(
-    access_token: str | None = Query(default=None),
+    request: Request,
+    ticket: str | None = Query(default=None),
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme_optional),
 ) -> User:
     """EventSource cannot send a custom Authorization header, so
     GET .../events/stream (routes/workflow.py) is the one route in this
     app that needs a token from somewhere other than the header - the
     header path stays available too (curl/Swagger/a future non-browser
-    client), the query param is what a real EventSource connection
-    actually uses. Same decode-and-look-up as get_current_user, via the
-    shared _user_from_token - no separate auth policy, just a second place
-    the token can arrive from.
+    client).
 
-    Real, accepted exposure, not silently carried: the token appears in
-    server access logs and browser history for its jwt_access_minutes
-    (15) life. The correct fix - a short-lived, single-use SSE-only
-    ticket, minted by its own endpoint - is deliberately not built here;
-    it's real token-minting infrastructure and B15 (Security and Prompt-
-    Injection Hardening) owns auth hardening, not this block. See
-    KNOWN_LIMITATIONS.md's B14 SSE-auth entry.
+    B15: the real access JWT no longer travels as a query param - that was
+    a real, accepted exposure (the token in server access logs and browser
+    history for its full jwt_access_minutes life), named and deferred to
+    this block in KNOWN_LIMITATIONS.md's B14 SSE-auth entry. A caller
+    without a header now mints a short-lived, single-use ticket first
+    (POST .../events/ticket -> sse_tickets.mint_sse_ticket) and passes
+    that instead - consumed here via sse_tickets.consume_sse_ticket
+    (Redis GETDEL, so a ticket cannot be replayed even within its own
+    30s window), and checked against request.path_params["run_id"] so a
+    ticket only ever opens the one stream it was minted for.
     """
-    raw_token = credentials.credentials if credentials is not None else access_token
-    if raw_token is None:
+    if credentials is not None:
+        return await _user_from_token(credentials.credentials)
+
+    if ticket is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token or access_token",
+            detail="Missing bearer token or ticket",
         )
-    return await _user_from_token(raw_token)
+    resolved = await consume_sse_ticket(ticket)
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ticket is invalid, expired, or already used",
+        )
+    user_id, bound_run_id = resolved
+    requested_run_id = request.path_params.get("run_id")
+    if requested_run_id is None or str(bound_run_id) != requested_run_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ticket is not valid for this run",
+        )
+
+    async with UnitOfWork() as uow:
+        user = await uow.users.get(user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive"
+            )
+        return user
 
 
 async def _resolve_organization_id(request: Request) -> UUID:

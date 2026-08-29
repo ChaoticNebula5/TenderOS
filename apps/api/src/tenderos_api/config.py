@@ -20,5 +20,19 @@ class Settings(BaseSettings):
     # browser, which is why nothing caught this until now.
     web_base_url: str = "http://localhost:5173"
 
+    # B15: on by default (secure by default) - the test suite explicitly
+    # disables this (Makefile's own test target, RATE_LIMIT_ENABLED=false)
+    # because both this project's real HTTP test harnesses
+    # (fastapi.testclient.TestClient and httpx.ASGITransport) report a
+    # single constant request.client.host for every request in the entire
+    # session ("testclient" / "127.0.0.1" respectively, confirmed directly
+    # during B15 - not assumed) - a global per-IP limit would eventually
+    # trip across completely unrelated tests sharing that one identity,
+    # not a real signal about the code under test. See
+    # rate_limit.py's own module docstring for the real, dedicated tests
+    # that verify the actual limiting logic with this flag deliberately
+    # re-enabled.
+    rate_limit_enabled: bool = True
+
 
 settings = Settings()

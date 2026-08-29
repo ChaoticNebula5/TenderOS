@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.talent import RoleExtractionOutput
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -25,7 +26,11 @@ class RequirementRef:
 
 
 def _render_prompt(refs: list[RequirementRef]) -> str:
-    return "\n\n".join(f"[{ref.label}]\n{ref.requirement_text}" for ref in refs)
+    # B15: requirement_text is tender-document-sourced, same as
+    # requirements/extract.py's own chunk text.
+    return "\n\n".join(
+        wrap_untrusted_content(ref.label, ref.requirement_text) for ref in refs
+    )
 
 
 async def _write_trace(

@@ -7,7 +7,7 @@ from tenderos_backend.domain.services import document_service, knowledge_service
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
-from tenderos_api.routes.documents import _validate_upload
+from tenderos_api.routes.documents import _read_and_validate_upload
 from tenderos_api.schemas.knowledge import (
     EmployeeResponse,
     ImportBatchResponse,
@@ -83,9 +83,8 @@ async def upload_employee_master(
     the worker (process_knowledge_document_import), never inside this
     request (line 538) - re-poll GET .../import-batches/{id} for progress.
     """
-    content = await file.read()
     filename = file.filename or "employee_master.xlsx"
-    _validate_upload(filename, file.content_type, len(content))
+    content = await _read_and_validate_upload(file, filename, file.content_type)
 
     document, _is_new = await document_service.create_document(
         organization_id=org_id,
@@ -131,9 +130,8 @@ async def upload_certifications(
     file: UploadFile = File(...),
     current_user: User = Depends(require_permission(_MANAGE)),
 ) -> ImportBatchResponse:
-    content = await file.read()
     filename = file.filename or "certifications.xlsx"
-    _validate_upload(filename, file.content_type, len(content))
+    content = await _read_and_validate_upload(file, filename, file.content_type)
 
     document, _is_new = await document_service.create_document(
         organization_id=org_id,
@@ -175,9 +173,8 @@ async def upload_resumes(
         org_id, "bulk_resumes", None, current_user.id
     )
     for file in files:
-        content = await file.read()
         filename = file.filename or "resume.docx"
-        _validate_upload(filename, file.content_type, len(content))
+        content = await _read_and_validate_upload(file, filename, file.content_type)
         await _upload_batch_document(
             org_id,
             current_user.id,
@@ -208,9 +205,8 @@ async def upload_knowledge_document(
     GET /organizations/{org_id}/knowledge for the resulting projects/
     capabilities once processing completes.
     """
-    content = await file.read()
     filename = file.filename or "document.docx"
-    _validate_upload(filename, file.content_type, len(content))
+    content = await _read_and_validate_upload(file, filename, file.content_type)
 
     document, _is_new = await document_service.create_document(
         organization_id=org_id,
@@ -435,9 +431,8 @@ async def replace_employee_resume(
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    content = await file.read()
     filename = file.filename or "resume.docx"
-    _validate_upload(filename, file.content_type, len(content))
+    content = await _read_and_validate_upload(file, filename, file.content_type)
 
     updated = await knowledge_service.replace_employee_resume(
         knowledge_item_id,

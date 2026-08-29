@@ -42,6 +42,54 @@ def test_create_tender_rejects_a_narrower_role(
     assert response.status_code == 403, response.text
 
 
+def test_create_tender_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # A genuinely permitted create_bid role - just a real admin of a
+    # DIFFERENT organization, not a narrower-role-within-the-same-org case
+    # (that's test_create_tender_rejects_a_narrower_role above).
+    _, _, org_id = register_actor()
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    response = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Should Fail"}, headers=outsider_headers
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+def test_list_tenders_rejects_a_caller_outside_the_organization(client: TestClient, register_actor):
+    admin_headers, _, org_id = register_actor()
+    client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Org A Bid"}, headers=admin_headers
+    )
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    response = client.get(f"/organizations/{org_id}/tenders", headers=outsider_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+def test_add_membership_rejects_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    _, _, org_id = register_actor()
+    outsider_headers, _, _outsider_org_id = register_actor()
+    target_email = f"{uuid.uuid4()}@example.com"
+    register_actor(email=target_email)
+
+    response = client.post(
+        f"/organizations/{org_id}/memberships",
+        json={"email": target_email, "role": "talent_reviewer"},
+        headers=outsider_headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
 def test_list_tenders_returns_only_that_organizations_tenders(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     other_headers, _, other_org_id = register_actor()

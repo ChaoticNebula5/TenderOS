@@ -2,6 +2,7 @@ import uuid
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.requirements import VerificationOutput
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.requirement_service import RequirementNotFoundError
@@ -53,9 +54,10 @@ async def verify_requirement(
     knows it.
     """
     system_prompt = load_prompt("requirement_verification")
+    # B15: both are tender-document-sourced text.
     user_prompt = (
-        f"Extracted requirement:\n{requirement_text}\n\n"
-        f"Source chunk text:\n{source_chunk_text}"
+        f"Extracted requirement:\n{wrap_untrusted_content('requirement', requirement_text)}\n\n"
+        f"Source chunk text:\n{wrap_untrusted_content('source_chunk', source_chunk_text)}"
     )
     try:
         llm_result = await call_with_repair(

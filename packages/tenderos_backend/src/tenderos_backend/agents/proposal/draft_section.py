@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
+from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
@@ -58,7 +59,9 @@ def _format_facts(facts: list[GroundedFactRef]) -> str:
         return "(no approved facts are available to ground this section)"
     lines = []
     for f in facts:
-        lines.append(f"- {f.label} [{f.kind}]: {f.excerpt}")
+        # B15: f.excerpt is document/knowledge-base-sourced (a requirement,
+        # an evidence excerpt, or an employee profile field).
+        lines.append(f"- {f.label} [{f.kind}]: {wrap_untrusted_content(f.label, f.excerpt)}")
     return "\n".join(lines)
 
 
