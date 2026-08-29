@@ -1,9 +1,11 @@
 """B15: Redis-backed rate limiting.
 
-Fixed-window counters (atomic INCR, TTL set only on the first increment in
-a window) - not sliding-window or token-bucket, both a real, more precise
-alternative available later at the cost of extra Redis round-trips per
-request. Fixed-window's known imprecision (a burst of close to 2x the
+Fixed-window counters (INCR-then-EXPIRE-on-first-hit run as one atomic Lua
+script, not two separate round-trips - see _INCR_WITH_EXPIRE_SCRIPT's own
+comment for why the two-step version had a real gap) - not sliding-window
+or token-bucket, both a real, more precise alternative available later at
+the cost of extra Redis round-trips per request. Fixed-window's known
+imprecision (a burst of close to 2x the
 limit is possible right at a window boundary - a client could send up to
 `limit` requests in the last instant of one window and another `limit` in
 the first instant of the next) is an accepted tradeoff for a first real
@@ -32,6 +34,22 @@ GLOBAL_WINDOW_SECONDS = 60
 LOGIN_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 60
 
+# INCR then EXPIRE-on-first-hit as two separate round-trips (the original
+# shape) has a real gap: if the process is killed, the connection drops, or
+# Redis itself fails over between the two calls, the key is left permanently
+# without a TTL - every future request against that key is rate-limited
+# forever, with no window ever expiring it. A Lua script runs atomically on
+# the Redis server (no other command can interleave between its INCR and
+# its conditional EXPIRE), closing that gap entirely rather than narrowing
+# the window.
+_INCR_WITH_EXPIRE_SCRIPT = """
+local current = redis.call("INCR", KEYS[1])
+if current == 1 then
+    redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return current
+"""
+
 
 async def check_rate_limit(
     redis_client: AsyncRedis, key: str, limit: int, window_seconds: int
@@ -40,9 +58,7 @@ async def check_rate_limit(
     meaningful - and only computed, one extra Redis round-trip - when
     allowed is False, since that's the only time a caller needs it.
     """
-    current = await redis_client.incr(key)
-    if current == 1:
-        await redis_client.expire(key, window_seconds)
+    current = int(await redis_client.eval(_INCR_WITH_EXPIRE_SCRIPT, 1, key, window_seconds))
     if current <= limit:
         return True, 0
     ttl = await redis_client.ttl(key)

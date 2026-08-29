@@ -29,10 +29,10 @@ TICKET_TTL_SECONDS = 30
 
 
 async def mint_sse_ticket(user_id: uuid.UUID, run_id: uuid.UUID) -> str:
-    redis_client = AsyncRedis.from_url(settings.redis_url)
     ticket = secrets.token_urlsafe(32)
     value = json.dumps({"user_id": str(user_id), "run_id": str(run_id)})
-    await redis_client.set(f"{_TICKET_KEY_PREFIX}{ticket}", value, ex=TICKET_TTL_SECONDS)
+    async with AsyncRedis.from_url(settings.redis_url) as redis_client:
+        await redis_client.set(f"{_TICKET_KEY_PREFIX}{ticket}", value, ex=TICKET_TTL_SECONDS)
     return ticket
 
 
@@ -42,8 +42,8 @@ async def consume_sse_ticket(ticket: str) -> tuple[uuid.UUID, uuid.UUID] | None:
     identical to a caller by design (an attacker probing which is true
     learns nothing from the response).
     """
-    redis_client = AsyncRedis.from_url(settings.redis_url)
-    raw = await redis_client.getdel(f"{_TICKET_KEY_PREFIX}{ticket}")
+    async with AsyncRedis.from_url(settings.redis_url) as redis_client:
+        raw = await redis_client.getdel(f"{_TICKET_KEY_PREFIX}{ticket}")
     if raw is None:
         return None
     payload = json.loads(raw)

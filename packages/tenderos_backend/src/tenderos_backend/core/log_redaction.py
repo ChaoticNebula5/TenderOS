@@ -32,7 +32,31 @@ import re
 # regardless of what the offending value itself contains (including a
 # literal `]`, which a naive "match up to the first `]`" pattern would
 # truncate on too early, leaving the rest of the raw value unredacted).
-_INPUT_VALUE_PATTERN = re.compile(r"input_value=.*?, input_type=\w+\]", re.DOTALL)
+#
+# Greedy `.*`, deliberately not non-greedy `.*?`: a non-greedy match stops
+# at the FIRST `, input_type=\w+]`-shaped substring it finds, including one
+# embedded inside the sensitive value's own repr (data that happens to
+# contain that exact text, not pydantic's real closing marker) - leaving
+# everything between that fake early stop and the real end unredacted, a
+# real bypass since input_value can be an arbitrary repr of
+# attacker-influenced data. A first attempt fixed this with a
+# negative-lookahead loop (`(?:(?!, input_type=\w+\]).)*`) instead of
+# `.*`, on the theory that it could only advance through non-terminator
+# characters - that doesn't actually work: the loop stops at the exact
+# same first position a fake terminator can start, and the terminator
+# then matches there too, so it ends up identical to `.*?` on this exact
+# case (verified by a failing test, not assumed). Plain greedy `.*`
+# actually solves it: it first consumes to the end of the record, then
+# backtracks to the LAST `, input_type=\w+]` in the text, which is always
+# at least as much redaction as the real boundary requires.
+#
+# Tradeoff, accepted deliberately: if a single record legitimately
+# contains multiple separate `input_value=...]` blocks (e.g. pydantic
+# reporting several field errors in one ValidationError), greedy `.*`
+# redacts the ordinary text BETWEEN them too, collapsing both blocks into
+# one span - over-redaction, not under-redaction, the correct direction
+# for a security control to err in.
+_INPUT_VALUE_PATTERN = re.compile(r"input_value=.*, input_type=\w+\]", re.DOTALL)
 _REDACTED = "input_value=[REDACTED]"
 
 
@@ -58,9 +82,23 @@ class RedactSensitiveDataFilter(logging.Filter):
         if isinstance(record.msg, str):
             record.msg = _redact_text(record.msg)
         if record.args:
-            record.args = tuple(
-                _redact_text(arg) if isinstance(arg, str) else arg for arg in record.args
-            )
+            # LogRecord.args is a tuple for positional %-style args, but
+            # can also be a single Mapping when a caller uses %-style named
+            # placeholders (`logger.warning("...%(input_value)s...", {...})`)
+            # - iterating a dict yields its KEYS, so the old unconditional
+            # `tuple(...)` comprehension both dropped every value (nothing
+            # actually got redacted) and replaced the mapping with a tuple
+            # of key strings, which breaks `record.getMessage()`'s own
+            # `msg % args` for any %(name)s-style format string.
+            if isinstance(record.args, dict):
+                record.args = {
+                    k: (_redact_text(v) if isinstance(v, str) else v)
+                    for k, v in record.args.items()
+                }
+            else:
+                record.args = tuple(
+                    _redact_text(arg) if isinstance(arg, str) else arg for arg in record.args
+                )
         if record.exc_info and not record.exc_text:
             record.exc_text = _redact_text(logging.Formatter().formatException(record.exc_info))
         return True

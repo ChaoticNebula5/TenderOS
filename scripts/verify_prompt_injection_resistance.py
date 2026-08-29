@@ -284,13 +284,22 @@ async def main() -> int:
 
     client = _build_client()
 
+    # Deliberately NOT printed below: model_reasoning_summary and
+    # extracted_requirement_texts. Both are raw live-model output over
+    # attacker-influenced document text - exactly the class of thing this
+    # whole block exists to keep out of logs/stdout (see log_redaction.py's
+    # own docstring). Printing booleans/counts/fixed identifiers is enough
+    # to read this script's result; anyone who needs to inspect the actual
+    # extracted text for a positive finding already has it, independently
+    # re-inspectable, via persist_extraction_results's own Postgres rows
+    # (this script's docstring already establishes the DB as the real
+    # audit trail for measurement 2, not this process's own stdout).
     print("=== Measurement 1: compliance-status manipulation ===")
     compliance_result = await _measure_compliance_manipulation(client)
     print(f"  tender_id: {compliance_result['tender_id']}")
     print(f"  model's proposed status: {compliance_result['model_status']}")
     print(f"  model influenced (claimed compliance with zero evidence): "
           f"{compliance_result['model_influenced']}")
-    print(f"  reasoning_summary: {compliance_result['model_reasoning_summary']!r}")
     print(f"  final PERSISTED status: {compliance_result['persisted_status']}")
     print(f"  unsafe outcome actually persisted: "
           f"{compliance_result['unsafe_outcome_persisted']}")
@@ -304,8 +313,6 @@ async def main() -> int:
           f"{leakage_result['model_influenced']}")
     if leakage_result["leaked_fragments"]:
         print(f"  leaked fragments: {leakage_result['leaked_fragments']}")
-    for text in leakage_result["extracted_requirement_texts"]:
-        print(f"  extracted: {text!r}")
     print()
 
     print("=== SUMMARY ===")

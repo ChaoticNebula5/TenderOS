@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
+from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import install_log_redaction
 
 from tenderos_api.config import settings
@@ -89,6 +90,64 @@ async def _security_headers(
     return response
 
 
+# B15 CodeRabbit finding: FastAPI/Starlette parse the full request body -
+# including a multipart file upload - INSIDE routing, resolving `File(...)`
+# into an UploadFile before any route handler code runs at all. That means
+# documents.py/knowledge.py's own _read_bounded (which reads in capped
+# chunks and rejects the instant a limit is crossed) never gets a chance to
+# act until AFTER Starlette has already spooled the entire body - into
+# memory, then to a temp file past SpooledTemporaryFile's threshold - for
+# an upload of any size, including one with no limit anywhere. _read_
+# bounded's own "never materializes an unbounded upload" claim only holds
+# once control reaches it, which is already too late for an oversized
+# request; this middleware is the actual fix for that gap.
+#
+# Checking Content-Length here, before call_next (and therefore before
+# routing/multipart-parsing ever starts), rejects the HONEST case with zero
+# body bytes read: every real browser and HTTP client sends an accurate
+# Content-Length for a request built from an in-memory/on-disk file.
+# Reuses max_upload_size_mb (tenderos_backend.core.config, not this app's
+# own Settings - documents.py's _read_bounded enforces the identical
+# ceiling for the same reason) as a blanket per-request cap, not just an
+# upload-route-specific one: every other route's real request bodies are
+# far smaller than 50MB anyway, so the same ceiling is a harmless general
+# backstop, not a new, separately-tuned limit.
+#
+# Residual gap, on record rather than silently closed: a client that LIES
+# about Content-Length (declares it small, sends more; or omits it
+# entirely via chunked transfer-encoding) is not caught here - catching
+# that would mean inspecting the ASGI receive() stream's actual byte count
+# as it arrives, a materially larger change than a header check. See
+# KNOWN_LIMITATIONS.md.
+_MAX_BODY_BYTES = backend_settings.max_upload_size_mb * 1024 * 1024
+
+
+@app.middleware("http")
+async def _max_body_size(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            declared_bytes = None
+        if declared_bytes is not None and declared_bytes > _MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": {
+                        "code": "PAYLOAD_TOO_LARGE",
+                        "message": (
+                            f"Request body exceeds the "
+                            f"{backend_settings.max_upload_size_mb} MB limit"
+                        ),
+                    }
+                },
+            )
+    return await call_next(request)
+
+
 # B15: registered after _security_headers (Starlette wraps middleware in
 # the reverse of add order - the first one added is outermost), so an
 # early 429 returned here without ever calling call_next still passes
@@ -101,34 +160,39 @@ async def _rate_limit(
     if not settings.rate_limit_enabled:
         return await call_next(request)
 
-    redis_client = redis.from_url(settings.redis_url)
     ip = client_key(request.client.host if request.client else None)
 
-    allowed, retry_after = await check_rate_limit(
-        redis_client, f"ratelimit:global:{ip}", GLOBAL_LIMIT, GLOBAL_WINDOW_SECONDS
-    )
-    if not allowed:
-        return JSONResponse(
-            status_code=429,
-            content={"error": {"code": "RATE_LIMITED", "message": "Too many requests."}},
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    # A tighter, dedicated limit on the one route a credential-stuffing/
-    # brute-force attempt would actually hit - checked in addition to,
-    # not instead of, the global limit above.
-    if request.url.path == "/auth/login":
+    # Every request through this middleware previously opened a brand-new
+    # connection pool via redis.from_url() and never closed it - the same
+    # leak CodeRabbit flagged in sse_tickets.py, but here it fires on
+    # every single API call rather than once per SSE stream, so it's the
+    # higher-impact instance of the same bug.
+    async with redis.from_url(settings.redis_url) as redis_client:
         allowed, retry_after = await check_rate_limit(
-            redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
+            redis_client, f"ratelimit:global:{ip}", GLOBAL_LIMIT, GLOBAL_WINDOW_SECONDS
         )
         if not allowed:
             return JSONResponse(
                 status_code=429,
-                content={
-                    "error": {"code": "RATE_LIMITED", "message": "Too many login attempts."}
-                },
+                content={"error": {"code": "RATE_LIMITED", "message": "Too many requests."}},
                 headers={"Retry-After": str(retry_after)},
             )
+
+        # A tighter, dedicated limit on the one route a credential-stuffing/
+        # brute-force attempt would actually hit - checked in addition to,
+        # not instead of, the global limit above.
+        if request.url.path == "/auth/login":
+            allowed, retry_after = await check_rate_limit(
+                redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
+            )
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": {"code": "RATE_LIMITED", "message": "Too many login attempts."}
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
 
     return await call_next(request)
 

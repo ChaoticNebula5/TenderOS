@@ -81,6 +81,23 @@ async def test_separate_keys_do_not_share_a_counter(redis_client):
     await redis_client.delete(key_b)
 
 
+@pytest.mark.asyncio
+async def test_the_first_increment_atomically_sets_a_ttl(redis_client):
+    """Regression: INCR then EXPIRE as two separate round-trips left a real
+    gap - a process killed between them leaves the key permanently without
+    a TTL. Now one atomic Lua script (_INCR_WITH_EXPIRE_SCRIPT). A unit
+    test cannot literally simulate a mid-script crash (that's exactly the
+    interleaving atomicity rules out), but it can confirm the one
+    observable property that matters: right after the very first call, the
+    key already carries a real TTL, not "EXPIRE hasn't run yet"."""
+    key = _key()
+    await check_rate_limit(redis_client, key, limit=5, window_seconds=60)
+
+    ttl = await redis_client.ttl(key)
+    assert 0 < ttl <= 60
+    await redis_client.delete(key)
+
+
 def test_client_key_falls_back_when_no_client_info_is_present():
     assert client_key("203.0.113.5") == "203.0.113.5"
     assert client_key(None) == "unknown"

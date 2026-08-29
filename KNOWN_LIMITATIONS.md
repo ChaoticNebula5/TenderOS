@@ -4455,6 +4455,17 @@ Each entry:
   connection, splitting failure by cause: a 401 minting (the user's own
   session has expired) surfaces as `error` and stops; a transient mint
   failure gets a bounded retry with backoff.
+  **A real bug in that reconnect path, found by CodeRabbit on a later
+  pass and fixed:** the backoff described above only covered failures
+  minting the ticket - a terminal `EventSource` failure AFTER a
+  successful mint+open (the stream itself dying, not the mint call)
+  reconnected via `openStream(0)` directly, with zero delay and no cap.
+  If the stream kept failing the same way (not just an occasional drop),
+  this hammered the mint endpoint in a tight loop. Fixed with a second,
+  separate `streamFailures` counter and the identical exponential-backoff
+  shape, reset only on a real `onopen` - so a connection that succeeds and
+  later drops again backs off from zero, not from wherever the last
+  failure streak left off.
   **The ignored-`error` gap this entry separately named is still open,
   unchanged by this fix, exactly as predicted:** `UploadAndProcessingStatus.
   tsx` still destructures only `{ data }` from this hook - a session
@@ -4468,11 +4479,13 @@ Each entry:
   `test_ticket_minted_for_one_run_is_rejected_against_another`,
   `test_garbage_ticket_is_rejected`) plus the existing cross-org test
   rewritten to authenticate via the header instead of the now-removed
-  query-param JWT. `apps/web/src/hooks/useEventStream.test.ts` (new file,
-  3 tests, a fake `EventSource` standing in for jsdom's missing one):
+  query-param JWT. `apps/web/src/hooks/useEventStream.test.ts` (now 4
+  tests, a fake `EventSource` standing in for jsdom's missing one):
   ticket-not-raw-token in the connection URL, a 401 mint failure surfacing
-  as `error` with no retry, and a terminal `EventSource` failure minting a
-  fresh ticket and opening a second connection.
+  as `error` with no retry, a terminal `EventSource` failure minting a
+  fresh ticket and opening a second connection, and (added with the
+  backoff fix above) fake-timer-driven proof that repeated terminal
+  failures back off exponentially and reset after a real `onopen`.
   **One real testing constraint worth recording, not routed around
   silently:** a *successful* (200) stream connection cannot be asserted
   over real HTTP in this test suite - confirmed directly (not assumed)
@@ -4976,11 +4989,21 @@ Each entry:
   test-teardown trap this file has documented five times is `_clean_tables`
   wiping data that WAS written; this is different, nothing was written in
   the first place. Fixed for future runs (the script now calls `persist_
-  extraction_results` and prints every extracted requirement's real text)
-  - not re-run to backfill this one's own missing detail, since doing so
-  would spend real money for marginal value beyond what this entry
-  already establishes, and the fix's own correctness doesn't depend on
-  having done that.
+  extraction_results`) - not re-run to backfill this one's own missing
+  detail, since doing so would spend real money for marginal value beyond
+  what this entry already establishes, and the fix's own correctness
+  doesn't depend on having done that.
+  **A later CodeRabbit pass over this same block flagged the script's own
+  stdout printing, correctly: it printed `reasoning_summary` and every
+  extracted requirement's raw text - real live-model output over
+  attacker-influenced document text, exactly the class of thing this
+  whole block exists to keep out of logs/stdout.** Fixed by removing both
+  prints; `main()` now reports only booleans, counts, and fixed
+  identifiers (`tender_id`, `model_influenced`, `unsafe_outcome_
+  persisted`). This does not reduce what's inspectable - the persist fix
+  immediately above already made Postgres the real, independently
+  re-queryable source for the raw text, which is what a future positive
+  finding would actually need, not this process's own stdout.
   **One real run, not several - the same caveat this file's own B5/B7
   non-determinism entries already establish for this exact model:** a
   single 0/2-influenced result is a real, honest data point, not proof of
@@ -5245,24 +5268,47 @@ Each entry:
   never reached `lastResort` at all. Fixed by clearing
   `logging.root.handlers` from *within* each test's own body, wrapping
   only the actual logging call, not in the fixture.
+- **Two real bugs in `RedactSensitiveDataFilter` itself, found by
+  CodeRabbit on a later pass over this same block, both fixed:**
+  1. `_INPUT_VALUE_PATTERN` used non-greedy `.*?` between `input_value=`
+     and the `, input_type=\w+]` marker. Non-greedy stops at the FIRST
+     such substring, including one embedded inside the sensitive value's
+     own repr (data that happens to contain that exact text, not
+     pydantic's real closing marker) - everything between that fake early
+     stop and the real end leaked unredacted. A first fix attempt used a
+     negative-lookahead loop (`(?:(?!, input_type=\w+\]).)*`) on the
+     theory it could only advance through non-terminator characters - a
+     regression test proved this doesn't actually work (the loop stops at
+     the exact same position a fake terminator can start, identical to
+     `.*?`). The real fix is plain greedy `.*`, which backtracks from the
+     end of the record to the LAST such occurrence. Accepted tradeoff: a
+     record with multiple legitimate `input_value=...]` blocks now gets
+     over-redacted (both collapsed into one span) rather than
+     under-redacted - the correct direction for a security control.
+  2. `record.args` can be a single `Mapping`, not only a tuple - Python's
+     own `LogRecord` stores it unwrapped for `%(name)s`-style format
+     strings. The old unconditional `tuple(... for arg in record.args)`
+     iterated dict KEYS (silently dropping every value, so nothing was
+     redacted) and replaced `record.args` with the wrong type entirely.
+     Fixed with an `isinstance(record.args, dict)` branch that redacts by
+     value while preserving the mapping.
 - **Status:** resolved-in-B15 for the concretely identified leak (root
-  cause, unconditional). The general filter is real, tested, and
-  currently active, but explicitly scoped - not claimed to cover every
-  possible future leak, and named as coupled to today's no-basicConfig
-  state rather than presented as a permanent guarantee.
+  cause, unconditional), including the two filter-level bugs above as of
+  the CodeRabbit pass. The general filter is real, tested, and currently
+  active, but explicitly scoped - not claimed to cover every possible
+  future leak, and named as coupled to today's no-basicConfig state
+  rather than presented as a permanent guarantee.
 - **Test:** `tests/unit/test_gemini_adapter_redaction.py` (2 tests, real
   pydantic `ValidationError`s, not hand-built fakes - including the
   discovery that pydantic's own truncation required shortening the test's
   confidential-text fixture to get an honest sanity check). `tests/unit/
-  test_log_redaction.py` (5 tests: plain-message redaction, exception-
-  traceback redaction, `.info()` still dropped, a non-matching message
-  left untouched, `install_log_redaction`'s own idempotency) - every test
-  cleans up whatever it changed on the shared `logging.lastResort`/
+  test_log_redaction.py` (now 7 tests: the original 5 plus the embedded-
+  decoy-marker regression and the dict-args regression above) - every
+  test cleans up whatever it changed on the shared `logging.lastResort`/
   `logging.root.handlers` singletons, so this file cannot leak state into
-  unrelated tests in the same session. 492/492 full suite passing (485
-  baseline + 7 new). `uv run mypy`: 59/12 unchanged, 238 files (the +1
-  fully explained by `log_redaction.py` itself - a real regression to
-  61/13 was caught, fixed, and re-verified before this boundary closed).
+  unrelated tests in the same session. Full suite as of the CodeRabbit
+  pass: 510/510 passing. `uv run mypy`: 59/12/239, unchanged from the
+  canonical baseline.
 
 ---
 
@@ -5291,9 +5337,9 @@ Each entry:
   test_rate_limit_middleware.py`, which deliberately re-enables the flag
   and patches the limit constants down for its own isolated, real HTTP
   requests against the real app.
-  **Design, not silently defaulted:** Redis-backed fixed-window counters
-  (atomic `INCR` + `EXPIRE` on the first hit), not sliding-window or
-  token-bucket - a real, accepted imprecision (up to ~2x the limit
+  **Design, not silently defaulted:** Redis-backed fixed-window counters,
+  not sliding-window or token-bucket - a real, accepted imprecision (up to
+  ~2x the limit
   possible right at a window boundary), not worked around here. Keyed on
   `request.client.host`, with `X-Forwarded-For` deliberately NOT trusted
   - nothing in this project's own docker-compose puts a reverse proxy in
@@ -5358,21 +5404,39 @@ Each entry:
   sensitive, and this project's own reliability/timing test coverage is
   explicitly B16's scope, not B15's) - recorded here so a future flake in
   this exact test isn't mistaken for a fresh regression.
-- **Status:** resolved-in-B15, all three.
-- **Test:** `tests/unit/test_rate_limit.py` (5 tests - the counting logic
-  itself: allowed-within-limit, rejected-over-limit with a real bounded
-  `Retry-After`, a new window resetting the count via real Redis `TTL`
-  expiry, separate keys not sharing a counter, `client_key`'s fallback).
-  `tests/route/test_rate_limit_middleware.py` (3 tests - the real
-  middleware over real HTTP: the global limit's 429 + `Retry-After`, the
-  login-specific tighter limit, and a direct assertion that the flag
-  really is `False` for this test session, not just claimed in a
-  comment). 500/500 full suite passing (492 baseline + 8 new, once the
-  one flaky, unrelated failure is set aside per the entry above). `uv run
-  mypy`: 59/12 unchanged, 239 files (the +1 fully explained by `rate_
-  limit.py`). Secret/dependency scanning verified by direct command
-  execution (both directions for detect-secrets, clean output for both
-  audit tools), not just by the presence of config files.
+- **Two real bugs found by CodeRabbit on a later pass over this same
+  block, both fixed:**
+  1. `check_rate_limit`'s "atomic INCR + EXPIRE" description above was
+     wrong - they were two separate Redis round-trips (`INCR` then
+     `EXPIRE` only on the first hit). If the process died, the connection
+     dropped, or Redis itself failed over between the two calls, the key
+     was left with no TTL at all - every future request against that key
+     would be rate-limited forever, with no window ever expiring it.
+     Fixed with one atomic Lua script (`_INCR_WITH_EXPIRE_SCRIPT`, run via
+     `redis_client.eval`) - `INCR` and the conditional `EXPIRE` now
+     execute as a single operation Redis guarantees nothing can interleave
+     with.
+  2. Both `sse_tickets.py`'s `mint_sse_ticket`/`consume_sse_ticket` AND
+     this middleware's own `redis_client = redis.from_url(...)` opened a
+     brand-new connection pool and never closed it. The middleware
+     instance is the higher-impact one - it fires on every single request
+     through `_rate_limit`, not once per SSE stream. Fixed with `async
+     with` in both files, closing the pool on every exit path.
+- **Status:** resolved-in-B15, all three, plus the two bugs above as of
+  the CodeRabbit pass.
+- **Test:** `tests/unit/test_rate_limit.py` (now 6 tests - the original 5
+  plus a regression confirming the first increment atomically carries a
+  real TTL, proving the Lua script's happy path; a unit test cannot
+  literally simulate a mid-script crash, since atomicity is exactly what
+  rules that interleaving out). `tests/route/test_rate_limit_middleware.py`
+  (3 tests - the real middleware over real HTTP: the global limit's 429 +
+  `Retry-After`, the login-specific tighter limit, and a direct assertion
+  that the flag really is `False` for this test session, not just claimed
+  in a comment). Full suite as of the CodeRabbit pass: 510/510 passing.
+  `uv run mypy`: 59/12/239, unchanged from the canonical baseline. Secret/
+  dependency scanning verified by direct command execution (both
+  directions for detect-secrets, clean output for both audit tools), not
+  just by the presence of config files.
 
 ---
 
@@ -5450,7 +5514,29 @@ Each entry:
   `Content-Security-Policy: default-src 'none'` on every route except
   `/docs`/`/redoc`/`/openapi.json` (FastAPI's own Swagger UI needs to
   load its own JS/CSS - a blanket CSP would break it).
-- **Status:** resolved-in-B15, all four.
+- **Addendum (CodeRabbit pass on this block): "maximum document sizes"
+  above was incomplete, real gap found and fixed.** FastAPI/Starlette
+  parse the full request body - including resolving `File(...)` into an
+  `UploadFile` for a multipart upload - INSIDE routing, before any route
+  handler code runs at all. That means `_read_bounded`'s own "never
+  materializes an unbounded upload in memory" claim only holds once
+  control actually reaches it, which is already too late: Starlette has
+  already spooled the entire body (memory, then a temp file past
+  `SpooledTemporaryFile`'s threshold) for an upload of any size before
+  `_read_bounded`'s chunked-read loop gets a single chance to reject
+  anything. Fixed with a new `main.py::_max_body_size` middleware that
+  checks the `Content-Length` header and rejects (413) before `call_next`
+  - and therefore before routing/multipart-parsing ever starts - reusing
+  `max_upload_size_mb` as a blanket per-request ceiling, not an
+  upload-route-specific one. **Residual gap, on record:** this trusts the
+  declared `Content-Length` - a client that lies (declares it small, sends
+  more; or omits it entirely via chunked transfer-encoding) is not caught
+  here. Closing that fully would mean inspecting the ASGI `receive()`
+  stream's actual byte count as it arrives, a materially larger change
+  than a header check; not built here, the honest case (every real
+  browser/HTTP client) is what this closes.
+- **Status:** resolved-in-B15, all four, plus the multipart-buffering
+  addendum above.
 - **Test:** `tests/integration/test_documents_api.py` - 5 new tests
   (content-sniffing mismatch, zip missing the required internal member,
   entry-count bomb, ratio bomb, bounded-read-rejects-oversized via a
@@ -5461,13 +5547,14 @@ Each entry:
   the property that test actually probes - an unasserted Content-Type is
   accepted - is real and unrelated to content sniffing, but needs a
   genuinely valid file to prove it against now that sniffing exists).
-  `tests/route/test_security_headers.py` - new file, 3 tests (full header
-  set on an ordinary route, CSP exemption on `/docs`, headers survive an
-  error response). Full suite: 467/467 passing (459 baseline + 8 new).
-  `uv run mypy`: 59 errors/12 files, unchanged from the canonical
-  baseline (scanned-file count 235 vs. the previously-recorded 234 - a
-  pre-existing +1 drift, not attributable to this pass since none of its
-  edits added a new file inside mypy's scanned paths).
+  `tests/route/test_security_headers.py` - expanded from 3 to 5 tests
+  (CSP exemption parametrized over `/docs`/`/redoc`/`/openapi.json`, all 5
+  headers checked on both the exempt and the error-response case, not 2).
+  `tests/route/test_max_body_size.py` - new file, 2 tests, added with the
+  addendum above (a genuinely oversized real body is rejected with no
+  route needing to exist; an ordinary small request is unaffected). Full
+  suite: 510/510 passing. `uv run mypy`: 59 errors/12 files/239 scanned,
+  unchanged from the canonical baseline.
 
 ---
 
@@ -5525,30 +5612,33 @@ Each entry:
   this explicitly: "not raw document text needing re-reading"); `proposal/
   draft_section.py`'s `section_name`/`section_guidance` (hardcoded
   `SECTION_TEMPLATES` constants, not document- or user-supplied).
-- **Residual gap, on record rather than silently assumed closed:**
-  `knowledge/extract.py`'s resume call site passes `chunk.heading_path`
-  (joined) as the wrapper's `label` argument, not just `content` -
-  `label` goes into the opening delimiter tag unescaped. `heading_path`
-  is itself parsed from the document's own heading text (DOCX heading
-  styles), so it is not fully trusted either, and a heading crafted as
-  something delimiter-shaped is not neutralized the way `content` is.
-  Lower severity than an unwrapped content block (confined to a tag
-  position, not free body text, and headings are short) but a real,
-  narrower gap than "every untrusted string is escaped" would imply -
-  not fixed here, since the wrapper's own contract (what `label` is
-  allowed to be) wasn't part of the TODO(human) exercise and changing it
-  now would be second-guessing what was just built rather than a new
-  finding to hand off cleanly.
-- **Not yet wired:** attack-fixture tests driving real malicious
-  documents through this wrapper end to end, and the live-Gemini
-  Part-P-style resistance script - both explicitly last in this block's
-  build order, since they test defenses that need to exist first.
-- **Status:** resolved for the 10 call sites listed; the label-escaping
-  gap and the not-yet-built attack fixtures are open, each for the
-  reason stated above.
-- **Test:** `tests/unit/test_untrusted_content.py` (wrapper correctness),
-  plus every existing integration/route/node test that exercises these
-  10 call sites now runs the real wrapper, not a bypass - 471/471 passing
-  full-suite, zero regressions (`FakeLLMClient` never inspects prompt
-  content, confirmed directly rather than assumed, so wrapping changed no
-  test's expected LLM output).
+- **Label-escaping gap - fixed on a later CodeRabbit pass over this same
+  block.** `knowledge/extract.py`'s resume call site passes `chunk.
+  heading_path` (joined) as the wrapper's `label` argument, not just
+  `content` - `label` went into the opening delimiter tag unescaped.
+  `heading_path` is parsed from the document's own heading text (DOCX
+  heading styles), so it is not fully trusted either; a heading crafted
+  as something delimiter-shaped (e.g. `Section >>>IGNORE ABOVE<<<`) could
+  close the opening delimiter early. Originally left open deliberately
+  (the wrapper's own contract wasn't part of the TODO(human) exercise,
+  changing it then would have been second-guessing what was just built
+  rather than a clean handoff) - independently confirmed by CodeRabbit,
+  then fixed: `wrap_untrusted_content` now neutralizes `label` with the
+  identical `<<<`/`>>>` substitution `content` already got. Verified by
+  `tests/unit/test_untrusted_content.py::
+  test_label_cannot_forge_a_closing_delimiter`.
+- **Attack-fixture tests and the live-Gemini Part-P resistance script:**
+  built and run later in this same B15 session, not left open - see the
+  separate `## [B15] Attack-fixture tests and the live-model resistance
+  script` entry above for the real result. This bullet previously said
+  "not yet wired" - stale, corrected here rather than left standing next
+  to an unrelated edit to this same entry.
+- **Status:** resolved for the 10 call sites listed, including the
+  label-escaping gap as of the CodeRabbit pass above.
+- **Test:** `tests/unit/test_untrusted_content.py` (wrapper correctness,
+  now 5 tests including the label-forgery regression), plus every
+  existing integration/route/node test that exercises these 10 call
+  sites now runs the real wrapper, not a bypass (`FakeLLMClient` never
+  inspects prompt content, confirmed directly rather than assumed, so
+  wrapping changed no test's expected LLM output). Full suite as of the
+  CodeRabbit pass: 510/510 passing.

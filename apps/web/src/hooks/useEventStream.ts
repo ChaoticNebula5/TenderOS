@@ -44,7 +44,14 @@ const _MAX_MINT_RETRIES = 3;
 // retrying would get the identical rejection forever, so this surfaces as
 // `error` and stops; anything else (a network hiccup, the API momentarily
 // unreachable) gets a bounded retry with backoff, the same shape
-// gemini_adapter.py's own _call_with_retry uses server-side.
+// gemini_adapter.py's own _call_with_retry uses server-side. A terminal
+// EventSource failure AFTER a successful mint+open (source.onerror with
+// readyState CLOSED) gets the identical exponential-backoff treatment,
+// via its own streamFailures counter reset only on a real onopen - the
+// original version reconnected those with openStream(0) directly, no
+// delay and no cap, which hammers the mint endpoint in a tight loop
+// whenever the stream itself (not just minting) keeps failing the same
+// way.
 export function useEventStream<T>(
   fetcher: () => Promise<T>,
   workflowRunId: string,
@@ -60,6 +67,16 @@ export function useEventStream<T>(
     let cancelled = false;
     let source: EventSource | null = null;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+    // Separate from mintAttempt: a terminal stream failure (readyState
+    // CLOSED - e.g. the ticket got consumed by a duplicate tab, or the
+    // server dropped the connection) used to call openStream(0) directly,
+    // with zero delay and no cap. Every reconnect that failed the same way
+    // immediately retried, hammering the ticket-mint endpoint in a tight
+    // loop. Reset only on a real onopen, so a connection that succeeds and
+    // later drops again still backs off from zero, not from wherever the
+    // last failure streak left off.
+    let streamFailures = 0;
+    const _MAX_STREAM_BACKOFF_MS = 30_000;
 
     async function refetch() {
       try {
@@ -103,6 +120,9 @@ export function useEventStream<T>(
       url.searchParams.set("ticket", ticket);
       source = new EventSource(url.toString());
 
+      source.onopen = () => {
+        streamFailures = 0;
+      };
       source.onmessage = () => {
         void refetch();
       };
@@ -110,7 +130,9 @@ export function useEventStream<T>(
         if (cancelled || source === null) return;
         if (source.readyState === EventSource.CLOSED) {
           source.close();
-          void openStream(0);
+          const delay = Math.min(1000 * 2 ** streamFailures, _MAX_STREAM_BACKOFF_MS);
+          streamFailures += 1;
+          retryTimeout = setTimeout(() => void openStream(0), delay);
         }
       };
     }

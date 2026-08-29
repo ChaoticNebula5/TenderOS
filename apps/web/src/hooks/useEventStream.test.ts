@@ -15,6 +15,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = [];
 
   readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
 
@@ -84,8 +85,52 @@ describe("useEventStream", () => {
     first.readyState = FakeEventSource.CLOSED;
     first.onerror?.();
 
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    // No new connection appears in the same tick - the whole point of the
+    // backoff fix is that this reconnect is no longer instant.
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2), { timeout: 2000 });
     expect(mintWorkflowEventsTicket).toHaveBeenCalledTimes(2);
     expect(FakeEventSource.instances[1]!.url).toContain("ticket=second-ticket");
+  });
+
+  it("backs off exponentially on repeated terminal failures and resets after a real onopen", async () => {
+    vi.useFakeTimers();
+    try {
+      mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+
+      renderHook(() => useEventStream(fetcher, "run-4", true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(FakeEventSource.instances).toHaveLength(1);
+
+      // First terminal failure: backoff is 1000ms (2^0), not instant.
+      FakeEventSource.instances[0]!.readyState = FakeEventSource.CLOSED;
+      FakeEventSource.instances[0]!.onerror?.();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(FakeEventSource.instances).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(FakeEventSource.instances).toHaveLength(2);
+
+      // A second consecutive failure, with no onopen in between, doubles
+      // the backoff to ~2000ms (2^1) instead of resetting to ~1000ms.
+      FakeEventSource.instances[1]!.readyState = FakeEventSource.CLOSED;
+      FakeEventSource.instances[1]!.onerror?.();
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(FakeEventSource.instances).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(FakeEventSource.instances).toHaveLength(3);
+
+      // A real onopen on the third connection resets the counter - the
+      // next failure backs off from ~1000ms again, not ~4000ms.
+      FakeEventSource.instances[2]!.onopen?.();
+      FakeEventSource.instances[2]!.readyState = FakeEventSource.CLOSED;
+      FakeEventSource.instances[2]!.onerror?.();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(FakeEventSource.instances).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(FakeEventSource.instances).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

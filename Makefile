@@ -28,8 +28,8 @@ typecheck:
 # for every request in the whole session - a global per-IP limit would
 # eventually trip across unrelated tests sharing that identity, not a real
 # signal about the code under test (see tenderos_api/config.py's own
-# comment on this field, and tests/route/test_rate_limit.py for the
-# dedicated tests that re-enable it deliberately).
+# comment on this field, and tests/route/test_rate_limit_middleware.py for
+# the dedicated tests that re-enable it deliberately).
 test:
 	POSTGRES_DSN=postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test \
 	REDIS_URL=redis://localhost:6379/0 \

@@ -60,9 +60,15 @@ jobs:
           node-version: "22"
       - run: uv sync
       - name: detect-secrets
+        # NUL-delimited throughout (git ls-files -z / grep -z / mapfile -d
+        # '') and the array expanded quoted ("${FILES[@]}") - the original
+        # newline-delimited `FILES=$(...)` handed to an unquoted `$FILES`
+        # underwent normal shell word-splitting AND globbing on every
+        # filename, which happens to be harmless only as long as no
+        # tracked file ever contains a space or a glob character.
         run: |
-          FILES=$(git ls-files | grep -v -E '\.venv/|apps/web/node_modules/|apps/web/playwright-report/|KNOWN_LIMITATIONS\.md')
-          uv run detect-secrets-hook --baseline .secrets.baseline $FILES
+          mapfile -d '' -t FILES < <(git ls-files -z | grep -zv -E '\.venv/|apps/web/node_modules/|apps/web/playwright-report/|KNOWN_LIMITATIONS\.md')
+          uv run detect-secrets-hook --baseline .secrets.baseline "${FILES[@]}"
       - run: uv run pip-audit
       - run: npm ci
         working-directory: apps/web

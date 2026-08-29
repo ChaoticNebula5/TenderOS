@@ -118,3 +118,35 @@ def test_message_with_no_sensitive_pattern_is_left_untouched(redaction_logger, c
 
     captured = capsys.readouterr().err
     assert "ordinary message, nothing to redact here" in captured
+
+
+def test_a_value_containing_an_embedded_decoy_marker_is_still_fully_redacted(
+    redaction_logger, capsys
+):
+    """Regression: a naive non-greedy `input_value=.*?, input_type=\\w+]`
+    stops at the FIRST such substring, including one embedded inside the
+    sensitive value's own text rather than pydantic's real closing marker -
+    leaking everything between the fake early stop and the real end. The
+    pattern must extend to the LAST occurrence in the record, not the
+    first."""
+    decoy_secret = "input_value='fake, input_type=str] REAL_SECRET_AFTER_DECOY', input_type=str]"
+    with _no_root_handlers():
+        redaction_logger.warning("schema mismatch: %s", decoy_secret)
+
+    captured = capsys.readouterr().err
+    assert "REAL_SECRET_AFTER_DECOY" not in captured
+    assert "input_value=[REDACTED]" in captured
+
+
+def test_dict_style_args_are_redacted_by_value_not_replaced_with_keys(redaction_logger, capsys):
+    """LogRecord.args can be a single Mapping, not only a tuple - Python's
+    own logging module stores it unwrapped for %(name)s-style format
+    strings. The old unconditional `tuple(... for arg in record.args)`
+    iterated dict KEYS (dropping every value) and replaced record.args with
+    the wrong type entirely, breaking getMessage()'s own `msg % args`."""
+    with _no_root_handlers():
+        redaction_logger.warning("schema mismatch: %(detail)s", {"detail": _SECRET_VALUE})
+
+    captured = capsys.readouterr().err
+    assert "CONFIDENTIAL DOCUMENT EXCERPT TEXT" not in captured
+    assert "input_value=[REDACTED]" in captured
