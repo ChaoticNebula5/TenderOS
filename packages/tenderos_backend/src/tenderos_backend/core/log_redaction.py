@@ -167,10 +167,26 @@ def configure_logging() -> None:
     own root-logger handlers per test) - so this is safe to call
     unconditionally at module-import time the same way install_log_
     redaction already is; it does not fight pytest's own log capture.
+
+    That no-op case is exactly why the root logger's level is set as a
+    second, unconditional step below rather than trusted to basicConfig()
+    alone: basicConfig(level=...) only ever applies the level as part of
+    its normal (non-no-op) path, so whenever a handler already exists -
+    the pytest case above, or a real deployment where some other library
+    attached one first - the root logger is left at its default WARNING.
+    A Logger's effective level is checked before a LogRecord is even
+    constructed (Logger.isEnabledFor, ahead of any handler or filter), so
+    every .info() call in the codebase would be silently dropped at the
+    logger itself in precisely the scenario this docstring already
+    documents as "safe" - never reaching the redaction filter attached
+    below, because it never reaches a handler at all. Setting the level
+    directly, independent of whatever basicConfig() decided to do, is
+    what actually closes the gap.
     """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.root.setLevel(logging.INFO)
     for handler in logging.root.handlers:
         _attach_redaction_filter(handler)

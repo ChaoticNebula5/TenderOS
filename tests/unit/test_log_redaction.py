@@ -36,7 +36,11 @@ import logging
 from contextlib import contextmanager
 
 import pytest
-from tenderos_backend.core.log_redaction import RedactSensitiveDataFilter, install_log_redaction
+from tenderos_backend.core.log_redaction import (
+    RedactSensitiveDataFilter,
+    configure_logging,
+    install_log_redaction,
+)
 
 _SECRET_VALUE = "input_value='CONFIDENTIAL DOCUMENT EXCERPT TEXT', input_type=str]"
 
@@ -136,6 +140,35 @@ def test_a_value_containing_an_embedded_decoy_marker_is_still_fully_redacted(
     captured = capsys.readouterr().err
     assert "REAL_SECRET_AFTER_DECOY" not in captured
     assert "input_value=[REDACTED]" in captured
+
+
+def test_configure_logging_sets_root_level_even_when_basicconfig_is_a_no_op():
+    """Regression for a CodeRabbit finding: logging.basicConfig(level=...)
+    only applies the level as part of its own normal path - it's a
+    documented no-op whenever the root logger already has a handler (the
+    common case: pytest's own logging plugin always attaches one, per this
+    file's own module docstring above). Left unaddressed, the root logger
+    would stay at its default WARNING in exactly that case, silently
+    dropping every .info() call at the logger itself - Logger.isEnabledFor
+    runs before a LogRecord is even constructed - before it ever reaches a
+    handler or the redaction filter. That defeats the entire point of
+    configure_logging existing, in precisely the scenario its own docstring
+    already documents as "safe to call unconditionally."
+    """
+    saved_level = logging.root.level
+    dummy_handler = logging.StreamHandler()
+    logging.root.addHandler(dummy_handler)
+    logging.root.setLevel(logging.WARNING)
+    try:
+        configure_logging()
+        assert logging.root.level == logging.INFO
+    finally:
+        for handler in logging.root.handlers:
+            handler.filters = [
+                f for f in handler.filters if not isinstance(f, RedactSensitiveDataFilter)
+            ]
+        logging.root.removeHandler(dummy_handler)
+        logging.root.setLevel(saved_level)
 
 
 def test_dict_style_args_are_redacted_by_value_not_replaced_with_keys(redaction_logger, capsys):
