@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
+from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import document_service, knowledge_service
@@ -277,6 +278,153 @@ async def test_import_certification_row_is_idempotent_on_retry():
     async with UnitOfWork() as uow:
         items = await uow.knowledge.list_import_items_for_batch(batch.id)
     assert len(items) == 1, "a retried row must not create a second import_items row"
+
+
+async def _org_and_resume_batch() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Returns (org_id, user_id, batch_id) for a bulk_resumes batch - shared
+    setup for the import_resume/knowledge_item_chunks tests below."""
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Resume Import Org",
+    )
+    org_id = registered.organization.id
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id, import_type="bulk_resumes", created_by=registered.user.id
+        )
+        await uow.commit()
+    return org_id, registered.user.id, batch.id
+
+
+async def _resume_document_with_chunks(org_id: uuid.UUID, user_id: uuid.UUID, filename: str, texts: list[str]):
+    """A real document + real document_chunks rows, same shape a real
+    résumé produces after B4 chunking (summary/experience/certifications/
+    education as separate chunks) - no embedding passed, matching every
+    other create_chunk call site in this test suite (test_compliance_routes,
+    test_graph_routes, test_gate_target_service, test_graph_projection).
+    content must be unique per call - document_service.create_document
+    dedupes by content hash within an org (its own docstring: "two uploads
+    of the same bytes land on the same key"), so two placeholder-content
+    calls in the same org/test would silently collapse into one document
+    row and collide on uq_document_chunk_index. filename goes into the
+    placeholder bytes to guarantee that.
+    """
+    document, _is_new = await document_service.create_document(
+        organization_id=org_id,
+        actor_user_id=user_id,
+        filename=filename,
+        content=f"placeholder:{filename}".encode(),
+        mime_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        side="company",
+        doc_type="resume",
+    )
+    chunks = []
+    async with UnitOfWork() as uow:
+        for i, text in enumerate(texts):
+            chunk = await uow.documents.create_chunk(
+                document_id=document.id,
+                chunk_index=i,
+                chunk_text=text,
+                normalized_text=text.lower(),
+                content_hash=uuid.uuid4().hex,
+            )
+            chunks.append(chunk)
+        await uow.commit()
+    return document, chunks
+
+
+async def test_import_resume_associates_every_resume_chunk_with_the_new_employee():
+    """This is the join-table fix's core claim: an employee's knowledge_item
+    must be findable from ANY of its résumé's chunks, not just one - the
+    scalar knowledge_items.source_chunk_id this employee never had could
+    only ever have pointed at one, which is exactly the bug B16's citation-
+    correctness investigation traced (docs/eval/
+    citation-correctness-investigation.md).
+    """
+    org_id, user_id, batch_id = await _org_and_resume_batch()
+    _document, chunks = await _resume_document_with_chunks(
+        org_id,
+        user_id,
+        "candidate.docx",
+        ["Summary: senior engineer.", "Certifications: PMP, PRINCE2."],
+    )
+    profile = ExtractedEmployeeProfile(name="Chunk Association Candidate", confidence=0.9)
+
+    item = await knowledge_service.import_resume(
+        org_id, batch_id, "candidate.docx", _document.id, profile, [c.id for c in chunks]
+    )
+    assert item.target_knowledge_item_id is not None
+
+    async with UnitOfWork() as uow:
+        for chunk in chunks:
+            found = await uow.knowledge.get_knowledge_items_by_chunk_id(chunk.id)
+            assert [f.id for f in found] == [item.target_knowledge_item_id], (
+                f"chunk {chunk.id} (index {chunk.chunk_index}) did not resolve back to the employee"
+            )
+
+
+async def test_import_resume_duplicate_merge_adds_new_chunks_without_dropping_old_ones():
+    """The duplicate-merge branch is additive, not a replace - a second
+    résumé upload for the same person adds its chunks to whatever the first
+    upload already associated. Real, accepted consequence (see this
+    function's own inline comment in knowledge_service.py and
+    KNOWN_LIMITATIONS.md): a chunk from an OLDER résumé stays associated
+    even if the newer one no longer repeats that claim.
+    """
+    org_id, user_id, batch_id = await _org_and_resume_batch()
+    _first_doc, first_chunks = await _resume_document_with_chunks(
+        org_id, user_id, "v1.docx", ["Summary: engineer."]
+    )
+    _second_doc, second_chunks = await _resume_document_with_chunks(
+        org_id, user_id, "v2.docx", ["Certifications: PMP."]
+    )
+    # Same name + same email is a strong identity signal (dedup.py) - the
+    # second call resolves DUPLICATE against the first, not NEW.
+    profile = ExtractedEmployeeProfile(
+        name="Merge Candidate", email="merge.candidate@example.com", confidence=0.9
+    )
+
+    first = await knowledge_service.import_resume(
+        org_id, batch_id, "v1.docx", _first_doc.id, profile, [c.id for c in first_chunks]
+    )
+    second = await knowledge_service.import_resume(
+        org_id, batch_id, "v2.docx", _second_doc.id, profile, [c.id for c in second_chunks]
+    )
+
+    assert second.target_knowledge_item_id == first.target_knowledge_item_id
+
+    async with UnitOfWork() as uow:
+        old_chunk_hits = await uow.knowledge.get_knowledge_items_by_chunk_id(first_chunks[0].id)
+        new_chunk_hits = await uow.knowledge.get_knowledge_items_by_chunk_id(second_chunks[0].id)
+    assert [h.id for h in old_chunk_hits] == [first.target_knowledge_item_id]
+    assert [h.id for h in new_chunk_hits] == [first.target_knowledge_item_id]
+
+
+async def test_get_knowledge_items_by_chunk_id_still_resolves_certifications_via_the_scalar_column():
+    """Regression guard: get_knowledge_items_by_chunk_id's new OR condition
+    (against knowledge_item_chunks) must not disturb the existing, proven
+    scalar-column path certifications/past_projects/capabilities rely on.
+    """
+    org_id, user_id, _batch_id = await _org_and_resume_batch()
+    _document, chunks = await _resume_document_with_chunks(
+        org_id, user_id, "cert-source.docx", ["PMP, valid through 2027."]
+    )
+
+    async with UnitOfWork() as uow:
+        knowledge_item, _certification = await uow.knowledge.create_certification(
+            organization_id=org_id,
+            title="PMP",
+            content_fingerprint=uuid.uuid4().hex,
+            source_chunk_id=chunks[0].id,
+        )
+        await uow.commit()
+
+    async with UnitOfWork() as uow:
+        found = await uow.knowledge.get_knowledge_items_by_chunk_id(chunks[0].id)
+    assert [f.id for f in found] == [knowledge_item.id]
 
 
 async def test_record_batch_parse_failure_gives_the_batch_a_real_terminal_status():

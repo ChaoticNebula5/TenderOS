@@ -43,6 +43,12 @@ Thumbs.db
 apps/web/test-results/
 apps/web/playwright-report/
 
+# Live-run Postgres dumps (B16) - preserved evidence from a real,
+# billed pipeline run, never source; see KNOWN_LIMITATIONS.md's own
+# test-teardown-trap history for why these get pg_dump'd immediately
+# and kept out of git rather than committed.
+/backups/
+
 # Generated synthetic fixtures (B4). Reproduced deterministically by
 # scripts/make_synthetic_fixtures.py, which IS committed - keeping the
 # binaries out keeps the repo diffable and avoids any chance of real tender

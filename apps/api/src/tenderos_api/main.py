@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
 from tenderos_backend.core.config import settings as backend_settings
-from tenderos_backend.core.log_redaction import install_log_redaction
+from tenderos_backend.core.log_redaction import configure_logging
 
 from tenderos_api.config import settings
 from tenderos_api.errors import register_exception_handlers
@@ -39,11 +39,15 @@ from tenderos_api.routes import (
     workflow,
 )
 
-# B15: real, process-wide (this module loads once per uvicorn process),
-# so this covers every route/service call this process ever makes - see
+# B16: real, process-wide (this module loads once per uvicorn process), so
+# this covers every route/service call this process ever makes - see
 # log_redaction.py's own module docstring for what this does and doesn't
-# cover.
-install_log_redaction()
+# cover. Must run before anything below logs anything, and before the
+# route modules import (each does logging.getLogger(__name__) at import
+# time, but the level/handler configuration this call provides is global
+# and doesn't care about import order beyond "before the process actually
+# starts serving").
+configure_logging()
 
 app = FastAPI(title="TenderOS API")
 # The web app is a separate origin in every configuration this project has
@@ -153,11 +157,57 @@ async def _max_body_size(
 # early 429 returned here without ever calling call_next still passes
 # back out through _security_headers and picks up the same header set
 # every other response gets, rather than skipping it.
+#
+# B16: header name/value are not secrets - Settings.e2e_rate_limit_
+# bypass_enabled is the only real gate (see its own comment), so these
+# don't need to be guessable-but-safe, just unambiguous and self-
+# documenting.
+_E2E_BYPASS_HEADER = "x-tenderos-e2e-bypass"
+_E2E_BYPASS_VALUE = "playwright"
+
+
 @app.middleware("http")
 async def _rate_limit(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
     if not settings.rate_limit_enabled:
+        return await call_next(request)
+    # B16: CORS preflight OPTIONS requests are exempt unconditionally, in
+    # production too, not just under the E2E bypass below - correction to
+    # this entry's own earlier state, which counted them. Two things,
+    # checked directly rather than assumed either way: (1) confirmed this
+    # middleware DOES see preflights (CORSMiddleware does not short-
+    # circuit them before reaching here in this app's actual behavior,
+    # whatever the general framework docs might suggest - a live curl
+    # test drove 120 raw OPTIONS requests and got real 429s past request
+    # ~100); (2) a live E2E run then hit exactly that on a request the
+    # bypass header SHOULD have covered - real browser preflights are
+    # browser-internal negotiation, not something page-JS or even
+    # Playwright's extraHTTPHeaders is guaranteed to reach the same way
+    # it reaches the real follow-up request, so the bypass's own
+    # reliability on preflights specifically was never actually solid
+    # ground. Exempting OPTIONS outright removes the question rather than
+    # resolving it, and is independently correct on its own merits: a
+    # preflight carries no Authorization header and does no real work -
+    # counting it toward a limit meant to protect against abusive real
+    # traffic was arguably wrong before B16 ever touched this file, not
+    # only under test.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    # B16: E2E harness only, for everything else. This spec drives real,
+    # sequential mutations at a request rate no human produces (a real run
+    # measured 41+ real PATCH /requirements calls inside one minute -
+    # enough on its own to trip this exact limiter) - B15's limiter is
+    # deliberately built for human/abusive-bot traffic, not a scripted
+    # test harness, and pacing a harness down to look human tests the
+    # harness's own patience, not anything the product does. The env-var-
+    # plus-header gate (not header alone) is what keeps this from ever
+    # being reachable in a real deployment - see Settings.
+    # e2e_rate_limit_bypass_enabled's own comment for the full contract.
+    if (
+        settings.e2e_rate_limit_bypass_enabled
+        and request.headers.get(_E2E_BYPASS_HEADER) == _E2E_BYPASS_VALUE
+    ):
         return await call_next(request)
 
     ip = client_key(request.client.host if request.client else None)

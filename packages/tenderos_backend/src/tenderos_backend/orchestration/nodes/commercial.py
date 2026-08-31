@@ -19,9 +19,12 @@ logger = logging.getLogger(__name__)
 def _build_llm_client() -> LLMClient:
     # Same "function, not module-level singleton" shape compliance_analysis_
     # node's and talent_analysis_node's own helpers document.
+    # B16: commercial_gemini_api_key first, falling back to the shared
+    # gemini_api_key when unset - see Settings.commercial_gemini_api_key's
+    # own comment for why this branch specifically needs its own key.
     redis_client = AsyncRedis.from_url(settings.redis_url)
     return GeminiClient(
-        api_key=settings.gemini_api_key,
+        api_key=settings.commercial_gemini_api_key or settings.gemini_api_key,
         redis_client=redis_client,
         cache_ttl_seconds=settings.llm_cache_ttl_seconds,
     )

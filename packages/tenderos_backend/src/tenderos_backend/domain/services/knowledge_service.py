@@ -260,6 +260,7 @@ async def import_resume(
     source_ref: str,
     resume_document_id: uuid.UUID,
     profile: ExtractedEmployeeProfile,
+    resume_chunk_ids: list[uuid.UUID],
 ) -> KnowledgeImportItem:
     """One resume's already-extracted profile (agents/knowledge/extract.py's
     output) -> one knowledge_import_items row, same dedup-adjudication shape
@@ -268,6 +269,15 @@ async def import_resume(
     reviewer to see - they do not create certifications/past_projects rows
     themselves (see ExtractedCertificationMention/ExtractedProjectMention's
     own docstrings for why).
+
+    resume_chunk_ids: every document_chunk belonging to this résumé
+    (callers already have this - it's the same resume_chunks list they just
+    passed to extract_employee_profile). Associated to the employee's
+    knowledge_item via knowledge_item_chunks below, in both branches that
+    touch an employee record, so retrieval can map any of the résumé's
+    chunks (summary, experience, certifications, education) back to this
+    employee - not just whichever one a scalar FK could have pointed at.
+    See docs/eval/citation-correctness-fix-options.md.
     """
     async with UnitOfWork() as uow:
         import_item = await uow.knowledge.create_import_item(
@@ -316,6 +326,17 @@ async def import_resume(
                 resume_document_id=resume_document_id,
                 parsed_profile=profile.model_dump(),
             )
+            # Additive, not a replace: a re-uploaded résumé's chunks are
+            # added to whatever this employee is already associated with,
+            # matching this function's own "corroborates rather than
+            # overwrites" treatment of résumé data everywhere else. Real
+            # consequence: if a corrected résumé DROPS a claim (e.g. an
+            # expired certification no longer listed), the old chunk stays
+            # associated and stays citable - the association only ever
+            # grows, never shrinks. Defensible (the old document is a real
+            # document that really said that), not obvious - see
+            # KNOWN_LIMITATIONS.md.
+            await uow.knowledge.associate_knowledge_item_chunks(target_id, resume_chunk_ids)
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
@@ -337,6 +358,7 @@ async def import_resume(
             source_document_id=resume_document_id,
             parsed_profile=profile.model_dump(),
         )
+        await uow.knowledge.associate_knowledge_item_chunks(knowledge_item.id, resume_chunk_ids)
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item.id
         )

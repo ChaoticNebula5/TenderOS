@@ -1,0 +1,17 @@
+# B16: E2E test-harness override. Adds ONLY the rate-limit bypass env var
+# on top of docker-compose.yml's own api service definition - see
+# apps/api/src/tenderos_api/config.py's Settings.e2e_rate_limit_bypass_enabled
+# and main.py's _rate_limit middleware for the full contract this activates.
+#
+# Deliberately a separate file, not a change to docker-compose.yml or
+# .env: the bypass only ever activates when this file is explicitly passed
+# alongside the base compose file, a visible, deliberate choice every
+# time - never a default, never something a normal `docker compose up`
+# (with no -f flags beyond the base file) could pick up by accident.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
+#        up -d --build api web worker outbox_dispatcher
+services:
+  api:
+    environment:
+      E2E_RATE_LIMIT_BYPASS_ENABLED: "true"

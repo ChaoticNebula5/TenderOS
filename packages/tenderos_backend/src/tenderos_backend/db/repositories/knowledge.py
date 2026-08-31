@@ -1,7 +1,8 @@
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.knowledge import (
@@ -12,6 +13,7 @@ from tenderos_backend.db.models.knowledge import (
     KnowledgeImportBatch,
     KnowledgeImportItem,
     KnowledgeItem,
+    KnowledgeItemChunk,
     KnowledgeRelationship,
     PastProject,
     TenderKnowledgeSelection,
@@ -146,10 +148,57 @@ class KnowledgeRepository:
         # legitimately be the source for several knowledge_items at once
         # (confirmed live - two of the four capability-statement projects
         # landed in the same chunk).
+        #
+        # A second, OR'd condition against knowledge_item_chunks handles the
+        # reverse cardinality the scalar column can't: one knowledge_item
+        # (an employee) evidenced by several chunks, not one chunk shared by
+        # several items. See docs/eval/citation-correctness-fix-options.md -
+        # certifications/past_projects/capabilities never need this side,
+        # since each is genuinely sourced from exactly one chunk; only the
+        # scalar column ever matches for them, and this OR is a no-op for
+        # those rows.
         result = await self._session.execute(
-            select(KnowledgeItem).where(KnowledgeItem.source_chunk_id == chunk_id)
+            select(KnowledgeItem).where(
+                or_(
+                    KnowledgeItem.source_chunk_id == chunk_id,
+                    KnowledgeItem.id.in_(
+                        select(KnowledgeItemChunk.knowledge_item_id).where(
+                            KnowledgeItemChunk.chunk_id == chunk_id
+                        )
+                    ),
+                )
+            )
         )
         return list(result.scalars().all())
+
+    async def associate_knowledge_item_chunks(
+        self, knowledge_item_id: uuid.UUID, chunk_ids: list[uuid.UUID]
+    ) -> None:
+        # Separate from create_employee rather than another constructor
+        # parameter - create_employee already takes 12, and this needs
+        # calling from two places in import_resume (new-employee creation
+        # and the duplicate-résumé-merge branch), not only at creation time.
+        # ON CONFLICT DO NOTHING (not session.add, which would raise
+        # IntegrityError on the composite primary key) - a retried worker
+        # job re-running import_resume on the same résumé, or the
+        # duplicate-merge branch re-associating chunks it already holds
+        # from a prior upload, must not crash on re-associating a pair that
+        # already exists. Same "retried job hits a real duplicate, must not
+        # crash" shape as get_import_item_by_source_ref above.
+        if not chunk_ids:
+            return
+        stmt = (
+            pg_insert(KnowledgeItemChunk)
+            .values(
+                [
+                    {"knowledge_item_id": knowledge_item_id, "chunk_id": chunk_id}
+                    for chunk_id in chunk_ids
+                ]
+            )
+            .on_conflict_do_nothing()
+        )
+        await self._session.execute(stmt)
+        await self._session.flush()
 
     async def list_knowledge_items_for_org(
         self, organization_id: uuid.UUID, item_type: str | None = None

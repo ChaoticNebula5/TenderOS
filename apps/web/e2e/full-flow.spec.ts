@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,6 +56,36 @@ function gatePanel(page: Page, headingText: string) {
     .locator("xpath=following-sibling::section[1]");
 }
 
+const MAX_GATE_APPROVE_RETRIES = 2;
+
+// B16 workaround for the SECOND instance of a real frontend pattern, not
+// a generic robustness improvement - see KNOWN_LIMITATIONS.md, "Standing
+// pattern: this frontend has no recovery path from a single transient
+// request failure". GateDecisionPanel's own handleDecide has no retry:
+// one failed decideGate() call (a live run hit exactly this - a single,
+// isolated 429 on a gate-approval click, from before OPTIONS preflights
+// were exempted from rate limiting) leaves the Approve button visible
+// forever, with nothing in the app able to recover. This wrapper retries
+// the CLICK itself, bounded, not a poll - belt and braces alongside the
+// OPTIONS exemption fix, which should make this rare rather than
+// unnecessary: a genuinely transient failure (a network blip, anything
+// else that isn't the now-fixed preflight issue) can still hit the same
+// dead end. Delete this - and revert every gate-approval call site back
+// to a bare click() + toBeHidden() - once B17 gives GateDecisionPanel a
+// real retry/recovery mechanism of its own.
+async function approveGate(gate: Locator): Promise<void> {
+  const approveButton = gate.getByRole("button", { name: "Approve" });
+  for (let attempt = 1; attempt <= MAX_GATE_APPROVE_RETRIES; attempt++) {
+    await approveButton.click();
+    try {
+      await expect(approveButton).toBeHidden({ timeout: 15_000 });
+      return;
+    } catch (err) {
+      if (attempt === MAX_GATE_APPROVE_RETRIES) throw err;
+    }
+  }
+}
+
 // Root cause of the third real run's own failure, found in its trace,
 // not guessed: page.reload({waitUntil:"load"}) only waits for the
 // page's own HTML/JS/CSS to finish loading - it does NOT wait for
@@ -79,6 +109,65 @@ function gatePanel(page: Page, headingText: string) {
 async function reloadAndSettle(page: Page) {
   await page.reload();
   await page.waitForLoadState("networkidle");
+}
+
+const MAX_ROUTE_BOUNCE_RECOVERIES = 2;
+
+// B15's rate_limit.py, read directly rather than assumed: the window is
+// keyed to whichever request first RE-CREATES the Redis counter after it
+// last expired (_INCR_WITH_EXPIRE_SCRIPT only calls EXPIRE when
+// `current == 1`), not a wall-clock-aligned boundary - and it does not
+// decay or extend on later requests within an already-active window.
+// That means a bare, immediate retry can never escape a tripped window
+// (it just becomes one more request inside the same window, confirmed
+// live: a zero-delay version of this loop produced 14 consecutive 429s
+// in one real run, docker logs tenderos-api-1) - only waiting out the
+// window does. 65s, not exactly B15's own 60s GLOBAL_WINDOW_SECONDS:
+// small margin since this wrapper doesn't read the real Retry-After value
+// off the failed request (would need intercepting network responses, not
+// attempted here), so it waits the full nominal window plus a buffer
+// rather than the precise remaining TTL.
+const RATE_LIMIT_RECOVERY_WAIT_MS = 65_000;
+
+// B16 workaround for a real product bug filed for B17 - NOT a generic
+// robustness improvement, and not meant to outlive that bug. See
+// KNOWN_LIMITATIONS.md, "[B16, owner B17] Login.tsx's 'already logged in'
+// guard drops the user's original destination on any transient /auth/me
+// failure": a single 429 on /auth/me - confirmed reachable at this spec's
+// own real request volume even after throttling every poll below to a 2s
+// reload floor (rate_limit_middleware.py's global ceiling, B15) -
+// permanently strands the browser on "/" or "/login", with nothing in the
+// app itself able to recover. Every reloadAndSettle(page) call that sits
+// inside a poll below goes through this wrapper instead, so a bounce gets
+// detected and manually re-navigated past, loudly, rather than silently
+// reading the wrong page's DOM as "0" for the rest of that poll's own
+// budget - which is exactly what turned one real, transient 429 into an
+// hour spent chasing a "Received: 0" message that gave no hint where the
+// actual problem was. Bounded, not looped forever, AND throttled between
+// attempts, not just bounded: an unbounded OR zero-delay retry here both
+// feed the same rate limiter that caused the bounce in the first place -
+// bounded alone was not enough on its own (see the 14-429 incident
+// above). Delete this wrapper - and revert every call site below back to
+// a bare reloadAndSettle(page) - once B17 actually fixes the underlying
+// guard; there is no reason for this scaffolding to exist once a
+// transient auth failure can no longer strand the browser.
+async function reloadAndSettleOnRoute(page: Page, expectedPath: string): Promise<void> {
+  await reloadAndSettle(page);
+  let bounces = 0;
+  while (!page.url().endsWith(expectedPath) && bounces < MAX_ROUTE_BOUNCE_RECOVERIES) {
+    bounces += 1;
+    await page.waitForTimeout(RATE_LIMIT_RECOVERY_WAIT_MS);
+    await page.goto(expectedPath);
+    await reloadAndSettle(page);
+  }
+  if (!page.url().endsWith(expectedPath)) {
+    throw new Error(
+      `bounced away from ${expectedPath} to ${page.url()} ${bounces} time(s), waiting ` +
+        `${RATE_LIMIT_RECOVERY_WAIT_MS / 1000}s between each - Login.tsx's destination-loss ` +
+        `bug (KNOWN_LIMITATIONS.md, "[B16, owner B17]"), not a poll timeout; giving up after ` +
+        `${MAX_ROUTE_BOUNCE_RECOVERIES} recovery attempts`,
+    );
+  }
 }
 
 // Root cause found in the second real run's own trace, not guessed: each
@@ -106,10 +195,14 @@ async function waitForGateToOpen(page: Page, url: string, headingText: string, t
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, url);
         return await gatePanel(page, headingText).getByRole("button", { name: "Approve" }).count();
       },
-      { timeout: timeoutMs, message: `waiting for the ${headingText} to open` },
+      // B16: 2s floor - shared by every waitForGateToOpen call site (each
+      // gate wait in this run), same reload-burst-triggers-429 mechanism
+      // fixed at the /talent poll below, fixed once here since this is the
+      // one function all of them go through.
+      { timeout: timeoutMs, intervals: [2_000], message: `waiting for the ${headingText} to open` },
     )
     .toBeGreaterThan(0);
 }
@@ -201,7 +294,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // own terminal condition), not just batch.status, since status alone
   // doesn't distinguish "still processing" from "done."
   async function readSoleBatchRow() {
-    await reloadAndSettle(page);
+    await reloadAndSettleOnRoute(page, "/talent/import");
     const row = page.locator("table").first().locator("tbody tr").first();
     const cells = await row.locator("td").allTextContents();
     return {
@@ -211,6 +304,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       failed: cells[4],
     };
   }
+  // B16: 300_000, matching the /talent poll below - same underlying wait
+  // (sequential, per-resume LLM extraction for all 4 employees) plus the
+  // same bounce-recovery contingency (this poll uses reloadAndSettleOnRoute
+  // via readSoleBatchRow too, so it's equally exposed): ~95s documented
+  // worst case + up to 130s of possible rate-limit recovery + overhead
+  // exceeds 180s, per the /talent poll's own worked accounting below.
   await expect
     .poll(
       async () => {
@@ -218,7 +317,8 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
         return b.completed + Number(b.failed) >= b.total && b.total > 0;
       },
       {
-        timeout: 120_000,
+        timeout: 300_000,
+        intervals: [2_000],
         message: "waiting for the resume import batch to finish processing all 4 items",
       },
     )
@@ -286,14 +386,42 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // document-upload loop's own toHaveCount(expectedDocCount, ...)
   // discipline a few steps above, is what actually closes this.
   await page.goto("/talent");
+  // B16 - this was the site that first found the Login.tsx destination-
+  // loss bug (a real run landed on "/" instead of /talent, root-caused
+  // against the real API container's own logs - a confirmed burst of 24
+  // consecutive 429s on /auth/me - not guessed from code reading alone).
+  // Throttled to a 2s reload floor below (keeps this poll's own request
+  // volume comfortably under the B15 global rate limit) AND routed
+  // through reloadAndSettleOnRoute (recovers if a 429 still gets through
+  // and bounces this to "/" anyway - see that function's own docstring
+  // and KNOWN_LIMITATIONS.md's "[B16, owner B17]" entry). Both matter: a
+  // second live run, after the throttle alone, still hit a smaller-but-
+  // real 3-request 429 burst and bounced the same way - one isolated 429
+  // is enough, so throttling lowers the odds without closing the gap;
+  // the route-recovery wrapper is what actually closes it.
+  //
+  // Timeout: 300_000, not 180_000 (which a fourth run already showed is
+  // tight once bounce-recovery is real). Budget: ~95s documented worst
+  // case for the sequential per-resume extraction itself (KNOWN_
+  // LIMITATIONS.md B14; 71s measured directly one run) + up to
+  // MAX_ROUTE_BOUNCE_RECOVERIES * RATE_LIMIT_RECOVERY_WAIT_MS = 130s if
+  // this poll's own reloads trip the limiter + real overhead (review/
+  // approve loop, navigation, page renders). 95 + 130 = 225s already
+  // exceeds 180s on its own, before any render overhead - confirmed the
+  // hard way, not derived in advance: the fourth live run bounced to
+  // /login, and reloadAndSettleOnRoute's own (then undelayed) retries
+  // produced a fresh 14-429 burst trying to recover inside a 180s budget
+  // that had no room left for a real wait. 300s gives real margin over
+  // 225s, not just past it.
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, "/talent");
         return await page.locator('a[href^="/talent/employees/"]').count();
       },
       {
-        timeout: 60_000,
+        timeout: 300_000,
+        intervals: [2_000],
         message: `waiting for all ${resumeFiles.length} imported employees to appear in the knowledge library`,
       },
     )
@@ -364,7 +492,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}`);
         const statuses = await page
           .locator("table")
           .first()
@@ -376,7 +504,15 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
         return { count: statuses.length, allParsed: statuses.every((s) => s === "parsed") };
       },
       {
+        // B16: 300_000 left unchanged, checked rather than skipped -
+        // different risk category from every other timeout touched in
+        // this pass, not just unmeasured-but-probably-fine. parse_and_
+        // embed_document (apps/worker/jobs/ingestion.py) makes zero LLM
+        // calls - confirmed directly (grepped the file) - it's local
+        // chunking/embedding only. No Gemini latency variance to budget
+        // for here at all.
         timeout: 300_000,
+        intervals: [2_000],
         message: "waiting for every uploaded document to reach parse_status=parsed",
       },
     )
@@ -402,14 +538,25 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // it). Real LLM-driven extraction across 5 documents, not a fixed
   // guess at duration - generous timeout, polled via reload since this
   // screen fetches once on mount with no auto-refresh.
+  //
+  // B16: bumped 300_000 -> 450_000. Extraction batches multiple
+  // requirements per call (MAX_EXTRACTION_BATCH_TOKENS), so real call
+  // volume here is well below compliance's 94-98 individual calls below -
+  // but no direct measurement exists for THIS step either, "generous"
+  // above was never checked against a real number, and this is the one
+  // gate that everything downstream depends on: a false timeout here
+  // loses the whole run before any of the expensive per-requirement work
+  // even starts. Moderate bump, not compliance's 2x, matching the smaller
+  // (but still real and unmeasured) exposure.
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/requirements`);
         return await page.getByText("No open requirement review gate for this tender yet.").count();
       },
       {
-        timeout: 300_000,
+        timeout: 450_000,
+        intervals: [2_000],
         message: "waiting for extraction to finish and the requirement_review gate to open",
       },
     )
@@ -440,14 +587,13 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   }
   {
     const reqGate = gatePanel(page, "Requirement review gate");
-    await reqGate.getByRole("button", { name: "Approve" }).click();
     // decideGate is async (GateDecisionPanel's handleDecide); its own
     // onDecided callback is what makes the Approve button disappear
     // (gate.status flips off "pending"). Waiting for that before the
     // next page.goto() below is the same fix as the resume-upload race
     // above - a goto fired while the decision POST is still in flight
     // would cancel it before it reaches the server.
-    await expect(reqGate.getByRole("button", { name: "Approve" })).toBeHidden({ timeout: 15_000 });
+    await approveGate(reqGate);
   }
 
   // ------------------------------------------------------------------
@@ -460,11 +606,24 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // 13 comes back not-ready with blocker 2, the answer is already
   // attached here, not something requiring a DB session after the fact.
   // ------------------------------------------------------------------
+  // B16: 600_000, not the original 300_000. This gate waits on
+  // compliance_analysis_node running propose_compliance once per real
+  // requirement - this exact fixture measured at 94-98 individual calls
+  // in this session's own citation-correctness investigation
+  // (KNOWN_LIMITATIONS.md), ~24x the 4-call resume-extraction step the
+  // /talent poll above now budgets 180s for. No direct wall-clock
+  // measurement exists for this step specifically (unlike the /talent
+  // poll's 71s) - this value is order-of-magnitude reasoning from real
+  // call-volume, not a repeat of the same precise evidence, stated as
+  // such rather than dressed up as measured. The asymmetry justifies
+  // erring high regardless: this is the most expensive step in the whole
+  // run to fail past (94-98 already-spent calls sunk if this times out
+  // short), and timeout headroom costs nothing until it fires.
   await waitForGateToOpen(
     page,
     `/tenders/${tenderId}/compliance`,
     "Compliance review gate",
-    300_000,
+    600_000,
   );
   const complianceRows = page.locator("table").first().locator("tbody tr");
   const complianceCount = await complianceRows.count();
@@ -508,10 +667,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   });
   {
     const complianceGate = gatePanel(page, "Compliance review gate");
-    await complianceGate.getByRole("button", { name: "Approve" }).click();
-    await expect(complianceGate.getByRole("button", { name: "Approve" })).toBeHidden({
-      timeout: 15_000,
-    });
+    await approveGate(complianceGate);
   }
 
   // ------------------------------------------------------------------
@@ -533,6 +689,13 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // because it's expected now, but because "the pool came back non-empty"
   // turned out to be a claim worth actually checking, not assuming.
   // ------------------------------------------------------------------
+  // B16: 300_000 left unchanged, checked rather than skipped. Lower real
+  // exposure than the compliance gate above - talent_analysis_node scores
+  // every role against every eligible pool candidate as a cross-product
+  // (orchestration/nodes/talent.py), which for this fixture's real scale
+  // (5 roles, at most 4 eligible candidates) is at most ~20 real LLM
+  // calls, not compliance's 94-98. Existing margin plausible; still
+  // unmeasured, same caveat as extraction above.
   await waitForGateToOpen(page, `/tenders/${tenderId}/team`, "Resource selection gate", 300_000);
   const roleRows = page.locator("table").first().locator("tbody tr");
   const roleCount = await roleRows.count();
@@ -568,7 +731,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     // still-unselected candidate's button instead of confirming this
     // click's own effect.
     const firstCandidateRow = candidateSection.locator("tbody tr").first();
-    const firstSelectButton = firstCandidateRow.getByRole("button", { name: "Select" });
+    // B16: exact: true - a live run found getByRole's default name match is
+    // a substring match, and "Deselect" contains "Select". Without exact,
+    // this locator kept matching the SAME button after it correctly
+    // flipped to "Deselect" on a real, successful selection (confirmed
+    // directly against role_matches.human_selected and the real
+    // audit_events row for this exact selection - the PATCH worked; only
+    // the assertion below was checking the wrong thing), so toBeHidden()
+    // could never become true and the test timed out waiting for
+    // something that was never going to happen.
+    const firstSelectButton = firstCandidateRow.getByRole("button", {
+      name: "Select",
+      exact: true,
+    });
     await firstSelectButton.click();
     // handleSelectCandidate's PATCH flips this row's own button to
     // "Deselect" on success - waiting for that (rather than just the
@@ -582,16 +757,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   });
   {
     const resourceGate = gatePanel(page, "Resource selection gate");
-    await resourceGate.getByRole("button", { name: "Approve" }).click();
-    await expect(resourceGate.getByRole("button", { name: "Approve" })).toBeHidden({
-      timeout: 15_000,
-    });
+    await approveGate(resourceGate);
   }
 
   // ------------------------------------------------------------------
   // 8. Inspect pricing finding - inspection only, per step 12's own
   // decision below: nothing here gets resolved yet.
   // ------------------------------------------------------------------
+  // B16: 300_000 left unchanged, checked rather than skipped. Commercial
+  // validation is largely deterministic (pricing_checks.py's arithmetic
+  // checks, B8B) - the only LLM exposure is explain_findings, at most one
+  // call per pricing document (2 in this fixture). Lowest real LLM
+  // exposure of the three gates in this run; existing margin is
+  // comfortable, not just assumed.
   await waitForGateToOpen(
     page,
     `/tenders/${tenderId}/commercial`,
@@ -605,10 +783,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   ).toBeGreaterThan(0);
   {
     const commercialGate = gatePanel(page, "Commercial approval gate");
-    await commercialGate.getByRole("button", { name: "Approve" }).click();
-    await expect(commercialGate.getByRole("button", { name: "Approve" })).toBeHidden({
-      timeout: 15_000,
-    });
+    await approveGate(commercialGate);
   }
 
   // ------------------------------------------------------------------
@@ -620,8 +795,16 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // to 6 section templates, each its own LLM call) - budgeted generously
   // rather than guessed tight, given the cost of finding out this was too
   // short a third time.
+  // B16: bumped 180_000 -> 300_000 during the same timeout audit that
+  // fixed the /talent and compliance-gate polls. This step drafts the
+  // exact claims the citation-correctness instrument (propose.py/
+  // draft_section.py's input_refs/output_refs, this session) measures -
+  // still no direct wall-clock measurement exists, same honest caveat the
+  // comment above already carried, but leaving the most consequential
+  // unmeasured step in the run at an admitted guess didn't survive this
+  // pass once the others got real numbers.
   await expect(page.getByRole("button", { name: "Generate proposal" })).toBeEnabled({
-    timeout: 180_000,
+    timeout: 300_000,
   });
   const proposalSections = page.locator("main > section");
   await expect(proposalSections.first()).toBeVisible();
@@ -828,11 +1011,23 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/knowledge-selections`);
         return await page.locator("table").first().locator("tbody tr").count();
       },
       {
-        timeout: 30_000,
+        // B16: bumped 30_000 -> 180_000. Found during the recovery-wait
+        // audit, not from an observed failure here specifically: this poll
+        // uses reloadAndSettleOnRoute (same bounce exposure as every other
+        // site), and MAX_ROUTE_BOUNCE_RECOVERIES * RATE_LIMIT_RECOVERY_
+        // WAIT_MS alone is 130s - more than 4x the old 30s budget. A single
+        // bounce here would have failed this poll immediately regardless of
+        // whether the underlying rows were ever going to appear. Real work
+        // itself should be fast (the import happened well before this
+        // point), so 180s is generous runway around a small real-work
+        // component, not a claim that the real work itself takes anywhere
+        // near that long.
+        timeout: 180_000,
+        intervals: [2_000],
         message: "waiting for the imported knowledge items to appear as selectable rows",
       },
     )
@@ -873,6 +1068,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     await expect(page.getByRole("heading", { name: "Impact preview" })).toBeVisible({
       timeout: 30_000,
     });
+    // B16: 60_000 left unchanged, checked rather than skipped. This poll
+    // has no reloadAndSettle call at all (no fresh mount, no /auth/me re-
+    // fire risk) and no direct LLM exposure either - preview_impact reads
+    // Neo4j directly, and the 409-retry cycle handlePreview's own comment
+    // above describes is a graph reprojection (project_tender), not a
+    // Gemini call. Different risk category from the gates above.
     await expect
       .poll(
         async () =>
@@ -958,11 +1159,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // requirement for this to fire, not reimplement it. Generous timeout:
   // the outbox dispatcher's own 5s poll, then a real LLM call, sit
   // between the confirm click above and this becoming true.
+  // B16: revised during the recovery-wait audit. One requirement, one
+  // real LLM call - real work is genuinely small - but this poll also
+  // uses reloadAndSettleOnRoute, and 130s of possible bounce-recovery
+  // overhead against the old 180_000 budget left only ~50s of real margin
+  // once that's subtracted. Thin, not provably broken, but every other
+  // similarly-thin poll found during this audit (knowledge-selections,
+  // needs_review below) turned out to need the room. Bumped to 300_000
+  // for the same reason, not because this step's own real work grew.
   await page.goto(`/tenders/${tenderId}/compliance`);
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/compliance`);
         const rows = page.locator("table").first().locator("tbody tr");
         const count = await rows.count();
         for (let i = 0; i < count; i++) {
@@ -974,7 +1183,8 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
         return null;
       },
       {
-        timeout: 180_000,
+        timeout: 300_000,
+        intervals: [2_000],
         message: `waiting for requirement ${affectedRequirementId}'s compliance entry to reopen (human_approved -> no)`,
       },
     )
@@ -992,11 +1202,22 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
-        await reloadAndSettle(page);
+        // Same page as the compliance-reopens poll immediately above -
+        // nothing navigates in between, so the recovery target matches.
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/compliance`);
         return await page.locator("li", { hasText: "/ needs_review]" }).count();
       },
       {
-        timeout: 60_000,
+        // B16: bumped 60_000 -> 180_000 during the recovery-wait audit.
+        // Real work rides on the same reanalysis job the compliance-
+        // reopens poll above already waited out (by the time this poll
+        // starts, the real LLM work is done) - but this poll's own
+        // reloadAndSettleOnRoute calls are independently exposed to the
+        // same bounce risk, and MAX_ROUTE_BOUNCE_RECOVERIES *
+        // RATE_LIMIT_RECOVERY_WAIT_MS (130s) alone exceeded the old 60s
+        // budget, same shape as the knowledge-selections poll above.
+        timeout: 180_000,
+        intervals: [2_000],
         message: "waiting for at least one additional claim to become needs_review",
       },
     )

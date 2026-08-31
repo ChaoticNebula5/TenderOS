@@ -135,6 +135,34 @@ class KnowledgeItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
 
 
+class KnowledgeItemChunk(Base):
+    """Many-to-many association between a knowledge_item and every
+    document_chunk it's evidenced by - unlike knowledge_items.source_chunk_id
+    (a scalar FK, correct for certifications/past_projects/capabilities,
+    which are each genuinely sourced from exactly one chunk), an employee's
+    résumé chunks into several sections (summary, experience, certifications,
+    education), so a single FK column can't represent "this employee is
+    evidenced by N chunks" no matter which one it points at. Composite
+    primary key, no surrogate id or created_at - a pure association, nothing
+    else in this schema references one of these rows individually the way
+    knowledge_relationships (a richer entity with its own confidence/verified
+    fields) is referenced.
+    """
+
+    __tablename__ = "knowledge_item_chunks"
+
+    knowledge_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_items.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_chunks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
 class Employee(Base):
     __tablename__ = "employees"
     __table_args__ = (

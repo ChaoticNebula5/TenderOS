@@ -898,6 +898,44 @@ Each entry:
      Docker Desktop restart), is what makes this a defect in the
      verification practice rather than a one-off worth another paragraph
      of description.
+  9. **Stale image, again - but this time it presented as a correctness
+     check silently returning the wrong answer, not a container failing to
+     start.** During B16's citation-correctness fix (the
+     `014_knowledge_item_chunks.py` join-table migration), a before/after
+     verification script called `search_company_knowledge` directly
+     against a scratch-restored copy of the preserved investigation dump.
+     The "before" half correctly returned 0 candidates for REQ-010 in
+     every org (the known, expected pre-fix state). The migration was
+     applied. The "after" half - the identical script, identical query -
+     also returned 0, unchanged. This looked exactly like a genuine,
+     negative result: the fix didn't work. Traced it by grepping the
+     running worker container's own filesystem for the new method name
+     (`associate_knowledge_item_chunks`) - absent, confirming the
+     container was still running an image built before any of this
+     session's source edits (worker/api have no dev-mode volume mount,
+     same root mechanism as incident 1, just never rebuilt this session).
+     Rebuilt (`docker compose build worker` + `up -d --no-deps worker`),
+     reran the identical after-check, got the expected 10 candidates.
+     **What makes this a materially worse failure mode than incidents 1-8,
+     not just a repeat of incident 1's mechanism:** every one of the nine
+     prior occurrences of this standing pattern presented as a container
+     or service being unreachable, refusing a connection, or failing to
+     start in some way that was detectable as *a problem* on its face -
+     including incident 1 itself, where the stale image produced a smoke
+     test that timed out waiting for a gate that never appeared. This one
+     produced no error, no timeout, nothing that looked broken - a clean,
+     plausible, negative finding from a check that was otherwise working
+     exactly as designed (the "before" half, run against the same stale
+     image, gave the correct answer purely because 0 was also the correct
+     *pre-fix* answer). Incident 1's own writeup already noted, as a
+     counterfactual, that "a less specific check... would have reported
+     success on a run that silently skipped" something real; this incident
+     is that counterfactual actually happening, on a correctness check
+     rather than a smoke test, producing a false negative that reads as a
+     real finding. Had it gone unquestioned, the natural next step would
+     have been to go debug a fix that was already correct - the failure
+     mode isn't "verification didn't happen," it's "verification happened
+     and reported the wrong thing with full confidence."
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -1001,7 +1039,7 @@ Each entry:
   `/health/ready`-style check run from the host, or a compose healthcheck
   replaced with something that can't be satisfied by the container's own
   internal view of itself.
-- **Test:** none automated for incidents 1/2/5/6/8 (host-machine/Docker-
+- **Test:** none automated for incidents 1/2/5/6/8/9 (host-machine/Docker-
   daemon state, not application code) - the incident write-up above and
   the discipline it dictates are the mitigation. Incident 3/4/7's own
   mechanism now has a real regression check: running `pytest` with
@@ -1011,7 +1049,14 @@ Each entry:
   incident 6 was (`docker port` diagnosis, `--force-recreate`, a real
   host-side `asyncpg.connect` before trusting the next test run) - no
   automated test exists for the underlying defect, which is exactly what
-  the new B16 ownership note above is for.
+  the new B16 ownership note above is for. Incident 9 was caught by
+  grepping the running container's own filesystem for a known-new symbol
+  before trusting a "no change" result - worth naming as its own concrete
+  practice: when a before/after check reports no change, verify the code
+  actually running matches the code just written before concluding the
+  fix didn't work, the same "verify before trusting" discipline point (2)
+  above already asks for, just applied to source code instead of a
+  database connection.
 
 ---
 
@@ -1396,6 +1441,158 @@ Each entry:
   neither individually nor combined is a statistically adequate
   measurement of citation semantic correctness at scale, and the
   evidence-availability question above still has no test at all.
+- **RESOLVED (investigation, not fix) in B16 - see
+  `docs/eval/citation-correctness-investigation.md` for the full
+  writeup, not repeated here.** The open question this entry has carried
+  since B9 - "was evidence thin, or did the model have it and not cite
+  it" - is answered: neither, cleanly. A new instrument
+  (`AgentTrace.input_refs`/`output_refs`, populated for the first time
+  this pass) traced a real live run end to end and found drafting was
+  offered real facts on every one of 15 calls across 3 revision passes,
+  exclusively `requirement`-kind, never `evidence`-kind - a third outcome,
+  not a confirmation of either original hypothesis. Traced one stage
+  further back: `search_company_knowledge` returned zero candidates for
+  87 of 87 real compliance evaluations in the same run - not thin,
+  absolute. Final result: 0/27 factual claims grounded (0%), lower than
+  either B9 (1/19) or B12 (2/19) and below this session's own predicted
+  5-15% range. **Not fixed** - the pipeline still grounds 0% of factual
+  claims after this investigation. **Follow-up in the same session
+  settled the retrieval-vs-fixture-coverage question the artifact
+  originally left open, and the answer is neither:** a direct,
+  no-LLM-cost check against a requirement this fixture's own knowledge
+  base genuinely covers (a "certified project manager" requirement
+  against an employee actually titled Project Manager) found vector
+  search correctly returning the real PMP-certification chunk - retrieval
+  itself works. The candidate is discarded one step later:
+  `knowledge_items.source_chunk_id` is never set for employee records
+  (confirmed: NULL for all 79 employee-type knowledge items in this live
+  database), so the chunk can never resolve back to the knowledge item
+  it's evidence for. `create_certification`/`create_past_project`/
+  `create_capability` all correctly set this field, with real callers
+  proven to thread a real value through - `create_employee`, sitting
+  right next to them under a comment calling it "same shape," is the one
+  sibling missing it. See the artifact's own §5 for the full stage-by-
+  stage trace and the write-site audit.
+- **Retrieval-layer root cause FIXED in B16** (migration
+  `014_knowledge_item_chunks.py`) - **downstream effect on the 0% grounded-
+  claims number above is unmeasured, not fixed to some new percentage.**
+  What's verified is the retrieval-to-knowledge-item join the investigation
+  artifact's own §3 traced as the break: 0→10 candidates for REQ-010, proven on preserved
+  data, before vs. after. What's NOT verified is compliance proposing
+  against those now-real candidates, evidence materializing, or drafting
+  citing it - the three later stages still untouched by this fix's own
+  verification. That needs a real live run; until one happens, do not read
+  0→10 candidates as 0%→something% grounded. See
+  `docs/eval/citation-correctness-investigation.md`'s own status line for
+  the same distinction stated in full. A new many-to-many
+  `knowledge_item_chunks` table, additive alongside the
+  existing scalar `knowledge_items.source_chunk_id` (untouched, still
+  correct for certifications/past_projects/capabilities). `import_resume`
+  now associates every chunk of a résumé with the resulting employee
+  knowledge_item, in both the new-employee and duplicate-résumé-merge
+  branches. Migration backfills all 76 pre-existing bulk_resumes-imported
+  employees from their already-correct `resume_document_id`. Verified
+  before/after on the preserved investigation dump
+  (`backups/b16_citation_run_20260830T134032Z.dump`, restored to a scratch
+  database): before the migration, the same REQ-010 check as the
+  investigation's §5 returned 0 candidates in all 29 orgs in that
+  database; after, the 19 orgs that actually have the résumé fixture
+  loaded returned 10 candidates each, including Priya Ostrowski's employee
+  item via the PMP-certification chunk (`dcb94707-...`, the exact chunk
+  the investigation named) - the other 10 orgs correctly stayed at 0 (no
+  résumé fixture ever imported into them, not a fix failure). Full test
+  suite (523 tests) and mypy (59 errors/12 files, canonical baseline)
+  unaffected. See `docs/eval/citation-correctness-fix-options.md` for the
+  three options considered and why the join table was chosen over
+  routing through `resume_document_id` or reopening the résumé-claims-
+  aren't-authoritative decision. **Two things this fix does NOT close,
+  each with its own entry below:** `import_employee_master_row`'s
+  spreadsheet-only employees still have zero chunk-level evidence (no
+  source text exists to associate, under any option), and the duplicate-
+  merge branch's associations are additive-only (a removed résumé claim's
+  old chunk stays citable).
+
+---
+
+## [B16, permanent] Employees imported from `employee_master.xlsx` have no chunk-level evidence, under any fix
+
+- **Discovered:** B16, deciding between the three options in
+  `docs/eval/citation-correctness-fix-options.md` §2 for the résumé-import
+  chunk-association gap. `import_employee_master_row`'s only inputs are
+  spreadsheet cells (`employee_code`, `name`, `role`, `status`) - no
+  document, no chunk, no free text behind them at all. None of the three
+  options considered (a join table, routing through `resume_document_id`,
+  or per-section extraction into real certification/past_project rows)
+  can associate a chunk that was never created. This is not a gap in the
+  fix that shipped (`014_knowledge_item_chunks.py`) - it's a real,
+  permanent limit on what a spreadsheet row can ever cite, independent of
+  which option had been chosen.
+- **Impact:** an employee created only from `employee_master.xlsx` (never
+  matched to a résumé upload) will never appear as retrieval evidence for
+  any compliance requirement, no matter how complete the fix is elsewhere.
+  A reviewer relying on the spreadsheet alone for a team member's identity
+  should expect this.
+- **Status:** open, by design - not something a future block should
+  "discover" and attempt to close as if it were an oversight. The honest
+  fix, if this ever matters, is requiring a résumé (or some other
+  chunk-bearing document) per employee, not a code change to this import
+  path.
+
+---
+
+## [B16] `import_resume`'s duplicate-merge branch only ever adds chunk associations, never removes them
+
+- **Discovered:** B16, implementing `014_knowledge_item_chunks.py`. When a
+  second résumé upload resolves to an existing employee (the
+  `DuplicateVerdict.DUPLICATE` branch in `import_resume`), its chunks are
+  associated additively - matching this function's own established
+  "corroborates rather than overwrites" treatment of résumé data
+  elsewhere (`update_employee`'s field-by-field `or` fallbacks in the same
+  branch).
+- **Consequence:** if a corrected résumé *removes* a claim (e.g. an
+  expired certification no longer listed), the chunk from the OLDER
+  résumé that mentioned it stays associated with the employee and stays
+  citable as evidence. The association only ever grows.
+- **Why this is accepted, not a bug:** the old document is a real document
+  that really said that thing at the time it was uploaded - staying
+  associated isn't wrong, just possibly stale. Reversing it (dropping
+  associations to chunks from a superseded document) would need either a
+  "current résumé only" invalidation rule or a human review step, neither
+  of which existed before this fix and neither of which this fix's scope
+  covers. Flagged here so a future reader who notices a removed
+  certification still being cited finds an explanation instead of a
+  surprise. See the inline comment at the call site in
+  `knowledge_service.py::import_resume`.
+
+---
+
+## [B16] Stale docstring in `extract.py` claimed employee profiles have no per-field citation need - checked against the actual code, found false
+
+- **Discovered:** B16, while costing `docs/eval/citation-correctness-
+  fix-options.md`'s three fix options. `extract_capability_statement`'s
+  own docstring claimed employee profiles have "no per-field citation
+  need... since B6's own gate only ever cites certifications/
+  past_projects as evidence, confirmed by inspecting every
+  valid_evidence_keys entry in the ground truth." Checked directly against
+  `compliance_service.py` rather than trusted: `prepare_evidence_
+  candidates`/`to_llm_candidates` apply no `item_type` filter, there's a
+  dedicated `item_type == "employee"` verification branch (line ~64), and
+  `prompts/versions/v1/compliance_proposal.md` lists "employee" as an
+  expected source kind. The code fully supports citing employees directly
+  - the claim was false as a code-capability statement (it may still be
+  true as a narrower claim about what the eval ground truth fixture
+  happened to exercise, which was not separately checked).
+- **Fixed:** the docstring, in the same commit as the schema fix -
+  corrected to state what's actually true: employees get a coarser,
+  whole-résumé chunk association instead of per-mention resolution,
+  which is a difference in mechanism, not in what's citable.
+- **Why this is worth its own entry:** this project has hit the "comment
+  asserts more certainty than the code underneath it" shape several times
+  now (see the standing-pattern entries elsewhere in this file) - this is
+  another confirmed instance, caught by checking the downstream code
+  directly instead of trusting a docstring's own citation of "the ground
+  truth," which is exactly the discipline this file asks for everywhere
+  else.
 
 ---
 
@@ -1889,6 +2086,59 @@ Each entry:
   `WorkflowTask` but nothing reads or decrements either, and nothing
   requeues a failed task - one transient provider error fails a task
   outright with no retry.
+  **This stopped being theoretical in B16: a real, full-cost live run
+  (45.1 minutes, past every earlier bottleneck this block found and
+  fixed) hit it directly.** `commercial_analysis` failed with a real
+  `RateLimitedError` (Gemini's own free-tier
+  `GenerateRequestsPerMinutePerProjectPerModel-FreeTier`, 15/min for
+  `gemini-3.5-flash-lite`) - not B15's own rate limiter, an external
+  Google quota, confirmed from the worker's own traceback, not guessed.
+  `compliance_analysis` and `talent_analysis` - the other two branches
+  LangGraph's `Send()` dispatches in parallel alongside
+  `commercial_analysis` (`orchestration/graph.py`) - both show
+  `workflow_tasks.status='pending'`, never `started_at`: one parallel
+  branch's own unhandled failure appears to have aborted the whole run
+  before its siblings ever ran, not just failed its own branch. This
+  finding (a) is separate from the inert-retry-controls finding above
+  and not confirmed with the same rigor - real, but named as observed,
+  not chased further this pass.
+  **Real fix applied for the quota-collision half, not the inert-retry
+  half - both stay true, on record separately, not conflated:**
+  `Settings.compliance_gemini_api_key`/`talent_gemini_api_key`/
+  `commercial_gemini_api_key` (`core/config.py`), one real Gemini API key
+  per parallel branch, each falling back to the shared `gemini_api_key`
+  when unset - wiring built and unit-tested this pass
+  (`tests/unit/test_branch_gemini_api_keys.py`, 7 cases, no real LLM cost:
+  each node's own `GeminiClient` construction is spied on directly,
+  confirming the right key reaches the right branch and the fallback
+  works when a branch key is unset). The real fix depends on a fact that
+  is NOT guaranteed by "three separate Google accounts" alone - three
+  accounts are only three separate quota buckets if each is also a
+  genuinely separate GCP project, since a shared project means a shared
+  quota and would defeat the whole point. Checked directly, per key, via
+  each key's own AI Studio/console project page - not inferred from
+  account separation, and not inferred from quota-error behavior either
+  (a live check found a successful `generateContent` response exposes no
+  project identifier anywhere, in headers or body, so that path couldn't
+  have confirmed this even if tried). **Confirmed distinct: `gen-lang-
+  client-0352341073`, `gen-lang-client-0008707582`,
+  `gen-lang-client-0439190722`** - recorded here so a future reader can
+  verify independence without re-deriving it, not just trust that it was
+  once checked.
+  Wired at `orchestration/nodes/compliance.py`/`talent.py`/`commercial.py`'s
+  own `_build_llm_client()` - extraction, drafting, and red-team
+  deliberately untouched, since they run sequentially in the graph and
+  never competed for the same per-minute window the three parallel
+  branches do. **This solves the quota collision this specific fixture's
+  workload produced - it does not make the retry mechanism itself
+  functional.** A transient failure from any OTHER cause (a real network
+  drop, a genuine Gemini outage, a quota exhausted for a different
+  reason) still fails its task outright with no retry, and - per the
+  observation above, not yet independently confirmed - may still be
+  capable of aborting sibling branches that never got a chance to run.
+  Building the actual retry mechanism (reading `retry_budget_remaining`,
+  requeuing instead of failing outright) remains open, exactly as this
+  entry already named it.
 - **Outbox events are not claimed atomically** (major finding #22,
   `db/repositories/outbox.py`/`outbox_dispatcher.py`): select-then-enqueue
   with no `FOR UPDATE SKIP LOCKED` - two dispatcher instances could both
@@ -2393,6 +2643,21 @@ Each entry:
   configuration should add a smoke-level test asserting an `.info()`
   call actually reaches a configured handler, so this class of gap
   cannot silently regress again.
+- **Resolved in B16.** `configure_logging()` (`core/log_redaction.py`)
+  calls `logging.basicConfig(level=logging.INFO, ...)` at the same three
+  real entrypoints this entry names, replacing each site's prior
+  `install_log_redaction()` call rather than adding a second call next to
+  it - see the standing-pattern entry below for why splitting the two
+  would have silently reopened B15's own redaction fix. Verified directly,
+  not assumed: a real `.info()` call reaches a real `StreamHandler` at
+  root level `INFO`, confirmed via direct process-level check, not a
+  Docker rebuild (this is process-internal configuration, not
+  networking-dependent, so the live-Docker-verification standard this
+  file holds elsewhere doesn't apply the same way here). Full suite
+  510/510, `uv run mypy` 59/12/239 unchanged, both after this change. The
+  smoke-level test this entry's own "Test" line asked for is still not
+  built - a real gap, left open deliberately rather than silently
+  dropped once the fix itself landed.
 
 ---
 
@@ -2524,6 +2789,20 @@ Each entry:
   already produces the exact fact list, rather than three. Not built now;
   named so B16 doesn't have to rediscover where the hook belongs.
 - **Test:** none - nothing to test until the persistence mechanism exists.
+- **BUILT in B16 - not at the hook this entry named, and worth recording
+  why.** The real instrument lives at `AgentTrace.input_refs`/
+  `output_refs` (already-existing, already-declared, never-populated
+  columns found during the same investigation), populated directly at
+  `propose.py`/`draft_section.py`'s own trace-write call sites, not by
+  extending `_prepare_evidence_facts` as this entry originally suggested.
+  `_prepare_evidence_facts` was checked directly during B16 and found to
+  do exactly what its own docstring already claimed - the suggested hook
+  wasn't wrong, it just turned out a cheaper, more directly-fitting
+  mechanism already existed one layer over. See
+  `docs/eval/citation-correctness-investigation.md` for what the real
+  instrument found: 0/27 grounded, traced to zero candidates returned by
+  retrieval on all 87 real compliance evaluations, not a drafting-side
+  defect at all.
 
 ---
 
@@ -3740,6 +4019,13 @@ Each entry:
 - **Status:** instrument verified; citation-correctness question itself
   remains open, unchanged by this step. Owner: whichever pass runs the
   full Playwright E2E scenario (§7 step 11 of this block's own plan).
+  **That pass happened in B16 - see
+  `docs/eval/citation-correctness-investigation.md`.** A different
+  instrument than this drawer answered it (`AgentTrace.input_refs`/
+  `output_refs`, not `currently_in_scope_evidence`), but the real sample
+  this entry's own note said had to come from a real E2E run - not
+  hand-seeded fixture rows - is exactly what B16 produced: 0/27 grounded,
+  traced to retrieval, not drafting.
 - **Test:** none automated - this was a manual live-browser check, not a
   regression test. The hand-inserted `evidence_link`/`compliance_
   evidence` rows were left in the dev database (`tenderos`, not
@@ -4713,6 +4999,30 @@ Each entry:
   fix should also tighten `full-flow.spec.ts`'s own step 7 assertion to
   check server-confirmed state, so a future regression of this exact
   shape fails loudly instead of passing silently a third time.
+- **B16 addendum - a related but distinct harness defect found at the
+  exact same call site, the opposite failure direction from the one this
+  entry names.** A live run (B16, the first time step 7 ever ran to
+  completion in this session - every earlier attempt failed upstream)
+  hit `firstSelectButton.toBeHidden({timeout: 15_000})` timing out on the
+  FIRST role processed. Checked against real data before assuming either
+  cause: `role_matches.human_selected = true` for that exact role_match,
+  and a real `role_select` audit event, both present - **the selection
+  genuinely succeeded server-side this time.** Root cause: `firstCandidateRow.
+  getByRole("button", { name: "Select" })` had no `exact: true` -
+  Playwright's default name match is substring, and "Deselect" contains
+  "Select". Once the button correctly relabeled itself, the same locator
+  kept matching it (now showing "Deselect"), so `toBeHidden()` could never
+  become true regardless of whether the underlying action worked. Fixed
+  with `exact: true`. Distinguishing why this is the OPPOSITE of the
+  entry above rather than a duplicate: that entry is about the assertion
+  passing on a failure (silent false-positive); this is the assertion
+  never being able to pass even on a real success (guaranteed false-
+  negative) - both are real defects in the same test's own step 7, at two
+  different points, neither explaining or subsuming the other. This one
+  observation is a real, confirmed instance of the selection working -
+  it does not establish the rate at which the OTHER bug (silent non-
+  persistence) does or doesn't still occur; that finding's own "open,
+  no owner" status is unchanged.
 
 ---
 
@@ -4774,6 +5084,26 @@ Each entry:
   produce one next.
 - **Test:** none - a live-run observation, not a code path with a
   missing test.
+- **RESOLVED (investigation, not fix) in B16 - see
+  `docs/eval/citation-correctness-investigation.md`, the same artifact
+  that supersedes the B9/B12 entry this one already names as its own
+  cluster.** The deliberate, preserved-database measurement this entry's
+  own "Status" line asked for was taken: a real live run, instrumented
+  (`AgentTrace.input_refs`/`output_refs`, new this pass), database
+  preserved immediately after. Result: `search_company_knowledge`
+  returned zero candidates for 87 of 87 real compliance evaluations -
+  not "~0/94-98," a clean, complete, instrumented zero, with the write
+  path (`persist_compliance_decision`/`link_evidence`) confirmed correctly
+  wired and simply never given anything to write. **Not fixed** - and, per
+  the artifact's own follow-up, not actually a retrieval defect either:
+  `search_company_knowledge` was proven working (a real, direct check
+  found it correctly returning the right match for a requirement this
+  fixture genuinely covers) - the zero traces one step further, to
+  `knowledge_items.source_chunk_id` never being set for employee records,
+  severing the chunk-to-knowledge-item join the search path itself
+  depends on. **FIXED in B16** - see the fuller entry in the B9/B12/B16
+  citation-correctness cluster above (migration
+  `014_knowledge_item_chunks.py`); not repeated here.
 
 ---
 
@@ -5705,3 +6035,205 @@ Each entry:
   inspects prompt content, confirmed directly rather than assumed, so
   wrapping changed no test's expected LLM output). Full suite as of the
   CodeRabbit pass: 510/510 passing.
+
+---
+
+## Standing pattern: a safety net attached to a fallback goes dark the moment something real replaces the default
+
+- **Discovered:** B16, while fixing the "[B12] Neither app calls
+  `logging.basicConfig()`" entry above. `install_log_redaction`'s own
+  docstring (written in B15) had already named the exact risk in writing,
+  in advance, before this pass existed to trigger it: "once real logging
+  configuration exists anywhere in the hierarchy... this filter's
+  redaction stops applying with no error, no warning, nothing to notice
+  at the moment it happens." That's the unusual part worth recording
+  about *this* instance - most entries in this file discover their own
+  failure mode empirically first and explain it afterward; this one was
+  predicted correctly, in writing, a full block ahead of the fix that
+  would have silently triggered it.
+- **The general shape, stated precisely so a second instance is
+  recognizable on sight, not just this one:** some safety/cross-cutting
+  mechanism M (a filter, a check, a guard) is wired to a *fallback* - a
+  handler, a path, a default - that the runtime only actually reaches in
+  the *absence* of something more specific claiming that role. M works
+  correctly, and stays working, for as long as nothing specific ever
+  shows up. The moment something real and legitimate *does* claim that
+  role (a real log handler configured, in this instance), the runtime
+  stops routing through the fallback at all - not because M broke, M is
+  never consulted again. No exception, no log line, nothing structurally
+  different about the moment it happens; the only way to notice is to
+  already know to check.
+- **Why this is a distinct mechanism from this file's other standing
+  patterns, not a restatement of one:** the "reader trusts a column its
+  writer never keeps current" pattern (above) is about a value going
+  stale *at rest* because nothing re-derives it. This is about a
+  mechanism going *unreached* because something else now occupies the
+  slot it depended on - the mechanism itself never changes at all, its
+  entire input (being called) simply stops arriving. Closer in shape to
+  the environment-traps pattern's own incident 6/8 (a container reporting
+  itself healthy by an internal measure while being unreachable by an
+  external one) than to the stale-column family - both are "two
+  independent things that happened to move together, until they didn't."
+- **The one confirmed instance, and its fix:** `RedactSensitiveDataFilter`
+  was attached to `logging.lastResort` (B15) - the correct, only available
+  choice at the time, since nothing called `logging.basicConfig()`
+  anywhere and `lastResort` was genuinely the one shared object every
+  unconfigured logger's WARNING+ output flowed through. B16's own fix for
+  the silent-`.info()`-dropping gap necessarily configures a real handler
+  - and by the mechanism above, would have silently stopped protecting
+  anything the moment it shipped, if the two had been fixed as two
+  separate calls at three entrypoints rather than one. Closed by
+  `configure_logging()` (`core/log_redaction.py`): `basicConfig()` and the
+  filter re-attachment collapsed into one function, so the ordering
+  dependency can't be split across call sites again by a future edit that
+  only touches one of them.
+- **What to check for a second instance, not yet confirmed as one:**
+  `configure_logging()`'s own filter-attachment loop iterates
+  `logging.root.handlers` - correct for what `basicConfig()` itself
+  installs, but unverified against whatever uvicorn's own logging setup
+  does independently (uvicorn is known, in general, to configure its own
+  `uvicorn.access`/`uvicorn.error` loggers, which may or may not route
+  through `root` depending on `propagate` settings this codebase has
+  never inspected). Not chased down here - flagged as the first place to
+  look if a request-level log line is ever found NOT to carry redaction
+  in a real deployment, rather than re-deriving this pattern from
+  scratch.
+- **Status:** named from one confirmed instance, not yet "confirmed as a
+  pattern, not a one-off" the way this file's other five standing
+  patterns are - each of those was named only once a second, independent
+  instance turned up. This entry exists anyway, ahead of a second
+  instance, because the shape is general enough (and the predicted-in-
+  writing character of this one instance sharp enough) to be worth
+  recognizing early rather than waiting to rediscover it under a
+  different name next time. Revisit this status once a genuine second
+  instance is found - or leave it exactly this honest if none ever turns
+  up.
+- **Test:** none - a design/process pattern, not a behavior. The one
+  instance's own fix is verified directly (see the `logging.basicConfig()`
+  entry above): a live check confirms `RedactSensitiveDataFilter` is
+  attached to the real handler `basicConfig()` installs, not to
+  `lastResort`, and that it still redacts correctly there.
+
+---
+
+## [B16, owner B17] `Login.tsx`'s "already logged in" guard drops the user's original destination on any transient `/auth/me` failure
+
+- **Discovered:** B16, root-causing a live E2E run's own setup-phase
+  failure - a Playwright poll stuck showing the Bids dashboard instead of
+  `/talent`. The trigger was harness-shaped (`full-flow.spec.ts`'s own
+  unthrottled `reloadAndSettle()` polling burst past B15's rate limit -
+  a real, confirmed burst of 24 consecutive 429s on `GET /auth/me`,
+  `docker logs tenderos-api-1`) - but the mechanism that turns one
+  transient failure into a *permanent* navigation loss is real, deliberate
+  app code, not a harness defect, and would fire for a real user hitting
+  the same failure by any other cause.
+- **Behaviour:** `AuthContext.tsx`'s `refresh()` sets `meResponse` to
+  `null` on *any* `me()` failure - a network drop, a 500, a 429, not only
+  a genuine 401/403 (the access/refresh token itself is correctly kept in
+  every case except a real 401/403, matching that function's own comment's
+  stated intent - but `meResponse` still goes `null` regardless of cause).
+  `RequireAuth` treats `null` as "not logged in" and redirects to
+  `/login`. Once a later `/auth/me` call succeeds (the token was valid the
+  whole time), `Login.tsx`'s own top-of-render guard
+  (`if (meResponse) return <Navigate to="/" replace />`) sends the user
+  back to the fixed default route `/`, not back to wherever they actually
+  were - nothing captures or restores the original pathname across this
+  round trip.
+- **Risk, for a real user, not just this harness:** a deep link into any
+  of this app's tender-scoped screens (`RequirementRegister`,
+  `ComplianceMatrix`, `TeamWorkspace`, ...), sitting behind a transient
+  `/auth/me` failure - a rate limit, a brief API restart, a network blip,
+  none of which mean the session is actually invalid - gets silently
+  bounced to the Bids dashboard with no error message and no path back
+  except manually renavigating. Confirmed reachable in this exact
+  codebase this session, not hypothetical - the harness made it fire
+  reliably, it didn't invent the mechanism.
+- **Why not P0/B16:** doesn't cross a tenant boundary (the redirect only
+  ever lands the same authenticated user on their own dashboard), doesn't
+  violate an invariant, doesn't block any of the PRD's 24 completion
+  scenarios outright (a user can still get back manually). A real
+  reliability/UX rough edge, not a security or correctness defect any of
+  the release gate's own five conditions name. Same shape and severity
+  class as the `CommercialFindings.tsx` stale-write-guard entry above -
+  owned by B17 for the identical reason: no block between B16 and B17 has
+  a stop-gate that touches this, and it's exactly the class of finding a
+  general frontend-correctness sweep should catch systematically rather
+  than one screen at a time.
+- **Status:** open. **Owner: B17.** Candidate fix, named not built - a
+  standard React Router pattern, not a novel design question: capture the
+  intended pathname (`useLocation()` at the point `RequireAuth` redirects,
+  passed via `state` on the `Navigate` to `/login`) and have `Login.tsx`'s
+  own guard `navigate(intendedPath, { replace: true })` instead of the
+  hardcoded `"/"`.
+- **Test:** none - found by root-causing a harness failure, not by a
+  dedicated test. Worth a real regression test when B17 picks this up:
+  force a transient 401/429/500 on `/auth/me` while on a deep-linked
+  screen, assert the user lands back on that same screen once
+  re-authenticated, not on `/`.
+- **A second live run, after throttling the E2E spec's own reload rate to
+  a 2s floor, confirms this is about recovery, not about rate-limit
+  tuning.** The first run's 429 burst was 24 consecutive requests; the
+  throttled second run's burst was 3 - an 8x reduction - and it bounced
+  the exact same way, stranding the browser on `/` for the rest of that
+  poll's budget regardless. **Three requests were enough.** No amount of
+  further throttling closes this on its own, because the defect isn't
+  "too many requests trigger the limit" - it's that hitting the limit
+  even once, for a single request, has no recovery path anywhere in the
+  app. The E2E spec's own workaround (`reloadAndSettleOnRoute` in
+  `full-flow.spec.ts`, B16) detects the bounce and manually re-navigates
+  past it, bounded and loud rather than silent - real, working scaffolding
+  for THIS test, not a fix for the underlying guard, and it should come
+  out once B17 actually fixes `Login.tsx`.
+
+---
+
+## Standing pattern: this frontend has no recovery path from a single transient request failure
+
+- **Discovered:** B16, two independent instances found in the same
+  session, at two unrelated call sites - named as a pattern once the
+  second one turned up, not assumed from the first alone.
+  1. `AuthContext.tsx`'s `refresh()` (the entry above) - any `/auth/me`
+     failure, not only a real 401/403, sets `meResponse` to `null`,
+     stranding the user on the dashboard once a later request happens to
+     succeed, with no memory of where they actually were.
+  2. `GateDecisionPanel.tsx`'s `handleDecide` - any `decideGate()`
+     failure sets an `error` message and leaves the component in its
+     `pending` render branch. Found live: a real E2E run's own resource-
+     selection gate approval hit an isolated 429 (a CORS preflight the
+     rate limiter was, at the time, still counting - see the "OPTIONS
+     preflight" fix elsewhere in this file), the click never resulted in
+     a recorded decision, and the "Approve" button simply stayed there,
+     unresponsive to anything but a manual retry.
+- **The shared shape, stated once so a third instance is recognizable on
+  sight:** a real, transient failure - a rate limit, a network blip, a
+  brief backend hiccup - is handled correctly in the narrow sense (caught,
+  not crashed, a real `error` state or `null` set) but with no path back
+  to the state the user was actually in. The component doesn't retry, doesn't
+  preserve context across the failure, and doesn't distinguish "this
+  session is genuinely over" from "one request happened to fail." Both
+  instances are one-shot: a single `try`/`catch` around one `fetch`-
+  shaped call, no retry, no backoff, no memory of intent.
+- **Why this is a pattern about the frontend, not two isolated bugs:**
+  neither instance is a logic error - both correctly detect and report
+  their own failure. The gap is architectural: nothing in this codebase's
+  own data-fetching conventions (no shared hook, no wrapper around
+  `client.ts`'s calls) provides retry-with-recovery as a default any
+  component gets for free. Every call site that wants resilience has to
+  build its own, and two independent call sites, built at different
+  times by different reasoning, both didn't.
+- **Status:** open. **Owner: B17**, alongside the other frontend
+  correctness items already assigned there (the `CommercialFindings.tsx`
+  stale-write guard). Not B16's to fix - diagnosing this is what this
+  block's own live runs were for, not a mandate to rebuild this app's
+  data-fetching layer. The E2E spec's own workarounds for both instances
+  (`reloadAndSettleOnRoute` for #1, a bounded retry around the gate-
+  decision click for #2, both in `full-flow.spec.ts`) are real,
+  functioning scaffolding for THIS test - not fixes, and both should come
+  out once B17 gives this frontend a real answer to "one request failed,
+  now what."
+- **Test:** none - two live-run observations, not dedicated tests. A real
+  fix would want one shared, tested mechanism (a retry-capable fetch
+  wrapper, or a hook every mutating call site uses) rather than two more
+  one-off patches at two more call sites - the same lesson the "sibling-
+  drift" pattern already in this file names for a different kind of
+  duplication.

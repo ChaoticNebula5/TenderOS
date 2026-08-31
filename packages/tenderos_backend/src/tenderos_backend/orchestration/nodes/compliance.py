@@ -32,9 +32,12 @@ def _build_llm_client() -> LLMClient:
     # Same "function, not module-level singleton" shape
     # requirement_extraction_node's own helper documents - tests monkeypatch
     # this one name instead of touching a real GeminiClient.
+    # B16: compliance_gemini_api_key first, falling back to the shared
+    # gemini_api_key when unset - see Settings.compliance_gemini_api_key's
+    # own comment for why this branch specifically needs its own key.
     redis_client = AsyncRedis.from_url(settings.redis_url)
     return GeminiClient(
-        api_key=settings.gemini_api_key,
+        api_key=settings.compliance_gemini_api_key or settings.gemini_api_key,
         redis_client=redis_client,
         cache_ttl_seconds=settings.llm_cache_ttl_seconds,
     )

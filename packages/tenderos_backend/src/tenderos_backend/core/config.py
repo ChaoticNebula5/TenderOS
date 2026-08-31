@@ -26,6 +26,29 @@ class Settings(BaseSettings):
     # commit message.
     llm_provider: str = "gemini"
     gemini_api_key: str = ""
+    # B16: one Gemini API key per specialist branch that dispatches in
+    # PARALLEL via LangGraph's Send() - compliance_analysis, talent_analysis,
+    # commercial_analysis (orchestration/graph.py's own fan-out). A real live
+    # run measured this fixture's own workload (85 real compliance calls
+    # alone) blowing through the free tier's per-minute quota
+    # (GenerateRequestsPerMinutePerProjectPerModel-FreeTier, 15/min for
+    # gemini-3.5-flash-lite) when all three branches shared one key/project
+    # and ran simultaneously - three separate Google accounts, each with its
+    # own key, are the fix ONLY if each is also a genuinely separate GCP
+    # project (a shared project would mean a shared quota, defeating the
+    # whole point) - check the project ID on each key's own AI Studio/
+    # console page before relying on this, not assumed equivalent to
+    # "different account." Each field defaults to "" and falls back to the
+    # shared gemini_api_key above at its own call site
+    # (orchestration/nodes/compliance.py, talent.py, commercial.py) when
+    # unset, so a deployment that never sets these keeps working exactly as
+    # before - all three sharing one quota, same as it always has.
+    # Extraction, drafting, and red-team deliberately stay on the shared
+    # key: they run sequentially in the graph, never competing for the same
+    # per-minute window the three parallel branches do.
+    compliance_gemini_api_key: str = ""
+    talent_gemini_api_key: str = ""
+    commercial_gemini_api_key: str = ""
     extractor_model: str = "changeme"
     verifier_model: str = "changeme"
     # A2.2's REASONING_MODEL alias - locked in the Build Guide's own env var

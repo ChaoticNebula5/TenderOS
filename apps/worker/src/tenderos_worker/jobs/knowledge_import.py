@@ -236,7 +236,9 @@ async def _process_resume(
     profile = await extract_employee_profile(
         client, settings.extractor_model, resume_chunks, org_id
     )
-    item = await import_resume(org_id, batch_id, filename, doc_id, profile)
+    item = await import_resume(
+        org_id, batch_id, filename, doc_id, profile, [c.id for c in resume_chunks]
+    )
     if item.target_knowledge_item_id is None:
         logger.info("resume import for %s produced no employee match, skipping WORKED_ON", filename)
         return

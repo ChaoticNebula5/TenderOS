@@ -197,7 +197,9 @@ async def _run_knowledge_import(client: GeminiClient, org_id: uuid.UUID, user_id
         async with UnitOfWork() as uow:
             resume_chunks = await uow.documents.list_chunks_for_document(resume_doc.id)
         profile = await extract_employee_profile(client, settings.extractor_model, resume_chunks, org_id)
-        item = await import_resume(org_id, resume_batch_id, filename, resume_doc.id, profile)
+        item = await import_resume(
+            org_id, resume_batch_id, filename, resume_doc.id, profile, [c.id for c in resume_chunks]
+        )
         if item.target_knowledge_item_id is None:
             continue
         worked_on = await extract_worked_on(

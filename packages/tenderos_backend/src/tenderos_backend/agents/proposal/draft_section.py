@@ -25,6 +25,40 @@ class GroundedFactRef:
     excerpt: str
 
 
+def _fact_input_refs(facts: list[GroundedFactRef]) -> dict:
+    """B16: the fact set as OFFERED to drafting, not just what a claim
+    cited - the drafting-stage half of the same instrumentation added to
+    propose.py's _candidate_input_refs (same pass, same reason: this
+    project's own citation-correctness investigation, B9/B12, could never
+    tell "nothing was offered" apart from "something was offered and not
+    cited" because only the cited side was ever recorded). No f.excerpt -
+    same document-content-out-of-logs reasoning as propose.py's own
+    version of this function.
+    """
+    return {
+        "fact_count": len(facts),
+        "facts": [{"label": f.label, "kind": f.kind} for f in facts],
+    }
+
+
+def _draft_output_refs(draft: ProposalSectionDraft) -> dict:
+    """What claims in this section actually cited, deduped across claims -
+    per-claim detail already survives in the persisted proposal_claims
+    rows once proposal_service.py materializes them; this trace only needs
+    "was anything from the offered fact set cited at all," paired against
+    _fact_input_refs above.
+    """
+    return {
+        "claim_count": len(draft.claims),
+        "factual_claim_count": sum(1 for c in draft.claims if c.is_factual),
+        "cited_evidence_labels": sorted({label for c in draft.claims for label in c.evidence_refs}),
+        "cited_requirement_labels": sorted(
+            {label for c in draft.claims for label in c.requirement_refs}
+        ),
+        "cited_employee_labels": sorted({label for c in draft.claims for label in c.employee_refs}),
+    }
+
+
 async def _write_trace(
     *,
     tender_id: uuid.UUID,
@@ -32,6 +66,7 @@ async def _write_trace(
     task_id: uuid.UUID | None,
     model: str,
     status: str,
+    facts: list[GroundedFactRef],
     result: LLMResult[ProposalSectionDraft] | None = None,
     error_code: str | None = None,
 ) -> None:
@@ -44,6 +79,8 @@ async def _write_trace(
             provider=result.provider if result else None,
             model=model,
             prompt_version=bundle_version(),
+            input_refs=_fact_input_refs(facts),
+            output_refs=_draft_output_refs(result.parsed) if result else {},
             latency_ms=result.latency_ms if result else None,
             input_tokens=result.input_tokens if result else None,
             output_tokens=result.output_tokens if result else None,
@@ -103,6 +140,7 @@ async def draft_section(
             task_id=task_id,
             model=model,
             status="failed",
+            facts=facts,
             error_code=type(exc).__name__,
         )
         raise
@@ -113,6 +151,7 @@ async def draft_section(
         task_id=task_id,
         model=model,
         status="completed",
+        facts=facts,
         result=llm_result,
     )
     return llm_result.parsed

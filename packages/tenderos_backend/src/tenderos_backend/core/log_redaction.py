@@ -1,14 +1,13 @@
-"""B15: log redaction, as defense-in-depth against the currently-unconfigured
-logging state - not the primary fix for the one concretely identified leak.
-
-apps/api and apps/worker call logging.basicConfig() nowhere. Verified
-directly (a throwaway script during B15 planning, not assumed): every
-.exception()/.warning()/.error() call in this codebase still surfaces, via
-Python's own "handler of last resort" (logging.lastResort), even with zero
-handlers configured anywhere. .info() calls are silently dropped before a
-LogRecord is even constructed - that class of gap needs real logging
-configuration to exist before it can be verified at all (owner: B16, see
-KNOWN_LIMITATIONS.md); nothing here changes that.
+"""B15: log redaction, originally built as defense-in-depth against the
+then-unconfigured logging state - not the primary fix for the one
+concretely identified leak. B16 added configure_logging() below, which
+closes the gap this docstring used to describe as open: apps/api and
+apps/worker now call logging.basicConfig() (via configure_logging(), not
+directly), so .info() calls reach a real handler instead of being silently
+dropped before a LogRecord is even constructed. Before B16, every module
+in this codebase relied on Python's own "handler of last resort"
+(logging.lastResort) for WARNING+ visibility only, verified directly
+during B15 planning via a throwaway script, not assumed.
 
 The one leak this project had actually identified and traced - gemini_
 adapter.py's MalformedOutputError embedding a pydantic ValidationError's
@@ -104,6 +103,12 @@ class RedactSensitiveDataFilter(logging.Filter):
         return True
 
 
+def _attach_redaction_filter(handler: logging.Handler) -> None:
+    if any(isinstance(f, RedactSensitiveDataFilter) for f in handler.filters):
+        return
+    handler.addFilter(RedactSensitiveDataFilter())
+
+
 def install_log_redaction() -> None:
     """Call once, at process startup - apps/api/main.py, apps/worker/
     worker.py, apps/worker/outbox_dispatcher.py, the three real process
@@ -119,16 +124,12 @@ def install_log_redaction() -> None:
     WARNING+ output actually flows through today (confirmed directly, not
     assumed - see this module's own docstring).
 
-    Real, named coupling to the current no-basicConfig state, not
-    something this function can outgrow silently: once real logging
-    configuration exists anywhere in the hierarchy (basicConfig, or any
-    handler added to any logger), Logger.callHandlers stops falling
-    through to lastResort at all, and this filter's redaction stops
-    applying with no error, no warning, nothing to notice at the moment
-    it happens. Whoever builds that (owner: B16, per KNOWN_LIMITATIONS.md)
-    needs to re-attach RedactSensitiveDataFilter to whatever handler(s)
-    they add - this function's own call sites do not automatically cover
-    that; it is not a general "logging is now safe forever" guarantee.
+    Superseded, as of B16, by configure_logging() below at all three real
+    entrypoints - kept here, unchanged, because B15's own tests exercise
+    this exact lastResort-attachment behavior directly, and because it
+    remains correct (if inert) once configure_logging() has run: lastResort
+    stops being reached at that point, so attaching a filter to it a second
+    time is harmless, not wrong.
     """
     handler = logging.lastResort
     if handler is None:
@@ -136,6 +137,40 @@ def install_log_redaction() -> None:
         # not something this project's own processes ever do, but mypy
         # correctly won't assume that. Nothing to attach a filter to.
         return
-    if any(isinstance(f, RedactSensitiveDataFilter) for f in handler.filters):
-        return
-    handler.addFilter(RedactSensitiveDataFilter())
+    _attach_redaction_filter(handler)
+
+
+def configure_logging() -> None:
+    """B16: the real fix for the gap install_log_redaction's own docstring
+    already named - .info() calls have been silently dropped since B0
+    because nothing anywhere ever called logging.basicConfig(). Call once,
+    at the same three real process entrypoints install_log_redaction
+    documents (apps/api/main.py, apps/worker/worker.py, apps/worker/
+    outbox_dispatcher.py) - REPLACES the install_log_redaction() call at
+    each of those three sites, not an addition next to it.
+
+    Order matters and is the whole point of this function existing as one
+    unit rather than two separate calls a caller has to remember to
+    sequence correctly: basicConfig() first, so the root logger has a real
+    handler; then the redaction filter is attached to THAT handler, not to
+    lastResort. Once basicConfig() attaches a handler anywhere in the
+    hierarchy, Logger.callHandlers stops falling through to lastResort at
+    all (per install_log_redaction's own docstring) - so a caller that
+    called basicConfig() and install_log_redaction() separately, in either
+    order, would silently stop being protected: the filter would still be
+    sitting on lastResort, and lastResort would no longer be reached.
+    Collapsing both steps into one function is what makes that ordering
+    bug structurally impossible to reintroduce at a fourth call site later.
+
+    basicConfig()'s own std-library behavior is a no-op if the root logger
+    already has a handler (true inside a pytest session, which attaches its
+    own root-logger handlers per test) - so this is safe to call
+    unconditionally at module-import time the same way install_log_
+    redaction already is; it does not fight pytest's own log capture.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    for handler in logging.root.handlers:
+        _attach_redaction_filter(handler)

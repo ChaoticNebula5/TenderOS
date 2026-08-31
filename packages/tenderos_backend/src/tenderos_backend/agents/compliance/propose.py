@@ -30,6 +30,47 @@ class EvidenceCandidateRef:
     validity_status: str
 
 
+def _candidate_input_refs(candidates: list[EvidenceCandidateRef]) -> dict:
+    """B16: the candidate set as OFFERED to the model, not just what it
+    cited - added so the citation-correctness investigation (this project's
+    largest known open quality gap, KNOWN_LIMITATIONS.md) can distinguish
+    "retrieval returned nothing" (candidate_count=0) from "retrieval
+    returned candidates the model declined to cite" (candidate_count>0,
+    output_refs.cited_labels empty) - only one of the two hypotheses is
+    distinguishable if only the cited labels are recorded, which is all
+    this trace wrote before this pass. Structural metadata only - label,
+    knowledge_item_id, source_kind, validity_status - never c.excerpt,
+    which is knowledge-base-sourced text; this is a durable trace record
+    a scorecard artifact may read from, not a place to duplicate document
+    content B15 spent real, deliberate effort keeping out of logs.
+    """
+    return {
+        "candidate_count": len(candidates),
+        "candidates": [
+            {
+                "label": c.label,
+                "knowledge_item_id": str(c.knowledge_item_id),
+                "source_kind": c.source_kind,
+                "validity_status": c.validity_status,
+            }
+            for c in candidates
+        ],
+    }
+
+
+def _proposal_output_refs(proposal: ComplianceProposal) -> dict:
+    """What the model actually did with the offered candidates, paired at
+    read time against _candidate_input_refs above. A non-empty
+    cited_labels against candidate_count=0 would itself be a real,
+    distinguishable anomaly (a fabricated label - E1's own "no fabricated
+    IDs" violated), not just one of the two hypotheses this pass exists
+    to separate - materialize_evidence's own by_label.get(label) is None
+    skip (compliance_service.py) already handles that case safely; this
+    trace just makes it visible rather than silent.
+    """
+    return {"status": proposal.status, "cited_labels": proposal.evidence_refs}
+
+
 async def _write_trace(
     *,
     tender_id: uuid.UUID,
@@ -37,6 +78,7 @@ async def _write_trace(
     task_id: uuid.UUID | None,
     model: str,
     status: str,
+    candidates: list[EvidenceCandidateRef],
     result: LLMResult[ComplianceProposal] | None = None,
     error_code: str | None = None,
 ) -> None:
@@ -49,6 +91,8 @@ async def _write_trace(
             provider=result.provider if result else None,
             model=model,
             prompt_version=bundle_version(),
+            input_refs=_candidate_input_refs(candidates),
+            output_refs=_proposal_output_refs(result.parsed) if result else {},
             latency_ms=result.latency_ms if result else None,
             input_tokens=result.input_tokens if result else None,
             output_tokens=result.output_tokens if result else None,
@@ -117,6 +161,7 @@ async def propose_compliance(
             task_id=task_id,
             model=model,
             status="failed",
+            candidates=candidates,
             error_code=type(exc).__name__,
         )
         raise
@@ -127,6 +172,7 @@ async def propose_compliance(
         task_id=task_id,
         model=model,
         status="completed",
+        candidates=candidates,
         result=llm_result,
     )
     return llm_result.parsed

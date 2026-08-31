@@ -6,7 +6,7 @@ from typing import Any
 
 from redis import Redis
 from rq import Queue
-from tenderos_backend.core.log_redaction import install_log_redaction
+from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
@@ -242,7 +242,7 @@ async def _run_forever() -> None:
 
 
 def main() -> None:
-    install_log_redaction()
+    configure_logging()
     asyncio.run(_run_forever())
 
 

@@ -34,5 +34,15 @@ class Settings(BaseSettings):
     # re-enabled.
     rate_limit_enabled: bool = True
 
+    # B16: E2E test-harness bypass - see main.py's _rate_limit middleware
+    # for the full contract. Off by default and gated behind an explicit
+    # env var, not just the header main.py also checks: a request carrying
+    # the bypass header changes nothing at all unless this flag is also
+    # true, so there is no way to enable the bypass by only sending a
+    # header - a real deployment that never sets this env var (nothing
+    # does except docker-compose.e2e.yml's own explicit override) is
+    # unaffected no matter what any client sends.
+    e2e_rate_limit_bypass_enabled: bool = False
+
 
 settings = Settings()

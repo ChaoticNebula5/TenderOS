@@ -132,10 +132,19 @@ async def extract_capability_statement(
     Unlike extract_employee_profile, this resolves each item's
     source_chunk_ref back to a real chunk (retrieval needs to know exactly
     which chunk a past_project/capability came from to set
-    knowledge_items.source_chunk_id - an employee profile has no per-field
-    citation need like this since B6's own gate only ever cites
-    certifications/past_projects as evidence, confirmed by inspecting every
-    valid_evidence_keys entry in the ground truth).
+    knowledge_items.source_chunk_id). An earlier version of this docstring
+    claimed employee profiles have "no per-field citation need" since B6's
+    gate only ever cites certifications/past_projects - checked directly
+    against compliance_service.py during the B16 citation-correctness fix
+    and that's false as a code-capability claim: prepare_evidence_candidates/
+    to_llm_candidates apply no item_type filter, there's a dedicated
+    employee-verification branch, and the compliance-proposal prompt lists
+    "employee" as an expected source kind. Employees just don't get
+    per-mention chunk resolution the way past_projects/capabilities do here
+    - they get a coarser, whole-résumé association instead (see
+    knowledge_service.py's import_resume and
+    docs/eval/citation-correctness-fix-options.md), which is a real
+    difference in mechanism, not a difference in what's citable.
     """
     system_prompt = load_prompt("capability_statement_extraction")
     labels = [f"chunk_{i + 1}" for i in range(len(document_chunks))]
