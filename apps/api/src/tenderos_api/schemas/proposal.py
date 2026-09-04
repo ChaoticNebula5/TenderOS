@@ -30,6 +30,7 @@ class ProposalClaimResponse(BaseModel):
     claim_text: str
     claim_type: str
     is_factual: bool
+    claim_kind: str
     grounding_status: str
 
     model_config = {"from_attributes": True}
@@ -62,6 +63,7 @@ class ProposalClaimTraceResponse(BaseModel):
     claim_text: str
     claim_type: str
     is_factual: bool
+    claim_kind: str
     grounding_status: str
     section_id: UUID
     section_name: str

@@ -310,6 +310,7 @@ async def project_tender(
                 "tender_id": tid,
                 "claim_type": c.claim_type,
                 "is_factual": c.is_factual,
+                "claim_kind": c.claim_kind,
                 "grounding_status": c.grounding_status,
             }
             for c in all_claims
@@ -411,6 +412,16 @@ async def project_tender(
         if sel.knowledge_item_id in resolved
     ]
     await relationships.merge_used_in(neo4j_session, used_in_rows)
+
+    # ------------------------------------------------------------------
+    # Step 9: mark this projection complete - major finding #8's fix. The
+    # genuinely LAST write of the whole sequence, not merely the last one
+    # added - a crash anywhere above (including inside merge_used_in
+    # itself) leaves this never called, and check_freshness's own Neo4j-
+    # side check (queries.is_projection_complete) reads that as damaged,
+    # not fresh. See nodes.mark_projection_complete's own docstring.
+    # ------------------------------------------------------------------
+    await nodes.mark_projection_complete(neo4j_session, tid)
 
     # ------------------------------------------------------------------
     # Step 10: verify basic projection counts - read the ACTUAL post-write

@@ -77,7 +77,14 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      # /health/ready (not /health/live) - checks real Postgres/Redis/
+      # Neo4j/MinIO connectivity, not just "the process is up." Does NOT
+      # detect the healthy-but-unreachable-from-the-host trap (KNOWN_
+      # LIMITATIONS.md's environment-traps entry, incidents 6/8) - that's
+      # a host-to-container port-publish failure, invisible to any check
+      # this container runs against itself. This only improves what an
+      # in-container check can see; it doesn't close that trap.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 5s
       timeout: 5s
       retries: 10

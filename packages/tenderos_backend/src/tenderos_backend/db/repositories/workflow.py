@@ -115,6 +115,36 @@ class WorkflowRepository:
             idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
         )
 
+    async def update_plan_version(self, run_id: uuid.UUID, plan_version: int) -> None:
+        # B16: workflow_runs.plan_version stayed 0 forever while the
+        # LangGraph checkpoint's own plan_version advanced -
+        # supervisor_node.py's own return value was never written back to
+        # Postgres. No outbox event, unlike update_run_status above -
+        # nothing currently reads a "plan version changed" signal, and
+        # this column existing at all is B12-forward-looking (a future
+        # readiness report wanting to know which planning epoch a run's
+        # data reflects), not something this write needs to announce yet.
+        run = await self._session.get(WorkflowRun, run_id)
+        if run is None:
+            raise ValueError(f"WorkflowRun {run_id} not found")
+        run.plan_version = plan_version
+
+    async def increment_retry_count(self, run_id: uuid.UUID, by: int = 1) -> WorkflowRun:
+        # B16 Group 4: the real countdown for the retry policy - see
+        # migration 016 and WorkflowRun.retry_count's own docstring for
+        # why this isn't TenderState.retry_budget_remaining. `by` is
+        # RetryDecision.budget_cost, not always 1 - some failure types may
+        # cost more of the shared run budget than others. No outbox
+        # event, same reasoning as update_plan_version above - nothing
+        # reads a "retry count changed" signal yet.
+        run = await self._session.get(WorkflowRun, run_id)
+        if run is None:
+            raise ValueError(f"WorkflowRun {run_id} not found")
+        run.retry_count += by
+        await self._session.flush()
+        return run
+        await self._session.flush()
+
     async def list_tasks(self, workflow_run_id: uuid.UUID) -> list[WorkflowTask]:
         result = await self._session.execute(
             select(WorkflowTask)

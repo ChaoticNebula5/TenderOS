@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -195,6 +196,47 @@ _ROUTES: dict[
 }
 
 
+async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID) -> None:
+    """Claims (by id) and processes one candidate event inside one
+    transaction - major finding #22's real fix. `claim_by_id`'s own
+    `FOR UPDATE SKIP LOCKED` holds a real Postgres row lock for the whole
+    claim-enqueue-mark-commit window, so a second, concurrent dispatcher
+    instance's own call for this SAME id skips it (gets None back)
+    instead of also reading and double-dispatching it. A None claim here
+    is a real, silent no-op, not an error - it means either another
+    dispatcher already claimed this exact row, or it no longer matches
+    (already dispatched, or its own backoff hasn't elapsed yet) by the
+    time this call reached it.
+    """
+    async with UnitOfWork() as uow:
+        event = await uow.outbox.claim_by_id(event_id, max_attempts=MAX_ATTEMPTS)
+        if event is None:
+            return
+
+        build_dispatch = _ROUTES.get((event.aggregate_type, event.event_type), _default_dispatch)
+        queue_name, job_fn, job_args, job_id = build_dispatch(event)
+
+        enqueue_succeeded = True
+        try:
+            queues[queue_name].enqueue(
+                job_fn,
+                *job_args,
+                job_id=job_id,
+                job_timeout=_QUEUE_TIMEOUTS_SECONDS.get(queue_name),
+            )
+        except Exception:
+            logger.exception("Failed to enqueue outbox event %s", event.id)
+            enqueue_succeeded = False
+
+        if enqueue_succeeded:
+            await uow.outbox.mark_dispatched(event.id)
+        else:
+            delay_seconds = _backoff_seconds(event.attempt_count)
+            available_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+            await uow.outbox.mark_retry(event.id, available_at)
+        await uow.commit()
+
+
 async def _dispatch_once() -> None:
     connection = Redis.from_url(settings.redis_url)
     queues = {
@@ -202,33 +244,19 @@ async def _dispatch_once() -> None:
         for name in (DEFAULT_QUEUE_NAME, "workflow", "ingestion")
     }
 
+    # A FIXED candidate list, read once (get_pending's own plain read, no
+    # lock needed here - the real protection happens per-event, below).
+    # Each event gets at most ONE claim attempt this call, deliberately -
+    # see _dispatch_claimed_event's own docstring for why a "keep
+    # claiming whatever's next" loop (an earlier version of this fix)
+    # could instead re-attempt the SAME just-failed event several times
+    # within one _dispatch_once() call, once its own short backoff
+    # elapsed mid-loop.
     async with UnitOfWork() as uow:
-        pending = await uow.outbox.get_pending(max_attempts=MAX_ATTEMPTS)
-        for event in pending:
-            build_dispatch = _ROUTES.get(
-                (event.aggregate_type, event.event_type), _default_dispatch
-            )
-            queue_name, job_fn, job_args, job_id = build_dispatch(event)
+        candidate_ids = [e.id for e in await uow.outbox.get_pending(max_attempts=MAX_ATTEMPTS)]
 
-            enqueue_succeeded = True
-            try:
-                queues[queue_name].enqueue(
-                    job_fn,
-                    *job_args,
-                    job_id=job_id,
-                    job_timeout=_QUEUE_TIMEOUTS_SECONDS.get(queue_name),
-                )
-            except Exception:
-                logger.exception("Failed to enqueue outbox event %s", event.id)
-                enqueue_succeeded = False
-
-            if enqueue_succeeded:
-                await uow.outbox.mark_dispatched(event.id)
-            else:
-                delay_seconds = _backoff_seconds(event.attempt_count)
-                available_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
-                await uow.outbox.mark_retry(event.id, available_at)
-            await uow.commit()
+    for event_id in candidate_ids:
+        await _dispatch_claimed_event(queues, event_id)
 
 
 async def _run_forever() -> None:

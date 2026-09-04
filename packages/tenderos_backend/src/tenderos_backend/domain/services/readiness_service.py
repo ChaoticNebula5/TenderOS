@@ -5,8 +5,10 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
+
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.graph_service import GraphStaleError, check_freshness
+from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +327,8 @@ async def _evaluate_readiness_once(
     # in the current topology; see the B12 plan's Q5/design notes).
     # ------------------------------------------------------------
     try:
-        await check_freshness(tender_id)
+        async with get_neo4j_session() as session:
+            await check_freshness(tender_id, session)
     except GraphStaleError:
         blockers.append(
             _blocker(STALE_GRAPH_PROJECTION, "tender", tender_id, "Graph projection is stale.")

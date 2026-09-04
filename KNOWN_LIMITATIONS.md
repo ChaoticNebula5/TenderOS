@@ -335,6 +335,17 @@ Each entry:
   pattern (measurement code as a distinct source of false signals) is
   recorded here as an accepted standing risk, not something one fix closes
   out.
+- **Follow-up, post-B16:** `.env.example`'s own `RETRIEVAL_TOP_K=10`/
+  `RERANK_TOP_N=5` were still sitting at exactly this entry's own
+  root-caused wrong value (10) well after the fix: `config.py`'s real
+  defaults were corrected to `20`/`10` and the live `.env` was updated to
+  match, but the example file never got the same correction. A stale
+  example is exactly how this specific wrong number could get
+  reintroduced later — someone copying `.env.example` to set up a fresh
+  environment, or "fixing" a real `.env` back to what the example shows,
+  would reproduce the identical Recall@10=0.600 failure this entry
+  documents. Corrected to `20`/`10` to match `config.py` and the live
+  `.env`.
 - **Test:** none dedicated yet for the scoping bug specifically — the fix
   is a required parameter (a caller *must* pass `tender_id`, so the
   unscoped-query shape can't silently return), which closes the specific
@@ -343,7 +354,7 @@ Each entry:
   reads `Requirement` rows for the given `tender_id` if this becomes
   load-bearing enough to warrant one.
 
-## [B6] DEMONSTRATES never auto-verifies under its own corroboration signal
+## [B6] DEMONSTRATES never auto-verifies under its own corroboration signal - ACCEPTED conservative default, not an open gap
 
 - **Discovered:** B6, live test of `extract_demonstrates` +
   `resolve_demonstrates_verification` against all 4 real past-project
@@ -375,22 +386,64 @@ Each entry:
   the real property, with an invisible failure mode). An honest "cannot
   corroborate this" is more useful than a signal that looks like
   corroboration but isn't.
-- **Practical cost:** every `DEMONSTRATES` edge this policy proposes
-  currently routes to human review, regardless of LLM confidence — there
-  is no auto-verify path for this relationship type as built. If real
-  usage volume makes 100% manual review of project×capability pairs
-  unworkable, the identified fix is a *better* signal, not a looser one:
-  embedding cosine similarity between the capability's name/description
-  and the project's description would actually capture the semantic
-  relationship token overlap structurally cannot. Not implemented — noted
-  as the known path forward, not a task in progress.
-- **Status:** accepted — a deliberate conservative default (100% review
-  for an inherently abstractive relationship is defensible, not an
-  oversight), not unverified.
+- **Practical cost, reframed as the accepted default's own real price,
+  not a symptom of a gap:** every `DEMONSTRATES` edge this policy
+  proposes routes to human review, regardless of LLM confidence — there
+  is no auto-verify path for this relationship type, by deliberate
+  design. This fails SAFE, not silently: nothing auto-verifies something
+  it can't actually corroborate, it just costs a reviewer's time on every
+  proposed edge. That is the accepted trade, not a placeholder for a
+  fix that hasn't landed yet.
+- **Status: ACCEPTED, closed as a conservative default - not an open gap,
+  not unverified, and not "not built yet."** 100% review for an
+  inherently abstractive relationship is the correct behavior for a
+  signal that structurally cannot discriminate correct from coincidental
+  - not a stopgap waiting on engineering time. Re-confirmed post-B16
+  that this is the right call to close on, not merely leave open: the
+  calibration data needed to responsibly build the identified
+  alternative does not exist, and inventing a threshold anyway would
+  reproduce exactly the "cheap heuristic standing in for the real
+  property" failure this entry's own "Why this is structural" section
+  already rejects above - the same discipline this project has applied
+  everywhere else it declined to fabricate a number (the latency
+  baselines' own "reported, not gated" treatment is the closest
+  precedent, not a new standard invented here).
+  **The path forward stays named and actionable, in case real data ever
+  exists - kept, not deleted, so it isn't re-derived from scratch:** the
+  embedding infrastructure genuinely is already in the stack, checked
+  directly rather than assumed - `agents/knowledge/retrieval.py` already
+  calls `ingestion/embed.py::embed_texts` for real vector search, so
+  wiring cosine similarity between a capability's name and a project's
+  description would be a small, mechanical addition IF a threshold could
+  ever be picked honestly. It cannot today, checked against the real
+  fixture directly, not assumed from an earlier "4 pairs" note:
+  `data/ground_truth/tender_a_knowledge.jsonl` names 4 projects and 3
+  capabilities, but never encodes which project demonstrates which
+  capability at all - that pairing only exists as whatever the LLM
+  happened to propose during one live extraction run, with no
+  independent human label attached to any of them. The real blocker is
+  not merely "4 is a small N" (though it is) - it is that **all 4 are
+  presumed-positive, and zero labeled NEGATIVE pairs exist anywhere in
+  this fixture.** Picking a similarity threshold from positive examples
+  alone is not calibration - without seeing where a genuinely MISMATCHED
+  project/capability pair's embedding similarity actually lands, any
+  threshold drawn from these 4 would be indistinguishable from a number
+  invented outright, dressed up as data-driven. **What real calibration
+  would need, so this stays actionable rather than abandoned:** a modest
+  set (dozens, not 4) of human-labeled project x capability pairs
+  spanning both true corroborations and plausible-but-wrong near-misses
+  (e.g. a project that demonstrates an ADJACENT
+  capability, not a random unrelated one - the actual failure mode this
+  signal needs to catch), embedding-similarity computed for each, and a
+  threshold chosen by maximizing precision/recall (or F1) against that
+  labeled set - not eyeballed from a handful of known-good examples.
+  That labeling effort is real product/ops work, not a follow-up code
+  task this pass could complete on its own.
 - **Test:** the 4 real project/capability pairs from this session's live
   run are the standing evidence for the current behaviour. No fixture
   exists yet asserting the embedding-similarity alternative, since it
-  isn't built.
+  isn't built - and, per the scoping above, shouldn't be until real
+  labeled calibration data exists.
 
 ## [B6, re-confirmed B9] knowledge_import_batches.status never advances past 'queued'
 
@@ -936,6 +989,69 @@ Each entry:
      have been to go debug a fix that was already correct - the failure
      mode isn't "verification didn't happen," it's "verification happened
      and reported the wrong thing with full confidence."
+  10. **Incident 6/8's exact mechanism, a third time - this pass, after
+      an unplanned Docker Desktop crash mid-session (two duplicate
+      `com.docker.backend.exe` processes found running simultaneously,
+      itself the likely root cause).** `docker compose ps` reported
+      `postgres` healthy; `docker port tenderos-postgres-1` returned
+      nothing at all (no host mapping), confirmed directly rather than
+      inferred from the connection failure alone - `netstat` on the host
+      showed nothing listening on 5432. A plain Docker Desktop restart
+      (this session's own established fix for incidents 6/8) was NOT
+      sufficient this time; the postgres container itself needed a real
+      recreate (`docker compose stop postgres && rm -f postgres && up -d
+      postgres`) before the port publish actually took. Data volume
+      confirmed intact throughout (same `tenderos`/`tenderos_test`
+      databases, unaffected by the container-level recreate). Recorded
+      as a third occurrence, not folded into 6/8 silently - the trigger
+      (a genuine backend-process duplication after a crash) and the fix
+      (container recreate, not just a Desktop restart) are both new
+      information, not a repeat of the same two.
+  11. **Both known mechanisms hit back to back, this pass - the
+      port-squatting native Postgres (incidents 2/5, third occurrence)
+      immediately followed by the container-healthy-but-port-publish-
+      missing mechanism (incidents 6/8/10, fourth occurrence), triggered
+      by the SAME Docker Desktop crash.** Docker Desktop had fully exited
+      (`tasklist` showed zero Docker processes at all, a different crash
+      shape than incident 10's duplicate-backend-process one) mid-session,
+      unprompted. After relaunching Desktop and bringing the stack back
+      up, `docker compose up -d` failed with `port is already allocated`;
+      `netstat`/`tasklist` identified the real cause precisely this time,
+      not just inferred - PID 8752, `postgres.exe`, running as a genuine
+      Windows Service (`Session Name: Services`), the same native
+      PostgreSQL install incidents 2/5 already named, still present on
+      this machine. **New this time: this was flagged to the user rather
+      than stopped directly.** Every prior incident in this entry was a
+      container-level action fully inside this project's own Docker
+      Compose stack, safe to take unilaterally; stopping a Windows
+      Service is host-level state outside the project entirely, with no
+      way to know from inside this session whether something else on the
+      machine depends on it - asked rather than assumed, matching this
+      file's "investigate before touching unfamiliar state" standard
+      applied to a real case, not just a git worktree. The user stopped
+      it directly. Once the port was free, the SECOND mechanism fired
+      immediately on the very next `docker compose up -d`: postgres
+      reported healthy, but `docker port tenderos-postgres-1` returned
+      nothing and nothing was listening on the host - resolved the same
+      way as incidents 6/8/10, a full container recreate. Both the
+      dev (`tenderos`) and test (`tenderos_test`) databases' data
+      survived throughout (named volume, unaffected by the container-level
+      recreate). One genuinely new, unrelated finding surfaced by this
+      same recovery: `tenderos_test` itself has no `alembic_version`
+      table at all (`tests/integration/conftest.py` builds its schema via
+      `Base.metadata.create_all()` directly from the ORM models, never via
+      Alembic) - expected and correct for a database that gets fully
+      rebuilt every test run, but it means `create_all()` will silently
+      skip re-creating a table that already exists without picking up a
+      newly added column on it, so a mid-session schema change (this
+      pass's own `proposal_claims.claim_kind`) needs `tenderos_test`
+      dropped and recreated once, not just a migration run, before the
+      next test run will see the new column. Separately: the same
+      recovery revealed the real dev database (`tenderos`) had never
+      actually had migrations 015/016 applied either, despite both being
+      written and tested earlier this session - `alembic upgrade head`
+      ran all three (015, 016, 017) in one pass here, closing a real gap
+      that predates this incident, not caused by it.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -1021,6 +1137,25 @@ Each entry:
   (image staleness, port-squatting), which remain open per points (1)-(3)
   above. See the guard's own KNOWN_LIMITATIONS entry below for its one
   known residual gap.
+  **New evidence about this trap's actual blast radius, found in B16 while
+  building the checkpoint-pruning script (its own entry below), not while
+  chasing this one:** prior write-ups of incidents 3/4/7 described the
+  wipe as losing run data - what actually checking a live database showed
+  is that it also leaves LangGraph's own tables (`checkpoints`/
+  `checkpoint_blobs`/`checkpoint_writes`) permanently inconsistent with
+  the application's own (`workflow_runs`), not just temporarily empty.
+  The wipe only reaches `Base.metadata`-managed tables; LangGraph's
+  checkpointer tables are not part of that metadata, so a wipe deletes
+  every `workflow_runs` row while leaving every checkpoint row that
+  referenced one behind - orphaned, not recoverable by re-running
+  anything, since the `workflow_runs` row an orphaned thread's own
+  `langgraph_thread_id` pointed at is simply gone. Measured directly: 226
+  of 240 distinct checkpoint
+  threads in the live dev database had no owning `workflow_runs` row at
+  all. This is a durable property of the trap's mechanism (which tables
+  are and aren't `Base.metadata`-managed), not a one-off - it recurs
+  identically every time incident 3/4/7's own mechanism fires, on
+  whichever tables sit outside `Base.metadata`'s reach at the time.
   **Incident 6/8's own mechanism (healthy-but-unreachable) is a separate
   gap from incidents 1/2/5, not covered by anything above - owner B16
   (Reliability and Observability), not fixed now.** Points (1)-(3) are
@@ -1105,14 +1240,241 @@ Each entry:
   section may end up thinner or more hedged than the underlying commercial
   validation actually justifies, because the one specialist output this
   section most wants to lean on structurally cannot ground a claim.
-- **Status:** accepted. A real fix would add a pricing-sourced
-  `evidence_links.source_kind` value (or a parallel junction table) -
-  out of scope for B9, not blocking its stop-gate since the stop-gate
-  measures unsupported-claims-wrongly-accepted-as-grounded, not proposal
-  section richness.
-- **Test:** none automated - covered by `enforce_claim_grounding`'s own
-  unit tests indirectly (a factual claim with no resolved evidence is
-  asserted `unsupported` regardless of cause).
+- **Status: RESOLVED, B16 Group 6 (Option C).** Three shapes were
+  compared, the same way as the earlier `USED_IN` structural-gap
+  comparison:
+  - **Option A - a new `pricing_finding` `evidence_links.source_kind`
+    value plus a nullable `pricing_finding_id` FK column.** Disqualified:
+    touches `evidence_links`' own `ck_evidence_link_has_source` invariant,
+    which compliance coverage and red-team contradiction detection both
+    depend on holding (knowledge-item-or-chunk, nothing else) - a third
+    source kind there is a change to a shared contract, not an addition
+    beside it.
+  - **Option B - a parallel `pricing_evidence_links` junction table.**
+    Disqualified, explicitly, not just left unchosen: never touches
+    `evidence_links`' own constraints, but `materialize_claim_links`,
+    `get_proposal_trace`, and the evidence trace UI would each need a
+    second, parallel code path to handle a new evidence type none of them
+    know about today. This project already has multiple documented
+    instances of exactly that shape (a second path drifting from the
+    first) as standing-pattern findings elsewhere in this file - Option B
+    would be creating a fresh one deliberately.
+  - **Option C - chosen. A synthetic `document_excerpt` chunk, same
+    pattern as `import_certification_row`'s own fix (B16 Group 3).** A
+    resolved pricing finding is a statement about a specific, real,
+    already-uploaded pricing document - representing it as an excerpt of
+    that document is accurate, not a workaround. Zero change to
+    `evidence_links`' schema or any of its existing readers: every
+    consumer already handles an ordinary `document_excerpt` link.
+  - **The comparison still holds after a real schema-change discovery
+    made mid-implementation** (see the provenance-gap bullet below): one
+    small, nullable, additive column on `pricing_findings` with the value
+    already in scope at creation time, versus Option A's change to a
+    shared invariant or Option B's N duplicated code paths. C remained
+    the smallest change of the three even once it stopped being literally
+    zero-schema-change.
+- **A real, independent provenance gap found while implementing Option
+  C, not only a grounding-enablement need.** `pricing_findings` recorded
+  no reference at all to which uploaded document a finding came from, for
+  7 of its 8 finding types (only `cross_doc_mismatch` carried anything,
+  via `item_a_ref`/`item_b_ref`). In a system whose entire thesis is
+  traceability, a finding with no traceable source document is a real
+  gap on its own, independent of whether grounding was ever attempted -
+  worth fixing on those grounds alone, not framed here as incidental to
+  the citation work. **Migration `015_pricing_finding_document`** adds a
+  nullable `pricing_document_id` FK, populated by
+  `evaluate_commercial_for_tender`'s own finding-creation loop (the value
+  is already in scope per-document at that point) for every finding type
+  except `cross_doc_mismatch`, which stays NULL by design - its two
+  documents are already both named, symmetrically, via `item_a_ref`/
+  `item_b_ref`. **No backfill, and none is possible:** an existing
+  finding's source document was never derivable from anything already in
+  Postgres - `cell_refs` (the only thing that could have disambiguated
+  it) was used only to compute the row's own `content_fingerprint`, a
+  one-way hash, and was never itself persisted as a column. Every
+  pre-existing `pricing_findings` row stays NULL here **permanently, not
+  just until the next re-run**: `evaluate_commercial_for_tender` is
+  idempotent by `content_fingerprint` (a finding that already exists is
+  returned as-is, never updated), so re-running commercial evaluation on
+  an already-ingested tender does not retroactively populate this column
+  either. A real, accepted limit, not a bug.
+- **cross_doc_mismatch's two-document sub-question, settled with
+  evidence, not assumed.** Checked `pricing_checks.py` directly:
+  `currency_mismatch` (despite living in the same code region) is
+  actually single-document - `item_a_ref`/`item_b_ref` are populated
+  "only for cross_doc_mismatch" per the code's own comment, confirmed by
+  its function signature taking one sheet's rows, not a multi-document
+  list. Only `cross_doc_mismatch` genuinely spans two documents, and its
+  `item_a_ref`/`item_b_ref` are already structurally symmetric - same
+  shape, same weight, and the finding's own `note` quotes both documents
+  equally ("X is priced at V1 in document A, but V2 in document B"),
+  neither privileged as the one being challenged. So a `cross_doc_mismatch`
+  finding gets TWO evidence links, one per document, not one arbitrarily
+  chosen side - confirmed safe downstream by reading
+  `enforce_claim_grounding` directly: `resolved_evidence_link_ids` is
+  already `list[uuid.UUID]`, and grounding only ever checks empty vs.
+  non-empty, so more than one evidence link per claim was already the
+  normal, handled shape (used elsewhere for compliance claims), not new
+  territory this fix had to open up.
+- **Implementation:** `commercial_service._ground_pricing_finding`
+  (called from `resolve_pricing_finding_in_uow`, after the finding is
+  marked resolved) creates one `document_service.create_synthetic_chunk`
+  (the same helper `import_certification_row` uses - moved out of
+  `knowledge_service.py` into `document_service.py` once a third caller
+  needed it, this project's own established threshold for sharing rather
+  than duplicating) plus one `EvidenceLink` per document, idempotent by a
+  deterministic fingerprint (`pricing_finding_evidence_fingerprint`) so a
+  repeat resolve action cannot duplicate evidence.
+  `proposal_service._facts_from_pricing` looks up the same fingerprint to
+  set `PreparedFact.evidence_link_id` when a link exists, and falls back
+  to B9's original unlinked-narrative-context behavior when it doesn't
+  (a pre-fix finding, or the "neither ref nor `pricing_document_id`"
+  defensive gap `_ground_pricing_finding` itself documents) - strictly
+  additive, nothing previously offered stops being offered.
+- **Test:** `tests/integration/test_commercial_service.py` (single-
+  document grounding, two-link cross-doc grounding, repeat-resolve
+  idempotency) and `tests/integration/test_proposal_service.py`
+  (`evidence_link_id` set for a grounded finding; still unset/filtered
+  for an unresolved one) - 5 new tests, all against the real synthetic
+  pricing fixtures, no mocking of the grounding path itself.
+
+---
+
+## [B9/B16] The PRD never defines whether a forward-looking commitment is a "factual claim" - RESOLVED post-B16: a new claim_kind field, orthogonal to is_factual, keeps commitments visible while letting the metric exclude what it can never ground
+
+- **Discovered:** post-B16, investigating whether the 8 forward-looking
+  proposal claims from the live E2E run's own 27-unsupported sample
+  ("will support SSO," "must maintain 99.5% uptime") were a prompt bug
+  (the model has a way to mark them non-factual and isn't using it) or a
+  genuine product-definition gap - checked the code and the PRD directly
+  rather than assumed either way.
+- **`is_factual` is binary with no third option, at both layers, checked
+  directly:** `ProposalClaimDraft.is_factual: bool = True`
+  (`agents/schemas/proposal.py:28`) - a plain bool, no enum. Storage:
+  `proposal_claims.is_factual: Mapped[bool]`
+  (`db/models/proposal.py:63`) - also a plain, non-nullable `Boolean`
+  column. Nothing in the schema can represent a third category even if
+  the prompt asked for one.
+- **The model is not simply failing to use an option it has - checked
+  the prompt's own current wording, not assumed.**
+  `prompts/versions/v1/proposal_drafting.md:20`: *"`is_factual` - `true`
+  if the claim asserts a specific, checkable fact (a count, a
+  certification, a named capability, a compliance position); `false` if
+  it is narrative, aspirational, or a general statement of approach
+  that cannot be evidenced one way or the other."* "Will support SSO"
+  and "must maintain 99.5% uptime" are specific and checkable - they
+  satisfy the `true` criteria exactly as written, just checkable
+  against a future deliverable rather than past evidence. The prompt's
+  own `false` example (line 12: *"Our team will apply industry-standard
+  project governance"*) is for vague, non-checkable narrative, not
+  specific forward commitments. **The model classified these correctly
+  per the prompt's own current definition** - this is not "the 7 were
+  misclassified, denominator becomes 27." (The real count in this
+  category is 8, not 7 - checked directly against the full 27-claim
+  sample, not re-derived from an earlier rounded figure.)
+- **The PRD never contemplates this category at all - quoted, not
+  paraphrased.** §8.5's only two worked examples
+  (`TenderOS-PRD.md:451-465`): *"We completed three telecom
+  migrations"* (→ 3 past projects) and *"Our proposed lead holds
+  Certification X"* (→ 1 certification) - both backward-looking, both
+  about something the company already has or has done. §10.11's
+  proposal-layer requirement list (`TenderOS-PRD.md:896-904`): "avoid
+  inventing company capabilities... employee experience... client
+  references... reflect approved compliance positions" - again entirely
+  about present/past state. No example, requirement, or invariant
+  anywhere in the PRD distinguishes a claim about what the company HAS
+  from a claim about what it WILL DO for this specific contract. A
+  forward-looking solution commitment is not classified as factual, not
+  classified as exempt, not mentioned as a category at all.
+- **What adding a third category would cost, named so it isn't
+  re-derived from scratch by whoever picks this up:**
+  1. A new `proposal_claims` column (e.g. `claim_temporality:
+     Literal["current", "commitment"]`) - a real migration, plus the
+     model, `ProposalClaimDraft`, and every reader that currently only
+     branches on `is_factual` (`enforce_claim_grounding`, the graph
+     projector's `merge_proposal_claim_nodes`, `get_proposal_trace`).
+  2. `enforce_claim_grounding` needs a real decision for the new
+     category, not just "exempt it like narrative." A forward
+     commitment is a real, checkable promise a bidder is making -
+     silently treating it as `not_required` (no evidence needed) could
+     hide a reckless commitment ("will support SSO" with no internal
+     roadmap backing it) as readily as it currently hides nothing,
+     since today it's `is_factual=true, unsupported` - visible, not
+     silently waved through.
+  3. The prompt needs a third, precisely-worded definition that
+     distinguishes "checkable against what we have" from "checkable
+     against what we're promising," without collapsing back into the
+     existing `false`/narrative bucket by accident.
+  4. Whether a forward commitment needs its OWN kind of evidence (an
+     internal roadmap/capability-commitment record - a knowledge-item
+     type that doesn't exist today) is itself unscoped - this is real
+     new product surface, not a field addition.
+- **Status: RESOLVED, post-B16, product decision made and implemented.**
+  Real options traced before building, three considered:
+  1. **Status quo, metric caveated instead of changed.** Zero code cost,
+     but permanently caps citation correctness below what a perfectly
+     evidenced proposal could ever reach, and conflates two different
+     kinds of "unsupported" (genuinely under-evidenced vs. structurally
+     un-groundable) under one status forever.
+  2. **A new `claim_kind` field (`"current"` / `"commitment"`),
+     orthogonal to `is_factual`, not a replacement.** Chosen. Traced
+     cost, corrected from this entry's own earlier estimate: a real
+     migration (`017_proposal_claim_kind`, additive column + CHECK
+     constraint, `server_default='current'`, same shape as 015/016
+     already applied this session without needing separate sign-off);
+     `ProposalClaimDraft`/`ProposalClaim`/`ProposalClaimTrace` and both
+     API response schemas each get the one new field, mirroring exactly
+     how `is_factual` already flows through every one of those layers;
+     the graph projector gets one more property in an already-generic
+     `MERGE ... SET n += row`; the prompt gets one new field definition,
+     worded to stay orthogonal to `is_factual` rather than collapse into
+     the existing narrative/`false` bucket. **The one cost this entry
+     originally over-estimated, corrected here:** `enforce_claim_
+     grounding` needs ZERO changes. The "keep commitments visible"
+     decision means a commitment claim is still `is_factual=true` and
+     goes through the exact same unsupported/grounded/needs_review logic
+     as any other factual claim - `claim_kind` never enters that
+     function at all, it only tags which bucket a future citation-
+     correctness measurement counts a claim into. Rejecting the
+     "exempt like narrative" alternative is what makes this true; had
+     that alternative been chosen instead, `enforce_claim_grounding`
+     WOULD have needed a new branch.
+  3. **Rejected alternatives, considered and traced:** a text-heuristic
+     classifier (regex/keyword matching on claim_text for "will"/"shall"
+     at read time, no schema change) - rejected as unreliable for
+     natural-language temporality and strictly worse than having the
+     model (which already has full context at draft time, in the same
+     structured call that already produces `claim_type`/`is_factual`)
+     tag it directly. Folding the distinction into `claim_type` instead
+     of a new column - rejected: `claim_type` and "is this forward-
+     looking" are orthogonal (a commitment can be `capability`,
+     `commercial`, etc.), so collapsing them would lose real information
+     for every commitment claim, the same reasoning this codebase
+     already applies to keeping `claim_type` and `evidence_links.
+     source_kind` as separate, unrelated vocabularies.
+  4. **Backfill:** every pre-existing claim defaults to `'current'` via
+     the migration's own `server_default` - correct and named as a real
+     limitation, not silently glossed over: there is no reliable way to
+     retroactively tell which historical claims would have been tagged
+     `'commitment'` without re-running the LLM against text that may
+     since have changed, so old rows simply stay exactly as measurable
+     as they always were.
+  5. **Not yet verified live:** the prompt change's real effect on model
+     behaviour (does a live Gemini call actually use `claim_kind`
+     sensibly, distinct from `is_factual`) needs a real LLM call to
+     confirm - not run this pass, same "flag before anything billed"
+     posture as every other live-model check this session.
+- **Test:** `tests/integration/test_proposal_service.py::
+  test_commitment_claim_with_no_evidence_is_unsupported_not_exempt` -
+  proves the actual guarantee end-to-end through the real service call:
+  a `claim_kind="commitment"` claim with `is_factual=true` and no
+  evidence persists `grounding_status="unsupported"`, never
+  `"not_required"` - the specific regression that would silently hide an
+  unbacked promise, which this fix's whole point was to avoid.
+  `tests/integration/test_schema_diff.py`'s own create_all()-vs-
+  alembic-migrated comparison passing is independent proof the new
+  migration and the ORM model agree, not just an assertion taken on
+  faith.
 
 ---
 
@@ -2033,35 +2395,228 @@ Each entry:
   concurrent transactions, not just code reading, to confirm the lost
   update actually happens under this project's real connection pool
   behavior).
-- **Idempotency-record acquisition is select-then-insert** (major finding
-  #4, `idempotency.py`): concurrent requests with the same key can both
-  observe "no existing record" and both proceed, or race into the unique
-  constraint. `expires_at` is stored but never consulted by any read path.
+- **Idempotency-record acquisition is select-then-insert - RESOLVED, B16
+  Tier 3.** (major finding #4, `idempotency.py`): concurrent requests
+  with the same key used to both observe "no existing record" and both
+  proceed, or race into the unique constraint as a raw 500. Fixed with
+  the established `except IntegrityError` / reread / recover pattern -
+  but this site turned out NOT to be the mechanical copy it looked like
+  (see the "sequential-retry tested, genuine concurrency untested"
+  standing-pattern entry below for why, and for the deeper, still-real
+  gap this fix's own scope stops short of: `expires_at` is stored but
+  still never consulted by any read path, so an abandoned `in_progress`
+  record now 409s every retry forever instead of silently duplicating -
+  surfaced loudly, not actually closed). Proven with a real concurrent
+  test (`tests/integration/test_idempotency.py::
+  test_concurrent_duplicate_idempotency_key_converges_to_one_tender_not_
+  two`, `asyncio.gather` against the real ASGI app).
 - **`knowledge_service.py`'s own import-row idempotency has the same
-  select-then-insert shape, at three call sites, not the one above's**
+  select-then-insert shape, at three call sites - RESOLVED, B16 Group 3.**
   (found by CodeRabbit's review of B13's own diff). `import_employee_
   master_row`, `import_certification_row`, and the resume-import path
-  each do `get_import_item_by_source_ref` then `create_import_item` as
+  each did `get_import_item_by_source_ref` then `create_import_item` as
   two separate awaits, not one atomic operation. The retry-resume fix
-  this pass made (KNOWN_LIMITATIONS.md's own "Knowledge imports are
-  neither retryable nor accurately observable," resolved-in-B13) covers
-  SEQUENTIAL retries correctly - a worker job re-processing the same
-  batch after a crash resumes past already-committed rows. It does not
-  cover TRUE CONCURRENT delivery of the same batch (two RQ workers, or
-  one worker's retry racing a still-running original attempt): both
-  could observe "no existing item" before either inserts, and the loser
-  crashes on `uq_knowledge_import_item_source_ref` instead of returning
-  the winner's row. Same root cause as the entry directly above, real
-  under this project's own RQ at-least-once delivery model, not yet
-  reproduced live (would need two genuinely concurrent deliveries of the
-  same batch, not just code reading, to confirm). **Owner: B16.** Not
-  B13's own fix, for the same reason the entry above is B16's and not
-  the pass that touched `idempotency.py`: an atomic insert-or-return
-  (Postgres `INSERT ... ON CONFLICT`, or `IntegrityError` recovery
-  inside a savepoint) is a real design decision about how this
-  project's concurrency-hardening pass wants to handle every
-  select-then-insert site at once, not a one-file patch to make
-  quietly during an unrelated block.
+  from B13 covered SEQUENTIAL retries correctly but not TRUE CONCURRENT
+  delivery of the same batch (two RQ workers, or one worker's retry
+  racing a still-running original attempt): both could observe "no
+  existing item" before either inserts, and the loser crashed on
+  `uq_knowledge_import_item_source_ref` instead of returning the
+  winner's row. Fixed with a narrower step than `document_document
+  create_document`'s own reread-after-rollback (deliberately, per this
+  entry's own earlier note that these three sites are a "genuinely
+  harder version" of the same problem): `_claim_or_resume_import_item`
+  does ONLY the claim (get-or-insert-with-IntegrityError-recovery,
+  returning `needs_resolution: bool`), before any of the substantial
+  duplicate-resolution work that used to run inside the same insert's
+  transaction - so a reread after a lost race returns the winner's
+  actual claimed row, not one still mid-resolution. Also fixed a real,
+  separate, pre-existing bug found as a side effect: `import_resume` had
+  NO `get_import_item_by_source_ref` retry-resume check at all before
+  this pass (unlike its two siblings) - a plain sequential retry, not
+  just a concurrent one, would always have crashed it. Proven with three
+  new tests, one per call site (`tests/integration/
+  test_knowledge_service.py::test_import_employee_master_row_concurrent_
+  delivery_converges_not_crashes` /
+  `test_import_certification_row_concurrent_delivery_converges_not_
+  crashes` / `test_import_resume_concurrent_delivery_converges_not_
+  crashes`, `asyncio.gather` on two identical real calls each).
+  **Owner was B16, as this entry originally said - completed there,**
+  not folded quietly into an unrelated pass.
+- **A second, DEEPER select-then-insert race under the same three call
+  sites, found by the very tests written for the fix above, not
+  anticipated in the design - RESOLVED the same pass.** Claiming the
+  import_item row is not the only insert in these three functions:
+  `_claim_or_resume_import_item`'s own `needs_resolution=True` result
+  means two concurrent callers can each independently run the
+  duplicate-candidate query, each see it empty, and each legitimately
+  decide "this is a NEW employee/certification" for the SAME content
+  fingerprint - then both call `create_employee`/`create_certification`,
+  and the loser crashes on `uq_knowledge_item_fingerprint` instead of
+  converging on the winner's row. Confirmed live, not assumed: 2 of the
+  3 new concurrency tests failed with exactly this traceback before this
+  second fix existed. Same `except IntegrityError` / rollback / reread
+  pattern as every other site in this cluster, but each wrapped in its
+  own dedicated helper (`_create_or_get_employee`, `_create_or_get_
+  certification`) with its OWN separate `UnitOfWork` - deliberately, not
+  reusing the caller's transaction, because an `IntegrityError` here must
+  not poison the caller's still-open transaction, which still has
+  `update_import_item`/`associate_knowledge_item_chunks` work left to do
+  after this returns. `import_certification_row`'s version has one
+  further wrinkle the employee ones don't: it fabricates its own
+  synthetic `source_chunk_id` (`_create_synthetic_chunk`) rather than
+  reusing an already-committed document chunk, so the chunk is created
+  INSIDE the same transaction as the certification insert, not on the
+  caller's - otherwise a losing racer's chunk would already be committed
+  (a different connection/transaction) by the time the certification
+  insert's `IntegrityError` fires, leaving an orphaned, never-referenced
+  `document_chunks` row behind on every lost race instead of rolling
+  back cleanly with it. Same three tests as the entry above prove this
+  (all 3 now pass; the certification and resume tests were the ones that
+  originally caught it).
+  found live by B16's own concurrent-uploads load test, not by
+  inspection, and RESOLVED the same pass.** Two genuinely concurrent
+  uploads of byte-identical content both pass `get_by_tender_and_hash`/
+  `get_by_org_and_hash` before either commits, both attempt
+  `uow.documents.create(...)`, and the loser used to propagate an
+  unhandled `IntegrityError` on `uq_tender_document_hash`/
+  `uq_org_document_hash` as a bare 500 - confirmed with a real traceback
+  from 20 genuinely concurrent uploads (`asyncio.gather` against the real
+  ASGI app), not simulated. **Fixed with the exact pattern
+  `readiness_service.py`'s own `evaluate_readiness` race already
+  established**: `except IntegrityError: await uow.rollback()`, reread
+  via a fresh `UnitOfWork`, return the winner's row - re-raise only if
+  the reread genuinely finds nothing (the same "constraint just fired,
+  not finding the row a moment later would be a different, more
+  exceptional problem" reasoning). Verified: the load test's own 20-
+  concurrent-upload run now passes cleanly (all 2xx, dedup converges to
+  the correct distinct-content count, no corruption), and a dedicated
+  regression test
+  (`tests/integration/test_document_service.py::
+  test_concurrent_identical_uploads_converge_to_one_document_not_a_500`)
+  covers it directly - `asyncio.gather` on two real `create_document`
+  calls, asserting neither raises and both resolve to the same row.
+  **Checked whether the other four sites above share enough shape to fix
+  in the same pass, not assumed either way:** `idempotency.py`'s site is
+  the same shape as this one - a single insert immediately followed by
+  return, no intervening work - and would take the identical fix
+  mechanically. The three `knowledge_service.py` sites are a genuinely
+  harder version of the same problem, not a trivial extension of this
+  fix: `create_import_item` is followed by substantial further work
+  (duplicate-resolution branching, conditional updates, sometimes a
+  second `create_employee`/`create_certification` call) before commit,
+  all inside the same transaction - a reread immediately after rollback
+  could race ahead of the winner's own still-open transaction and return
+  a row mid-resolution, not the finished one. Fixing those three needs
+  real design work (a narrower insert-or-detect step before the rest of
+  the resolution logic runs, not a bare reread), not a copy of this
+  pattern - left for their own pass, per this cluster's own existing
+  "Owner: B16" note above, not folded in here.
+- **A second, independent bug found investigating the first: the ORM
+  model was missing the very constraint the fix depends on, so no
+  `pytest`-built database could ever exercise this race at all until
+  now.** Writing the regression test above surfaced that
+  `db/models/document.py`'s `Document.__table_args__` never declared
+  `uq_tender_document_hash`/`uq_org_document_hash` - migration
+  `003_documents.py` created them directly as partial unique indexes
+  (`op.create_index(..., unique=True, postgresql_where=...)`), and
+  nothing ever mirrored that in the ORM model. `Base.metadata.
+  create_all()` (every `pytest` integration test database, this
+  project's own established pattern) only creates what the model
+  declares - so every prior test run of this project's entire suite has
+  been missing both constraints entirely, silently. Confirmed directly:
+  the first version of the new regression test above passed its
+  "neither call raises" assertion but FAILED "both calls resolve to the
+  same row" - two real, separate document rows got created for
+  identical content, something the real deployed schema (migrated via
+  Alembic) would never allow. Fixed by adding both as `Index(...,
+  unique=True, postgresql_where=...)` in `__table_args__`, matching
+  `outbox.py`'s own existing partial-index precedent in this same
+  codebase - `Base.metadata.create_all()` now creates them, matching the
+  real migrated schema. Same underlying risk this file's own CI entry
+  already names ("integration tests build schema via `Base.metadata.
+  create_all`, which can pass even with broken Alembic migrations") -
+  this is the mirror image of it: not a broken migration going
+  unverified, but a model that drifted out of sync with a working one,
+  silently narrowing what every test in this project could ever catch.
+  **The wider audit this entry named as unperformed - done, before B16
+  closes, since a constraint invisible to `create_all()` is an
+  invariant no test in this project's history could verify, which bears
+  directly on the release-gate condition "no invariant failure
+  remains."** Mechanical: every `op.create_index`/`op.create_check_
+  constraint`/`op.create_unique_constraint`/`op.create_foreign_key` call
+  across all 14 migration files, diffed against what each corresponding
+  model actually declares (not against what a migration's own comment
+  claims). Found 8 standalone constraint/index-adding calls total beyond
+  plain non-unique performance indexes (those don't represent an
+  invariant a test could fail to catch, so weren't in scope for this
+  question) and FK columns declared inline on the column itself (a
+  different, much lower-risk shape than a partial unique index, which
+  has no inline-column equivalent and must live in `__table_args__` or
+  nowhere): `fk_audit_events_workflow_run_id` (correct - `audit.py`
+  declares it inline, with its own comment explaining the retroactive-
+  migration history), `ck_agent_trace_scope` (correct - `agent_trace.py`
+  has it verbatim), `fk_import_item_target` (correct - `knowledge.py`
+  declares it inline on `KnowledgeImportItem.target_knowledge_item_id`),
+  `ck_redteam_finding_resolution_source` (correct - `redteam.py` has
+  it), plus the two `documents` ones above (fixed). **One more gap
+  found: `uq_employee_code_per_org`** (migration `005_knowledge.py`,
+  same partial-unique-index shape, `WHERE employee_code IS NOT NULL`) -
+  never declared on `Employee.__table_args__` either. Fixed the same
+  way, same pass: added as `Index(..., unique=True, postgresql_
+  where=...)`, matching the `documents`/`outbox` precedent exactly.
+  Proven with a direct test (`tests/integration/test_knowledge_service.
+  py::test_uq_employee_code_per_org_is_enforced_at_the_database_level`,
+  two repository-level `create_employee` calls, same org + employee_code,
+  asserting the second raises `IntegrityError`) - independent of
+  `resolve_employee_duplicate`'s own application-level dedup, which is a
+  separate mechanism already tested elsewhere and doesn't prove the
+  database-level invariant itself.
+  **Checked, not assumed, whether any prior finding rested on behavior
+  the real schema would have rejected - it doesn't.** Every
+  `create_employee` call site across the whole test suite (14 files)
+  either passes no `employee_code` at all (the partial index only
+  applies `WHERE employee_code IS NOT NULL`, so these were never
+  affected regardless of count) or creates exactly one coded employee
+  per org; the one CSV-import test that creates two coded employees in
+  one org uses two different codes (`EMP-01`/`EMP-02`); the retry-
+  idempotency test that reuses `EMP-01` calls the import path twice for
+  the SAME row and asserts it does NOT create a second employee - the
+  behavior under test is retry-safety, not something that would create a
+  real duplicate either way. Checked the live dev database directly too
+  (`GROUP BY organization_id, employee_code HAVING count(*) > 1`): zero
+  rows. Résumé/master-row import sat at the center of this session's own
+  citation-correctness investigation - worth having actually checked
+  that nothing there depended on this gap, not just assumed it, given
+  how much else in that investigation turned on exactly this kind of
+  distinction.
+  ---
+  **This audit is a scorecard-level finding in its own right, not three
+  isolated fixes, and belongs in the scorecard framed as one.** For all
+  sixteen prior blocks, every test database in this project's history
+  was built from model declarations that were missing three real
+  constraints the deployed (migrated) schema has enforced the entire
+  time. "Tests pass" therefore meant, precisely, "tests pass against a
+  schema weaker than production" - not that the invariants those three
+  constraints represent were ever actually exercised by anything this
+  project calls a test, on any of those constraints, until this pass.
+  All three gaps shared one shape (a partial unique index - the one
+  constraint type with no inline-column form, so the one form most
+  likely to be declared only in a migration and never mirrored on the
+  model) and all three were fixed declaratively - nothing found here
+  needed a different mechanism.
+  **The mechanism that allowed this is unchanged and will produce a
+  fourth.** `Base.metadata.create_all()` reads models; migrations create
+  the real schema; nothing reconciles the two, and nothing did before
+  this pass either - this audit is a snapshot, not a standing guarantee.
+  The next migration that adds a constraint via a standalone `op.*` call
+  without updating its model reintroduces the identical gap, silently,
+  the same way these three did. **What would prevent recurrence, not
+  built now:** a test that spins up two schemas - one via `Base.metadata.
+  create_all()`, one via a real `alembic upgrade head` - and diffs their
+  constraint/index sets, failing loudly on any difference. A real
+  candidate for B17 or its own follow-up, not something to build as a
+  side effect of an audit that was already scoped to "enumerate, diff,
+  fix the declarative gaps."
 - **Tender creation and idempotency-record completion are two separate
   commits** (major finding #7): a crash between them lets a retry create
   a second tender. Real for `create_tender` specifically; some other
@@ -2073,14 +2628,137 @@ Each entry:
   *same* `state_version` partially rewrites the graph and then fails, the
   prior completed run's row is what `get_latest_completed_run` still
   returns, but the graph underneath it may now be the partially-rewritten
-  one, not the one that run originally produced.
-- **Re-ingestion destroys stable chunk provenance** (major finding #9,
-  `jobs/ingestion.py`'s delete-then-recreate of `document_chunks`):
-  knowledge-item/requirement provenance pointing at the old chunk ids
-  goes through `ON DELETE SET NULL`, and a requirement still referencing
-  a chunk can make the delete step itself fail. Concurrent workers
-  re-ingesting the same document is a real path (not hypothetical) via
-  the ordinary upload flow.
+  one, not the one that run originally produced. **Reproduced live, B16**
+  (`tests/integration/test_graph_projection.py::
+  test_a_damaged_graph_still_reads_as_fresh_reproduced_not_fixed`) -
+  `check_freshness` settles freshness with exactly one comparison, two
+  Postgres integers, never Neo4j content.
+  **A cheap-looking partial fix was considered and rejected as
+  inadequate, not half-built - checked against the real write order, not
+  assumed sufficient.** The obvious narrow version - verify a `Tender`
+  node exists in Neo4j with the matching `state_version` - looked like a
+  small, safe addition (one extra query) that would catch the exact
+  reproduction above (`delete_tender_scoped_subgraph` removes the Tender
+  node itself, among the other 6 tender-scoped labels). Checked directly
+  against `projector.py`'s own real sequence: `merge_tender_nodes` (the
+  Tender node's own recreation) is the FIRST write after the delete,
+  before Requirement/Evidence/Compliance/Role/ProposalClaim/
+  ProposalSection are recreated - meaning a crash anywhere in that much
+  larger remaining window (statistically the more likely place for a
+  real crash to land, not the narrow gap before the Tender node itself is
+  written) would leave the Tender node showing the CORRECT, matching
+  `state_version` while children are still missing or stale, and the
+  narrow check would report fresh anyway. Implementing it would have
+  looked like real progress while covering only a small slice of the
+  actual risk - worse than naming the gap, since it invites false
+  confidence the next reader wouldn't have reason to question.
+  **FIXED, post-B16.** Built exactly what was named, once the real
+  effort turned out to be well under the day-long threshold that would
+  have deferred it: `nodes.mark_projection_complete` sets a
+  `projection_complete` property on the Tender node as the genuinely
+  LAST statement of `project_tender`'s write sequence (a new step 9,
+  after `merge_used_in`, before the step-10 count verification read).
+  Reuses the Tender node itself rather than a separate marker node -
+  deliberate, not just convenient: that node is already deleted-and-
+  recreated every run (`delete_tender_scoped_subgraph`'s own tender-
+  scoped label set includes `Tender`), so a stale marker surviving from
+  a PRIOR successful run is structurally impossible, not merely
+  unlikely - there's no prior Tender node left to read once the delete
+  has happened. `queries.is_projection_complete` reads it back
+  (`state_version` matches AND the property is `true`); `check_freshness`
+  now requires both a Postgres session AND a Neo4j session and checks
+  both, raising `GraphStaleError(reason="damaged")` - a distinct reason
+  from a genuine version mismatch, so a log reader isn't misled into
+  thinking the versions disagreed when they didn't.
+  **The latency/ripple cost this entry itself flagged turned out
+  smaller than expected, checked directly rather than assumed:** all
+  three of `check_freshness`'s real callers (`preview_impact`,
+  `find_contradictions`, `get_graph_trace`) already opened their own
+  Neo4j session immediately AFTER calling `check_freshness` - the fix
+  is to open that SAME session first and pass it in, not add a second
+  connection. One caller outside `graph_service.py` itself
+  (`readiness_service.py`'s stale-graph blocker) had no Neo4j session
+  of its own and needed one added - a real, if small, ripple, not
+  zero-cost, but contained to one call site. `get_graph_status` (never
+  raises, by its own contract) folds the same check into its `fresh`
+  boolean instead of raising.
+  **Test:** the original reproduction test
+  (`test_a_damaged_graph_still_reads_as_fresh_reproduced_not_fixed`) is
+  now `test_a_damaged_graph_is_now_correctly_detected_fixed` - same
+  exact reproduction (`delete_tender_scoped_subgraph` called directly),
+  assertion inverted: `check_freshness` now raises with
+  `reason="damaged"` instead of silently returning the stale-but-
+  matching run. New sibling `test_get_graph_status_reports_not_fresh_
+  for_a_damaged_graph` covers the never-raises reader. Every other
+  existing graph/readiness test (46 total across
+  `test_graph_projection.py`/`test_readiness_service.py`/`test_graph_
+  routes.py`/`test_readiness_routes.py`) still passes unchanged,
+  confirming the marker doesn't disturb a normal, undamaged projection.
+- **Re-ingestion destroys stable chunk provenance - FIXED, post-B16**
+  (major finding #9, `jobs/ingestion.py`'s delete-then-recreate of
+  `document_chunks`).
+  **Established which of the two named problems actually fires, and
+  under what conditions, before proposing a fix - by reading every real
+  FK to `document_chunks.id` directly, not assumed from the entry's own
+  original framing:** three tables (`Requirement.source_chunk_id`,
+  `SubmissionItem.source_chunk_id`, `RoleRequirement.source_chunk_id`)
+  have **no `ondelete` clause at all** - Postgres defaults to blocking
+  the delete outright (`Requirement`'s own column is additionally
+  `NOT NULL`, so `SET NULL` was never even an option for it). Two other
+  tables (`KnowledgeItem.source_chunk_id`, `EvidenceLink.source_chunk_
+  id`) DO use `ON DELETE SET NULL`. **Both failure modes are real, but
+  for different document categories, not a single shared mechanism:**
+  RFP-side documents (real `Requirement`/`RoleRequirement`/
+  `SubmissionItem` rows extracted from them) hit a hard, reachable FK
+  violation on reprocess; company-side documents (résumés,
+  certifications - no such rows ever reference their chunks) silently
+  lose provenance instead. **Confirmed reachable via the real, already-
+  built, already-tested route, not a hypothetical path**:
+  `POST /documents/{id}/reprocess` (`document_service.
+  reprocess_document`) has no guard whatsoever checking whether the
+  document already has real extracted data before re-enqueuing
+  ingestion - any ordinary reprocess of an already-extracted RFP would
+  hit this.
+  **Fix chosen, no schema change needed (`document_chunks` already
+  carries a real `UNIQUE (document_id, content_hash)` constraint, plus a
+  `content_hash` column, exactly the identity key this fix needed):**
+  `_persist_chunks` (`jobs/ingestion.py`) now reconciles by
+  `content_hash` instead of a blanket delete-then-reinsert - a chunk
+  whose content_hash still matches a fresh re-parse is UPDATED IN PLACE
+  (`DocumentRepository.update_chunk`, same row, same id), not deleted
+  and recreated with a fresh one. Every FK pointing at it - the
+  NOT-NULL-blocked ones and the SET-NULL-silenced ones alike - is simply
+  never disturbed for unchanged content, which is the overwhelmingly
+  common real trigger for reprocessing (a retry after a transient parse
+  failure, not a genuinely edited source document). Only genuinely NEW
+  content gets inserted; only genuinely GONE content gets deleted
+  (`DocumentRepository.delete_chunks`, by id, replacing the now-dead
+  `delete_chunks_for_document` - removed, not left unused, once its one
+  caller stopped calling it). A delete at that point is correct, not a
+  regression: a citation pointing at content no longer in the source
+  document should go stale exactly as it does today.
+  **Deliberately not fixed further, named as real remaining scope, not
+  silently absorbed:** a requirement whose cited chunk's content
+  genuinely CHANGED still hits the same `Requirement` FK block on
+  reprocess - narrower and more legitimate now (only for real content
+  changes, not every reprocess), but still a hard failure. What that
+  citation should do when the source text it pointed at is gone is a
+  real, separate re-extraction-cascade question (does the requirement
+  get flagged for human re-review? re-extracted automatically?), out of
+  this fix's own scope.
+  **Test:** `tests/integration/test_document_ingestion.py` - two new
+  tests: `test_reingestion_reuses_chunk_ids_for_unchanged_content`
+  (chunk ids are IDENTICAL across two real ingestion passes, not just
+  their content_hash/chunk_index, which the pre-existing `test_
+  reingestion_does_not_duplicate_chunks` already checked but never
+  proved identity itself) and `test_reprocessing_a_document_with_a_
+  real_requirement_citation_no_longer_fails` (a real `Requirement` row
+  created citing a real chunk, then the SAME document reprocessed - before
+  this fix, a real `ForeignKeyViolationError`; now succeeds, and the
+  requirement's own `source_chunk_id` is unchanged, not nulled, not
+  dangling). All 10 tests in the file pass, including every pre-existing
+  one, unchanged. Full suite 585 passed; `uv run mypy` 59/12/243
+  unchanged.
 - **Workflow retry controls are inert** (major finding #17):
   `retry_budget_remaining`/`max_attempts` exist in `TenderState`/
   `WorkflowTask` but nothing reads or decrements either, and nothing
@@ -2139,12 +2817,398 @@ Each entry:
   Building the actual retry mechanism (reading `retry_budget_remaining`,
   requeuing instead of failing outright) remains open, exactly as this
   entry already named it.
-- **Outbox events are not claimed atomically** (major finding #22,
-  `db/repositories/outbox.py`/`outbox_dispatcher.py`): select-then-enqueue
-  with no `FOR UPDATE SKIP LOCKED` - two dispatcher instances could both
-  claim the same pending event. Lower real-world impact if the deployment
-  only ever runs one dispatcher, but nothing in the code enforces that
-  assumption.
+  **B16 Group 4: the semantics question DECIDED and implemented -
+  `orchestration/retry.py::classify_task_failure`, not merely
+  scaffolded.** Real policy, per exception type: `RateLimitedError`
+  honors the provider's own `retry_after_seconds` when Gemini supplied
+  one, else this module's own 30s-base/2x/120s-cap task-level backoff
+  (deliberately coarser than `gemini_adapter.py`'s own 5s-base call-level
+  backoff - a task-level retry needs to wait longer than the call layer
+  already did before giving up); `TransientProviderError` gets the same
+  task-level backoff; `MalformedOutputError` and `ModelNotFoundError` are
+  terminal, never retried at this layer (the former because a bare retry
+  would resend an identical prompt to this project's temperature=0
+  models with little chance of a different outcome; the latter per I4's
+  own explicit "no automatic retry" for a config error); any other
+  exception (no existing classification - a DB error, a bug) gets
+  exactly one conservative retry at a fixed 15s delay, bounded by
+  `max_attempts` rather than never retried at all. Both ceilings
+  (`max_attempts` per-task, `retry_budget_remaining` whole-run-shared)
+  are checked first and win unconditionally. 9 new unit tests
+  (`tests/unit/test_retry_classification.py`, pure function, no LLM
+  cost, no DB) cover every branch plus both ceilings independently.
+  ruff-clean, mypy-clean (59/12 baseline held), full suite 557 passed.
+  **B16 Group 1: WIRED, real production callers now exist - this is no
+  longer "capability exists, nothing calls it" (this project's own
+  standing pattern, sixth instance before this fix, closed here).**
+  The instructed design was "requeue the task via RQ, don't re-enter the
+  node." Checked directly against this codebase's real RQ/LangGraph
+  boundary before implementing, not assumed: **there is no per-node RQ
+  job to requeue.** `run_workflow`/`resume_workflow` are the only two RQ
+  jobs in the whole orchestration system - each runs the ENTIRE graph
+  (`graph.ainvoke(...)`, every node, every `Send()`-dispatched parallel
+  branch) as one job. A specialist node like `commercial_analysis_node`
+  is a plain Python function LangGraph calls in-process; it was never
+  independently RQ-enqueued, so "retry just that task via RQ" isn't a
+  granularity this architecture has. Reported this rather than building
+  something that looked like the instruction but didn't match the real
+  code, per this session's own standing instruction to say so and pick
+  the better option:
+  **What was actually built - RQ-level retry of the whole run, narrowed
+  back down by LangGraph's own checkpointing:** a new `retry_workflow_run`
+  job (`jobs/workflow.py`) resumes the SAME checkpointed thread with
+  `graph.ainvoke(None, config)` - LangGraph's own idiom for "continue
+  from the last committed checkpoint, no new input." A crashed super-step
+  never gets checkpointed in the first place (LangGraph commits a whole
+  super-step atomically, unlike Neo4j's own per-statement auto-commit
+  that major finding #8 above had to work around) - so resuming
+  naturally re-executes only the super-step that failed, not the whole
+  workflow from scratch. This also gives the sibling-branch-abort
+  question (trigger event 2, still not independently re-confirmed) a
+  coherent answer without solving it directly: if a failed super-step
+  really does discard ALL of its `Send()`-dispatched branches together
+  (not just the one that raised), resuming that same super-step
+  naturally retries all of them together too - consistent with, not
+  contradicting, whatever LangGraph's own real fan-out-failure semantics
+  turn out to be.
+  `_handle_graph_failure` (shared by `run_workflow`/`resume_workflow`/
+  `retry_workflow_run`'s own except blocks) classifies the exception
+  against the most recently failed `WorkflowTask` for the run (the one
+  whose own `mark_task_failed` call put it there) and schedules the
+  retry via `Queue.enqueue_in` - real RQ infrastructure, real backoff
+  (`classify_task_failure`'s own `delay_seconds`), survives a worker
+  crash (once `enqueue_in` returns, the schedule lives in Redis, not
+  this process). Does NOT re-enter the failed node in-process - no node
+  function is called directly by the retry path at all, only the
+  compiled graph's own `ainvoke`. Still re-raises after scheduling a
+  retry (this attempt stays inspectable in RQ's own failed-job registry,
+  I4's "failed jobs remain inspectable"); only skips `sync_run_status(
+  "failed")` when a retry was actually scheduled.
+  **A second real deviation, found while wiring, not assumed away:**
+  `TenderState.retry_budget_remaining` - the field major finding #17
+  originally named - lives inside LangGraph's own checkpointed state,
+  not a plain column. Nothing outside a running `graph.ainvoke()` call
+  can read or decrement it without re-deriving LangGraph's own
+  checkpoint-serialization format. New migration
+  `016_workflow_run_retry_count` adds `workflow_runs.retry_count` - a
+  real, plain, mutable Postgres column - as the actual countdown;
+  `retry_budget_remaining`'s own seed value (10) is reused as a constant
+  ceiling, read at decision time, not as the live counter.
+  `TenderState.retry_budget_remaining` itself stays exactly as inert as
+  before this fix - a second, still-open residual of major finding #17,
+  now named precisely rather than left implicit.
+  RQ's own scheduler had to be turned on for this to work at all -
+  `apps/worker/.../worker.py`'s `Worker.work()` call now passes
+  `with_scheduler=True`; without it, `enqueue_in` jobs land in RQ's
+  scheduled-jobs registry and sit there invisibly forever, since nothing
+  promotes them to a real queue for a worker to dequeue. Caught by
+  reading RQ's own `Worker.work` signature directly, not assumed
+  default-on.
+  **Test:** `tests/integration/test_workflow_retry.py`, 5 new tests,
+  real Postgres AND real Redis (no LLM cost - `classify_task_failure` is
+  pure) - a retryable failure schedules a real, fetchable RQ job in
+  Redis's own scheduled-jobs registry and bumps `retry_count`; a
+  terminal one schedules nothing; the run-level and per-task ceilings
+  each independently override an otherwise-retryable exception; no
+  failed task on record returns cleanly rather than crashing. All 52
+  pre-existing tests touching `run_workflow`/`resume_workflow`
+  (`test_outbox_dispatcher.py`, `test_workflow_api.py`, `test_gates_
+  routes.py`, `test_orchestration_nodes.py`, `test_graph_execution.py`)
+  still pass unchanged. mypy 59/12/243 baseline held; full suite 568
+  passed.
+  **The sibling-branch-abort question (trigger event 2) - RESOLVED,
+  post-B16, confirmed directly rather than left as a coherent-sounding
+  guess.** Read LangGraph 1.2.10's own installed source first
+  (`.venv/Lib/site-packages/langgraph/pregel/_runner.py`), stated an
+  expectation, then reproduced it live with a `FakeLLMClient`-scripted
+  graph run, not just inspection:
+  - **LangGraph's own design, not this graph's construction.**
+    `_should_stop_others`'s own docstring is unambiguous: *"Check if any
+    task failed, if so, cancel all other tasks."* The async `tick()` loop
+    backs it up structurally - it waits on `asyncio.wait(futures,
+    return_when=FIRST_COMPLETED)`, and the moment one done future carries
+    an unhandled, non-`GraphBubbleUp` exception with no registered
+    per-node error handler (this graph registers none), it breaks the
+    wait loop and calls `.cancel()` on every future still in-flight.
+    `compliance_analysis`/`talent_analysis`/`commercial_analysis` are all
+    `Send()`-dispatched into the same Pregel super-step (`graph.py`'s own
+    comment already said so), so this applies to exactly the three
+    branches trigger event 2 was about.
+  - **First repro attempt was itself a real lesson in why the live
+    B16 observation and a naive test aren't the same experiment.**
+    With no artificial delay, `compliance_analysis`/`talent_analysis`
+    actually WON the race and completed before `commercial_analysis`'s
+    near-instant, zero-await failure was even detected - the fixture
+    tender had no requirements, so both siblings' own per-item loops ran
+    zero iterations and finished near-synchronously. B16's real trigger
+    was different in exactly this dimension: `compliance_analysis` was
+    genuinely mid-flight through dozens of real per-requirement Gemini
+    calls (real network latency) when the quota collision hit elsewhere.
+    Reproduced faithfully with a `_SlowUnitOfWork` wrapper (one real,
+    cancellable `asyncio.sleep()` at the first line of each sibling's
+    real body) rather than declared unreproducible.
+  - **Confirmed, with the delay in place:** `commercial_analysis` fails
+    and marks itself `'failed'` via its own except-block; `compliance_
+    analysis`/`talent_analysis` get asyncio-cancelled by LangGraph
+    mid-sleep, and since `asyncio.CancelledError` is a `BaseException`,
+    not an `Exception`, their OWN `except Exception:` blocks never fire
+    either - `mark_task_failed` never runs for them. Also confirmed
+    directly, not assumed: no code anywhere in this codebase ever sets
+    `WorkflowTask.status='running'` or `.started_at` (grepped - only
+    `create_task`/`mark_task_completed`/`mark_task_failed` exist), so a
+    cancelled-mid-flight task and one that never got scheduled at all are
+    indistinguishable from the row alone, both simply `'pending'` -
+    which is exactly why B16's own observation ("both at status=
+    'pending' with no started_at") could describe the symptom but
+    couldn't by itself distinguish the two explanations.
+  - **Does Group 4's retry work change it? Yes, confirmed directly, not
+    assumed from the design.** Calling `retry_workflow_run` (the same
+    function the real scheduled RQ job would call) resumes the exact
+    same LangGraph checkpoint thread, and ALL THREE tasks - not just the
+    one that raised - reach `status == 'completed'`. Resuming an aborted
+    super-step re-executes the WHOLE super-step, cancelled siblings
+    included, not only the task whose exception triggered the abort.
+    This closes trigger event 2's own real risk for a run that hasn't
+    checkpointed past this super-step yet - the only case that matters,
+    since a super-step's writes aren't committed to the checkpoint until
+    every task in it completes.
+  - **A second, more severe finding surfaced by the FIRST repro attempt,
+    before the delay fix, not by inspection:** a sibling cancelled
+    mid-flight through a real `UnitOfWork`/asyncpg connection leaves that
+    connection in a broken state; `db/session.py`'s engine had no
+    `pool_pre_ping`, so the pool silently handed the broken connection to
+    the very NEXT, completely unrelated query, which failed with a raw
+    `InterfaceError: connection is closed` that looked like an unrelated
+    bug in whatever code happened to draw it next. **FIXED:**
+    `create_async_engine(settings.postgres_dsn, pool_pre_ping=True)` -
+    the standard SQLAlchemy remedy for a connection invalidated by
+    something outside the pool's own visibility, verified to actually
+    fix the observed cascading failure by rerunning the same repro, not
+    assumed correct from the docs alone. This is real, not test-only:
+    the same engine/pool singleton is used by the real long-lived worker
+    process across every job it ever handles, so any production
+    sibling-cancellation event (which the confirmation above shows is a
+    real, by-design LangGraph behavior, not a rare edge case) could have
+    poisoned the pool for an unrelated later job.
+  **Test:** `tests/integration/test_graph_execution.py::
+  test_one_failing_specialist_branch_cancels_its_still_running_siblings` -
+  drives the real compiled graph through `run_workflow`/`resume_workflow`/
+  `retry_workflow_run`, asserts on real `WorkflowTask` rows, not a mock of
+  LangGraph's own runner. Full suite 587 passed; mypy 59/12/244 baseline
+  held (244, not 243 - migration 017 from the claim_kind fix earlier this
+  pass is a new source file, not a regression).
+- **Outbox events are not claimed atomically - FIXED, post-B16** (major
+  finding #22, `db/repositories/outbox.py`/`outbox_dispatcher.py`): was
+  select-then-enqueue with no `FOR UPDATE SKIP LOCKED` - two dispatcher
+  instances could both claim the same pending event. The fifth instance
+  of this project's own "sequential retry tested, genuine concurrency
+  untested" standing pattern - reproduced live, not just fixed on
+  inspection, per instruction.
+  **Fix: `OutboxRepository.claim_by_id(event_id, max_attempts)` -
+  `SELECT ... WHERE id = :event_id ... FOR UPDATE SKIP LOCKED`, called
+  once per event from a FIXED candidate list built at the start of each
+  `_dispatch_once()` call.** Real design correction made along the way,
+  not shipped as first written: the first version claimed "whatever's
+  next" (`ORDER BY available_at LIMIT 1 FOR UPDATE SKIP LOCKED`, in a
+  loop) rather than by a fixed id list - caught by the EXISTING test
+  suite, not the new concurrency test: `test_redis_unavailable_does_
+  not_lose_the_event_or_touch_the_db_write` failed with `attempt_count
+  == 3`, not the expected `1`. Root cause, traced not guessed: that
+  version's own loop could re-claim the SAME just-failed event several
+  times within ONE `_dispatch_once()` call once its own short backoff
+  (`_backoff_seconds(0) == 1.0s`) elapsed mid-loop - a fix for
+  concurrency that broke an already-correct sequential/backoff
+  guarantee, the inverse failure mode of the pattern this fix was
+  closing. Corrected to claim a fixed list of candidate ids (read once,
+  unlocked - the real protection is per-event, at claim time), so each
+  event is attempted at most once per invocation, matching the pre-fix
+  behavior exactly, while `FOR UPDATE SKIP LOCKED` still gives the real
+  cross-dispatcher protection that behavior never had.
+  **Test:** `tests/integration/test_outbox_dispatcher.py::
+  test_two_concurrent_dispatchers_claim_each_event_exactly_once` - two
+  real, concurrent `_dispatch_once()` calls (`asyncio.gather` against
+  real Postgres, the same technique that proved every other race in
+  this project's own record) against 10 real pending events, `Queue.
+  enqueue` wrapped to record every attempt by `job_id` - asserts each
+  event's job was enqueued exactly once across both concurrent runs
+  combined, not just that the final DB status looks right (which is
+  idempotent either way and wouldn't distinguish "claimed once" from
+  "claimed twice, both writes landed"). All 4 tests in the file pass,
+  including the pre-existing Redis-unavailable test that caught the
+  first attempt's own regression. Full suite 583 passed; `uv run mypy`
+  59/12/243 unchanged.
+- **`[I5]` Cost budget enforcement - RESOLVED, post-B16. A spec deviation
+  now closed, not a feature added.** I5 (Build Guide `:2755-2763`,
+  verbatim): *"Every workflow tracks estimated model cost. When
+  projected cost exceeds `MAX_TENDER_COST_USD`: pause, show current
+  progress, require bid-manager approval to continue."* `MAX_TENDER_COST_
+  USD` sat in `.env.example`/`.env` for 16 blocks reading like a real,
+  enforced cap while this gate was never built at all - undetected the
+  same way the `preview_impact`/`USED_IN` gap was: spec names a real
+  behaviour, code never builds it, nothing records the deviation until
+  someone checks. Only discoverable once cost tracking itself became
+  real this same pass (`agents/llm/gemini_adapter.py`'s price table) -
+  there was no number to enforce against before that.
+  **Design options traced before building, one chosen:** the three
+  originally on the table (hard stop mid-run; finish in-flight, refuse
+  new work; alert-only) were all superseded once I5's own text was read
+  directly - it specifies a fourth shape, a real human-approval gate,
+  the same mechanism already proven six times over in this graph. It
+  beats all three: not a hard stop (this session's own sibling-
+  cancellation investigation, major finding #17's own entry, already
+  showed mid-flight interruption leaves `WorkflowTask` rows in an
+  ambiguous, unrecoverable state - deliberately not reproduced here);
+  not silent refusal (a human sees real progress and decides); not
+  alert-only (it actually blocks new work by default). Cheaper to build
+  too - reused fully generic, already-tested machinery
+  (`orchestration/gates.py`, `GateRepository.create`,
+  `interrupt()`/`Command(resume=...)`) instead of inventing a new
+  control-flow shape.
+  **Where the budget lives, an explicit interpretive call:** one global
+  `settings.max_tender_cost_usd`, not per-org/per-tender-configurable -
+  matches every other numeric `Settings` field in this codebase.
+  Accounting is per-WORKFLOW-RUN (`agent_traces.workflow_run_id`), not
+  per-tender lifetime and not per-org - a real, deliberate divergence
+  from the old env var's own literal name ("TENDER"): a tender can have
+  multiple runs (after cancellation/restart), and a fresh run gets a
+  fresh budget rather than inheriting a prior aborted run's spend. The
+  old name itself was kept, not renamed - I5 names `MAX_TENDER_COST_USD`
+  verbatim, and the live `.env`'s own pre-existing `MAX_TENDER_COST_USD=
+  25` value and a from-scratch cost derivation (this deployment's real
+  configured models are all flash-lite tier per `gemini_adapter.py`'s
+  own price table; the one real measured call-volume figure already on
+  record, "85 real compliance calls alone" in one live run, prices a
+  full run including revisions at roughly $0.30-$1.00 today)
+  independently landed on the same `25.0` starting number - real
+  justification, not a coincidence glossed over. Org-scoped `agent_
+  traces` rows (knowledge import - `tender_id IS NULL`, confirmed by
+  `ck_agent_trace_scope`) are out of scope for this cap, named
+  explicitly, not silently solved. "Projected cost" (I5's own wording)
+  is read as "accumulated actual cost so far, checked before the next
+  expensive phase starts" - there is no cost-forecasting model in this
+  codebase and building one is real, unscoped work this pass does not
+  attempt.
+  **B2.4's own stop condition (`:731`), checked directly, not assumed
+  covered by the same gate:** B2.4 lists "total estimated LLM-cost
+  budget" as one of the proposal↔red-team revision loop's own five stop
+  conditions - a DIFFERENT condition from "total workflow revision
+  budget" (`:706`, the one `route_after_red_team`'s own `revision_count
+  >= max_revisions` check already enforces; that function's own comment
+  labels its check "Budget exhausted (B2.4's own stop condition)"
+  ambiguously, conflating the two). Read literally, this gate's first
+  design (sitting only on the `specialist_dispatch`-bound path) would
+  NOT have fully satisfied it: `route_after_targeted_replan`'s OTHER
+  live branch (a `proposal_drafting`-only revision, no `compliance_
+  analysis` re-run) routed straight past it, meaning a run over budget
+  could still spend on repeated proposal-only revisions unchecked, bounded
+  only by `max_revisions=2`, not by cost at all. Closed properly, not
+  left partial: `cost_budget_gate_node` sits in front of BOTH live
+  targets now (`route_after_requirement_gate`'s first-pass edge AND both
+  of `route_after_targeted_replan`'s revision-pass edges), reading
+  `revision_dispatch_target` back out of state to route to the correct
+  downstream node on approval.
+  **Two real bugs a naive copy of the closest existing template would
+  have shipped, both caught before merging, not after:**
+  1. **Gate-key collision on a second, later revision-pass breach.**
+     `plan_version` is bumped exactly once, by `supervisor_node`, and
+     never again on any revision pass (checked directly - no other file
+     in `orchestration/` ever assigns `plan_version + 1`); `revision_
+     count` genuinely increments per revision (`redteam.py`'s
+     `targeted_replan_node`). `gates.derive_gate_key("cost_budget",
+     plan_version)` unmodified would therefore compute the IDENTICAL key
+     on a first-pass breach and every later revision-pass breach - a
+     first pass that exceeds budget and gets approved, followed by a
+     revision pass that also exceeds budget, would find the already-
+     approved row via `get_by_key`, never open a new pending one, and
+     still call `interrupt()` regardless - a permanently stuck run with
+     no visible gate anywhere to approve. Fixed by composing the key
+     with `revision_count` folded in
+     (`f"cost_budget:plan-{plan_version}:rev-{revision_count}"`), not by
+     changing `derive_gate_key`'s own one-arg contract the other six
+     gates depend on.
+  2. **Approve-path status write, wrong precedent copied initially.**
+     `compliance_gate_node`'s own approve path returns `{}` (documented
+     reason: the very next node in ITS sequential chain writes its own
+     status moments later). `cost_budget_gate_node`'s own next node on
+     the dominant path is `specialist_dispatch` - a no-op lambda - and
+     none of the three parallel analysis nodes write `state["status"]`
+     either (checked directly). Copying `compliance_gate_node`'s pattern
+     here would have stranded `workflow_runs.status` at `waiting_for_
+     human` forever after a real approval, even though specialists were
+     actually running. Fixed by copying `requirement_gate_node`'s own
+     explicit approve path instead (`sync_run_status("running_
+     specialists")` + a matching state write) on the specialist-bound
+     branch; the `proposal_drafting`-bound branch correctly returns `{}`,
+     matching `commercial_approval_gate_node`'s own precedent for the
+     same reason - confirmed `proposal_drafting_node` writes its own
+     `"drafting"` status unconditionally at its own entry before relying
+     on that.
+  Both caught by direct code reading during a Plan-agent-validated
+  design review before implementation, not discovered live afterward -
+  the review explicitly checked this feature's topology against the
+  known B7 interrupt()-upstream-of-a-Send()-fan-in-join pitfall
+  (`compliance_gate_node`'s own docstring) and confirmed this gate's
+  slot (strictly before any `Send()` fires, the same slot `requirement_
+  gate_node` already safely occupies) is not that risk class.
+  **A third, real bug caught by the test suite itself, not by review:**
+  `AgentTraceRepository.sum_cost_for_run` returns a `Decimal`;
+  `settings.max_tender_cost_usd` is a plain `float`. Python allows
+  comparing `Decimal` to `float` but not subtracting one from the other
+  - `overage = accumulated - settings.max_tender_cost_usd` raised a real
+  `TypeError` the first time the over-budget integration test actually
+  exercised that line. Fixed by converting to `float` once, right after
+  the query, used consistently from there on.
+  **New RBAC action, not in Part H's matrix** (I5 postdates it, same gap
+  shape as `rbac.py`'s own `cancel_workflow_run` precedent):
+  `approve_cost_budget`, scoped to `{BID_MANAGER, APPROVER, ADMIN}` -
+  Approver included alongside Bid manager, not Bid manager+Admin alone,
+  matching every other gate-adjacent RBAC row in this table (`approve_
+  compliance`, `select_resource`, `resolve_commercial_finding`, `final_
+  readiness_approval` all include Approver as a superset role).
+  **Frontend: explicitly out of scope, named honestly, not silently
+  glossed over.** Backend/API support ships (new `CostBudgetGateResponse`/
+  `CostBudgetSummary`, `_GATE_TYPE_TO_RESPONSE_CLASS` entry - without
+  these, any route returning/listing a real `cost_budget` gate would
+  KeyError). A real UI entry point does not: checked directly, gate
+  *discovery* in the web app is hardcoded per-screen (`RequirementRegister.
+  tsx` filters for `"requirement_review"`, etc.) with no "any pending
+  gate" screen anywhere - a real `cost_budget` gate would be
+  undiscoverable in the UI today without a new screen or hooking into an
+  existing one, not just missing a render case.
+  **Files:** `core/enums.py` (`WorkflowStatus`/`_AWAITING_HUMAN`,
+  real additions beyond R3's verbatim transcription), `core/config.py`
+  (`max_tender_cost_usd`), migration `018_approval_gate_cost_budget`
+  (+ `db/models/workflow.py`'s matching `CheckConstraint`), `db/
+  repositories/agent_traces.py` (`sum_cost_for_run`), `orchestration/
+  gates.py` (`GATE_TYPES`/`GATE_TYPE_ACTIONS`), `domain/policies/rbac.py`
+  (`approve_cost_budget`), new `orchestration/nodes/cost_budget.py`
+  (`cost_budget_gate_node`), `orchestration/routing.py` (`route_after_
+  requirement_gate`/`route_after_targeted_replan` retargeted, new
+  `route_after_cost_budget_gate`), `orchestration/graph.py` (new node +
+  retargeted conditional edges), `apps/api/.../schemas/gates.py` +
+  `routes/gates.py` (`CostBudgetGateResponse`).
+  **Test:** `tests/unit/test_cost_budget_routing.py` (5 tests, pure
+  routing logic). `tests/integration/test_cost_budget_gate.py` (2 tests,
+  real Postgres, no graph runtime needed: `sum_cost_for_run`'s own SQL
+  scoping/coalescing, and the gate-key uniqueness fix proven directly
+  against `GateRepository`). `tests/integration/test_graph_execution.py`
+  (2 new tests driving the REAL compiled graph: an under-budget run
+  opens no gate and specialists complete normally; an over-budget run
+  opens a gate before any specialist task leaves `pending`, blocks until
+  a real approval decision is recorded, and `workflow_runs.status`
+  correctly reaches `running_specialists` then its real next pause, not
+  stuck on the gate's own status write forever). B16's reliability item
+  9 ("cost budget exceeded") is now run for real by this last test, not
+  deferred - see `docs/eval/b16-scorecard.md`'s own §6 update. Also
+  closes three pre-existing routing tests that would otherwise have
+  silently asserted the old, now-wrong topology (`test_orchestration_
+  routing.py`, `test_orchestration_nodes.py`, `test_redteam_routing.py`
+  - the last one needed a second fix beyond what a first pass caught,
+  since the design review's own original finding only flagged the
+  specialist-bound branch, not the proposal-drafting-bound one this
+  entry's own B2.4 completeness fix also touched). Full suite 600
+  passed; `uv run mypy` 59/12/246 (246, not 244 - two new source files,
+  the migration and `cost_budget.py`, not a regression).
 - **Cancellation-during-execution race, remaining half** (major finding
   #14): this pass fixed the half where `run_workflow`/`resume_workflow`'s
   own new exception handler could overwrite a real `cancelled` status with
@@ -2165,15 +3229,455 @@ Each entry:
   unauthenticated liveness endpoint rather than real schema/bucket
   access). Explicitly the user's own call: these are B16/B17's block, not
   pre-work - untouched here on purpose, not overlooked.
+  - **CI: RESOLVED in B16, with a correction to this entry's own framing.**
+    "CI provisions no service stack but runs all tests" implies CI
+    executed and something was observed - checked directly rather than
+    assumed: this repo has no git remote configured, so `ci.yml` has run
+    **zero times** across all 16 blocks. Every implicit "CI is green"
+    assumption in this project's history was vacuous, not confirmed - not
+    a return to green, the first time this workflow will ever have been
+    observed running at all. Fixed as originally scoped: the `test` job
+    now provisions `postgres`/`redis`/`neo4j` as real service containers
+    (image versions matching `docker-compose.yml` exactly) plus a `minio`
+    container started via a manual step (GitHub Actions' `services:`
+    block has no `command:` field, and `minio/minio` needs an explicit
+    `server /data ...` command to start - not expressible there), and runs
+    `scripts/verify_migrations.py` (real upgrade→downgrade→upgrade) before
+    `pytest`. `tests/integration/conftest.py`'s own `Base.metadata.
+    create_all` schema-build for the test suite itself is unchanged and
+    deliberately so (its own comment already explains why) - CI now
+    additionally catches a broken Alembic migration via the dedicated
+    script, not by changing how the test suite builds its own schema.
+  - **Worker image: RESOLVED in B16.** `apps/worker/Dockerfile` now bakes
+    the embedding model (`sentence-transformers/all-MiniLM-L6-v2`) into its
+    own layer, placed after `uv sync` (so the package is installed) but
+    before the app-code `COPY`s (so it stays cached across ordinary code
+    changes). Verified against a real build, not assumed: rebuilt the
+    image, confirmed `model.safetensors` present under `/root/.cache/
+    huggingface/` inside the running container - no `USER` directive
+    anywhere in this Dockerfile, so the cache written at build time is
+    visible to the same root user at runtime.
+  - **Compose readiness: the one-line fix only, taken deliberately narrow -
+    see this file's own environment-traps entry for what it does NOT
+    fix.** `docker-compose.yml`'s `api` healthcheck now checks
+    `/health/ready` (real Postgres/Redis/Neo4j/MinIO connectivity) instead
+    of `/health/live` (process-is-up only) - an already-existing, unused
+    check now actually wired in. Verified against a real rebuild: the
+    container reported `health: starting` → `healthy` once `/health/ready`
+    started returning 200 (confirmed in its own logs, not assumed from the
+    compose status alone). **What this does not fix, stated explicitly so
+    it isn't mistaken for closing the trap:** the environment-traps
+    standing-pattern entry's incidents 6/8 - and, now, incident 9 - are
+    a container reporting healthy while its host port publish is
+    missing, or while the image it's running predates the code just
+    written. No in-container check, `/health/ready` included, can see
+    either failure: both are about what's true OUTSIDE the container
+    (Docker's own NAT/port-forwarding state; which image is actually
+    loaded) that no process running inside it can observe about itself.
+    Nine incidents of this standing pattern now recorded, the most recent
+    (9) a false negative on a correctness check, not a container failing
+    to start - this fix improves what an in-container check can see; it
+    does not close the trap that check can never see in the first place.
+  - **Schema/bucket migration-init service for Compose itself, and
+    deepening `/health/ready`'s own Postgres/MinIO checks (bare `SELECT 1`
+    passes against an empty database; MinIO's liveness check is
+    unauthenticated) - still open, not addressed by any of the above.**
+    Scoped and discussed during this same B16 pass but deliberately left
+    for a future block rather than bundled in - a real design question
+    (check `alembic_version` matches head? a known table exists? a real
+    bucket HEAD request?), not a mechanical fix like the healthcheck
+    target swap above.
 - **Compliance's state_version bump is unconditional even on an identical
-  semantic retry** (minor finding #6): `persist_compliance_decision`
-  bumps once per call regardless of whether `status`/evidence actually
-  changed, producing a false-stale graph-freshness signal on a no-op
-  re-run. Same root shape as the human_approved fix this pass made
-  (distinguish "the decision materially changed" from "the same decision
-  was recomputed"), just for `state_version` instead of `human_approved` -
-  worth revisiting together with the read-increment-flush race above,
-  since both touch the same function.
+  semantic retry (minor finding #6) - STALE, checked directly against
+  current code (B16, Tier 3 pass), not still open.** This entry described
+  `persist_compliance_decision` bumping once per call regardless of
+  whether `status`/evidence changed. That's not what the function does
+  today: `materially_changed` is computed before either write branch runs
+  (`existing is None`, or `status` differs, or `new_evidence_ids` isn't a
+  subset of what's already linked) and the bump at the bottom of the
+  function is gated on it directly - `if materially_changed: await
+  uow.tenders.bump_state_version(tender_id)`. A dedicated regression test
+  already exists and passes right now, not just inferred from reading the
+  code: `tests/integration/test_compliance_service.py::
+  test_persist_compliance_decision_does_not_bump_state_version_on_
+  identical_retry`, whose own docstring names this as a CodeRabbit
+  follow-up fix, predating this session. Left in this file's own record
+  uncorrected until this pass actually went to fix it and found there was
+  nothing to fix - a real instance of this file's own record going stale
+  rather than the code, worth naming for the same reason a wrong finding
+  is worth retracting anywhere else in this file: an audit that reports a
+  gap incorrectly is worse than one that finds nothing.
+
+## [B16] Load tests: concurrent uploads, retrieval latency, graph query latency
+
+- **Concurrent uploads: PASS, after fixing what it found.** 20 genuinely
+  concurrent uploads (`asyncio.gather` against the real ASGI app, real
+  PDF/DOCX bytes, 15 distinct + 5 duplicate-content) plus a dedicated
+  2-concurrent-request replay of B13's own duplicate-content scenario
+  (KNOWN_LIMITATIONS.md's `document_service.create_document` race entry
+  above). Before the fix: a real, uncaught `IntegrityError` 500. After:
+  all 20 return 2xx, 15 documents created (matching distinct content
+  count exactly), no corruption (hash sets match), both B13-replay
+  requests succeed. No numeric pass/fail threshold needed here - the
+  assertions are correctness, not speed (no upload lost, corrupted, or
+  duplicated), stated before running, per this project's own discipline
+  against a load test with no stated definition of "pass."
+- **Retrieval latency: baseline only, no spec-derived threshold exists**
+  (checked directly against the PRD and Build Guide - neither names a
+  number, only the category to measure). Corpus: 93 genuinely distinct
+  real fixture items from `scripts/synthetic_tender_a.py` (74 requirement
+  sentences spanning every category/mandatory-modal combination + 19
+  employee/certification/project/capability entries - the actual ceiling
+  of non-repeating content this project's fixtures hold, confirmed by
+  import and direct count, not estimated), chunked via the real B4
+  chunker into 39 chunks, embedded via the real local model. Measured by
+  inserting incrementally (9 / 19 / 39 rows genuinely present in the
+  database at each checkpoint, not a fixed table with `retrieval_top_k`
+  varied - caught before running that varying top_k against a static
+  table measures result-count, not corpus size, since vector/lexical
+  search scans the whole index either way).
+  - **A finding that contradicts the reasoning behind seeding a bigger
+    corpus in the first place, stated as such, not buried in a table.**
+    The corpus was sized up specifically on the premise that embedding-
+    model overhead would dominate a too-small corpus and mask the
+    retrieval path's own cost. The measurement says the opposite:
+    search dominated at every size tested, including the smallest (9
+    chunks) - see the numbers below. The premise that motivated this
+    test's own design turned out to be wrong, and the result is honest
+    precisely because it was allowed to contradict it rather than being
+    read as confirming it.
+  - **A scorecard-level result in its own right, not a caveat on three
+    numbers: this environment cannot produce a meaningful latency
+    measurement at n=30.** Cold start was isolated specifically to rule
+    it out as the explanation before drawing that conclusion - one
+    untimed warmup call (`embed_texts` + `search_company_knowledge`)
+    before any timed measurement, then a full re-run. First pass (no
+    warmup) produced a non-monotonic curve (approx search-only cost
+    49.4ms -> 33.5ms -> 77.3ms across sizes 9/19/39), consistent with
+    model load-in contaminating the first few calls. **Warmup did not
+    fix it - the shape changed into a different, equally non-monotonic
+    one** (embedding P50 13.3 -> 33.9 -> 35.8ms across the same three
+    sizes). The decisive evidence isn't the shape, it's what varied:
+    `embed_texts` embeds only the fixed query text - its cost is
+    corpus-size-independent BY CONSTRUCTION, has no code path that reads
+    corpus size at all, and still swung 2-3x call to call. A quantity
+    that cannot legitimately vary with the thing being tested varying
+    anyway is a measurement-setup finding, not a data point: at n=30, in
+    this environment (shared dev machine, Docker containers competing
+    for host CPU), latency numbers here are dominated by system-level
+    noise, not by corpus size, cold start, or anything this test is
+    actually trying to measure.
+  - **Numbers, both passes, for the record - not trusted as a real
+    curve, kept as the evidence for the finding above:**
+
+    | size | embed P50 (cold) | search P50 (cold) | embed P50 (warm) | search P50 (warm) |
+    |---|---|---|---|---|
+    | 9 | 35.0ms | 84.4ms | 13.3ms | 41.4ms |
+    | 19 | 31.4ms | 64.9ms | 33.9ms | 49.6ms |
+    | 39 | 24.4ms | 101.7ms | 35.8ms | 49.4ms |
+
+    Search dominates the embed-only step at every size, both passes -
+    the one conclusion these numbers support with any confidence; the
+    P50 values themselves should not be read as precise.
+  - **What would actually fix this, not just disclaim it:** (1) larger
+    n - 30 samples is too few to average out container-level scheduling
+    noise, likely needs 200+ per checkpoint before P50 stabilizes call to
+    call; (2) a quieter environment - this ran on a shared dev machine
+    with the full Docker stack (7 containers) live alongside it, not an
+    isolated benchmark host; (3) in-process timing isolated from
+    container/system variance - the current script times full round
+    trips through a container's own event loop and connection pool,
+    where GC pauses and scheduler jitter are indistinguishable from real
+    query cost; a `pg_stat_statements`-level or Postgres `EXPLAIN
+    ANALYZE`-level measurement would isolate the database's own query
+    time from everything sitting above it. None of the three was applied
+    here - naming them so a future run is actionable, not another
+    baseline with the same noise.
+  - **Consequence for future use:** the two latency rows in the
+    scorecard are baselines in name only. A future regression comparison
+    against these exact numbers would be comparing noise to noise, not a
+    real signal to a real signal - state that plainly wherever these
+    numbers get reused, not just here.
+- **Graph query latency: baseline, real scale, clean.** Largest real
+  tender in the live dev database (98 requirements), graph freshly
+  projected before measuring. `preview_impact`: P50=7.9ms, P95=17.6ms,
+  P99=138.8ms (n=30). `find_contradictions`: P50=24.6ms, P95=37.2ms,
+  P99=290.6ms (n=30). Sensible P50/P95 at this scale; the P99/max
+  outliers (138.8ms/188.1ms and 290.6ms/393.4ms respectively, well above
+  their own P95) are worth one line rather than left unexplained: no
+  warmup call preceded this measurement, so these single high outliers
+  are more likely a first-query/JIT/connection-warmup effect than a
+  real tail-latency signal - not isolated the way the retrieval-latency
+  numbers above were, since this run predated that lesson. A future
+  re-run should warm up first, the same way, before trusting the P99
+  here as a real number.
+- **Test:** none of the above are `pytest` regressions - they're one-off
+  load-test scripts (not committed; run directly against the live dev
+  stack) plus the one real correctness bug they found, which does have
+  permanent coverage (`tests/integration/test_document_service.py`, see
+  the race-fix entry above).
+
+## [B16] `agent_traces.estimated_cost_usd` has never been populated - RESOLVED post-B16, all five dead-config/dead-instrument instances now closed
+
+- **Discovered:** confirming real dollar cost before triggering B16's own
+  live E2E run (the post-B16 backend-closure plan's own Tier 1). Checked
+  directly rather than assumed a per-call cost figure existed to sum:
+  `SELECT count(*), count(estimated_cost_usd), count(input_tokens) FROM
+  agent_traces` against the live dev database returns 2,455 total rows,
+  **0** with `estimated_cost_usd` populated, 982 (40%) with
+  `input_tokens` populated. Zero rows, ever, across every block this
+  column has existed, carry a real cost figure.
+- **Why this is a different claim than "unmeasured":** the B16 scorecard
+  recorded metric 12 (Cost) as "NOT MEASURED as a tracked figure" -
+  phrasing that implies the instrument exists and simply hasn't been
+  read yet. It doesn't: nothing in this codebase ever writes to
+  `estimated_cost_usd` (checked directly - no assignment to the field
+  exists anywhere in `agents/llm/`, the node files, or the
+  trace-persistence path). The column was declared in the schema and
+  never wired to anything that could fill it. "Never measurable" is the
+  accurate claim, not "measured rarely" or "not yet gotten to."
+- **Grouped with three config-level dead-instrument instances, same root
+  pattern, all four now resolved except this column itself:**
+  1. **`settings.llm_provider`** - resolved in B16: deleted, 12 call
+     sites bypassed it directly (each constructs `GeminiClient` itself).
+  2. **`MAX_TENDER_COST_USD`** - resolved in B16: deleted from
+     `.env.example`. Never had a corresponding `Settings` field at all -
+     the more severe version of the shape, since it was never even wired
+     into the settings object it would need to reach code through. A
+     config line claiming a real, enforced budget cap exists is worse
+     than the line simply being absent, since it invites the same
+     "NOT MEASURED, implies unread not unbuilt" misreading corrected
+     above for `estimated_cost_usd`. The scorecard's own metric 12
+     (Cost) is corrected alongside this - the accurate status is that no
+     cost-budget-enforcement feature was ever built, recorded as an
+     explicit out-of-scope decision, not a measurement gap.
+     **Superseded, later the same session - REVIVED, not left deleted:**
+     I5 (Build Guide `:2755-2763`) turned out to be a real, locked spec
+     requirement naming this exact env var, never built - see this
+     file's own `[I5]` entry above for the full record. `settings.max_
+     tender_cost_usd` is a real `Settings` field again (`25.0`), now
+     actually wired to a real gate. The B16-era "no feature was ever
+     built" framing was accurate as of B16 - closing this out required
+     building the feature it was missing, not re-deleting a config line
+     a second time.
+  3. **`settings.max_proposal_revisions`** - resolved post-B16: deleted
+     from `config.py` and `.env.example`. Grepped directly - zero read
+     sites anywhere in `packages/`. Its own removed comment additionally
+     claimed (falsely - checked, not assumed) that the value was "Seeded
+     into TenderState['max_revisions'] by load_context_node at run
+     start." It never was: `orchestration/routing.py:84` does read
+     `state["max_revisions"]` for real, but `apps/worker/.../jobs/
+     workflow.py`'s `run_workflow` seeds that state key from a
+     **hardcoded literal `"max_revisions": 2`** in its `initial_state`
+     dict, never touching `settings.max_proposal_revisions` at all - the
+     same "comment overclaims a connection that was never built" shape
+     already on record for `llm_provider` (its own `extract.py`
+     docstring made the identical kind of false claim before B16).
+  4. **`MAX_AGENT_RETRIES`** - resolved post-B16: deleted from
+     `.env.example`. Never had a corresponding `Settings` field at all
+     (same shape as `MAX_TENDER_COST_USD`) - grepped directly, zero read
+     sites anywhere in `packages/`. Previously recorded here as
+     "adjacent evidence" for major finding #17 (workflow retry controls
+     inert), on the theory it was likely the number that finding's own
+     retry budget was meant to be seeded from. Re-checked now that #17
+     is fully wired (`orchestration/retry.py`, `classify_task_failure`):
+     it remains genuinely dead even post-wiring, not merely dead until
+     #17 landed - the real backoff constants
+     (`_TASK_LEVEL_BASE_BACKOFF_SECONDS = 30.0`,
+     `_TASK_LEVEL_MAX_BACKOFF_SECONDS = 120.0`,
+     `_UNKNOWN_EXCEPTION_DELAY_SECONDS = 15.0`) and the per-task
+     attempt ceiling (`WorkflowTask.max_attempts`, DB default `2`) are
+     all hardcoded in that module, none sourced from this env var. #17's
+     real wiring simply never reached for it.
+
+  Not identical shapes across all four - `llm_provider`/
+  `max_proposal_revisions`/`MAX_TENDER_COST_USD`/`MAX_AGENT_RETRIES` are
+  config values nothing reads; `estimated_cost_usd` is a column nothing
+  writes - but the same underlying pattern: something declared to look
+  load-bearing that was never connected to the code path that would make
+  it real.
+- **Status:** `estimated_cost_usd` itself - RESOLVED, post-B16. Checked
+  first whether this was wiring or new work, per instruction, rather than
+  assumed either way: `gemini_adapter.py`'s own `response.usage_metadata`
+  already carries real `prompt_token_count`/`candidates_token_count` -
+  the SDK returns them, and the adapter already extracted them into
+  `input_tokens`/`output_tokens` (matching the 40% of rows that already
+  had those two columns populated). The gap was purely the dollar
+  conversion: no price table existed, so `estimated_cost_usd` was
+  hardcoded `None` at the one real call site, with its own comment
+  explicitly deferring it to "a future block." **Fix:**
+  `_PRICE_PER_MILLION_TOKENS_USD` (`gemini_adapter.py`), a dict keyed by
+  exact model id string (`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+  `gemini-3.5-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`,
+  `gemini-2.5-pro`, `gemini-3.1-pro-preview`), each mapped to real
+  published (input, output) USD-per-1M-token rates - looked up from
+  https://ai.google.dev/gemini-api/docs/pricing directly, not guessed
+  from memory, since a wrong invented number would be worse than an
+  honest `None`. **A hardcoded approximation, not a billing integration,
+  said plainly in the code comment itself:** Google can change these
+  rates without this file knowing, and the SDK's own text/image/video
+  input rate is used uniformly (every call this project makes is text) -
+  treat the resulting figure as an order-of-magnitude signal for
+  comparing runs, never as a real invoice. A model id not in the table
+  (the "changeme" placeholder `REASONING_MODEL`/`WRITER_MODEL`/
+  `CRITIC_MODEL` still default to) leaves `estimated_cost_usd` `None`,
+  honestly, rather than guessing another model's price for it -
+  `ModelNotFoundError` would terminate that call before cost estimation
+  is ever reached anyway. `EXTRACTOR_MODEL`/`VERIFIER_MODEL` (the two
+  real, non-placeholder models this project actually calls today) are
+  both in the table. Metric 12 becomes a real number on the next live
+  run - not re-run this pass to demonstrate, matching this session's own
+  "flag a new billed run separately" posture; the arithmetic itself is
+  proven by a real unit test instead, at zero cost. All four config-level
+  instances - resolved (`llm_provider`, `MAX_TENDER_COST_USD` in B16;
+  `max_proposal_revisions`, `MAX_AGENT_RETRIES` post-B16). The live,
+  untracked `.env` initially left untouched (out of the original
+  `.env.example`-only scope) - on explicit follow-up instruction, its own
+  `MAX_PROPOSAL_REVISIONS=2`/`MAX_AGENT_RETRIES=3` lines were removed too.
+  `MAX_TENDER_COST_USD=25` remaining in `.env` turned out not to be
+  leftover dead config at all - superseded by this file's own `[I5]`
+  entry: `settings.max_tender_cost_usd` is a real `Settings` field again,
+  and this exact pre-existing `.env` value is what it now reads.
+- **Test:** `tests/unit/test_gemini_cost_estimation.py` - four tests, pure
+  function, zero SDK/network dependency: a known model computes the real
+  published-rate dollar figure; an unmapped model id stays `None`, not a
+  guessed price; missing token counts (a cache hit) stay `None`, not a
+  false `0.0`; both of this project's real configured models
+  (`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`) are confirmed priced.
+  The `max_proposal_revisions`/`MAX_AGENT_RETRIES` removal earlier in
+  this same cluster was confirmed a true no-op on its own terms too (full
+  suite 585 passed, mypy 59/12/243, both unchanged from immediately
+  before that edit). Full suite 591 passed; mypy 59/12/244 baseline held
+  as of this entry's own final state.
+
+## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - three instances, one blind spot in review
+
+- **Discovered:** named once the count reached three, across two separate
+  passes. The shape is more general than dead config specifically - it's
+  about how a false claim of connectedness survives review, not about
+  what kind of connection it falsely claims.
+  1. **`settings.llm_provider`**'s own comment (`config.py`, resolved
+     B16): claimed the field "selects which `agents/llm/*_adapter.py`
+     implementation gets constructed." Zero real read sites, anywhere -
+     every one of 12 call sites constructs `GeminiClient` directly. See
+     the dedicated entry above.
+  2. **`extract_capability_statement`'s docstring** (`extract.py`,
+     resolved B16): claimed employee profiles have "no per-field citation
+     need." False against the actual downstream code, checked directly
+     rather than assumed - see the dedicated entry above.
+  3. **`settings.max_proposal_revisions`**'s own comment (`config.py`,
+     resolved post-B16): claimed the value was "Seeded into
+     TenderState['max_revisions'] by load_context_node at run start."
+     False - `jobs/workflow.py`'s `run_workflow` seeds that state key
+     from a hardcoded literal `"max_revisions": 2`, never touching this
+     setting. See the dead-config entry above.
+- **Why this is invisible to grep specifically:** a plain dead-config or
+  dead-code check (grep for read sites, list unused symbols) catches a
+  field or function with zero callers. It does NOT catch a field with
+  zero callers that ALSO carries a comment describing behaviour it
+  doesn't have - the declaration plus the comment together read as a
+  complete, working, documented connection. Nothing about the code's
+  shape signals a problem; the prose itself is the only thing that's
+  wrong, and prose isn't type-checked, isn't linted, and isn't run.
+  Catching any of these three took the same specific step: read the
+  *other end* of the claimed connection directly (the real call site the
+  comment names, or the real downstream consumer it describes) rather
+  than trusting the comment's description of it once the symbol itself
+  looked properly declared.
+- **Status:** all three known instances resolved (deleted or corrected).
+  The pattern itself is not closeable by a fix - it's a standing review
+  discipline, same posture as the "eval/measurement code needs the same
+  scrutiny as pipeline code" entry above: a comment describing a
+  connection is a claim, not evidence, and should be spot-checked against
+  the code it describes rather than taken as read.
+- **Test:** none - this is a review-process note, not a code path.
+
+## Standing pattern: sequential retry tested, genuine concurrency untested - five instances, one blind spot in test design
+
+- **Discovered:** not five separate bugs found independently - a pattern
+  named once the count reached four, then extended when a fifth turned up
+  post-B16, the same discipline this file applies to every other standing
+  pattern (see "measurement/verification tooling," "environment-traps,"
+  "a two-resource guard," "this frontend has no recovery path"). All five
+  are the identical shape: select-then-act with no row lock/claim, a real
+  test proving the SEQUENTIAL case (a retry after seeing the first
+  response) works correctly, and no test anywhere exercising two workers
+  genuinely in flight at once.
+  1. **`document_service.create_document`** (B16) - found live by the
+     concurrent-uploads load test, not by inspection. RESOLVED.
+  2. **`apps/api/.../idempotency.py`'s own record acquisition** (B16,
+     Tier 3) - RESOLVED, this pass. Turned out to hide a second, worse
+     bug the crash had been masking: the naive "same fix as #1" version
+     didn't crash, but silently let both concurrent requests create
+     separate tenders, because unlike #1 there's no second, independent
+     constraint the loser's own reread converges on - the tender doesn't
+     exist yet to converge on, only a marker that someone else is still
+     making it. Had to also close a second branch ("existing but not yet
+     completed") the crash had never let either previous fix or this
+     file's own audit reach. See that entry above for the real
+     consequence this traded in: an abandoned `in_progress` record (a
+     worker that crashed before ever calling `finalize()`) now 409s every
+     retry forever, since `expires_at` still isn't consulted anywhere -
+     the crash-recovery gap wasn't introduced by this fix, but it is now
+     surfaced loudly instead of hidden as a silent duplicate.
+  3. **`knowledge_service.py`'s three import-row sites** - found by
+     CodeRabbit, RESOLVED B16 Group 3. Deliberately NOT the same
+     mechanical fix as #1/#2: each site does substantial further work
+     (duplicate-resolution branching, conditional updates, sometimes a
+     second `create_employee`/`create_certification` call) between the
+     select and the point where a reread-after-rollback would be safe to
+     trust, so the fix is a narrower `_claim_or_resume_import_item`
+     insert-or-detect step before the rest of the resolution logic runs,
+     not a bare reread - real design work, as this entry originally said
+     it would need. Also surfaced a SECOND, deeper race one layer below
+     the claim step itself (two concurrent callers both legitimately
+     deciding "NEW" for the same fingerprint, both hitting
+     `uq_knowledge_item_fingerprint`) - not anticipated in the design,
+     caught live by the tests written for the first fix, closed with its
+     own dedicated helpers. See the two dedicated entries above (in the
+     select-then-insert cluster) for both fixes' full detail - not
+     repeated here.
+  4. **`outbox_dispatcher.py`'s event claiming (major finding #22)** -
+     found by inspection (no `FOR UPDATE SKIP LOCKED` on the
+     select-before-enqueue), RESOLVED post-B16. `OutboxRepository.
+     claim_by_id` claims one event by id, `FOR UPDATE SKIP LOCKED`,
+     against a fixed candidate-id list built once per dispatch cycle -
+     not "claim whatever's next in a loop," which was the first fix
+     attempt and a real regression: it let the SAME just-failed event be
+     re-claimed and re-attempted multiple times within one dispatch call,
+     since a Postgres row lock releases at commit and the event's own
+     short backoff could already have elapsed by the time the loop cycled
+     back. Caught by the PRE-EXISTING sequential-retry test
+     (`test_redis_unavailable_does_not_lose_the_event_or_touch_the_db_
+     write`, `attempt_count` came back 3, not the expected 1) - not by
+     the new concurrency test, which passed even on the buggy first
+     version. The clearest instance yet of this entry's own point:
+     sequential coverage alone doesn't catch a concurrency bug, but it
+     can catch a concurrency FIX that broke the sequential case, if that
+     coverage already existed. A new concurrent test
+     (`test_two_concurrent_dispatchers_claim_each_event_exactly_once`)
+     proves the actual property this entry is about, against real
+     Postgres.
+- **Why this is a genuine blind spot, not five unlucky misses:** every
+  one of these sites already had real test coverage before this pattern
+  was named - `test_duplicate_idempotency_key_same_body_replays_response`
+  and its siblings, the knowledge-import retry-resume tests - all proving
+  the SAME property (a sequential retry converges correctly) without ever
+  once proving the DIFFERENT property (two requests genuinely overlapping
+  don't corrupt state). A green test suite said nothing about this,
+  systematically, for every select-then-insert site in this codebase
+  until the load tests this session started actually generating real
+  concurrent traffic against them. Worth naming as a design habit to
+  break going forward: a retry test and a concurrency test are not the
+  same test, and passing the first has never implied passing the second
+  here.
+- **Status:** 5 of 5 resolved (#1, #2, #3 - B16 Groups; #3 additionally
+  surfaced and closed a second, deeper race beyond its original scope;
+  #4 - outbox atomicity, post-B16), this entry itself closes no code.
+- **Test:** each resolved instance has its own real concurrent test
+  (`asyncio.gather` against the real ASGI app/service layer) - this entry
+  is the pattern note, matching every other standing-pattern entry's own
+  convention in this file.
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 
@@ -2824,12 +4328,69 @@ Each entry:
   in exchange for the space - a genuinely bad trade if it's ever measured
   against retaining, say, the drafting-context log the entry above
   describes instead.
-- **Status:** not fixed - out of scope for a prep pass. **Owner: B16**,
-  same reasoning as the entry above: B16's own reliability/load-test pass
-  is where retention policy for infrastructure tables like this belongs,
-  not a side effect of unrelated work.
-- **Test:** none - the count above (226 threads, ~12,700 rows) is the
-  standing evidence of the gap, not a regression check.
+- **RESOLVED in B16 - pruned, not merely prunable.** `scripts/
+  prune_checkpoints.py` is both the one-time backfill and the ongoing
+  mechanism (one idempotent script, re-running it later is always a safe
+  no-op for anything already pruned) - but its first version, written
+  while Docker was unavailable, was reported here as "resolved" before it
+  had actually been run even once. Corrected on direct question: writing
+  the mechanism and running it are different claims. What actually
+  happened, in order:
+  1. First real dry-run (once Docker was back) hit a genuine bug: two
+     separate `asyncio.run()` calls broke the async Postgres engine on
+     Windows (`RuntimeError: Event loop is closed`). Fixed to one event
+     loop for the whole script - caught before anything destructive ran,
+     which is the entire reason dry-run-by-default existed.
+  2. The fixed dry-run then surfaced something bigger than a bug: only
+     14 `workflow_runs` rows exist at all in the live database, against
+     240 distinct checkpoint threads - the `workflow_runs.status`-only
+     join this script originally relied on could reach exactly 1 thread.
+     **226 of 240 threads have no `workflow_runs` row whatsoever**, not
+     merely a non-terminal one - matching this entry's own original "226"
+     count almost exactly, strongly implicating the documented test-
+     teardown trap (this file's environment-traps entry, incidents 3/4/7):
+     `workflow_runs` is `Base.metadata`-managed and gets wiped when
+     `pytest` runs against the live DSN; LangGraph's own checkpoint tables
+     are not, and survive. A run of the original script would have pruned
+     ~55 of ~13,789 rows (0.4%) and left the actual problem untouched
+     while reporting success.
+  3. Extended to a second, independent category - a thread with no
+     `workflow_runs` row is at least as safe to prune as a confirmed-
+     terminal one (no owning record whose status could still be
+     non-terminal; `resume_workflow` requires that row to exist at all) -
+     guarded so the trap's own mechanism isn't load-bearing: only prunes
+     an orphaned thread whose newest checkpoint predates the OLDEST
+     surviving `workflow_runs` row. Anything genuinely still in flight
+     would be more recent than that cutoff by construction; anything
+     actually orphaned by a wipe is necessarily older than everything the
+     wipe didn't reach. `checkpoint_id` has no real timestamp column, but
+     is UUIDv6 (confirmed 100% across this database, not assumed) -
+     LangGraph uses v6 specifically because it sorts chronologically as a
+     string, and its embedded 60-bit Gregorian-epoch timestamp is decoded
+     directly (Python's stdlib `uuid.UUID.time` assumes v1's different
+     field order and would return the wrong value, so this reassembles
+     the bits itself).
+  4. Dry-run with the guard reported 227 prunable threads (1 terminal +
+     226 orphaned-and-older-than-the-cutoff) and 12,747 rows - within 50
+     rows of this entry's own original ~12,700 estimate, a strong
+     cross-check that the guard was catching the right population before
+     anything was deleted. Executed for real against the live dev
+     database. **Before → after, verified directly:** `checkpoints`
+     1968→171, `checkpoint_blobs` 2374→176, `checkpoint_writes`
+     9447→695, distinct threads 240→13. Confirmed after deletion, not
+     assumed: all 13 remaining threads correspond exactly to the 13
+     `workflow_runs` rows still in a real non-terminal state
+     (`waiting_for_human`), each with its checkpoints fully intact (5-23
+     rows each, zero touched).
+- **No in-app periodic scheduling exists to wire this into automatically**
+  - this project's locked stack (Redis + RQ) has no cron/scheduler
+  component, and adding one wasn't judged worth it for a single
+  maintenance script. Run by hand, or by an external cron outside this
+  codebase, periodically - nothing prevents the same ~13,000-row growth
+  recurring between runs.
+- **Test:** none - a destructive-by-design operational script, not
+  application behavior; the dry-run default and the before/after
+  verification above are its safety net, not a pytest regression.
 
 ---
 
@@ -4032,7 +5593,7 @@ Each entry:
   `tenderos_test`) as accumulated fixture state, matching this session's
   established practice for other "*-check" org data, not cleaned up.
 
-## Standing pattern: API surface lagging the service/repository layer - now four instances this block
+## Standing pattern: API surface lagging the service/repository layer - four instances in B13, two more since ("capability exists, nothing calls it")
 
 - **Discovered:** named explicitly after §7 step 9's claims-list gap,
   once it was clear this was the same shape as two earlier B13 findings,
@@ -4071,8 +5632,26 @@ Each entry:
   4. `SubmissionRepository.update_submission_item` - has existed since
      B5, zero callers anywhere in either app, found not by building a
      screen but by the live E2E run reaching final readiness and finding
-     it permanently blocked. Open - see the dedicated entry below for
-     why this one isn't B13's to close.
+     it permanently blocked. Resolved-in-B16 - see the dedicated entry
+     below; the repository method was, as predicted, still there and
+     still correct, needing only a real caller.
+  5. `target_updates` batch approval (`gate_target_service.
+     apply_target_update(s)`) - B12 built and tested a real working
+     backend path; B13's frontend, the first UI that could have called
+     it, never did (see that entry's own dedicated writeup above).
+     Widens the pattern one notch: instances 1-4 were about a route
+     never being EXPOSED; this one is about a route that IS exposed and
+     working, with no CALLER choosing to use it - same underlying shape
+     (capability exists, nothing connects to it), one layer further from
+     the code. Accepted asymmetry, not resolved.
+  6. `orchestration/retry.py::classify_task_failure` (major finding #17,
+     B16 Group 4) - built, tested (9 unit tests), ruff/mypy-clean, and
+     called by nothing for one full pass, deliberately: the semantics
+     decision and the wiring decision were split across two separate
+     instructions. Resolved-in-B16 Group 1 - see that entry's own full
+     writeup for the wiring, including a real architectural surprise
+     (no per-node RQ job existed to "requeue" the way the instruction
+     assumed) found only by checking the real code before building.
 - **Why this is worth naming as a pattern:** the first three were each
   found by the same mechanism (a UI block trying to do something a
   screen genuinely needs and discovering the route doesn't exist or is
@@ -4083,8 +5662,7 @@ Each entry:
   remembering for whichever block eventually builds a submission-item
   screen: check this pattern first, the repository method is very
   likely still there and still correct.
-- **Status:** instances 1-3 resolved-in-B13. Instance 4 open, owner
-  named in its own dedicated entry below.
+- **Status:** all four instances resolved. 1-3 in B13, 4 in B16.
 - **Test:** none - this is a naming/recognition entry, not a behavior;
   see each instance's own entry for its test coverage.
 
@@ -4174,7 +5752,7 @@ Each entry:
 - **Test:** none yet - the spec this entry's fix lives in hadn't been
   written when this entry was added; see §7 step 11a's own plan.
 
-## [B13, owner B16] `settings.llm_provider` is dead configuration - 8 sites construct `GeminiClient` directly, bypassing the provider-neutral interface it exists to select
+## [B13, owner B16] `settings.llm_provider` is dead configuration - 12 sites construct `GeminiClient` directly, bypassing the provider-neutral interface it exists to select
 
 - **Discovered:** §7 step 11's own pre-run pre-flight - checking
   whether `FakeLLMClient` (already every automated test's own LLM
@@ -4186,18 +5764,18 @@ Each entry:
   implementation gets constructed." Grepped for every read of
   `settings.llm_provider` across both apps: zero matches, anywhere.
   The comment describes behaviour the field does not have. Every actual
-  construction site hardcodes `GeminiClient(...)` directly, in 8
-  separate places across two apps, each with its own local
-  `_build_llm_client()`-shaped function: `orchestration/nodes/
-  requirement_extraction.py`, `compliance.py`, `talent.py`,
-  `commercial.py`, `proposal.py`, `redteam.py` (the 6 automatic
-  LangGraph nodes), plus `apps/worker/.../jobs/knowledge_import.py` and
-  `verification.py`. (A further 3 route-level `_build_llm_client()`
-  functions in `apps/api/.../routes/proposal.py`/`redteam.py`/
-  `commercial.py` exist too, for the manual on-demand triggers - not
-  counted separately above since they're the same pattern, just a
-  smaller fraction of a full run's total LLM cost than the 6 automatic
-  nodes.) A2's own locked stack decision is "a provider-neutral
+  construction site hardcodes `GeminiClient(...)` directly, in 12
+  separate places across two apps (re-counted directly in B16, not
+  re-derived from this entry's own original enumeration - it undercounted
+  by one: `apps/worker/.../jobs/reanalysis.py`, a B14 job, was never
+  listed here at all), each with its own local `_build_llm_client()`-
+  shaped function: `orchestration/nodes/requirement_extraction.py`,
+  `compliance.py`, `talent.py`, `commercial.py`, `proposal.py`,
+  `redteam.py` (the 6 automatic LangGraph nodes), `apps/worker/.../jobs/
+  knowledge_import.py`, `verification.py`, and `reanalysis.py` (3 worker
+  jobs), plus `apps/api/.../routes/proposal.py`/`redteam.py`/
+  `commercial.py` (3 route-level functions for the manual on-demand
+  triggers). A2's own locked stack decision is "a provider-neutral
   `LLMClient` interface with model IDs supplied purely as
   configuration" - the interface exists and is honored (every
   construction site returns something satisfying `LLMClient`), but the
@@ -4221,19 +5799,19 @@ Each entry:
   real, structural constraint on every future block that wants to
   exercise the full path cheaply or repeatedly - not unique to B13's
   own E2E spec.
-- **Status:** not fixed - real work (wiring 8 call sites plus sized
-  fake-response scripts per agent name), correctly declined for this
-  pass rather than built as a side effect of a pre-flight check.
-  **Owner: B16 (Full Evaluation, Reliability, and Load Tests)** - this
-  is exactly the kind of full-stack, repeated-run infrastructure a
-  reliability/load-test block needs and would very likely have to build
-  anyway to run its own suite affordably; B13's own E2E spec is a
-  smaller, one-shot consumer of the same capability, not its natural
-  owner. B15 was considered and set aside without a documented reason
-  strong enough to prefer it here - nothing in this session traced B15's
-  own scope closely enough to argue it fits better, so the choice is
-  B16 on the strength of the evaluation/reliability match, not a
-  comparison actually made between the two.
+- **RESOLVED in B16 - deleted, not wired.** `llm_provider` removed from
+  `core/config.py` (and its now-orphaned `LLM_PROVIDER=gemini` line from
+  `.env.example`, replaced with a comment pointing here) rather than
+  built out - CLAUDE.md's own instruction is to delete rather than leave
+  unused config lying around claiming behaviour it doesn't have. **The
+  real fix - wiring all 12 call sites to actually read a provider switch,
+  plus the sized per-agent `FakeLLMClient` scripted responses this
+  entry's own text already established are the actually-expensive part -
+  remains exactly as undone as before, and remains its own explicitly
+  named future item, not silently closed by this deletion.** Consequence
+  section above still holds without qualification: there is still no way
+  to run the system end-to-end against the real stack without spending
+  real, billed LLM calls.
 - **Test:** none - this is dead-configuration characterization, not a
   regression to guard yet.
 
@@ -4286,14 +5864,63 @@ Each entry:
   what either spec asked for, not a Build-Guide omission of a PRD
   requirement. Flagged as such rather than resolved silently, per
   CLAUDE.md's own instruction for exactly this shape of ambiguity.
-- **Status:** open, no owner named. Not B13's - Part J's own 17 screens
-  never asked for this one, so building it now would be scope B13 was
-  never given, not a bug B13 introduced. Whoever scopes the next block
-  touching readiness or submission tracking should treat this as a real,
-  load-bearing gap - final readiness cannot be honestly reached without
-  it - not a nice-to-have.
-- **Test:** none - `tests/route/` has no submission-item coverage
-  because no route exists to cover.
+- **RESOLVED in B16.** `GET /tenders/{tender_id}/submission-items` and
+  `PATCH /submission-items/{submission_item_id}` now exist
+  (`routes/requirements.py`), backed by `requirement_service.
+  patch_submission_item`, which finally gives `SubmissionRepository.
+  update_submission_item` its first caller since B5. Same before/after
+  audit-event shape as `patch_requirement`.
+  - **RBAC: `review_requirements` is a reasoned reuse, not an inherited
+    default.** Part H's matrix never named submission items (the same gap
+    this entry itself already documents for the whole 17-screen list), so
+    there was no existing row to inherit - checked and confirmed, not
+    assumed. Reused `review_requirements` because a reviewer editing or
+    confirming a requirement and a reviewer marking a submission item
+    received are the same trust tier: both are "a human with review
+    authority over this tender's extracted checklist confirms what's
+    actually true." A dedicated RBAC row is the alternative if submission-
+    item handling ever needs its own escalation path (e.g. an approver-
+    only override once items feed a formal sign-off) - not needed now,
+    but named here so the choice reads as deliberate if that day comes.
+  - **`tenders.state_version` is bumped on a materially-changed patch -
+    checked against Part D before deciding this, not assumed.** Part D1's
+    node-label table lists exactly 11 types (Tender, Requirement,
+    Evidence, Compliance, Employee, Certification, Project, Capability,
+    Role, ProposalClaim, ProposalSection); `SubmissionItem` is not one of
+    them, and no D2 relationship touches it either. **The bump is
+    therefore NOT required by Part C's state-version invariant** - it is
+    a deliberate choice purely for `readiness_reports`' own
+    `UNIQUE(tender_id, tender_state_version)` freshness, so a stale report
+    doesn't keep reporting an already-cleared blocker. If a future reader
+    checks Part D, sees no `SubmissionItem` node, and reads the bump as a
+    leftover mistake to "correct" away - it isn't one; this paragraph is
+    the record of why it's there anyway.
+  - **The write path was proven, not just built - both consumers of
+    `submission_items.status`, checked in the same test pass.**
+    `tests/integration/test_readiness_service.py::
+    test_the_real_write_path_reaches_an_honest_unwaived_ready_true` goes
+    through the real service call (not the bare repository method a prior
+    test already exercised directly) and asserts two things together: an
+    otherwise-clean tender reaches a genuine, unwaived `ready=True` with
+    zero remaining blockers - the assertion this entry's own "final
+    readiness is unreachable through the UI by construction" line could
+    never make before now - and `redteam_checks.check_submission_checklist`
+    (a second, independent consumer of the same `status` column, not
+    something this fix was specifically built for) also clears in the
+    same pass. Route-level coverage in `tests/integration/
+    test_requirements_api.py` additionally proves cross-organization
+    isolation - caught and fixed a real bug while building it: the route's
+    first draft used `{item_id}` as its path parameter, which
+    `dependencies.py`'s `_resolve_organization_id` already binds to
+    `knowledge_import_items` (B6) - an unrelated resource. Renamed to
+    `submission_item_id` with its own resolver branch before this ever
+    shipped, not discovered by the isolation test after the fact.
+- **Test:** `tests/integration/test_readiness_service.py::
+  test_the_real_write_path_reaches_an_honest_unwaived_ready_true` (the one
+  that matters most - see above), plus `tests/integration/
+  test_requirements_api.py::test_list_submission_items`/
+  `test_patch_submission_item_updates_status`/
+  `test_submission_items_are_not_visible_across_organizations`.
 
 ## [B13] §1's own stale-graph reasoning was correct for the automatic path and silently applied to the manual one - a conflation, not a stale-data bug
 
@@ -4927,6 +6554,238 @@ Each entry:
 - **Test:** none dedicated - this is a mechanism finding about existing
   code (`projector.py`, `queries.py`), not new behavior to pin. The
   spec's own live run is the standing verification.
+- **B16 addendum - the identical structural gap reproduced live a second
+  time, through the opposite symptom.** Root-causing a live E2E run's own
+  step-14 failure (waiting up to 300s for requirement `EXP-002`'s
+  `compliance_entries.human_approved` to flip from stale-`true` back to
+  `false` after deselecting its backing knowledge item - the assertion
+  never passed). Checked directly, not assumed: `worker` logs show
+  `reanalyze_knowledge_selection_change` fired and completed twice for
+  the same knowledge item (`26ddfff0-...`) - once for the initial select
+  (`requirements=3`), once for the deselect (`requirements=3`, same
+  count) - so this is not a dead job or a harness timing miss. Querying
+  the live compliance entry directly: it still shows `fully_compliant`/
+  `human_approved=true`, backed by exactly one `evidence_links` row,
+  still pointing at the *same* deselected knowledge item. The
+  reanalysis genuinely re-ran `evaluate_compliance_for_requirement` and
+  re-found the identical evidence, because - exactly as this entry's own
+  "why this is structural" paragraph above already established -
+  compliance evidence retrieval was never gated by
+  `tender_knowledge_selections` in the first place. Deselecting an item
+  removes its `USED_IN` graph edge; it does not and cannot change what
+  compliance evidence Postgres-side retrieval finds, so
+  `persist_compliance_decision`'s own "only reset `human_approved` on a
+  real material change" logic is *correctly* leaving it alone - nothing
+  compliance-relevant changed. **The two symptoms are the same root
+  cause, not two bugs:** the original finding is `preview_impact`
+  under-reporting (an item that backs a real decision shows no impact
+  until selected); this one is a reanalysis-cascade assertion
+  over-assuming (selection state is expected to affect a decision it
+  structurally cannot touch). `full-flow.spec.ts`'s own step-14
+  "compliance reopens" assertion was therefore testing a behavior that
+  cannot occur under this system's actual, deliberate design, not a
+  flake - it failed this exact way every time it reached this point.
+  **Resolved below, not left open.**
+
+- **Resolution (B16): two live reproductions is a stronger case than the
+  original "needs a design decision, no owner" status - the decision is
+  now made, both alternatives ruled out for concrete, documented reasons,
+  not just a preference.**
+  - **Option A (gate compliance retrieval by selection) - disqualified,
+    two independent reasons, either alone sufficient.** First: the
+    automatic `compliance_analysis` workflow task runs in parallel with
+    `talent_analysis`/`commercial_analysis`, *before* a human ever visits
+    the knowledge-selection screen - confirmed directly from this same
+    live run's own timestamps (`compliance_analysis` completed at
+    `07:11:41`; the first `Confirm select` click happened a minute
+    *later*, at `07:12:47`). Gating retrieval by selection would make
+    every tender's first compliance pass find zero evidence for
+    everything, by construction, every time - not a corner case, the
+    normal path for every tender this project has ever processed.
+    Second: it makes D6's own locked `deselected_fact_in_use`
+    contradiction query permanently unreachable - that state
+    (`USED_IN.selected=false` AND the fact still provides evidence)
+    could never arise if retrieval were gated, silently retiring a
+    required Build Guide feature.
+  - **Option B (auto-create/reselect the `USED_IN` edge when compliance
+    evidence materializes) - disqualified, a real self-defeating loop,
+    traced at the code level, not assumed.** The write would go in
+    `persist_compliance_decision`, right after `uow.compliance.
+    link_evidence(...)` (`compliance_service.py:338`) - and
+    `reanalyze_knowledge_selection_change` already calls exactly that
+    function (via `evaluate_compliance_for_requirement`) on every
+    selection change, deselections included. A human deselects an item;
+    the reanalysis it triggers re-evaluates compliance; compliance
+    re-materializes evidence from the same item; Option B's own new code
+    would then immediately re-select it - undoing the human's action
+    inside the very job that exists to process it. This session's own
+    live run already demonstrated the re-materialization half of this
+    chain happening for real; Option B would have closed the loop on it.
+  - **Correction to this entry's own earlier framing of the B7 comment:**
+    "`selected_only` is deliberately not used here" (`compliance_service.
+    py:404-412`) is narrower than it reads - a build-sequencing decision
+    made before `tender_knowledge_selections` existed at all (B7 predates
+    Part C), not a permanent statement that compliance should ignore
+    selection forever. What actually settles Option A regardless of that
+    comment's original intent is D6 (Build Guide) requiring a *detector*
+    for exactly this state, independent of why B7 originally didn't gate
+    retrieval.
+  - **What was built instead - the "option C, wiring version": run the
+    already-existing, already-tested detector where it was structurally
+    missing, rather than leave it running only during a full `run_red_
+    team` pass.** `reanalyze_knowledge_selection_change`
+    (`apps/worker/jobs/reanalysis.py`) now has a step (5): re-project
+    (state_version can move during step 3's own reevaluation - see the
+    note below) and run `redteam_checks.check_graph_contradictions`,
+    persisting any drafts via a new public `redteam_service.
+    persist_finding_draft` (promoted from the module-private
+    `_persist_draft`, now genuinely shared by two real callers).
+    Deliberately does NOT call `uow.redteam.auto_retire_undetected_
+    findings` - that method's own docstring says retirement is only safe
+    because `run_red_team`'s check list covers a tender's ENTIRE current
+    state every pass; this job only ever checks the 4 graph-contradiction
+    categories, so retiring against its own narrower fingerprint set
+    would wrongly resolve every other open finding it never looked at.
+  - **A second, real bug found and fixed while wiring this in, not
+    assumed away:** the first working version re-used step (1)'s own
+    projection (from the top of the job) for the new contradiction check
+    at the bottom - but `persist_compliance_decision` (step 3) bumps
+    `tenders.state_version` unconditionally (this file's own "Compliance's
+    state_version bump is unconditional" entry), making that projection
+    stale by the time step (5) ran. `find_contradictions` calls `check_
+    freshness` first and raised `GraphStaleError`, which `check_graph_
+    contradictions` swallows by design (the same tolerance `run_red_team`
+    relies on for staleness it didn't cause) - here the staleness was
+    self-inflicted, one step earlier in the SAME job, and the detector
+    silently found nothing every time. Caught by a real integration test
+    failing with an honest zero-findings result, not inferred - fixed by
+    re-projecting immediately before step (5), which is also the more
+    correct read of "is the fact still in use": AFTER reevaluation, not a
+    stale pre-reevaluation snapshot.
+  - **Test coverage, both levels, per the standing "capability exists,
+    nothing exercises it" concern:** a new service-level integration test
+    (`tests/integration/test_reanalysis_job.py::
+    test_reanalyze_knowledge_selection_change_surfaces_deselected_fact_
+    still_used_finding`) builds a real employee knowledge item with a
+    real embedded company-knowledge chunk (via `knowledge_item_chunks`,
+    this same session's own earlier B16 fix), selects then deselects it
+    against a real compliance decision that cites it, runs the real job
+    against real Postgres AND real Neo4j (no monkeypatching around the
+    graph, unlike this file's other reanalysis tests, since the thing
+    under test only means something against a real projected graph), and
+    asserts both halves: the compliance entry does NOT reopen (status and
+    `human_approved` unchanged) AND a `deselected_fact_in_use` finding
+    exists, unresolved, correctly D7-severity-graded. `FakeLLMClient`
+    throughout, zero LLM cost. `full-flow.spec.ts`'s own step-14
+    assertion is corrected to match - it now polls the red-team screen
+    for the same finding to surface, commented with why (citing D6
+    directly) so a future reader doesn't "fix" it back to the old,
+    impossible expectation.
+  - **Status: resolved.** Both disqualified alternatives and the
+    reasoning are recorded here so the next person to look at this
+    doesn't re-propose Option A from scratch.
+- **`preview_impact`'s own half of this cluster - RESOLVED, separately,
+  post-B16 (scorecard scenarios 13/16).** The reanalysis/detection fix
+  above closed the deselection-non-reopening symptom; `preview_impact`
+  itself (`graph_projection/queries.py`) still had its own real gap -
+  its `MATCH (fact)-[u:USED_IN]->(:Tender {id: $tenderId})` was a hard
+  requirement, so a knowledge item that genuinely backs a real
+  compliance decision (via `PROVIDES`, materialized independent of
+  selection - same root fact as the entry above) but was never
+  explicitly selected/deselected at all had no `USED_IN` edge and
+  returned nothing. **Fix: the `USED_IN` match is now `OPTIONAL`, not
+  required.** Traced, not assumed, before changing it: `fact` is already
+  anchored to one specific node via `knowledge_item_id` (an indexed
+  lookup, not a scan), and the `WHERE affected.tender_id = $tenderId`
+  clause already does 100% of the cross-tenant safety work by filtering
+  the DESTINATION node, independent of whether the source edge is
+  required - loosening the source-side match introduces no leak.
+  `currentlySelected` now reads `null` for an item with no `USED_IN`
+  edge at all - a real, meaningful third state ("never selected for
+  this tender"), not a defect; checked every consumer before assuming
+  this was safe (`GraphImpactRow = dict[str, Any]`, no Pydantic
+  constraint; the one real frontend consumer, `KnowledgeSelections.tsx`,
+  renders `JSON.stringify(row)` with no field-specific assumption; no
+  existing test asserted on this field's value). Two new tests
+  (`tests/integration/test_graph_projection.py`): the positive case
+  (a never-selected item with real compliance evidence now appears,
+  `currentlySelected is None`), and a real cross-org observation, not
+  only the traced reasoning - two separate orgs/tenants, each with their
+  own never-selected employee (the exact new code path this fix opens),
+  confirming `preview_impact` for org A's tender still returns nothing
+  for org B's employee id. Options A (gate compliance retrieval by
+  selection) and B (auto-create the `USED_IN` edge on evidence
+  materialization) stay disqualified for the same reasons as the entry
+  above - this fix touches neither compliance's write path (B's loop
+  risk) nor retrieval gating (A's every-tender-breaks risk), it's a
+  read-side change to `preview_impact` alone.
+
+---
+
+## [B16] `full-flow.spec.ts` step 7's own `waitForLoadState("networkidle")` does not actually wait for the fetch it's meant to confirm - found root-causing a live run's own "0 of 4 roles staffed" result
+
+- **Discovered:** post-B16 backend-closure work, Group 1 (root-causing
+  `select_candidate`). Traced click → network → route → service against
+  this session's own preserved E2E trace (the run that reached step 14
+  before failing there, meaning it DID pass through step 7). The DB
+  showed all 16 `role_matches` for that run's tender `human_selected =
+  false`, matching the already-documented golden-path symptom exactly -
+  but tracing the actual trace file told a different story.
+- **What the trace actually shows, precisely:** `role_matches` for all 4
+  roles were real and complete by 07:07:04 UTC. The UI's own
+  `GET /roles/{id}/matches` calls didn't fire until 07:12:07 - over 5
+  minutes later, no race on data existing. All 4 returned `200`, with
+  real, substantial response bodies (1334-1861 bytes, confirmed by
+  reading the actual JSON out of the trace's own resource store, not
+  just the status code) - the server did everything right. And yet the
+  UI recorded "No candidates found for this role yet." for all 4 roles
+  (the test's own `step-7-roles-with-no-candidate` attachment names all
+  four), and **zero `POST /roles/{id}/select-candidate` requests exist
+  anywhere in the trace** - the Select button was never clicked, because
+  the loop's own `noCandidates` branch fired and skipped every role.
+- **The mechanism:** click-to-check gaps of 10-40ms, all 4 roles
+  processed in a ~185ms burst total (trace timestamps, not estimated).
+  Nowhere near enough time for click → `handleSelectRole` → real fetch →
+  response → `setMatches(result)` → React re-render to complete - the
+  check was reading `matches.length === 0`, which is TRUE from the
+  instant of the click (`setMatches([])` at the top of the handler) and
+  stays true until the real response is applied. `page.
+  waitForLoadState("networkidle")`, positioned between the click and the
+  check specifically to "confirm this role's own fetch has landed" (this
+  file's own prior comment, now known wrong), observes the BROWSER's
+  network layer, not React's post-fetch render commit - it can resolve
+  before `setMatches()` has ever run, especially late into a long test
+  session with little other background traffic to make "idle" a
+  meaningful signal.
+- **Same class of gap as two entries already in this file:** "E2E
+  harness bug: `page.reload()` does not wait for React's own
+  data-fetching effects" and "premature navigation cancelled in-flight
+  requests, twice" - a third instance of "a browser/network-level
+  Playwright signal was trusted to mean 'the app has finished reacting
+  to this,' and it doesn't."
+- **Fixed:** replaced the click-then-`networkidle` sequence with
+  `Promise.all([page.waitForResponse(...), click()])` (registering the
+  response wait BEFORE the click, closing the window where the response
+  could land before the wait starts - the same pattern this file's own
+  `liveTaskListRefetch` already uses for step 11), plus a bounded,
+  non-throwing poll (not `expect.poll()`, which throws on timeout and
+  would wrongly fail a role that genuinely has zero candidates) for the
+  candidate rows to actually render after the response is confirmed
+  received, closing the remaining React-render-commit gap the network
+  wait alone doesn't cover.
+- **What this does NOT establish:** whether the golden-path bug below
+  (silent non-persistence on a REAL Select click) is still real. This
+  run's own click never happened at all - there was nothing for that bug
+  to manifest in. See that entry's own new addendum for what a real,
+  cheap check (against this same run's already-existing data, with the
+  harness fix in place) found.
+- **Status:** resolved. Real fix, not a wider timeout - the old code
+  would have had the identical failure mode at 30s or 300s, since the
+  problem was never insufficient TIME, it was `networkidle` never being
+  the right signal to wait for in the first place.
+- **Test:** the fix itself - `full-flow.spec.ts:704-767`. No dedicated
+  regression test beyond the spec's own live run, matching this file's
+  own convention for E2E-harness-only findings.
 
 ---
 
@@ -4986,15 +6845,20 @@ Each entry:
   once when the mutation worked and once when it didn't) - it should
   check server-confirmed state (a reload showing "Deselect," or the
   audit trail), not just the clicked button's own re-render.
-- **Status:** open. Owner named honestly, not force-fit: no block in
-  Part J's current B12-B17 list has a stop-gate that touches
-  `select_candidate`/`TeamWorkspace.tsx` specifically, so this is left
-  unassigned rather than attached to a block whose own gate doesn't
-  actually depend on it - matching this file's own "a home that isn't
-  real is worse than an honest 'unassigned'" standard (the no-clean-
-  owning-block triage entry, pre-B12). Real, reproducible, confirmed via
-  direct Postgres/audit-log inspection on two independent runs, not
-  inferred.
+- **Status:** RESOLVED, post-B16 (see the third addendum below) -
+  downgraded from "open, unowned" once the harness-race fix produced 2
+  clean, real, DB-confirmed successes in 2 attempts with 0 failures.
+  Root cause inferred (the same class of harness race fixed elsewhere in
+  this file), not independently proven by tracing `set_candidate_
+  selection` itself line-by-line - see the third addendum for the exact
+  reasoning and its own stated limits. Originally: open, owner named
+  honestly, not force-fit - no block in Part J's current B12-B17 list has
+  a stop-gate that touches `select_candidate`/`TeamWorkspace.tsx`
+  specifically, so this was left unassigned rather than attached to a
+  block whose own gate doesn't actually depend on it - matching this
+  file's own "a home that isn't real is worse than an honest
+  'unassigned'" standard (the no-clean-owning-block triage entry,
+  pre-B12).
 - **Test:** none - the bug itself has none (that's the finding). A real
   fix should also tighten `full-flow.spec.ts`'s own step 7 assertion to
   check server-confirmed state, so a future regression of this exact
@@ -5023,6 +6887,63 @@ Each entry:
   it does not establish the rate at which the OTHER bug (silent non-
   persistence) does or doesn't still occur; that finding's own "open,
   no owner" status is unchanged.
+- **Second B16 addendum - a real, cheap, direct check, after fixing the
+  harness race named in the entry immediately above this one.** That fix
+  closed off the ONLY available evidence source this pass (this
+  session's own preserved run never actually clicked Select at all, for
+  an unrelated reason) - so rather than re-running the full, expensive
+  pipeline, checked against already-existing data instead: a throwaway
+  Playwright script logged into that same run's real org (real
+  credentials, no new LLM cost - `talent_analysis_node` had already
+  populated real `role_matches`), opened `/team`, and clicked a real
+  Select button with the harness fix in place. Result: `POST .../select-
+  candidate` returned `200` with `human_selected: true` in the body, the
+  button flipped to "Deselect," and - checked directly in Postgres, not
+  assumed from the response - `role_matches.human_selected = true` and a
+  real `role_select` audit_events row both exist. One clean, real,
+  server-confirmed success.
+  **What this does and does not mean, stated precisely rather than
+  rounded either direction:** it does NOT disprove the intermittent
+  non-persistence finding above - one success is exactly what "confirmed
+  intermittent, not assumed" already predicts (the B13 tender showed 3
+  of 4 working; this is consistent with that base rate, not a
+  contradiction of it). It does NOT confirm the original bug is fixed
+  either - nothing about this pass touched `set_candidate_selection` or
+  the route layer, the two places the original entry names as
+  unconfirmed. Recorded as **unconfirmed, not disproven** - the honest
+  middle state, not rounded to "resolved" on one non-reproduction. A
+  future check with a real reproduction rate (several real clicks across
+  several roles/runs, not one) is what would actually move this entry's
+  own "Status: open" line.
+- **Third addendum, post-B16 - the check the second addendum said would
+  move the status line, run for real.** Second independent real click
+  against the same E2E tender, different role/candidate than the first
+  (`role_matches` id `a4ebd8ec-8c2c-4340-97a9-8d47a5700b23`, role
+  "Database Administrator") - same method: throwaway Playwright script,
+  real login, real click, checked directly in Postgres afterward, not
+  inferred from the UI alone. Result, identical shape to the first:
+  `human_selected` flipped to `true`, and a new `role_select`
+  `audit_events` row (`5ebbd27a-e745-40bb-b827-8a222970cd12`) landed at
+  the exact click timestamp. **2 clean, real, server-confirmed successes
+  in 2 attempts since the harness race fix, 0 failures.**
+  **Status call made, per the explicit standard this entry's own second
+  addendum set: downgraded from "open, real product bug, unowned" to
+  "resolved by the harness fix, root cause inferred not directly
+  proven."** Not claiming certainty this was never anything but a
+  harness artifact - `set_candidate_selection` and the route layer were
+  never independently audited line-by-line the way the original entry
+  named as the remaining unconfirmed layers. What's being claimed is
+  narrower and real: the original symptom (a real click producing zero
+  server-side effect, across all 4 roles in one run) is the exact same
+  *shape* as the `networkidle`-vs-React-re-render race this file
+  documents elsewhere in this exact function's own test coverage, and
+  every attempt made AFTER that class of race was fixed has succeeded,
+  with no counter-example since. Absent a new failure, treating this as
+  closed rather than carrying it forward as an open, unowned product bug
+  indefinitely - the standard this project applies to reproduction-
+  based findings elsewhere is "the fix is proven by the reproduction no
+  longer reproducing," not "proven by tracing every line the bug could
+  theoretically have lived in."
 
 ---
 
@@ -5486,6 +7407,68 @@ Each entry:
   file via `git stash`. Not this pass's own bug, but a trivial one-line
   fix sitting immediately next to code being actively added here, so
   fixed rather than left - not a drive-by cleanup of anything unrelated.
+- **The remaining 8-module systematic audit - DONE, post-B16, the exact
+  method named above reused.** Route list from each module's own file,
+  cross-referenced against actual test CONTENT (not names) across
+  wherever that module's tests actually live - a real, necessary
+  correction found doing this, not assumed: `workflow.py`'s own route
+  tests are split across two files (`tests/route/test_workflow_routes.py`
+  AND `tests/integration/test_workflow_api.py`), and the second file
+  already had genuine cross-org coverage for 3 of the 4 routes this
+  entry's own earlier count had marked as gaps (`cancel`, the SSE
+  stream, the SSE ticket route) - checking only the first file, the way
+  the original per-module estimate implicitly did, would have produced
+  3 duplicate tests. A second real correction, this time strengthening
+  the count rather than shrinking it: `knowledge.py`'s existing "rejects
+  a knowledge item from another organization" test on `PUT .../
+  knowledge-selections/{id}` was read in full, not trusted by name - it
+  proves a legitimate caller can't select a FOREIGN knowledge_item into
+  their OWN tender (404, a resource-mismatch), not that an outsider
+  CALLER is rejected (403 `ORG_ACCESS_DENIED`) - a different property.
+  Real starting coverage was 1/19 for that module, not 2/19; both
+  knowledge-selection routes were real gaps.
+  **Real, verified gap count per module, corrected from the original
+  estimate where checking content changed it:** `documents.py` 3 of 4,
+  `workflow.py` **1** of 8 (not 4 - see the correction above),
+  `requirements.py` 6 of 8, `tenders.py` 2 of 2, `knowledge.py` **18**
+  of 19 (not 17), `compliance.py` 4 of 5, `proposal.py` 3 of 5,
+  `talent.py` 3 of 3. **40 real gaps closed, not the 42 first estimated**
+  (the estimate was a route-list-vs-signal-term pass, not yet content-
+  verified for workflow.py/knowledge.py specifically - corrected before
+  writing tests, not after finding duplicates or a false negative).
+  `auth.py`'s own exemption reasoning was independently re-verified,
+  route by route, not inherited from the original plan: `register`/
+  `login`/`refresh` accept no org/tender-scoped resource id in their
+  request at all (nothing to check against); `GET /me` derives
+  `current_user` from the caller's own token and queries only that
+  same user's own memberships, with no external id anywhere in the
+  request - structurally exempt, confirmed by reading all 4 route
+  bodies directly.
+  **Worth naming plainly: 0 real bugs found, unlike B13's own per-route
+  audit (2 real RBAC bugs found across roughly 45 previously-untested
+  routes that pass).** Every one of the 40 new assertions passed on the
+  first run, no test needed a second attempt or a code fix - the
+  `_resolve_organization_id`/`_check_permission` mechanism was already
+  correctly applied everywhere this pass checked; the real gap was pure
+  test coverage, not a security hole. Worth recording as a genuine,
+  different outcome from B13's, not a weaker version of the same result
+  - a systematic audit that finds nothing wrong is still informative,
+  distinct from one that was never run.
+  **Status: fully resolved.** All 15 route modules now have per-route
+  (not per-module) cross-org verification, or a route-by-route-verified
+  structural exemption (`auth.py`).
+- **Test:** 13 new test functions across 8 files (`tests/route/
+  test_organizations_and_tenders_routes.py`, `tests/route/
+  test_talent_routes.py`, `tests/integration/test_documents_api.py`,
+  `tests/integration/test_workflow_api.py`, `tests/route/
+  test_compliance_routes.py`, `tests/route/test_proposal_routes.py`,
+  `tests/integration/test_requirements_api.py`, `tests/route/
+  test_knowledge_routes.py`), several covering multiple routes per
+  function via loops (matching this entry's own earlier `commercial.py`/
+  `readiness.py` precedent) - 40 real route-level assertions, all
+  passing first run. Full suite 582 passed (up from 570 at this pass's
+  own prior boundary); `uv run mypy` 59/12 unchanged, 243 files (no new
+  source-tree files, only tests).
 
 ---
 

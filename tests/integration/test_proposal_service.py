@@ -8,10 +8,13 @@ against real persisted rows rather than re-pinning the same rules."""
 
 import io
 import uuid
+from pathlib import Path
 
 import docx
 import pytest
 from sqlalchemy import select
+from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.compliance import EvidenceLink
@@ -19,10 +22,18 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import document_service, proposal_service
+from tenderos_backend.domain.services import (
+    commercial_service,
+    document_service,
+    proposal_service,
+)
 from tenderos_worker.jobs.ingestion import parse_and_embed_document
 
 pytestmark = pytest.mark.asyncio
+
+_PRICING_FIXTURES_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "synthetic" / "tender_a"
+)
 
 
 async def _make_org_and_tender(name: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -358,6 +369,39 @@ async def test_factual_claim_in_company_overview_with_no_evidence_is_unsupported
         claims = await uow.proposal.list_proposal_claims_for_section(section.id)
     assert claims[0].grounding_status == "unsupported"
     assert claims[0].grounding_status != "not_required"
+    assert claims[0].claim_kind == "current"
+
+
+async def test_commitment_claim_with_no_evidence_is_unsupported_not_exempt():
+    # KNOWN_LIMITATIONS.md's [B9/B16] entry, resolved: a forward-looking
+    # commitment ("will support SSO") is_factual=true with no evidence must
+    # stay exactly as visible as a "current" factual claim in the same
+    # position - claim_kind is a measurement-bucket tag, not a second way
+    # to reach "not_required". If this ever regressed to auto-exempting
+    # commitments, it would silently hide an unbacked promise, which the
+    # user's own stated priority for this fix explicitly rules out.
+    org_id, tender_id = await _make_org_and_tender("Commitment Grounding Test")
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="We will support SSO within the first quarter of the contract.",
+                claim_type="capability",
+                is_factual=True,
+                claim_kind="commitment",
+                evidence_refs=[],
+            )
+        ]
+    )
+
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Company Overview", draft, [], {}
+    )
+
+    async with UnitOfWork() as uow:
+        claims = await uow.proposal.list_proposal_claims_for_section(section.id)
+    assert claims[0].claim_kind == "commitment"
+    assert claims[0].grounding_status == "unsupported"
+    assert claims[0].grounding_status != "not_required"
 
 
 async def test_materialize_claim_links_drops_a_label_not_in_this_sections_own_facts():
@@ -642,3 +686,79 @@ async def test_reground_claim_becomes_unsupported_when_its_evidence_goes_invalid
     async with UnitOfWork() as uow:
         reloaded = await uow.proposal.get_proposal_claim(claim_id)
     assert reloaded.grounding_status == "unsupported"
+
+
+async def test_facts_from_pricing_sets_evidence_link_id_for_a_grounded_resolved_finding():
+    """B16 Group 6: once commercial_service.resolve_pricing_finding
+    materializes a real EvidenceLink (Option C), _facts_from_pricing must
+    surface it via PreparedFact.evidence_link_id - not just offer the
+    finding as unlinked narrative context the way B9 originally left it.
+    Real fixture, real ingest -> resolve -> fact-building pipeline, no
+    monkeypatching."""
+    org_id, tender_id = await _make_org_and_tender("Pricing Facts Grounding Test")
+    content = (_PRICING_FIXTURES_DIR / "pricing_schedule_1.xlsx").read_bytes()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="pricing_schedule_1.xlsx",
+        content=content,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    client = FakeLLMClient()
+    client.script(
+        "commercial_explanation",
+        FindingExplanation,
+        [
+            FindingExplanation(
+                severity="major", explanation="A deterministic pricing check found this issue."
+            )
+        ]
+        * 4,
+    )
+    findings = await commercial_service.evaluate_commercial_for_tender(
+        client, "fake-model", tender_id
+    )
+    await commercial_service.resolve_pricing_finding(findings[0].id, uuid.uuid4())
+
+    async with UnitOfWork() as uow:
+        facts = await proposal_service._facts_from_pricing(uow, tender_id, start_index=1)
+
+    assert len(facts) == 1
+    assert facts[0].evidence_link_id is not None, (
+        "a resolved, grounded finding must be offered with a real evidence_link_id, "
+        "not left unlinked the way B9 originally required"
+    )
+
+
+async def test_facts_from_pricing_leaves_evidence_link_id_unset_for_an_unresolved_finding():
+    """Regression guard on the other half of the same function: an
+    UNRESOLVED finding must still be filtered out entirely (unchanged B9
+    behavior), not accidentally start appearing once grounding exists."""
+    org_id, tender_id = await _make_org_and_tender("Pricing Facts Unresolved Test")
+    content = (_PRICING_FIXTURES_DIR / "pricing_schedule_1.xlsx").read_bytes()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="pricing_schedule_1.xlsx",
+        content=content,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    client = FakeLLMClient()
+    client.script(
+        "commercial_explanation",
+        FindingExplanation,
+        [
+            FindingExplanation(
+                severity="major", explanation="A deterministic pricing check found this issue."
+            )
+        ]
+        * 4,
+    )
+    await commercial_service.evaluate_commercial_for_tender(client, "fake-model", tender_id)
+
+    async with UnitOfWork() as uow:
+        facts = await proposal_service._facts_from_pricing(uow, tender_id, start_index=1)
+
+    assert facts == []

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from _helpers import make_ready_run_inputs
 from sqlalchemy import select
@@ -5,6 +7,7 @@ from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.agents.schemas.requirements import ExtractionOutput
+from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_service, workflow_service
@@ -16,7 +19,7 @@ from tenderos_backend.orchestration.nodes import (
     requirement_extraction,
     talent,
 )
-from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
+from tenderos_worker.jobs.workflow import resume_workflow, retry_workflow_run, run_workflow
 
 pytestmark = pytest.mark.asyncio
 
@@ -288,6 +291,150 @@ async def test_run_workflow_does_nothing_for_an_already_cancelled_run():
     assert unchanged_run.status == "cancelled"
 
 
+async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(monkeypatch):
+    """The sibling-branch-abort question (KNOWN_LIMITATIONS.md's major
+    finding #17 entry, trigger event 2 - "may still be capable of
+    aborting sibling branches that never got a chance to run... not yet
+    independently confirmed"), answered directly rather than left open.
+
+    Expected, stated before running, from reading LangGraph 1.2.10's own
+    installed source (.venv/Lib/site-packages/langgraph/pregel/_runner.py)
+    rather than assumed: compliance_analysis/talent_analysis/
+    commercial_analysis are three tasks Send()-dispatched into the SAME
+    Pregel super-step (graph.py's own comment: "all Send()-dispatched...
+    same shape for all three branches"). PregelRunner.tick's async loop
+    waits on asyncio.wait(futures, return_when=FIRST_COMPLETED) in a loop;
+    the moment a done future carries an exception that is not a
+    GraphBubbleUp (an interrupt) and has no registered per-node error
+    handler (this graph registers none - no retry_policy/error handler is
+    passed to any add_node call in graph.py), _should_stop_others - whose
+    own docstring says exactly "Check if any task failed, if so, cancel
+    all other tasks" - returns True, the wait loop breaks, and every
+    future still in `futures` (the still in-flight siblings) gets
+    `.cancel()`'d before the panic/reraise.
+
+    First run of this test (kept honest, not smoothed over): with NO
+    artificial delay, compliance_analysis/talent_analysis actually WON the
+    race and completed before commercial_analysis's near-instant,
+    zero-await failure ever got detected - this fixture tender has no
+    requirements/documents, so both siblings' own per-item loops run zero
+    iterations and finish essentially synchronously. That is a real,
+    important difference from B16's own live-run trigger, where compliance_
+    analysis was mid-flight through dozens of real per-requirement Gemini
+    calls (genuine network latency) when commercial's RateLimitedError hit
+    - the failure and the siblings were racing over real wall-clock time
+    there, not over near-zero local work. A `_SlowUnitOfWork` wrapper
+    (below) reproduces that same real-latency shape deterministically,
+    without needing a live LLM call: it inserts one genuine, cancellable
+    await (asyncio.sleep) at the very first line of each sibling's real
+    body, so they are provably still in-flight when commercial's
+    zero-await raise fires.
+
+    That first run also surfaced a second, more severe finding before this
+    fix: a cancelled sibling's own asyncpg connection is left in a broken
+    state, and with no `pool_pre_ping` (db/session.py, now fixed), the
+    pool silently handed that broken connection to the very next,
+    unrelated query, which failed with a raw `InterfaceError` unrelated to
+    anything it was actually doing. See db/session.py's own comment.
+
+    Expected now: commercial_analysis fails and marks itself 'failed' via
+    its own except-block (compliance.py/commercial.py's identical `except
+    Exception as exc: mark_task_failed(...); raise` pattern); compliance_
+    analysis/talent_analysis get asyncio-cancelled by LangGraph mid-sleep -
+    and since asyncio.CancelledError is a BaseException, not an Exception,
+    their OWN `except Exception:` blocks never fire either, so
+    mark_task_failed never runs for them either. Also checked directly,
+    not assumed: no code anywhere in this codebase ever sets
+    WorkflowTask.status='running' or .started_at (grepped - only
+    create_task/mark_task_completed/mark_task_failed exist) - so a
+    cancelled-mid-flight task and a task that never got scheduled at all
+    are indistinguishable from the row alone, both simply 'pending'. That
+    is itself the reason B16's original live-run observation ("both at
+    status='pending' with no started_at") could not tell "never ran" from
+    "ran, then cancelled" apart.
+    """
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+    await _approve(registered, gates[0])
+
+    call_count = {"n": 0}
+
+    def _commercial_client_fails_once_then_succeeds():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("scripted commercial failure")
+        return FakeLLMClient()
+
+    monkeypatch.setattr(
+        commercial, "_build_llm_client", _commercial_client_fails_once_then_succeeds
+    )
+
+    class _SlowUnitOfWork(UnitOfWork):
+        # A real, cancellable await at the very first line of the real
+        # node body - resolved via compliance.py's/talent.py's own module
+        # globals (each does `from tenderos_backend.db.unit_of_work import
+        # UnitOfWork`), so patching the name on those two modules reaches
+        # every `async with UnitOfWork() as uow:` inside them without
+        # touching commercial.py or any other caller.
+        async def __aenter__(self):
+            await asyncio.sleep(0.5)
+            return await super().__aenter__()
+
+    monkeypatch.setattr(compliance, "UnitOfWork", _SlowUnitOfWork)
+    monkeypatch.setattr(talent, "UnitOfWork", _SlowUnitOfWork)
+
+    with pytest.raises(RuntimeError, match="scripted commercial failure"):
+        await resume_workflow(str(run.id), str(gates[0].id))
+
+    async with UnitOfWork() as uow:
+        tasks = await uow.workflow.list_tasks(run.id)
+    by_type = {t.task_type: t for t in tasks}
+
+    commercial_task = by_type["commercial_validation"]
+    assert commercial_task.status == "failed"
+    assert commercial_task.error_code == "RuntimeError"
+
+    compliance_task = by_type["compliance_analysis"]
+    talent_task = by_type["talent_analysis"]
+    assert compliance_task.status == "pending", (
+        "confirmed: LangGraph's own _should_stop_others cancelled this "
+        "still-in-flight sibling before it ever reached mark_task_completed"
+    )
+    assert talent_task.status == "pending"
+    assert compliance_task.completed_at is None
+    assert talent_task.completed_at is None
+    assert compliance_task.error_code is None, (
+        "a cancelled task's own except-block never ran - CancelledError is "
+        "a BaseException, not an Exception, so mark_task_failed was never "
+        "called for it either"
+    )
+
+    # Group 4's retry mechanism (major finding #17), resuming the exact
+    # SAME LangGraph checkpoint thread - does it correctly re-dispatch the
+    # cancelled siblings too, or only the one task that actually raised?
+    # Bypasses the real RQ scheduling delay (classify_task_failure's own
+    # 15s fixed backoff for an unclassified exception) by calling the
+    # scheduled job's own target function directly, matching
+    # test_workflow_retry.py's own established "don't wait for RQ, call
+    # the target directly" convention.
+    await retry_workflow_run(str(run.id))
+
+    async with UnitOfWork() as uow:
+        tasks_after_retry = await uow.workflow.list_tasks(run.id)
+    by_type_after = {t.task_type: t for t in tasks_after_retry}
+    assert by_type_after["commercial_validation"].status == "completed"
+    assert by_type_after["compliance_analysis"].status == "completed", (
+        "this is the sibling-branch-abort question's real answer: resuming "
+        "the same checkpoint after a retryable failure re-executes the "
+        "WHOLE aborted super-step, not just the one task that raised - "
+        "Group 4's retry work does close this, at least for a run that "
+        "hasn't paused/checkpointed past this super-step yet"
+    )
+    assert by_type_after["talent_analysis"].status == "completed"
+
+
 async def test_resume_workflow_does_nothing_once_cancelled_mid_flight():
     """Cancel a run that's already paused at requirement_review, then try to
     approve+resume it anyway - I6's actual scenario: cancellation must win
@@ -314,3 +461,81 @@ async def test_resume_workflow_does_nothing_once_cancelled_mid_flight():
     )
     assert still_cancelled_run is not None
     assert still_cancelled_run.status == "cancelled"
+
+
+async def test_under_budget_run_opens_no_cost_budget_gate(monkeypatch):
+    """I5's gate (Build Guide :2755-2763) - the common path. FakeLLMClient
+    calls never write a real estimated_cost_usd (no real Gemini response,
+    no real usage_metadata), so accumulated cost reads as $0 regardless of
+    settings.max_tender_cost_usd's own default - proves the gate stays a
+    true no-op when nothing is actually spent, not just when explicitly
+    configured generously.
+    """
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+    await _approve(registered, gates[0])
+    await resume_workflow(str(run.id), str(gates[0].id))
+
+    async with UnitOfWork() as uow:
+        gates_after = await uow.gates.list_for_run(run.id)
+        tasks_after = await uow.workflow.list_tasks(run.id)
+    assert not any(g.gate_type == "cost_budget" for g in gates_after)
+    specialist_types = {"compliance_analysis", "talent_analysis", "commercial_validation"}
+    specialist_tasks = [t for t in tasks_after if t.task_type in specialist_types]
+    assert all(t.status == "completed" for t in specialist_tasks)
+
+
+async def test_over_budget_run_opens_a_gate_and_approving_it_unblocks_specialists(monkeypatch):
+    """The real point of I5: a run that's already over budget pauses BEFORE
+    specialist_dispatch fires (no specialist task leaves 'pending'), shows
+    real progress in the gate's own summary, and only proceeds once a real
+    approval decision is recorded - not silently, not on a timer.
+    """
+    monkeypatch.setattr(settings, "max_tender_cost_usd", 0.0)
+
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+    await _approve(registered, gates[0])
+    await resume_workflow(str(run.id), str(gates[0].id))
+
+    async with UnitOfWork() as uow:
+        gates_after_first_resume = await uow.gates.list_for_run(run.id)
+        tasks_still_pending = await uow.workflow.list_tasks(run.id)
+        run_after_first_resume = await uow.workflow.get_run(run.id)
+    cost_budget_gate = next(
+        g for g in gates_after_first_resume if g.gate_type == "cost_budget"
+    )
+    assert cost_budget_gate.status == "pending"
+    assert cost_budget_gate.request_payload["summary"]["accumulated_cost_usd"] == 0.0
+    assert cost_budget_gate.request_payload["summary"]["budget_usd"] == 0.0
+    specialist_types = {"compliance_analysis", "talent_analysis", "commercial_validation"}
+    specialist_tasks = [t for t in tasks_still_pending if t.task_type in specialist_types]
+    assert all(t.status == "pending" for t in specialist_tasks), (
+        "no specialist task may start before the cost_budget gate is decided"
+    )
+    assert run_after_first_resume is not None
+    assert run_after_first_resume.status == "waiting_for_human"
+
+    await _approve(registered, cost_budget_gate)
+    await resume_workflow(str(run.id), str(cost_budget_gate.id))
+
+    async with UnitOfWork() as uow:
+        tasks_after_approval = await uow.workflow.list_tasks(run.id)
+        run_after_approval = await uow.workflow.get_run(run.id)
+    specialist_tasks_after = [
+        t for t in tasks_after_approval if t.task_type in specialist_types
+    ]
+    assert all(t.status == "completed" for t in specialist_tasks_after), (
+        "approving the cost_budget gate must let specialists actually run, "
+        "not leave them stranded"
+    )
+    assert run_after_approval is not None
+    assert run_after_approval.status == "waiting_for_human", (
+        "workflow_runs.status must reflect the real next pause "
+        "(compliance_review), not stay stuck on the cost_budget gate's own "
+        "'running_specialists' write forever"
+    )

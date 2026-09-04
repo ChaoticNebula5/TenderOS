@@ -1,15 +1,100 @@
 import logging
 import uuid
+from datetime import timedelta
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
+from redis import Redis
+from rq import Queue
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.checkpoint import get_checkpointer
 from tenderos_backend.orchestration.graph import build_graph
+from tenderos_backend.orchestration.retry import classify_task_failure
 from tenderos_backend.orchestration.state import TenderState
 
+from tenderos_worker.settings import settings
+
 logger = logging.getLogger(__name__)
+
+# TenderState.retry_budget_remaining's own seed value (jobs/workflow.py's
+# initial_state below), reused here as a constant ceiling - see
+# _handle_graph_failure's own docstring for why the LIVE countdown lives in
+# WorkflowRun.retry_count instead of that LangGraph-checkpointed field.
+_RETRY_BUDGET_CEILING = 10
+
+
+async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
+    """Shared by run_workflow/resume_workflow/retry_workflow_run's own
+    except blocks - major finding #17's real fix (B16 Group 4/1). Returns
+    True if a retry was scheduled (caller should NOT mark the run
+    'failed' - it's expected to recover), False otherwise.
+
+    Classifies the failure (orchestration/retry.py::classify_task_failure)
+    against the most recently failed WorkflowTask for this run - the one
+    whose own `except Exception: mark_task_failed(...); raise` put it
+    there right before this exception reached here - and this run's own
+    retry_count/ceiling.
+
+    If retryable, schedules a NEW RQ job via Queue.enqueue_in - real
+    backoff (classify_task_failure's own delay_seconds), survives a
+    worker crash (once enqueue_in returns, the schedule lives in Redis,
+    not this process's memory), and does NOT re-enter the failed node
+    in-process. The new job (retry_workflow_run) resumes the SAME
+    LangGraph checkpoint thread with `ainvoke(None, config)` - LangGraph's
+    own idiom for "continue from the last committed checkpoint, no new
+    external input" - which naturally re-executes only the super-step
+    that never got checkpointed (the one that crashed), not the whole
+    workflow from scratch.
+
+    Deliberately does not itself mark the run failed or re-raise -
+    callers still do both regardless of this function's return value, so
+    THIS attempt stays inspectable in RQ's own failed-job registry (I4:
+    "failed jobs remain inspectable") even when a retry is already
+    scheduled to fix it.
+    """
+    async with UnitOfWork() as uow:
+        tasks = await uow.workflow.list_tasks(run_id)
+        failed_task = max(
+            (t for t in tasks if t.status == "failed"),
+            key=lambda t: t.completed_at or t.created_at,
+            default=None,
+        )
+        run = await uow.workflow.get_run(run_id)
+
+    if failed_task is None or run is None:
+        # No WorkflowTask recorded this failure (an exception from outside
+        # any node's own try/except, or the run itself vanished) - nothing
+        # to classify against, and no reliable per-task ceiling to check.
+        # Not retried; the caller's own sync_run_status("failed") stands.
+        return False
+
+    decision = classify_task_failure(
+        exc,
+        attempt_count=failed_task.attempt_count,
+        max_attempts=failed_task.max_attempts,
+        retry_budget_remaining=_RETRY_BUDGET_CEILING - run.retry_count,
+    )
+    if not decision.should_retry:
+        return False
+
+    async with UnitOfWork() as uow:
+        await uow.workflow.increment_retry_count(run_id, by=decision.budget_cost)
+        await uow.commit()
+
+    connection = Redis.from_url(settings.redis_url)
+    queue = Queue("workflow", connection=connection)
+    queue.enqueue_in(timedelta(seconds=decision.delay_seconds), retry_workflow_run, str(run_id))
+    logger.info(
+        "workflow run %s: scheduled a retry in %.1fs after %s (task %s, attempt %d/%d)",
+        run_id,
+        decision.delay_seconds,
+        type(exc).__name__,
+        failed_task.task_key,
+        failed_task.attempt_count,
+        failed_task.max_attempts,
+    )
+    return True
 
 
 async def run_workflow(workflow_run_id: str) -> None:
@@ -64,7 +149,7 @@ async def run_workflow(workflow_run_id: str) -> None:
             graph = build_graph(checkpointer)
             await graph.ainvoke(initial_state, config)
         logger.info("workflow run %s paused or completed", run_id)
-    except Exception:
+    except Exception as exc:
         # Individual specialist nodes mark their own WorkflowTask failed
         # before re-raising (see orchestration/nodes/compliance.py etc.),
         # but nothing upstream of graph.ainvoke() previously caught that
@@ -80,7 +165,9 @@ async def run_workflow(workflow_run_id: str) -> None:
         # Re-checking here, not just before, is what stops "failed" from
         # silently overwriting a real, deliberate cancellation.
         if not await is_cancelled(run_id):
-            await sync_run_status(run_id, "failed")
+            retried = await _handle_graph_failure(run_id, exc)
+            if not retried:
+                await sync_run_status(run_id, "failed")
         raise
 
 
@@ -111,10 +198,55 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
             graph = build_graph(checkpointer)
 
             await graph.ainvoke(resume_command, config)
-    except Exception:
+    except Exception as exc:
         # See run_workflow's identical catch above - same gap, same fix,
         # including the re-check of cancellation-during-execution.
         logger.exception("workflow run %s failed while resuming", run_id)
         if not await is_cancelled(run_id):
-            await sync_run_status(run_id, "failed")
+            retried = await _handle_graph_failure(run_id, exc)
+            if not retried:
+                await sync_run_status(run_id, "failed")
+        raise
+
+
+async def retry_workflow_run(workflow_run_id: str) -> None:
+    """B16 Group 1/4's real retry mechanism - scheduled by
+    _handle_graph_failure via Queue.enqueue_in, never called directly by
+    an outbox route. Resumes the SAME LangGraph checkpoint thread with no
+    new input (`ainvoke(None, config)`) - LangGraph's own idiom for
+    "continue from the last committed checkpoint." Since a crashed
+    super-step never gets checkpointed (a real Neo4j-style auto-commit-
+    per-statement risk does NOT apply to LangGraph's own Postgres
+    checkpointer, which commits a whole super-step atomically or not at
+    all), this naturally re-executes only the super-step that failed -
+    the same one `run_workflow`/`resume_workflow` were mid-way through -
+    not the entire workflow from scratch. Deliberately not "re-enter the
+    node": no node function is called directly here at all, only the
+    compiled graph's own `ainvoke`, the same entry point every other real
+    invocation in this file uses.
+    """
+    run_id = uuid.UUID(workflow_run_id)
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.get_run(run_id)
+    if run is None:
+        raise ValueError(f"WorkflowRun {run_id} not found")
+
+    if run.status == "cancelled":
+        logger.info("workflow run %s is cancelled, skipping retry", run_id)
+        return
+
+    config: RunnableConfig = {"configurable": {"thread_id": run.langgraph_thread_id}}
+
+    logger.info("retrying workflow run %s (attempt %d)", run_id, run.retry_count)
+    try:
+        async with get_checkpointer() as checkpointer:
+            graph = build_graph(checkpointer)
+            await graph.ainvoke(None, config)
+        logger.info("workflow run %s paused or completed after retry", run_id)
+    except Exception as exc:
+        logger.exception("workflow run %s failed again during retry", run_id)
+        if not await is_cancelled(run_id):
+            retried = await _handle_graph_failure(run_id, exc)
+            if not retried:
+                await sync_run_status(run_id, "failed")
         raise

@@ -577,6 +577,218 @@ async def test_set_knowledge_selection_404s_for_an_unknown_tender(
 
 
 # ----------------------------------------------------------------------
+# B16 item 3: cross-org rejection, grouped by how require_permission(
+# _MANAGE)'s own _resolve_organization_id resolves each route's org - one
+# test per resolution SHAPE (org_id direct, batch_id, item_id,
+# knowledge_item_id, tender_id), matching this file's own "prove the
+# boundary once per shape" precedent for RBAC below. Only GET
+# /employees/{id} had a genuine outsider-caller cross-org test before
+# this - the existing "rejects a knowledge item from another
+# organization" test on PUT knowledge-selections (above) turned out,
+# read directly rather than trusted by name, to prove a different
+# property (a legitimate caller selecting a FOREIGN knowledge_item into
+# their OWN tender, a 404 resource-mismatch) - not an outsider CALLER
+# rejected by RBAC (403 ORG_ACCESS_DENIED). Real coverage before this
+# was 1/19, not 2/19; both knowledge-selections routes are gaps here.
+# ----------------------------------------------------------------------
+
+
+async def test_org_scoped_knowledge_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # Group A: org_id resolved directly from the path - the 4 upload
+    # routes plus list_import_batches/list_organization_knowledge/
+    # list_bid_eligible_employees.
+    headers, user_id, org_id = register_actor()
+    await _seed_needs_review_item(org_id, user_id)
+    await _seed_employee(org_id, name="Org A Employee For Group A")
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    upload_kwargs = [
+        (
+            f"/organizations/{org_id}/knowledge/import-batches/employee-master",
+            {
+                "file": (
+                    "employees.xlsx",
+                    _xlsx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        ),
+        (
+            f"/organizations/{org_id}/knowledge/import-batches/certifications",
+            {
+                "file": (
+                    "certs.xlsx",
+                    _xlsx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        ),
+        (
+            f"/organizations/{org_id}/knowledge/documents",
+            {
+                "file": (
+                    "capabilities.docx",
+                    _docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+        ),
+    ]
+    for path, files in upload_kwargs:
+        resp = client.post(path, files=files, headers=outsider_headers)
+        assert resp.status_code == 403, f"{path}: {resp.text}"
+        assert resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    resumes_resp = client.post(
+        f"/organizations/{org_id}/knowledge/import-batches/resumes",
+        files=[
+            (
+                "files",
+                (
+                    "resume1.docx",
+                    _docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            )
+        ],
+        headers=outsider_headers,
+    )
+    assert resumes_resp.status_code == 403, resumes_resp.text
+    assert resumes_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    for path in (
+        f"/organizations/{org_id}/knowledge/import-batches",
+        f"/organizations/{org_id}/knowledge",
+        f"/organizations/{org_id}/employees",
+    ):
+        resp = client.get(path, headers=outsider_headers)
+        assert resp.status_code == 403, f"{path}: {resp.text}"
+        assert resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_batch_and_item_scoped_knowledge_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # Groups B and C: batch_id-resolved (get_import_batch,
+    # list_import_items) and item_id-resolved via the batch's own org
+    # (approve_import_item, reject_import_item).
+    headers, user_id, org_id = register_actor()
+    batch_id, item_id = await _seed_needs_review_item(org_id, user_id)
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    get_batch_resp = client.get(f"/knowledge/import-batches/{batch_id}", headers=outsider_headers)
+    assert get_batch_resp.status_code == 403, get_batch_resp.text
+    assert get_batch_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    list_items_resp = client.get(
+        f"/knowledge/import-batches/{batch_id}/items", headers=outsider_headers
+    )
+    assert list_items_resp.status_code == 403, list_items_resp.text
+    assert list_items_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    approve_resp = client.post(
+        f"/knowledge/import-items/{item_id}/approve", headers=outsider_headers
+    )
+    assert approve_resp.status_code == 403, approve_resp.text
+    assert approve_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    reject_resp = client.post(
+        f"/knowledge/import-items/{item_id}/reject",
+        json={"reason": "hijacked"},
+        headers=outsider_headers,
+    )
+    assert reject_resp.status_code == 403, reject_resp.text
+    assert reject_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_knowledge_item_scoped_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # Group D: knowledge_item_id resolved via the item's/employee's own
+    # organization_id - get/patch_knowledge_item, patch_employee_profile,
+    # verify_employee, replace_employee_resume.
+    headers, _, org_id = register_actor()
+    item_id = await _seed_employee(org_id, name="Org A Employee For Group D")
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    get_resp = client.get(f"/knowledge/{item_id}", headers=outsider_headers)
+    assert get_resp.status_code == 403, get_resp.text
+    assert get_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    patch_resp = client.patch(
+        f"/knowledge/{item_id}", json={"title": "Hijacked"}, headers=outsider_headers
+    )
+    assert patch_resp.status_code == 403, patch_resp.text
+    assert patch_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    patch_profile_resp = client.patch(
+        f"/employees/{item_id}/profile", json={"name": "Hijacked"}, headers=outsider_headers
+    )
+    assert patch_profile_resp.status_code == 403, patch_profile_resp.text
+    assert patch_profile_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    verify_resp = client.post(
+        f"/employees/{item_id}/verify",
+        json={"eligible_for_bid": True},
+        headers=outsider_headers,
+    )
+    assert verify_resp.status_code == 403, verify_resp.text
+    assert verify_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    resume_resp = client.post(
+        f"/employees/{item_id}/resume",
+        files={
+            "file": (
+                "resume.docx",
+                _docx_bytes(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        headers=outsider_headers,
+    )
+    assert resume_resp.status_code == 403, resume_resp.text
+    assert resume_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_knowledge_selection_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # Group E: tender_id-resolved - list_knowledge_selections and
+    # set_knowledge_selection, neither previously proven against a
+    # genuine outsider CALLER (see this section's own module comment
+    # above for why the existing "another_organization"-named test on
+    # the PUT route doesn't already cover this).
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Group E Cross-Org Bid"},
+        headers=headers,
+    ).json()
+    item_id = await _seed_employee(org_id, name="Org A Employee For Group E")
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    list_resp = client.get(
+        f"/tenders/{tender['id']}/knowledge-selections", headers=outsider_headers
+    )
+    assert list_resp.status_code == 403, list_resp.text
+    assert list_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    put_resp = client.put(
+        f"/tenders/{tender['id']}/knowledge-selections/{item_id}",
+        json={"selected": True},
+        headers={**outsider_headers, "Idempotency-Key": "group-e-select"},
+    )
+    assert put_resp.status_code == 403, put_resp.text
+    assert put_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+# ----------------------------------------------------------------------
 # RBAC boundary - proven once, not per-route (every route in this module
 # shares the same manage_organization_knowledge action).
 # ----------------------------------------------------------------------

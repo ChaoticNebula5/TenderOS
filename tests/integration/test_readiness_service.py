@@ -21,7 +21,12 @@ from tenderos_backend.db.models.readiness import ReadinessReport
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import graph_service, readiness_service
+from tenderos_backend.domain.services import (
+    graph_service,
+    readiness_service,
+    redteam_checks,
+    requirement_service,
+)
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 
 pytestmark = pytest.mark.asyncio
@@ -347,6 +352,53 @@ async def test_missing_mandatory_submission_item_blocks_and_clears():
     cleared = await readiness_service.evaluate_readiness(tender_id)
     categories = {b["category"] for b in cleared.blockers}
     assert readiness_service.MISSING_MANDATORY_SUBMISSION_ITEM not in categories
+
+
+async def test_the_real_write_path_reaches_an_honest_unwaived_ready_true():
+    """The assertion above only ever proved the BLOCKER computation clears
+    when the repository is poked directly (uow.requirements.
+    update_submission_item + a manual bump_state_version) - that's always
+    worked. What has never been demonstrated, since B5, is a real write
+    PATH: SubmissionRepository.update_submission_item had zero callers
+    anywhere in either app until requirement_service.patch_submission_item
+    (B16) gave it its first one. This test goes through that real service
+    call - the same one PATCH /submission-items/{id} calls - not the bare
+    repository method, and checks the two things that actually matter:
+    (1) an otherwise-clean tender reaches a genuine, unwaived ready=True
+    with zero remaining blockers, the assertion this project's own
+    KNOWN_LIMITATIONS.md ("final readiness is unreachable through the UI
+    by construction") has never been able to make; (2) redteam_checks.py's
+    own missing_mandatory_submission_item finding - a second, independent
+    consumer of the same 'missing' status this fix was not specifically
+    built for - clears in the same pass, proving the write path fixes both
+    readiness AND red-team, not just the one it was written for.
+    """
+    org_id, tender_id = await _org_and_tender("RealWritePath")
+    item_id = await _submission_item(tender_id)
+    await _project(tender_id)
+
+    blocked = await readiness_service.evaluate_readiness(tender_id)
+    assert blocked.ready is False
+    assert readiness_service.MISSING_MANDATORY_SUBMISSION_ITEM in {
+        b["category"] for b in blocked.blockers
+    }
+    async with UnitOfWork() as uow:
+        blocked_findings = await redteam_checks.check_submission_checklist(uow, tender_id)
+    assert len(blocked_findings) == 1
+    assert blocked_findings[0].finding_category == "missing_mandatory_submission_item"
+
+    await requirement_service.patch_submission_item(
+        item_id, org_id, uuid.uuid4(), status="present"
+    )
+    await _project(tender_id)
+
+    cleared = await readiness_service.evaluate_readiness(tender_id)
+    assert cleared.ready is True
+    assert cleared.blockers == []
+
+    async with UnitOfWork() as uow:
+        cleared_findings = await redteam_checks.check_submission_checklist(uow, tender_id)
+    assert cleared_findings == []
 
 
 # ----------------------------------------------------------------------

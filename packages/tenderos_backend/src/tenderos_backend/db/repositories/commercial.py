@@ -124,6 +124,7 @@ class CommercialRepository:
         finding_type: str,
         note: str,
         content_fingerprint: str,
+        pricing_document_id: uuid.UUID | None = None,
         item_a_ref: dict | None = None,
         item_b_ref: dict | None = None,
         delta: float | None = None,
@@ -132,6 +133,7 @@ class CommercialRepository:
         finding = PricingFinding(
             tender_id=tender_id,
             finding_type=finding_type,
+            pricing_document_id=pricing_document_id,
             item_a_ref=item_a_ref,
             item_b_ref=item_b_ref,
             delta=delta,

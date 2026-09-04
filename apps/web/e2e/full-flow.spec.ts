@@ -216,7 +216,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // The individual per-step poll timeouts below (300s/120s) were never
   // the problem; this outer budget was too tight for their real sum
   // against live Gemini latency, not a guess corrected in the abstract.
-  test.setTimeout(40 * 60_000);
+  // A later real run (B16, KNOWN_LIMITATIONS.md's "Workflow retry
+  // controls are inert" entry) reached 45.1 minutes of real workflow
+  // wall-clock before failing on an unrelated RateLimitedError - past
+  // this 40-minute cap. Bumped with real margin above that observed
+  // number, not re-guessed from zero.
+  test.setTimeout(60 * 60_000);
 
   // ------------------------------------------------------------------
   // Setup (not one of Part J's 13 - see KNOWN_LIMITATIONS.md's entry on
@@ -703,22 +708,60 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   for (let i = 0; i < roleCount; i++) {
     const roleRow = page.locator("table").first().locator("tbody tr").nth(i);
     const roleName = (await roleRow.locator("td").first().textContent()) ?? `role-${i}`;
-    await roleRow.getByRole("button", { name: "View candidates" }).click();
     // handleSelectRole's own listMatches(roleId) call is async, and
     // TeamWorkspace.tsx doesn't clear the previous role's matches before
     // it resolves (see KNOWN_LIMITATIONS.md) - a bare read right after
     // click() can observe the PREVIOUS role's candidates, or select a
     // candidate for the wrong role. The section shows no role name or
-    // busy indicator to poll for instead, so networkidle is what
-    // actually confirms this role's own fetch has landed.
-    await page.waitForLoadState("networkidle");
+    // busy indicator to poll for instead.
+    //
+    // B16: this used to be a bare await page.waitForLoadState("networkidle")
+    // AFTER the click, on the theory that it "actually confirms this
+    // role's own fetch has landed" - it does not. Found live, root-caused
+    // with a real trace, not assumed: click-to-check gaps of 10-40ms,
+    // real GET /roles/{id}/matches responses (200, real bodies, matching
+    // role_matches already 5+ minutes old in Postgres) that hadn't been
+    // applied to React state yet by the time the very next check ran, for
+    // all 4 roles in one run. networkidle observes the BROWSER's network
+    // layer, not React's own post-fetch re-render commit - it can resolve
+    // before setMatches() has run, especially this late into a long test
+    // when there's little OTHER network traffic to make "idle" meaningful.
+    // Same class of gap as this file's own "page.reload() does not wait
+    // for React's own data-fetching effects" and "premature navigation
+    // cancelled in-flight requests" findings - waiting on the actual
+    // response this click triggers, registered BEFORE the click so the
+    // response can't land in the gap between click() and the wait
+    // starting, closes it directly instead of hoping a proxy signal lines
+    // up.
+    await Promise.all([
+      page.waitForResponse(
+        (resp) => resp.request().method() === "GET" && /\/roles\/[^/]+\/matches$/.test(resp.url()),
+      ),
+      roleRow.getByRole("button", { name: "View candidates" }).click(),
+    ]);
     const candidateSection = page.locator("section", {
       has: page.getByRole("heading", { name: "Candidates" }),
     });
-    const noCandidates = await candidateSection
-      .getByText("No candidates found for this role yet.")
-      .count();
-    if (noCandidates > 0) {
+    // waitForResponse above only guarantees the response was RECEIVED, not
+    // that handleSelectRole's own setMatches(result) has committed a React
+    // re-render yet - a real, separate gap one layer up from the network
+    // one just closed. "No candidates found for this role yet." is TRUE in
+    // the DOM from the moment of the click (matches starts as []), so a
+    // bare read the instant the response lands can still catch the
+    // pre-render default rather than the real answer. Not expect.poll()
+    // (which throws on timeout, wrong here - genuinely zero candidates for
+    // a role is a valid outcome, not a failure) - a bounded, non-throwing
+    // wait for real rows to appear, falling back to "no candidates" only
+    // once that window genuinely elapses.
+    let candidateRowCount = 0;
+    const rowPollDeadline = Date.now() + 3_000;
+    while (Date.now() < rowPollDeadline) {
+      candidateRowCount = await candidateSection.locator("tbody tr").count();
+      if (candidateRowCount > 0) break;
+      await page.waitForTimeout(100);
+    }
+    const noCandidates = candidateRowCount === 0;
+    if (noCandidates) {
       rolesWithNoCandidate.push(roleName);
       continue;
     }
@@ -1152,31 +1195,54 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     timeout: 10_000,
   });
 
-  // Compliance reopens: persist_compliance_decision (already built, B7/
-  // pre-B12) clears a stale human_approved when reevaluation changes the
-  // entry's status - reanalyze_knowledge_selection_change (apps/worker/
-  // jobs/reanalysis.py) just has to call evaluate_compliance_for_
-  // requirement for this to fire, not reimplement it. Generous timeout:
-  // the outbox dispatcher's own 5s poll, then a real LLM call, sit
-  // between the confirm click above and this becoming true.
-  // B16: revised during the recovery-wait audit. One requirement, one
-  // real LLM call - real work is genuinely small - but this poll also
-  // uses reloadAndSettleOnRoute, and 130s of possible bounce-recovery
-  // overhead against the old 180_000 budget left only ~50s of real margin
-  // once that's subtracted. Thin, not provably broken, but every other
-  // similarly-thin poll found during this audit (knowledge-selections,
-  // needs_review below) turned out to need the room. Bumped to 300_000
-  // for the same reason, not because this step's own real work grew.
-  await page.goto(`/tenders/${tenderId}/compliance`);
+  // B16: this used to poll for the compliance entry's human_approved to
+  // flip to "no" after the deselection above. It never can, and that's
+  // not a bug - do not "fix" this back without reading the investigation
+  // it's the result of (KNOWN_LIMITATIONS.md's "USED_IN" entry, B16
+  // addendum). compliance_service.py's own B7 comment ("selected_only is
+  // deliberately not used here") was a build-sequencing decision made
+  // before tender_knowledge_selections existed, not a permanent statement
+  // that compliance ignores selection - but the Build Guide's D6 section
+  // independently settles it regardless of that comment's intent:
+  // "Deselected fact still in use" (USED_IN.selected=false AND fact still
+  // provides evidence that supports a compliance decision) is a state D6
+  // explicitly anticipates and requires a DETECTOR for
+  // (find_deselected_fact_still_used_contradictions,
+  // graph_projection/queries.py) - not an automatic reversal.
+  // reanalyze_knowledge_selection_change's own docstring is explicit that
+  // step (3) only clears human_approved "when the reevaluated status
+  // differs" - re-evaluating after this deselection finds the SAME
+  // evidence (compliance retrieval was never gated by selection) and
+  // correctly persists the SAME status, so nothing about step (3) alone
+  // was ever going to make this assertion pass, confirmed status quo, not
+  // a defect.
+  //
+  // What the design actually promises, and what's now wired in (B16):
+  // reanalyze_knowledge_selection_change's own step (5) runs
+  // check_graph_contradictions after every selection change and persists
+  // any drafts via the same upsert-by-fingerprint path run_red_team uses -
+  // proven with a dedicated service-level integration test
+  // (test_reanalysis_job.py::test_reanalyze_knowledge_selection_change_
+  // surfaces_deselected_fact_still_used_finding, FakeLLMClient, no LLM
+  // cost) before this assertion was ever changed to depend on it. This is
+  // the full-stack proof of the same thing: the deselection above must
+  // surface a real, open deselected_fact_in_use finding on the red-team
+  // screen WITHOUT a fresh manual "Run red team" click (step 11 already
+  // ran once, before this deselection existed to be detected) - the
+  // reanalysis job's own step (5) is what has to produce it. Same
+  // 300_000/reloadAndSettleOnRoute budget as the assertion this replaces,
+  // for the same reason (one real LLM call plus bounce-recovery
+  // overhead, not a re-guess).
+  await page.goto(`/tenders/${tenderId}/redteam`);
   await expect
     .poll(
       async () => {
-        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/compliance`);
+        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/redteam`);
         const rows = page.locator("table").first().locator("tbody tr");
         const count = await rows.count();
         for (let i = 0; i < count; i++) {
           const row = rows.nth(i);
-          if ((await row.locator("td").first().textContent()) === affectedRequirementId) {
+          if ((await row.locator("td").first().textContent()) === "deselected_fact_in_use") {
             return (await row.locator("td").nth(3).textContent())?.trim();
           }
         }
@@ -1185,7 +1251,10 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       {
         timeout: 300_000,
         intervals: [2_000],
-        message: `waiting for requirement ${affectedRequirementId}'s compliance entry to reopen (human_approved -> no)`,
+        message:
+          "waiting for a deselected_fact_in_use finding to surface on the red-team screen " +
+          "(D6's own answer to a deselection that doesn't change the compliance verdict it " +
+          "backs - see the comment above)",
       },
     )
     .toBe("no");

@@ -123,6 +123,16 @@ async def search_company_knowledge(
                     and knowledge_item.valid_until < today
                 ):
                     continue
+                # B16: valid_only's other half - an archived/expired-status
+                # item with no valid_until set at all (or one still in the
+                # future) used to stay eligible regardless, since only the
+                # date check above gated it. "active" is the only status
+                # compliance_service._compute_candidate_signals itself
+                # treats as currently good for non-employee items; mirrored
+                # here rather than re-deriving a second definition of
+                # "valid" for the same field.
+                if valid_only and knowledge_item.status != "active":
+                    continue
                 if selected_item_ids is not None and knowledge_item.id not in selected_item_ids:
                     continue
                 candidates.append((chunk, knowledge_item, fused_scores[chunk_id]))

@@ -143,6 +143,10 @@ async def _resolve_organization_id(request: Request) -> UUID:
     if requirement_id is not None:
         return await _organization_id_for_requirement(UUID(requirement_id))
 
+    submission_item_id = request.path_params.get("submission_item_id")
+    if submission_item_id is not None:
+        return await _organization_id_for_submission_item(UUID(submission_item_id))
+
     # B6 (G6): knowledge_service's own routes never carry org_id/tender_id
     # in most of their paths (e.g. GET /knowledge/{knowledge_item_id},
     # POST /employees/{knowledge_item_id}/verify) - these three branches
@@ -269,6 +273,23 @@ async def _organization_id_for_requirement(requirement_id: UUID) -> UUID:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
             )
         tender = await uow.tenders.get(requirement.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    return tender.organization_id
+
+
+async def _organization_id_for_submission_item(submission_item_id: UUID) -> UUID:
+    # Deliberately its own path-param name (submission_item_id), not the
+    # existing item_id branch below - item_id already resolves
+    # knowledge_import_items (B6), an unrelated resource. Reusing it here
+    # would have silently looked up the wrong table for this route's id.
+    async with UnitOfWork() as uow:
+        item = await uow.requirements.get_submission_item(submission_item_id)
+        if item is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Submission item not found"
+            )
+        tender = await uow.tenders.get(item.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
     return tender.organization_id

@@ -100,6 +100,9 @@ class RequirementRepository:
             await self._session.delete(requirement)
             await self._session.flush()
 
+    async def get_submission_item(self, item_id: uuid.UUID) -> SubmissionItem | None:
+        return await self._session.get(SubmissionItem, item_id)
+
     async def create_submission_item(
         self,
         tender_id: uuid.UUID,

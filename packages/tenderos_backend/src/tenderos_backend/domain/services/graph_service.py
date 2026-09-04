@@ -1,12 +1,17 @@
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.graph_projection import GraphProjectionRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.graph_projection import queries
-from tenderos_backend.graph_projection.driver import SHARED_LABELS, TENDER_SCOPED_LABELS
+from tenderos_backend.graph_projection.driver import (
+    SHARED_LABELS,
+    TENDER_SCOPED_LABELS,
+    Neo4jSession,
+)
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_backend.graph_projection.projector import project_tender as _write_projection
 
@@ -36,14 +41,32 @@ class GraphStaleError(Exception):
         tender_id: uuid.UUID,
         current_state_version: int,
         projected_state_version: int | None,
+        reason: str = "stale",
     ) -> None:
         self.tender_id = tender_id
         self.current_state_version = current_state_version
         self.projected_state_version = projected_state_version
-        super().__init__(
-            f"Graph for tender {tender_id} is stale: current state_version="
-            f"{current_state_version}, last projected={projected_state_version}"
-        )
+        self.reason = reason
+        if reason == "damaged":
+            # Postgres's own state_version comparison passed - the two ARE
+            # equal here - but major finding #8's fix (queries.
+            # is_projection_complete) found the graph itself incomplete.
+            # Same exception type as a real version mismatch (routes/
+            # graph.py's own 409 GRAPH_STALE handling is correct for both:
+            # neither case is safe to read from), distinct message so a
+            # log reader isn't misled into thinking the versions disagreed.
+            super().__init__(
+                f"Graph for tender {tender_id} at state_version "
+                f"{current_state_version} is damaged: the latest projection "
+                f"run completed in Postgres but the graph itself is missing "
+                f"its completion marker - a crash partway through "
+                f"reprojection, not a stale version."
+            )
+        else:
+            super().__init__(
+                f"Graph for tender {tender_id} is stale: current state_version="
+                f"{current_state_version}, last projected={projected_state_version}"
+            )
 
 
 async def project_tender(tender_id: uuid.UUID) -> GraphProjectionRun:
@@ -81,11 +104,20 @@ async def project_tender(tender_id: uuid.UUID) -> GraphProjectionRun:
         return result
 
 
-async def check_freshness(tender_id: uuid.UUID) -> GraphProjectionRun:
+async def check_freshness(tender_id: uuid.UUID, session: Neo4jSession) -> GraphProjectionRun:
     """Every read-path function below calls this first. Returns the latest
     completed run on success (callers that already need it, e.g.
     get_graph_status, avoid a second lookup); raises GraphStaleError
     otherwise - including when no successful projection has ever run.
+
+    Major finding #8's fix: a matching Postgres state_version alone no
+    longer means fresh - it only proves a projection was ATTEMPTED for
+    this state_version, not that it finished (Neo4j auto-commits per
+    statement; a crash partway through leaves real, permanent damage a
+    Postgres-only check has no way to see). `session` is now required -
+    every caller already opens one immediately after this call anyway
+    (to run its own query), so this reuses that same session rather than
+    opening a second one just for this check.
     """
     async with UnitOfWork() as uow:
         tender = await uow.tenders.get(tender_id)
@@ -99,7 +131,12 @@ async def check_freshness(tender_id: uuid.UUID) -> GraphProjectionRun:
                 tender.state_version,
                 latest.source_state_version if latest else None,
             )
-        return latest
+
+    if not await queries.is_projection_complete(session, str(tender_id), tender.state_version):
+        raise GraphStaleError(
+            tender_id, tender.state_version, latest.source_state_version, reason="damaged"
+        )
+    return latest
 
 
 async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
@@ -108,28 +145,40 @@ async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
         if tender is None:
             raise TenderNotFoundError(f"Tender {tender_id} not found")
         latest = await uow.graph_projection.get_latest_completed_run(tender_id)
-        fresh = latest is not None and latest.source_state_version == tender.state_version
-        return {
-            "fresh": fresh,
-            "current_state_version": tender.state_version,
-            "projected_state_version": latest.source_state_version if latest else None,
-            "last_projected_at": latest.completed_at if latest else None,
-        }
+        version_matches = latest is not None and latest.source_state_version == tender.state_version
+
+    # Same fix as check_freshness: a matching state_version alone isn't
+    # enough, the graph itself might be damaged from a crashed
+    # reprojection. This function's own contract (never raises, always
+    # returns a status dict) is unchanged - it just folds the same
+    # Neo4j-side check into "fresh" rather than trusting Postgres alone.
+    fresh = False
+    if version_matches:
+        async with get_neo4j_session() as session:
+            fresh = await queries.is_projection_complete(
+                session, str(tender_id), tender.state_version
+            )
+    return {
+        "fresh": fresh,
+        "current_state_version": tender.state_version,
+        "projected_state_version": latest.source_state_version if latest else None,
+        "last_projected_at": latest.completed_at if latest else None,
+    }
 
 
 async def preview_impact(
     tender_id: uuid.UUID, knowledge_item_id: uuid.UUID
 ) -> list[dict[str, Any]]:
-    await check_freshness(tender_id)
     async with get_neo4j_session() as session:
+        await check_freshness(tender_id, session)
         return await queries.preview_impact(
             session, str(tender_id), str(knowledge_item_id), settings.graph_max_hops
         )
 
 
 async def find_contradictions(tender_id: uuid.UUID) -> list[dict[str, Any]]:
-    await check_freshness(tender_id)
     async with get_neo4j_session() as session:
+        await check_freshness(tender_id, session)
         tid = str(tender_id)
         contradictions: list[dict[str, Any]] = []
         for finder, category in (
@@ -168,7 +217,6 @@ async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -
     """
     if node_label not in _ALLOWED_TRACE_LABELS:
         raise ValueError(f"Unknown graph node label: {node_label!r}")
-    await check_freshness(tender_id)
 
     tid = str(tender_id)
     # Tender-scoped labels carry their own tender_id property (set by the
@@ -186,6 +234,7 @@ async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -
         )
 
     async with get_neo4j_session() as session:
+        await check_freshness(tender_id, session)
         result = await session.run(
             match_clause + " "
             "OPTIONAL MATCH (n)-[r]-(neighbor) "
@@ -208,7 +257,9 @@ class EvidenceCoverageResult:
     recommended_action: str = "compliance_re_evaluation_required"
 
 
-def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageResult:
+def evaluate_evidence_coverage(
+    rows: list[dict[str, Any]], today: date | None = None
+) -> EvidenceCoverageResult:
     """D7's evidence-coverage decision function. `rows` is exactly
     queries.evidence_coverage_rows's output for one compliance decision -
     one dict per attached evidence link, already fetched from Neo4j:
@@ -223,8 +274,9 @@ def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageRe
        path: the evidence link itself must be verified=true AND
        validity_status='valid'. If the row DOES have a backing fact
        (knowledge_item_status is not None), that fact's status must also be
-       'active' AND its USED_IN.selected must not be False (None counts as
-       passing - a fact with no selection row at all was never deselected).
+       'active', its USED_IN.selected must not be False (None counts as
+       passing - a fact with no selection row at all was never deselected),
+       AND its valid_until (if set at all) must not be in the past.
     2. Split evidence_id values into valid_evidence_ids vs
        invalid_evidence_ids based on step 1's per-row verdict.
     3. valid_path_count = len(valid_evidence_ids).
@@ -239,16 +291,38 @@ def evaluate_evidence_coverage(rows: list[dict[str, Any]]) -> EvidenceCoverageRe
     condition applies," not as an automatic failure. Getting this backwards
     would make every document-excerpt-only compliance decision
     permanently un-coverable regardless of how solid the excerpt itself is.
+
+    valid_until fix (B16): queries.evidence_coverage_rows already fetches
+    fact.valid_until fresh on every call - this function simply never read
+    it (KNOWN_LIMITATIONS.md's "a check doesn't actually verify what it
+    claims to" standing pattern, shape B, instance 4). A certification
+    whose valid_until has passed but whose knowledge_item_status hasn't
+    separately been flipped to archived/expired was scored fact_is_valid=
+    True regardless. `today` follows this codebase's own established
+    pattern (compliance_service.prepare_evidence_candidates) rather than
+    calling date.today() directly, so a test can pin it without mocking
+    the clock. Neo4j's driver returns fact.valid_until as its own
+    neo4j.time.Date, not a plain datetime.date - directly comparable
+    against one (the driver's temporal types support this), same as
+    find_expired_certification_contradictions already compares two Neo4j
+    Date properties server-side; nothing here needs an explicit conversion.
     """
+    today = today or date.today()
 
     valid_evidence_ids: list[str] = []
     invalid_evidence_ids: list[str] = []
     for row in rows:
         evidence_id = str(row["evidence_id"])
         evidence_is_valid = row["verified"] is True and row["validity_status"] == "valid"
-        
-        fact_is_valid = row["knowledge_item_status"] is None or (row["knowledge_item_status"] == "active" and row["selected"] is not False)
-        
+
+        valid_until = row.get("valid_until")
+        fact_not_expired = valid_until is None or valid_until >= today
+        fact_is_valid = row["knowledge_item_status"] is None or (
+            row["knowledge_item_status"] == "active"
+            and row["selected"] is not False
+            and fact_not_expired
+        )
+
         path_is_valid = evidence_is_valid and fact_is_valid
         
         if path_is_valid:

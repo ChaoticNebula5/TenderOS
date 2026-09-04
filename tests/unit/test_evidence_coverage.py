@@ -6,7 +6,15 @@ document-excerpt case); an active, still-selected backing fact is required
 when one exists; a deselected or non-active fact disqualifies its evidence
 even when the evidence link itself still looks fine; unverified/invalid
 evidence never counts regardless of the fact.
+
+B16: the valid_until half of "an active fact" (KNOWN_LIMITATIONS.md's
+"a check doesn't actually verify what it claims to" standing pattern,
+shape B, instance 4 - the function fetched valid_until fresh every call
+and simply never read it). Fixed here, not just described - see the two
+new tests below.
 """
+
+from datetime import date
 
 from tenderos_backend.domain.services.graph_service import evaluate_evidence_coverage
 
@@ -94,4 +102,27 @@ def test_one_valid_alternate_path_is_enough_when_another_fails():
     assert result.valid_path_count == 1
     assert result.valid_evidence_ids == ["ev-good"]
     assert result.invalid_evidence_ids == ["ev-bad"]
+    assert result.recommended_action == "review_optional"
+
+
+def test_active_fact_with_expired_valid_until_disqualifies_evidence():
+    # The exact real-world case this bug missed: knowledge_item_status is
+    # still "active" (nothing separately flipped it to archived/expired),
+    # but the certification's own valid_until has passed - the fact is
+    # stale even though its status column doesn't say so yet.
+    row = _row(knowledge_item_status="active", selected=True, valid_until=date(2020, 1, 1))
+
+    result = evaluate_evidence_coverage([row], today=date(2026, 1, 1))
+
+    assert result.valid_path_count == 0
+    assert result.invalid_evidence_ids == ["ev-1"]
+    assert result.recommended_action == "compliance_re_evaluation_required"
+
+
+def test_active_fact_with_future_valid_until_still_counts_as_valid():
+    row = _row(knowledge_item_status="active", selected=True, valid_until=date(2030, 1, 1))
+
+    result = evaluate_evidence_coverage([row], today=date(2026, 1, 1))
+
+    assert result.valid_path_count == 1
     assert result.recommended_action == "review_optional"

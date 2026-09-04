@@ -154,6 +154,42 @@ async def test_select_candidate_404s_for_an_employee_with_no_match_row(
     assert response.status_code == 404, response.text
 
 
+async def test_talent_routes_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # B16 item 3: talent.py's own 3 routes had zero genuine cross-org
+    # coverage - test_talent_routes_reject_a_role_outside_select_resource
+    # below is a same-org narrower-ROLE case (proposal_writer lacking
+    # select_resource), not a different-org case. Real Admin of a
+    # DIFFERENT organization for all 3 routes, same shape as this
+    # project's other cross-org route tests.
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Cross-Org Bid"},
+        headers=admin_headers,
+    ).json()
+    role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    list_roles = client.get(f"/tenders/{tender['id']}/roles", headers=outsider_headers)
+    assert list_roles.status_code == 403, list_roles.text
+    assert list_roles.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    list_matches = client.get(f"/roles/{role_id}/matches", headers=outsider_headers)
+    assert list_matches.status_code == 403, list_matches.text
+    assert list_matches.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    select_candidate = client.post(
+        f"/roles/{role_id}/select-candidate",
+        json={"employee_knowledge_item_id": employee_id, "selected": True},
+        headers={**outsider_headers, "Idempotency-Key": "select-cross-org"},
+    )
+    assert select_candidate.status_code == 403, select_candidate.text
+    assert select_candidate.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
 async def test_talent_routes_reject_a_role_outside_select_resource(
     client: TestClient, register_actor, add_member_with_role
 ):

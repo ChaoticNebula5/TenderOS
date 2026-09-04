@@ -214,4 +214,14 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
             Role.ADMIN,
         }
     ),
+    # I5 (Build Guide :2755-2763): "require bid-manager approval to
+    # continue." Not in Part H's matrix at all - I5 postdates it, same gap
+    # shape as cancel_workflow_run above. Approver added alongside
+    # bid_manager, not bid_manager+admin alone - matching every other
+    # gate-adjacent row in this table (approve_compliance, select_resource,
+    # resolve_commercial_finding, final_readiness_approval all include
+    # Approver), the same reasoning cancel_workflow_run's own comment
+    # already gives: Approver sits above Bid manager in every other
+    # gate-adjacent row here, not narrower.
+    "approve_cost_budget": frozenset({Role.BID_MANAGER, Role.APPROVER, Role.ADMIN}),
 }

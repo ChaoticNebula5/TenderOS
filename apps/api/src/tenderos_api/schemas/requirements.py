@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -50,3 +51,25 @@ class SplitItemRequest(BaseModel):
 
 class SplitRequirementRequest(BaseModel):
     new_items: list[SplitItemRequest] = Field(min_length=2)
+
+
+class SubmissionItemResponse(BaseModel):
+    id: UUID
+    tender_id: UUID
+    name: str
+    mandatory: bool
+    status: str
+    source_chunk_id: UUID | None
+    matched_document_id: UUID | None
+
+    model_config = {"from_attributes": True}
+
+
+class PatchSubmissionItemRequest(BaseModel):
+    """The write path readiness_service.py's missing_mandatory_submission_item
+    blocker (and redteam_checks.py's identically-named finding) have both
+    been waiting on since B5 - see requirement_service.patch_submission_item.
+    """
+
+    status: Literal["missing", "present", "needs_review", "not_applicable"]
+    matched_document_id: UUID | None = None

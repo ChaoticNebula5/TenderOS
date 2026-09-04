@@ -89,6 +89,16 @@ class FindingResolutionSummary(BaseModel):
     critical_count: int
 
 
+class CostBudgetSummary(BaseModel):
+    # I5's gate (Build Guide :2755-2763) - see cost_budget_gate_node's own
+    # summary dict, which this mirrors field-for-field. Not a count of
+    # objects like the five summaries above - a snapshot of the run's own
+    # spend against its budget.
+    accumulated_cost_usd: float
+    budget_usd: float
+    overage_usd: float
+
+
 class FinalReadinessSummary(BaseModel):
     # The one gate type whose summary isn't a plain count dict - it carries
     # the readiness snapshot final_gate_node read moments earlier
@@ -162,6 +172,11 @@ class FinalReadinessGateResponse(_GateResponseBase):
     summary: FinalReadinessSummary
 
 
+class CostBudgetGateResponse(_GateResponseBase):
+    gate_type: Literal["cost_budget"]
+    summary: CostBudgetSummary
+
+
 GateResponse = Annotated[
     Union[
         RequirementReviewGateResponse,
@@ -170,6 +185,7 @@ GateResponse = Annotated[
         CommercialApprovalGateResponse,
         FindingResolutionGateResponse,
         FinalReadinessGateResponse,
+        CostBudgetGateResponse,
     ],
     Field(discriminator="gate_type"),
 ]

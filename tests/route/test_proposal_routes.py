@@ -298,3 +298,44 @@ async def test_trace_proposal_claim_rejects_a_claim_from_another_organization(
 
     assert response.status_code == 403, response.text
     assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_list_generate_and_patch_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor, monkeypatch
+):
+    # B16 item 3: the other 3 proposal.py routes had zero cross-org
+    # coverage - only claims-list and trace (above) did. Same shape:
+    # a real Admin of a DIFFERENT organization. generate_proposal's own
+    # RBAC dependency runs before the route body (and before any LLM
+    # call) - a 403 here is proven without needing FakeLLMClient scripted
+    # at all, since draft_proposal_for_tender never runs.
+    admin_headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 11"},
+        headers=admin_headers,
+    ).json()
+    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    list_resp = client.get(
+        f"/tenders/{tender['id']}/proposal/sections", headers=outsider_headers
+    )
+    assert list_resp.status_code == 403, list_resp.text
+    assert list_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    generate_resp = client.post(
+        f"/tenders/{tender['id']}/proposal/generate",
+        headers={**outsider_headers, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert generate_resp.status_code == 403, generate_resp.text
+    assert generate_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    patch_resp = client.patch(
+        f"/proposal/sections/{sections[0]['id']}",
+        json={"content": "Hijacked content"},
+        headers=outsider_headers,
+    )
+    assert patch_resp.status_code == 403, patch_resp.text
+    assert patch_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"

@@ -1,7 +1,14 @@
 import uuid
 
-# R5's canonical gate list, transcribed verbatim - also the CHECK constraint's
-# allowed values on approval_gates.gate_type (migration 002_workflow).
+# R5's canonical gate list, transcribed verbatim, PLUS "cost_budget" - a
+# real addition, not part of R5's own transcription. I5 (Build Guide
+# :2755-2763) names a real cost-budget gate that was never built; the old
+# MAX_TENDER_COST_USD env var sat in .env.example for 16 blocks reading
+# like it was wired. A spec deviation now closed, same shape as the
+# preview_impact/USED_IN gap - spec names a behaviour, code never built
+# it, nothing recorded the deviation until now. Also the CHECK constraint's
+# allowed values on approval_gates.gate_type (migration 018_approval_gate_
+# cost_budget, extending 002_workflow's original 6).
 GATE_TYPES = (
     "requirement_review",
     "compliance_review",
@@ -9,12 +16,16 @@ GATE_TYPES = (
     "commercial_approval",
     "finding_resolution",
     "final_readiness",
+    "cost_budget",
 )
 
 # Part H's RBAC matrix, one row per gate type. Only "requirement_review" and
 # "final_readiness" have a real producer in B3 (the other four gate types are
 # valid rows in this table with no caller yet - same "table is locked and
 # small, later blocks reference it" precedent as B2's rbac.ACTION_ROLES).
+# "cost_budget" is not in Part H's matrix at all (I5 postdates it) - added
+# with its own reasoning on record, matching rbac.py's own precedent for
+# "cancel_workflow_run".
 GATE_TYPE_ACTIONS: dict[str, str] = {
     "requirement_review": "review_requirements",
     "compliance_review": "approve_compliance",
@@ -22,6 +33,7 @@ GATE_TYPE_ACTIONS: dict[str, str] = {
     "commercial_approval": "resolve_commercial_finding",
     "finding_resolution": "resolve_redteam_finding",
     "final_readiness": "final_readiness_approval",
+    "cost_budget": "approve_cost_budget",
 }
 
 ALLOWED_DECISIONS = ("approve", "reject", "request_changes")

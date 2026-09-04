@@ -10,6 +10,7 @@ from tenderos_backend.orchestration.nodes.compliance import (
     compliance_analysis_node,
     compliance_gate_node,
 )
+from tenderos_backend.orchestration.nodes.cost_budget import cost_budget_gate_node
 from tenderos_backend.orchestration.nodes.final_gate import final_gate_node
 from tenderos_backend.orchestration.nodes.graph_projection import project_graph_node
 from tenderos_backend.orchestration.nodes.load_context import load_context_node
@@ -34,6 +35,7 @@ from tenderos_backend.orchestration.nodes.talent import (
 from tenderos_backend.orchestration.routing import (
     route_after_commercial_approval_gate,
     route_after_compliance_gate,
+    route_after_cost_budget_gate,
     route_after_finding_gate,
     route_after_red_team,
     route_after_requirement_gate,
@@ -52,6 +54,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("requirement_extraction", requirement_extraction_node)
     builder.add_node("requirement_gate", requirement_gate_node)
+    builder.add_node("cost_budget_gate", cost_budget_gate_node)
     builder.add_node("compliance_analysis", compliance_analysis_node)
     builder.add_node("compliance_gate", compliance_gate_node)
     builder.add_node("talent_analysis", talent_analysis_node)
@@ -116,7 +119,25 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         "requirement_gate",
         route_after_requirement_gate,
         {
+            "cost_budget_gate": "cost_budget_gate",
+            END: END,
+        },
+    )
+    # I5's gate (Build Guide :2755-2763), immediately before specialist_
+    # dispatch - the same slot requirement_gate_node already safely
+    # occupies (strictly before any Send() fires, not upstream of a fan-in
+    # join - see compliance_gate_node's own docstring for the B7 topology
+    # bug this class of placement avoids). Two live outgoing targets, not
+    # one: route_after_cost_budget_gate picks specialist_dispatch (first
+    # pass, or a specialist-bound revision) or proposal_drafting (a
+    # proposal-only revision) - see cost_budget.py's own docstring for why
+    # both matter to B2.4's stop condition, not just the dominant-cost one.
+    builder.add_conditional_edges(
+        "cost_budget_gate",
+        route_after_cost_budget_gate,
+        {
             "specialist_dispatch": "specialist_dispatch",
+            "proposal_drafting": "proposal_drafting",
             END: END,
         },
     )
@@ -170,8 +191,7 @@ def build_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
         "targeted_replan",
         route_after_targeted_replan,
         {
-            "specialist_dispatch": "specialist_dispatch",
-            "proposal_drafting": "proposal_drafting",
+            "cost_budget_gate": "cost_budget_gate",
             "finding_gate": "finding_gate",
         },
     )

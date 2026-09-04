@@ -427,7 +427,7 @@ async def test_corrected_finding_is_auto_retired_from_the_open_set():
 async def test_auto_retired_finding_reopens_when_the_defect_reappears():
     """CodeRabbit review of the #19 fix: auto-retiring a finding
     (resolved=True) with nothing distinguishing it from a human resolution
-    meant _persist_draft's own upsert returned the still-resolved row
+    meant persist_finding_draft's own upsert returned the still-resolved row
     untouched even when the SAME fingerprint was detected again - a
     currently-real, possibly-critical finding sitting silently in the
     resolved pile, worse than the original bug and plausible in exactly

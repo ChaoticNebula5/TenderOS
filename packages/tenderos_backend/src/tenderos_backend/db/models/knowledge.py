@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     ForeignKey,
+    Index,
     Numeric,
     UniqueConstraint,
     func,
@@ -73,7 +74,9 @@ class KnowledgeImportItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     extracted_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     target_knowledge_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("knowledge_items.id", ondelete="SET NULL"),
+        ForeignKey(
+            "knowledge_items.id", ondelete="SET NULL", name="fk_import_item_target"
+        ),
         nullable=True,
     )
     error_code: Mapped[str | None] = mapped_column(nullable=True)
@@ -175,6 +178,22 @@ class Employee(Base):
             "profile_review_status IN "
             "('needs_review','verified','stale','rejected','archived')",
             name="ck_employee_profile_review_status",
+        ),
+        # Partial unique index, not UniqueConstraint - same reason as
+        # documents.py's uq_tender_document_hash/uq_org_document_hash
+        # (Postgres unique constraints can't carry a WHERE clause).
+        # Migration 005_knowledge.py created this directly via
+        # op.create_index; never mirrored here until B16's own partial-
+        # index audit found it - the same gap, second instance, found by
+        # auditing every op.create_index/op.create_check_constraint/
+        # op.create_unique_constraint in every migration against what the
+        # models declare, not by another live failure.
+        Index(
+            "uq_employee_code_per_org",
+            "organization_id",
+            "employee_code",
+            unique=True,
+            postgresql_where="employee_code IS NOT NULL",
         ),
     )
 

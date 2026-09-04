@@ -1,5 +1,5 @@
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tenderos_backend.agents.commercial.explain_findings import explain_finding
 from tenderos_backend.agents.commercial.parse_pricing_workbook import parse_pricing_workbook
@@ -8,16 +8,17 @@ from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.commercial import PricingDocument, PricingFinding
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services.document_service import create_synthetic_chunk
 from tenderos_backend.domain.services.pricing_checks import (
     LogicalRow,
     PricingFindingDraft,
-    check_currency_mismatch,
     check_cross_doc_mismatch,
+    check_currency_mismatch,
     check_grand_total,
     check_missing_cells,
     evaluate_row_arithmetic,
-    finding_fingerprint,
     find_duplicate_costs,
+    finding_fingerprint,
     group_rows,
 )
 
@@ -133,16 +134,27 @@ async def _draft_findings_for_tender(
 ) -> list[PricingFindingDraft]:
     drafts: list[PricingFindingDraft] = []
     for doc in document_rows:
+        single_doc_drafts: list[PricingFindingDraft] = []
         for row in doc.rows:
             arithmetic_finding = evaluate_row_arithmetic(row)
             if arithmetic_finding is not None:
-                drafts.append(arithmetic_finding)
-        drafts.extend(find_duplicate_costs(doc.rows))
-        drafts.extend(check_missing_cells(doc.rows))
-        drafts.extend(check_currency_mismatch(doc.rows))
+                single_doc_drafts.append(arithmetic_finding)
+        single_doc_drafts.extend(find_duplicate_costs(doc.rows))
+        single_doc_drafts.extend(check_missing_cells(doc.rows))
+        single_doc_drafts.extend(check_currency_mismatch(doc.rows))
         grand_total_finding = check_grand_total(doc.rows, doc.grand_total)
         if grand_total_finding is not None:
-            drafts.append(grand_total_finding)
+            single_doc_drafts.append(grand_total_finding)
+
+        # B16 Group 6: tag every single-document draft with the document
+        # it came from - the check functions above are pure (rows in,
+        # drafts out) and have no document identity to set this
+        # themselves, so it's stamped on here, at the one place that
+        # still knows which pricing_document these rows belong to.
+        drafts.extend(
+            replace(draft, pricing_document_id=doc.pricing_document_id)
+            for draft in single_doc_drafts
+        )
 
     cross_doc_input = [(str(doc.pricing_document_id), doc.rows) for doc in document_rows]
     drafts.extend(check_cross_doc_mismatch(cross_doc_input))
@@ -201,6 +213,7 @@ async def evaluate_commercial_for_tender(
                     finding_type=draft.finding_type,
                     note=f"{draft.note} {explanation.explanation}",
                     content_fingerprint=fingerprint,
+                    pricing_document_id=draft.pricing_document_id,
                     item_a_ref=draft.item_a_ref,
                     item_b_ref=draft.item_b_ref,
                     delta=draft.delta,
@@ -218,6 +231,92 @@ async def evaluate_commercial_for_tender(
 # ----------------------------------------------------------------------
 
 
+def pricing_finding_evidence_fingerprint(
+    finding_id: uuid.UUID, suffix: str | None = None
+) -> str:
+    """Shared with proposal_service.py's own _facts_from_pricing, which
+    needs to look up the same EvidenceLink(s) this fingerprint scheme
+    creates - one formula, not two independently-maintained copies that
+    could drift (this project's own recurring "duplicated path" lesson).
+    suffix distinguishes cross_doc_mismatch's two links ("a"/"b") from
+    every other finding type's single one (None).
+    """
+    return sha256_hex(
+        "|".join(["pricing_finding_evidence", str(finding_id), suffix or ""]).encode("utf-8")
+    )
+
+
+async def _materialize_one_pricing_evidence_link(
+    uow: UnitOfWork, finding: PricingFinding, pricing_document_id: uuid.UUID, suffix: str | None
+) -> None:
+    fingerprint = pricing_finding_evidence_fingerprint(finding.id, suffix)
+    existing = await uow.compliance.get_evidence_link_by_fingerprint(
+        finding.tender_id, fingerprint
+    )
+    if existing is not None:
+        return
+    pricing_document = await uow.commercial.get_pricing_document(pricing_document_id)
+    if pricing_document is None:
+        return
+    chunk = await create_synthetic_chunk(uow, pricing_document.document_id, finding.note)
+    await uow.compliance.create_evidence_link(
+        tender_id=finding.tender_id,
+        source_kind="document_excerpt",
+        content_fingerprint=fingerprint,
+        source_chunk_id=chunk.id,
+        excerpt=finding.note,
+        verified=True,
+        validity_status="valid",
+    )
+
+
+async def _ground_pricing_finding(uow: UnitOfWork, finding: PricingFinding) -> None:
+    """B16 Group 6: resolved pricing findings become real, citable
+    evidence - Option C from the citation-correctness follow-up
+    (KNOWN_LIMITATIONS.md's [B9] entry). A resolved finding is a
+    statement about a specific, real, already-uploaded pricing document,
+    so representing it as a document_excerpt EvidenceLink (a synthetic
+    chunk quoting the finding's own note, the same pattern
+    import_certification_row already established for certifications) is
+    accurate, not a workaround - and needs zero change to evidence_links'
+    own schema or any of its existing readers (compliance coverage,
+    red-team contradiction detection, the trace UI all already handle an
+    ordinary document_excerpt link).
+
+    cross_doc_mismatch is the one finding type genuinely about two
+    documents at once - checked directly against pricing_checks.py, not
+    assumed: item_a_ref/item_b_ref are already symmetric, equally-weighted
+    references, and the finding's own note quotes both sides ("X is
+    priced at V1 in document A, but V2 in document B") with neither
+    privileged as the one being challenged. So it gets two evidence
+    links, one per document, not one arbitrarily chosen side. Every
+    other finding type has exactly one pricing_document_id (migration
+    015) and gets one link.
+
+    Idempotent by construction: resolve_pricing_finding_in_uow has no
+    guard against being called again on an already-resolved finding, so
+    this checks get_evidence_link_by_fingerprint first rather than
+    crashing or duplicating evidence on a repeat resolve action.
+    """
+    if finding.finding_type == "cross_doc_mismatch":
+        for suffix, ref in (("a", finding.item_a_ref), ("b", finding.item_b_ref)):
+            if ref is None:
+                continue
+            await _materialize_one_pricing_evidence_link(
+                uow, finding, uuid.UUID(ref["pricing_document_id"]), suffix
+            )
+        return
+    if finding.pricing_document_id is not None:
+        await _materialize_one_pricing_evidence_link(
+            uow, finding, finding.pricing_document_id, None
+        )
+    # else: neither item_a_ref/item_b_ref nor pricing_document_id is set -
+    # shouldn't happen for any of the 8 known finding types (migration
+    # 015, PricingFindingDraft's own field docstrings), but a resolve
+    # action must not crash over a data gap it can't help - the finding
+    # just stays ungrounded, same as before this fix existed.
+
+
 async def resolve_pricing_finding_in_uow(
     uow: UnitOfWork, pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> PricingFinding:
@@ -233,6 +332,7 @@ async def resolve_pricing_finding_in_uow(
 
     before = {"resolved": finding.resolved}
     updated = await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)
+    await _ground_pricing_finding(uow, updated)
     await uow.audit.create(
         organization_id=tender.organization_id,
         actor_type="user",

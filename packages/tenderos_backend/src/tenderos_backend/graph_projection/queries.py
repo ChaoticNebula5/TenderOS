@@ -50,6 +50,29 @@ async def count_tender_subgraph(session: AsyncSession, tender_id: str) -> tuple[
     return node_count, relationship_count
 
 
+async def is_projection_complete(session: AsyncSession, tender_id: str, state_version: int) -> bool:
+    """The Neo4j-side half of check_freshness's freshness check (major
+    finding #8) - Postgres's own graph_projection_runs.source_state_
+    version comparison only proves a projection was ATTEMPTED for the
+    current state_version, not that it finished. True only if a Tender
+    node exists for this tender_id, AT this state_version (a stale Tender
+    node from an older, still-successful run would otherwise pass), with
+    nodes.mark_projection_complete's own property set - the genuinely
+    last write of a real, un-crashed project_tender run. See that
+    function's own docstring for why reusing the Tender node (rather
+    than a separate marker) makes a stale flag from a prior run
+    structurally impossible, not just unlikely.
+    """
+    result = await session.run(
+        "MATCH (n:Tender {id: $tenderId}) "
+        "RETURN n.state_version = $stateVersion AND n.projection_complete = true AS complete",
+        tenderId=tender_id,
+        stateVersion=state_version,
+    )
+    record = await result.single()
+    return record is not None and bool(record["complete"])
+
+
 async def preview_impact(
     session: AsyncSession, tender_id: str, knowledge_item_id: str, max_hops: int
 ) -> list[dict[str, Any]]:
@@ -59,10 +82,27 @@ async def preview_impact(
     bound is safe: it's a validated int from Settings, never raw user input
     (D5's own implementation note; the request schema has no hop field at
     all to begin with).
+
+    B16: the USED_IN match is OPTIONAL, not required - was a hard MATCH,
+    which meant a knowledge item that genuinely backs a real compliance
+    decision (via PROVIDES, materialized automatically during compliance
+    evaluation, independent of selection - see KNOWN_LIMITATIONS.md's
+    USED_IN structural-gap entry) but was never explicitly selected/
+    deselected for this tender had no USED_IN edge at all and returned
+    nothing here, even though it demonstrably affects this tender's own
+    decisions. Safe to loosen: `fact` is already anchored to one specific
+    node via knowledge_item_id (an indexed lookup, not a scan), and the
+    WHERE clause below already does 100% of the cross-tenant safety work
+    by filtering the DESTINATION node's own tender_id - traced directly,
+    not assumed, and covered by a real cross-org test
+    (test_graph_projection.py) alongside the positive case. currentlySelected
+    reads null (not true/false) for an item with no USED_IN edge at all -
+    a real, meaningful third state ("never selected for this tender"),
+    not a defect.
     """
     result = await session.run(
         "MATCH (fact {knowledge_item_id: $knowledgeItemId}) "
-        "MATCH (fact)-[u:USED_IN]->(:Tender {id: $tenderId}) "
+        "OPTIONAL MATCH (fact)-[u:USED_IN]->(:Tender {id: $tenderId}) "
         f"MATCH path = (fact)-[*1..{int(max_hops)}]-(affected) "
         "WHERE affected.tender_id = $tenderId AND ("
         "  affected:Role OR affected:Compliance OR affected:Requirement "

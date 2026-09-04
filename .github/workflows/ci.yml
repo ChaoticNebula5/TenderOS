@@ -28,13 +28,77 @@ jobs:
       - run: uv sync
       - run: uv run mypy
 
+  # B16: this job previously ran `uv run pytest` with zero service
+  # containers and no DB env vars - every DB-touching test would have
+  # failed outright the moment this workflow ever executed. It never had:
+  # no git remote is configured on this repo, so this file has run zero
+  # times across 16 blocks. Every implicit "CI is green" assumption in
+  # this project's history was therefore vacuous, not confirmed - the
+  # first real run of this job is the first time it's ever been observed
+  # at all, not a return to a previously-passing state.
   test:
     runs-on: ubuntu-latest
+    services:
+      # Images match docker-compose.yml exactly, so CI exercises the same
+      # versions local dev and the real deployment do. Credentials below
+      # are throwaway, scoped to this one ephemeral CI run - never the
+      # real values from .env (gitignored, never committed - checked
+      # directly before writing this).
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: tenderos
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: tenderos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tenderos -d tenderos_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      neo4j:
+        image: neo4j:5.26-community
+        env:
+          NEO4J_AUTH: neo4j/changeme
+        ports:
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p changeme 'RETURN 1'"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+          --health-start-period 30s
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
+      # minio/minio's image needs an explicit `server /data ...` command to
+      # start in server mode - GitHub Actions' services: block has no
+      # command: field (unlike docker-compose's own minio service below),
+      # so it's started directly here instead of alongside the three
+      # above.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=changeme -e MINIO_ROOT_PASSWORD=changeme \
+            minio/minio server /data --console-address ":9001"
+          timeout 30 bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
       - run: uv sync
-      - run: uv run pytest
+      - name: Verify migrations apply cleanly (upgrade -> downgrade -> upgrade)
+        env:
+          POSTGRES_DSN: postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test
+        run: uv run python scripts/verify_migrations.py
+      - name: Run tests
+        env:
+          POSTGRES_DSN: postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test
+          REDIS_URL: redis://localhost:6379/0
+          NEO4J_URI: bolt://localhost:7687
+          S3_ENDPOINT_URL: http://localhost:9000
+          RATE_LIMIT_ENABLED: "false"
+        run: uv run pytest
 
   # B15: secret scanning + dependency scanning. detect-secrets-hook (the
   # same command pre-commit runs locally, not `detect-secrets scan` -

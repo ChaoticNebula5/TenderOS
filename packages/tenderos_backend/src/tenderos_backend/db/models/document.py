@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     UniqueConstraint,
 )
@@ -28,6 +29,35 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "(tender_id IS NOT NULL AND organization_id IS NULL) "
             "OR (tender_id IS NULL AND organization_id IS NOT NULL)",
             name="ck_document_scope",
+        ),
+        # Partial unique indexes, not UniqueConstraint - Postgres unique
+        # constraints can't carry a WHERE clause, and these only apply to
+        # one side of ck_document_scope's own XOR at a time (a tender-scoped
+        # row has organization_id NULL, and vice versa - a plain UNIQUE
+        # (tender_id, sha256) would let every org-scoped row's NULL
+        # tender_id collide with every other one, since Postgres treats
+        # NULL as distinct in a unique index only for non-partial ones in a
+        # way that's easy to get backwards). Migration 003_documents.py
+        # created these directly via op.create_index - this mirrors that
+        # real schema so Base.metadata.create_all() (every pytest test
+        # database) actually has them too. Found missing here, not assumed
+        # present, while writing a regression test for the concurrent-
+        # upload race (document_service.py) that depends on this exact
+        # constraint firing - the test silently couldn't reproduce the race
+        # at all under create_all()'s own (until now, incomplete) schema.
+        Index(
+            "uq_tender_document_hash",
+            "tender_id",
+            "sha256",
+            unique=True,
+            postgresql_where="tender_id IS NOT NULL",
+        ),
+        Index(
+            "uq_org_document_hash",
+            "organization_id",
+            "sha256",
+            unique=True,
+            postgresql_where="organization_id IS NOT NULL",
         ),
     )
 

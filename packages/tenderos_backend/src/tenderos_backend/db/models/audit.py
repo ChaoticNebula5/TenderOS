@@ -23,7 +23,11 @@ class AuditEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # FK added by migration 002_workflow.py once workflow_runs exists - 001_initial
     # created this column bare (workflow_runs didn't exist yet in B2).
     workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("workflow_runs.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey(
+            "workflow_runs.id", ondelete="SET NULL", name="fk_audit_events_workflow_run_id"
+        ),
+        nullable=True,
     )
     actor_type: Mapped[str] = mapped_column(nullable=False)
     actor_id: Mapped[str] = mapped_column(nullable=False)

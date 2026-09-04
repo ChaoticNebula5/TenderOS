@@ -74,6 +74,16 @@ class PricingFinding(UUIDPrimaryKeyMixin, Base):
         UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False
     )
     finding_type: Mapped[str] = mapped_column(nullable=False)
+    # B16 Group 6: which uploaded document this finding came from. NULL
+    # for cross_doc_mismatch by design (that finding type's two documents
+    # are already both named, symmetrically, via item_a_ref/item_b_ref
+    # below); set at creation time for every other finding type. See
+    # migration 015's own docstring for why this is a real provenance
+    # gap being closed, not only grounding enablement, and why it can't
+    # be backfilled for pre-existing rows.
+    pricing_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pricing_documents.id", ondelete="SET NULL"), nullable=True
+    )
     item_a_ref: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     item_b_ref: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     delta: Mapped[float | None] = mapped_column(Numeric, nullable=True)

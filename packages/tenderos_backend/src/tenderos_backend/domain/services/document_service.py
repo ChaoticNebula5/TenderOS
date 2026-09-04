@@ -1,7 +1,9 @@
 import uuid
 
+from sqlalchemy.exc import IntegrityError
+
 from tenderos_backend.core.hashing import sha256_hex
-from tenderos_backend.db.models.document import Document
+from tenderos_backend.db.models.document import Document, DocumentChunk
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
@@ -10,7 +12,47 @@ from tenderos_backend.domain.events.outbox_events import (
     document_uploaded_idempotency_key,
     document_uploaded_payload,
 )
+from tenderos_backend.ingestion.chunk import normalize_text
 from tenderos_backend.ingestion.classify import classify_document
+from tenderos_backend.ingestion.embed import embed_texts
+
+
+async def create_synthetic_chunk(
+    uow: UnitOfWork, source_document_id: uuid.UUID, text: str
+) -> DocumentChunk:
+    """Retrieval is built entirely on document_chunks (Part C gives
+    knowledge_items no embedding column of its own), but some records are
+    built from data that never goes through B4's parse->chunk->embed
+    pipeline - there's no prose to chunk, just a spreadsheet row or a
+    resolved finding. This does for one such record what that pipeline
+    does for prose: render it to text, embed it, and store it as a real
+    document_chunks row against the already-uploaded source document, so
+    the record can still set a real source_chunk_id and be found by
+    retrieval. chunk_index is derived from the existing chunk count for
+    source_document_id - safe for this codebase's sequential (not
+    concurrent within one document) callers, same caveat B4's own
+    _persist_chunks never needed to consider for a single document's
+    chunks.
+
+    Moved here from knowledge_service.py (B16 Group 3) once a third
+    caller (commercial_service.py's pricing-finding grounding, B16
+    Group 6) needed the identical logic - this project's own established
+    threshold for pulling a twice-repeated pattern into one shared place,
+    not duplicating it a third time. document_service.py owns documents/
+    document_chunks already; knowledge_service.py and commercial_service.py
+    both import this rather than each defining their own copy.
+    """
+    normalized = normalize_text(text)
+    existing_count = len(await uow.documents.list_chunks_for_document(source_document_id))
+    embedding = (await embed_texts([normalized]))[0]
+    return await uow.documents.create_chunk(
+        document_id=source_document_id,
+        chunk_index=existing_count,
+        chunk_text=text,
+        normalized_text=normalized,
+        content_hash=sha256_hex(normalized.encode("utf-8")),
+        embedding=embedding,
+    )
 
 
 async def create_document(
@@ -61,51 +103,80 @@ async def create_document(
         await storage.put(storage_key, content, content_type=mime_type)
 
         resolved_doc_type = doc_type or classify_document(filename, mime_type)
-        document = await uow.documents.create(
-            tender_id=tender_id,
-            organization_id=None if tender_id is not None else organization_id,
-            side=side,
-            doc_type=resolved_doc_type,
-            filename=filename,
-            storage_key=storage_key,
-            sha256=sha256,
-            mime_type=mime_type,
-            file_size_bytes=len(content),
-        )
-        # B13: only for a real tender document - see KNOWN_LIMITATIONS.md.
-        # DocumentUploaded's one consumer (outbox_dispatcher's own
-        # _document_uploaded_dispatch) always routes to parse_and_embed_
-        # document, the generic tender-RAG ingestion pipeline; it has no
-        # meaning for an organization-scoped knowledge upload (employee-
-        # master, certifications, resumes, capability statements), which
-        # already fires its own KnowledgeDocumentUploaded event via
-        # knowledge_service.queue_knowledge_document_import. reprocess_
-        # document (below) already refuses to act when tender_id is None
-        # for the identical reason - this call site is what never adopted
-        # that same guard.
-        if tender_id is not None:
-            await uow.outbox.create(
-                aggregate_type=AGGREGATE_DOCUMENT,
-                aggregate_id=document.id,
-                event_type=EVENT_DOCUMENT_UPLOADED,
-                payload=document_uploaded_payload(
-                    document.id,
-                    tender_id=tender_id,
-                    organization_id=None,
-                ),
-                idempotency_key=document_uploaded_idempotency_key(document.id),
+        try:
+            document = await uow.documents.create(
+                tender_id=tender_id,
+                organization_id=None if tender_id is not None else organization_id,
+                side=side,
+                doc_type=resolved_doc_type,
+                filename=filename,
+                storage_key=storage_key,
+                sha256=sha256,
+                mime_type=mime_type,
+                file_size_bytes=len(content),
             )
-        await uow.audit.create(
-            organization_id=organization_id,
-            actor_type="user",
-            actor_id=str(actor_user_id),
-            action="upload_client_docs" if tender_id is not None else "upload_knowledge_docs",
-            tender_id=tender_id,
-            target_type="document",
-            target_id=document.id,
-        )
-        await uow.commit()
-        return document, True
+            # B13: only for a real tender document - see KNOWN_LIMITATIONS.md.
+            # DocumentUploaded's one consumer (outbox_dispatcher's own
+            # _document_uploaded_dispatch) always routes to parse_and_embed_
+            # document, the generic tender-RAG ingestion pipeline; it has no
+            # meaning for an organization-scoped knowledge upload (employee-
+            # master, certifications, resumes, capability statements), which
+            # already fires its own KnowledgeDocumentUploaded event via
+            # knowledge_service.queue_knowledge_document_import. reprocess_
+            # document (below) already refuses to act when tender_id is None
+            # for the identical reason - this call site is what never adopted
+            # that same guard.
+            if tender_id is not None:
+                await uow.outbox.create(
+                    aggregate_type=AGGREGATE_DOCUMENT,
+                    aggregate_id=document.id,
+                    event_type=EVENT_DOCUMENT_UPLOADED,
+                    payload=document_uploaded_payload(
+                        document.id,
+                        tender_id=tender_id,
+                        organization_id=None,
+                    ),
+                    idempotency_key=document_uploaded_idempotency_key(document.id),
+                )
+            await uow.audit.create(
+                organization_id=organization_id,
+                actor_type="user",
+                actor_id=str(actor_user_id),
+                action="upload_client_docs" if tender_id is not None else "upload_knowledge_docs",
+                tender_id=tender_id,
+                target_type="document",
+                target_id=document.id,
+            )
+            await uow.commit()
+            return document, True
+        except IntegrityError:
+            # uq_tender_document_hash/uq_org_document_hash (Part C) PREVENTS
+            # a duplicate row - it does not, by itself, make concurrent
+            # uploads idempotent. Two concurrent create_document calls for
+            # the same content both pass the get_by_tender_and_hash/
+            # get_by_org_and_hash check above (neither sees the other's
+            # not-yet-committed insert), both attempt create(), the
+            # constraint lets exactly one through - the loser rolls back its
+            # own failed insert and reads back the winner's row instead of
+            # propagating an unhandled 500. Same pattern as readiness_
+            # service.py's own evaluate_readiness race (KNOWN_LIMITATIONS.md:
+            # "select-then-insert" family), found live this pass by a
+            # concurrent-upload load test, not by inspection - two identical-
+            # content uploads racing genuinely hit this.
+            await uow.rollback()
+            async with UnitOfWork() as reread_uow:
+                existing = (
+                    await reread_uow.documents.get_by_tender_and_hash(tender_id, sha256)
+                    if tender_id is not None
+                    else await reread_uow.documents.get_by_org_and_hash(organization_id, sha256)
+                )
+            if existing is None:
+                # The constraint just fired, which only happens if a
+                # matching row exists - not finding it a moment later would
+                # mean something deleted it in between, a genuinely
+                # exceptional state worth surfacing rather than masking.
+                raise
+            return existing, False
 
 
 async def get_document(document_id: uuid.UUID) -> Document | None:

@@ -221,6 +221,50 @@ async def test_documents_are_not_visible_across_organizations():
         assert allowed.status_code == 200
 
 
+async def test_documents_upload_list_and_reprocess_reject_a_caller_outside_the_organization():
+    """B16 item 3: documents.py's own upload/list/reprocess routes had zero
+    cross-org coverage - only GET /documents/{id} (the test above) did.
+    All 3 share the same shape as that one (a real Admin of a DIFFERENT
+    organization, not a narrower-role-same-org case)."""
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "docs-api-owner2@example.com", "Docs API Owner Org 2"
+        )
+        upload = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("rfp.docx", _docx_bytes(), _DOCX_TYPE)},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        document_id = upload.json()["id"]
+
+        outsider = await client.post(
+            "/auth/register",
+            json={
+                "email": "docs-api-outsider2@example.com",
+                "password": "hunter2",
+                "organization_name": "Docs API Outsider Org 2",
+            },
+        )
+        outsider_headers = {"Authorization": f"Bearer {outsider.json()['access_token']}"}
+
+        blocked_upload = await client.post(
+            f"/tenders/{tender_id}/documents",
+            files={"file": ("rfp2.docx", _docx_bytes(), _DOCX_TYPE)},
+            headers=outsider_headers,
+        )
+        assert blocked_upload.status_code == 403
+
+        blocked_list = await client.get(
+            f"/tenders/{tender_id}/documents", headers=outsider_headers
+        )
+        assert blocked_list.status_code == 403
+
+        blocked_reprocess = await client.post(
+            f"/documents/{document_id}/reprocess", headers=outsider_headers
+        )
+        assert blocked_reprocess.status_code == 403
+
+
 async def test_reprocess_requeues_and_marks_document_queued():
     async with await _client() as client:
         token, tender_id = await _register_and_create_tender(

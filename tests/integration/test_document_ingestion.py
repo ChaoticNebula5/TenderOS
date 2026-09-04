@@ -327,3 +327,93 @@ async def test_corrupted_file_marks_document_failed():
     assert run is not None and run.status == "failed"
     assert run.error_code, "the failure must be recorded for inspection"
     assert chunks == [], "a failed parse must not leave partial chunks"
+
+
+async def test_reingestion_reuses_chunk_ids_for_unchanged_content():
+    """Major finding #9's real fix: a re-parse of UNCHANGED content must
+    reuse the same chunk rows (same ids), not delete and reinsert with
+    fresh ones - the old shape's own real defect, silently invisible to
+    test_reingestion_does_not_duplicate_chunks above (which only checks
+    content_hash/chunk_index, never chunk identity itself)."""
+    org_id, tender_id = await _make_tender()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="eligibility.docx",
+        content=_docx_bytes(),
+        mime_type=None,
+    )
+
+    await parse_and_embed_document(str(document.id))
+    async with UnitOfWork() as uow:
+        first_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
+
+    await parse_and_embed_document(str(document.id))
+    async with UnitOfWork() as uow:
+        second_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
+
+    assert set(second_ids) == set(first_ids), (
+        "unchanged content must reuse the exact same chunk rows across re-ingestion, "
+        "not delete-then-reinsert with fresh ids - this is what actually protects "
+        "every FK pointing at a chunk (Requirement.source_chunk_id, KnowledgeItem."
+        "source_chunk_id, EvidenceLink.source_chunk_id) from a reprocess"
+    )
+
+
+async def test_reprocessing_a_document_with_a_real_requirement_citation_no_longer_fails():
+    """The exact reachable bug this finding named: Requirement.source_
+    chunk_id has no `ondelete` at all (NOT NULL, so Postgres blocks a
+    delete outright) - before this fix, re-ingesting a document that
+    already had a real Requirement extracted from it would hit a genuine
+    FK violation the moment _persist_chunks tried its own blanket
+    delete-then-reinsert, reachable via the real, already-tested
+    POST /documents/{id}/reprocess route (no guard anywhere stops it).
+    Proven here at the job level directly - not the route - since the
+    route itself only enqueues; parse_and_embed_document is where the
+    real delete used to happen.
+    """
+    org_id, tender_id = await _make_tender()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="eligibility.docx",
+        content=_docx_bytes(),
+        mime_type=None,
+    )
+    await parse_and_embed_document(str(document.id))
+
+    async with UnitOfWork() as uow:
+        chunks = await uow.documents.list_chunks_for_document(document.id)
+        cited_chunk_id = chunks[0].id
+        requirement = await uow.requirements.create(
+            tender_id=tender_id,
+            display_code="REQ-001",
+            requirement_text="Bidders must hold a valid tax clearance certificate.",
+            normalized_text="bidders must hold a valid tax clearance certificate.",
+            category="eligibility",
+            mandatory=True,
+            source_chunk_id=cited_chunk_id,
+            content_fingerprint=uuid.uuid4().hex,
+        )
+        await uow.commit()
+
+    # Before this fix: a real asyncpg.exceptions.ForeignKeyViolationError
+    # here, from the blanket delete_chunks_for_document call - the same
+    # document content, reprocessed, with a real citation in place.
+    await parse_and_embed_document(str(document.id))
+
+    async with UnitOfWork() as uow:
+        refreshed_document = await uow.documents.get(document.id)
+        refreshed_requirement = await uow.requirements.get(requirement.id)
+
+    assert refreshed_document is not None and refreshed_document.parse_status == "parsed", (
+        "reprocessing a document with a real requirement citation must succeed, "
+        "not fail on a chunk-delete FK violation"
+    )
+    assert refreshed_requirement is not None
+    assert refreshed_requirement.source_chunk_id == cited_chunk_id, (
+        "the requirement's own citation must still point at a real, valid chunk "
+        "after reprocessing unchanged content - not nulled, not dangling"
+    )

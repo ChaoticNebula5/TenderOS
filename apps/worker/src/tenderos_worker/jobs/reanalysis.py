@@ -16,7 +16,7 @@ from tenderos_backend.domain.events.outbox_events import (
     proposal_changed_idempotency_key,
     proposal_changed_payload,
 )
-from tenderos_backend.domain.services import graph_service
+from tenderos_backend.domain.services import graph_service, redteam_checks, redteam_service
 from tenderos_backend.domain.services.compliance_service import (
     evaluate_compliance_for_requirement,
 )
@@ -95,10 +95,33 @@ async def reanalyze_knowledge_selection_change(
     status differs, so nothing here has to reimplement that; (4) for each
     affected claim, reground_claim (proposal_service.py, pinned separately)
     re-derives current evidence validity and rewrites grounding_status only
-    if it changed. Each requirement/claim result gets its own ComplianceChanged/
+    if it changed; (5) re-project (state_version can have moved during step
+    3) and run redteam_checks.check_graph_contradictions, persisting any
+    drafts - see the dedicated comment at that call site for the full
+    reasoning, including why this must never call auto_retire_undetected_
+    findings. Each requirement/claim result gets its own ComplianceChanged/
     ProposalChanged outbox event, keyed by state_version so a genuine retry
     of this same job is idempotent and two different selection changes never
     collide on the same key.
+
+    Step (5)'s own reason for existing (B16): compliance evidence retrieval
+    was never gated by tender_knowledge_selections (compliance_service.py's
+    own B7 comment - a build-sequencing decision made before this table
+    existed, not a permanent statement that compliance should ignore
+    selection forever). That means step (3) can re-run after a deselection
+    and correctly find NO status change - the evidence a decision relies on
+    doesn't disappear just because its USED_IN edge flipped to
+    selected=false - so a deselection can never make step (3) alone
+    "reopen" anything. D6 (Build Guide) already anticipates this exact
+    state and requires a detector for it (deselected_fact_in_use,
+    KNOWN_LIMITATIONS.md's USED_IN entry has the full investigation) - the
+    detector existed and was correct, it just only ever ran during a full
+    run_red_team pass, which nothing calls automatically on a selection
+    change. Without step (5), the state D6 requires being able to detect
+    could sit invisible for an arbitrarily long time between red-team
+    passes. With it, this job now produces a visible result for a
+    deselection that doesn't change any compliance status, instead of
+    silently concluding "nothing changed."
 
     One asymmetry worth naming rather than silently accepting: reground_claim's
     own write and its ProposalChanged event share one transaction (atomic by
@@ -181,8 +204,51 @@ async def reanalyze_knowledge_selection_change(
             )
             continue
 
+    # D6's own required detector for exactly this job's own blind spot -
+    # see the docstring's step (5) paragraph for the full reasoning.
+    # Deliberately NOT calling uow.redteam.auto_retire_undetected_findings:
+    # that method's own docstring says retirement is only safe because
+    # run_red_team's check list covers a tender's ENTIRE current state
+    # every pass - this job only ever checks the 4 graph-contradiction
+    # categories, never the other 3 (missing mandatory requirement,
+    # unsupported claim, submission checklist, commercial findings), so
+    # retiring based on this job's own narrower fingerprint set would
+    # wrongly resolve open findings this job never looked at.
+    #
+    # Re-project before checking, not reuse step (1)'s own projection -
+    # found by running this against a real graph, not assumed: persist_
+    # compliance_decision (step 3, already a known unconditional bump -
+    # KNOWN_LIMITATIONS.md's own "Compliance's state_version bump is
+    # unconditional" entry) can bump tenders.state_version between step
+    # (1)'s projection and here, and find_contradictions calls check_
+    # freshness first - a real reevaluation would otherwise make this
+    # step's own detector see its own job's projection as stale and
+    # silently return nothing (check_graph_contradictions swallows
+    # GraphStaleError by design, matching how run_red_team tolerates a
+    # graph that's stale for reasons outside its control - but here the
+    # staleness would be self-inflicted, one step earlier in the SAME
+    # job, which is a different situation and worth the extra
+    # projection). This also happens to be the more correct read of "is
+    # the fact still in use": AFTER reevaluation, not a pre-reevaluation
+    # snapshot.
+    await graph_service.project_tender(tid)
+    contradiction_drafts = await redteam_checks.check_graph_contradictions(tid)
+    for draft in contradiction_drafts:
+        try:
+            async with UnitOfWork() as uow:
+                await redteam_service.persist_finding_draft(uow, tid, draft)
+                await uow.commit()
+        except Exception:
+            logger.exception(
+                "reanalysis: persisting graph-contradiction finding failed "
+                "(category=%s, tender=%s, knowledge_item=%s)",
+                draft.finding_category, tid, kid,
+            )
+            continue
+
     logger.info(
         "reanalysis complete: tender=%s knowledge_item=%s state_version=%s "
-        "requirements=%d claims=%d",
+        "requirements=%d claims=%d contradictions=%d",
         tid, kid, state_version, len(requirement_ids), len(claim_ids),
+        len(contradiction_drafts),
     )

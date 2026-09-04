@@ -2,8 +2,6 @@ from langgraph.graph import END
 
 from tenderos_backend.orchestration.state import TenderState
 
-
-
 # Both a "reject" and a "request_changes" decision must stop the run from
 # advancing - they differ in what the fine-grained status/coarse read says
 # happened (rejected -> failed; changes_requested -> waiting_for_human), not
@@ -13,9 +11,12 @@ _GATE_HALT_STATUSES = frozenset({"rejected", "changes_requested"})
 
 
 def route_after_requirement_gate(state: TenderState) -> str:
+    # I5's cost_budget_gate sits immediately before specialist_dispatch now
+    # (see cost_budget.py's own docstring) - every path that used to go
+    # straight to specialist_dispatch goes through it first instead.
     if state["status"] in _GATE_HALT_STATUSES:
         return END
-    return "specialist_dispatch"
+    return "cost_budget_gate"
 
 
 def route_after_compliance_gate(state: TenderState) -> str:
@@ -96,12 +97,33 @@ def route_after_targeted_replan(state: TenderState) -> str:
     # which is ambiguous between "nothing was auto-correctable" and "only a
     # proposal redraft is needed" (a state that legitimately has an empty
     # dispatch_task_ids too, since proposal_drafting isn't Send()-dispatched).
+    #
+    # BOTH real targets route through cost_budget_gate now, not just the
+    # specialist-bound one - I5's own gate sits in front of the next spend
+    # regardless of which shape it takes, and B2.4's "cost budget exceeded"
+    # stop condition (:731) names the whole revision loop, not only its
+    # specialist-heavy half. cost_budget_gate_node itself reads
+    # revision_dispatch_target back out of state to decide where approval
+    # actually proceeds to (see its own docstring) - this function no
+    # longer needs to distinguish the two on the way IN.
     target = state.get("revision_dispatch_target", "none")
-    if target == "specialist_dispatch":
-        return "specialist_dispatch"
-    if target == "proposal_drafting":
-        return "proposal_drafting"
+    if target in ("specialist_dispatch", "proposal_drafting"):
+        return "cost_budget_gate"
     return "finding_gate"
+
+
+def route_after_cost_budget_gate(state: TenderState) -> str:
+    # Mirrors route_after_requirement_gate's own halt check, then picks
+    # between cost_budget_gate_node's two live downstream targets the same
+    # way the node's own approve-path status write does: absent or
+    # "specialist_dispatch" both mean specialist_dispatch (first pass has
+    # no revision_dispatch_target at all yet); "proposal_drafting" means
+    # exactly that.
+    if state["status"] in _GATE_HALT_STATUSES:
+        return END
+    if state.get("revision_dispatch_target") == "proposal_drafting":
+        return "proposal_drafting"
+    return "specialist_dispatch"
 
 
 def route_after_finding_gate(state: TenderState) -> str:

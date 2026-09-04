@@ -91,6 +91,40 @@ async def test_create_workflow_run_succeeds_and_is_idempotent():
         assert second.json()["id"] == first.json()["id"], "replay must return the same run"
 
 
+async def test_create_workflow_run_rejects_a_caller_outside_the_organization():
+    # B16 item 3: create_workflow_run was the one genuine gap in
+    # workflow.py's own 8 routes - cancel, the SSE stream, and the SSE
+    # ticket route all already had real cross-org tests in this exact
+    # file (test_cancel_workflow_run_requires_the_new_rbac_action's own
+    # docstring undersells what it proves - it registers a real second
+    # org, not a narrower same-org role, despite its name/comment).
+    async with await _client() as client:
+        owner_token, tender_id = await _register_and_create_tender(
+            client, "wf-api-create-403-owner@example.com", "WF API Create 403 Org"
+        )
+
+        outsider_resp = await client.post(
+            "/auth/register",
+            json={
+                "email": "wf-api-create-403-outsider@example.com",
+                "password": "hunter2",
+                "organization_name": "WF API Create 403 Outsider Org",
+            },
+        )
+        outsider_token = outsider_resp.json()["access_token"]
+
+        response = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={
+                "Authorization": f"Bearer {outsider_token}",
+                "Idempotency-Key": "create-403-1",
+            },
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
 async def test_cancel_workflow_run_requires_the_new_rbac_action():
     async with await _client() as client:
         admin_token, tender_id = await _register_and_create_tender(

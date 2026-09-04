@@ -239,3 +239,36 @@ async def test_trace_compliance_rejects_an_entry_from_another_organization(
 
     assert response.status_code == 403, response.text
     assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_compliance_list_get_patch_and_approve_reject_a_caller_outside_the_organization(
+    client: TestClient, register_actor
+):
+    # B16 item 3: the other 4 compliance.py routes had zero cross-org
+    # coverage - only trace_compliance (above) did. Same shape: a real
+    # Admin of a DIFFERENT organization, not a narrower-role-same-org case.
+    admin_headers, _, org_id = register_actor()
+    tender_id, document_id = await _make_tender_with_document(client, admin_headers, org_id)
+    _req_id, entry_id = await _requirement_and_compliance_entry(tender_id, document_id)
+
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    list_resp = client.get(f"/tenders/{tender_id}/compliance", headers=outsider_headers)
+    assert list_resp.status_code == 403, list_resp.text
+    assert list_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    get_resp = client.get(f"/compliance/{entry_id}", headers=outsider_headers)
+    assert get_resp.status_code == 403, get_resp.text
+    assert get_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    patch_resp = client.patch(
+        f"/compliance/{entry_id}",
+        json={"status": "fully_compliant", "reasoning_summary": "Hijacked"},
+        headers=outsider_headers,
+    )
+    assert patch_resp.status_code == 403, patch_resp.text
+    assert patch_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+    approve_resp = client.post(f"/compliance/{entry_id}/approve", headers=outsider_headers)
+    assert approve_resp.status_code == 403, approve_resp.text
+    assert approve_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"

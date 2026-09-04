@@ -50,6 +50,10 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
             "grounding_status IN ('grounded','unsupported','needs_review','not_required')",
             name="ck_proposal_claim_grounding_status",
         ),
+        CheckConstraint(
+            "claim_kind IN ('current','commitment')",
+            name="ck_proposal_claim_kind",
+        ),
         UniqueConstraint(
             "section_id", "content_fingerprint", name="uq_proposal_claim_fingerprint"
         ),
@@ -61,6 +65,17 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
     claim_text: Mapped[str] = mapped_column(nullable=False)
     claim_type: Mapped[str] = mapped_column(nullable=False)
     is_factual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Orthogonal to is_factual, not a replacement - is_factual asks "is this
+    # specific and checkable at all"; claim_kind asks "checkable against
+    # what we already have (current) or what we're promising for this
+    # contract (commitment)". A commitment claim still goes through
+    # enforce_claim_grounding exactly like any other is_factual=true claim
+    # (unchanged by this addition - see that function's own comment) and
+    # still surfaces visibly as "unsupported" when it has no evidence,
+    # never silently exempted the way is_factual=false is. This field only
+    # changes which bucket a citation-correctness measurement counts a
+    # claim into - see KNOWN_LIMITATIONS.md's [B9/B16] entry.
+    claim_kind: Mapped[str] = mapped_column(nullable=False, default="current")
     grounding_status: Mapped[str] = mapped_column(nullable=False, default="needs_review")
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(

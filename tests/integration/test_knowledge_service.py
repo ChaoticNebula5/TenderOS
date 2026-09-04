@@ -9,11 +9,13 @@ before/after assertion shape as test_compliance_service.py/
 test_talent_service.py/test_proposal_service.py's own state_version tests.
 """
 
+import asyncio
 import uuid
 from datetime import date
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
@@ -181,6 +183,52 @@ async def test_import_employee_master_row_is_idempotent_on_retry():
     assert len(items) == 1, "a retried row must not create a second import_items row"
 
 
+async def test_import_employee_master_row_concurrent_delivery_converges_not_crashes():
+    """B16: the test directly above proves SEQUENTIAL retry-safety (a
+    worker resuming a crashed batch, one call fully finishing before the
+    next starts) - it says nothing about two deliveries genuinely
+    overlapping (two RQ workers, or a retry racing a still-running
+    original attempt). asyncio.gather against two real service calls, the
+    same technique that proved the document_service.create_document and
+    idempotency.py races real, is what actually tests that. Converges to
+    ONE import_items row and ONE real employee knowledge_item - not just
+    "neither call raised."
+    """
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Concurrent Import Org",
+    )
+    org_id = registered.organization.id
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id,
+            import_type="employee_master_csv",
+            source_document_id=None,
+            created_by=registered.user.id,
+        )
+        await uow.commit()
+
+    row = EmployeeMasterRow(
+        row_number=2, employee_code="EMP-CONCURRENT", name="Concurrent Test Employee",
+        role=None, status=None,
+    )
+
+    first, second = await asyncio.gather(
+        knowledge_service.import_employee_master_row(org_id, batch.id, row),
+        knowledge_service.import_employee_master_row(org_id, batch.id, row),
+    )
+
+    assert first.status == "approved" and second.status == "approved"
+    assert first.target_knowledge_item_id == second.target_knowledge_item_id, (
+        "both concurrent attempts must converge on the SAME employee knowledge_item, "
+        "not create two"
+    )
+    async with UnitOfWork() as uow:
+        items = await uow.knowledge.list_import_items_for_batch(batch.id)
+    assert len(items) == 1, "a genuine race must not create a second import_items row either"
+
+
 async def test_import_certification_row_with_blank_employee_ref_routes_to_review():
     """Regression test for KNOWN_LIMITATIONS.md's "a certification row with
     a blank employee cell creates an approved, holderless certification
@@ -280,6 +328,110 @@ async def test_import_certification_row_is_idempotent_on_retry():
     assert len(items) == 1, "a retried row must not create a second import_items row"
 
 
+async def test_import_certification_row_concurrent_delivery_converges_not_crashes():
+    """Same concurrency gap as import_employee_master_row's own sibling
+    test above, for this file's second select-then-insert site. A real
+    employee_ref (not the blank-ref review path) so this actually
+    exercises create_certification's own fingerprint-keyed convergence,
+    not just the import_items row.
+    """
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Cert Concurrent Org",
+    )
+    org_id = registered.organization.id
+    async with UnitOfWork() as uow:
+        _knowledge_item, _employee = await uow.knowledge.create_employee(
+            organization_id=org_id,
+            name="Cert Concurrent Holder",
+            content_fingerprint=uuid.uuid4().hex,
+            title="Cert Concurrent Holder",
+            employee_code="EMP-CONCURRENT-CERT",
+        )
+        await uow.commit()
+    document, _is_new = await document_service.create_document(
+        organization_id=org_id,
+        actor_user_id=registered.user.id,
+        filename="certifications.xlsx",
+        content=b"placeholder",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        side="company",
+        doc_type="certification_documents",
+    )
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id,
+            import_type="certification_documents",
+            source_document_id=document.id,
+            created_by=registered.user.id,
+        )
+        await uow.commit()
+
+    row = CertificationRow(
+        row_number=2,
+        cert_key="CERT-CONCURRENT",
+        employee_ref="EMP-CONCURRENT-CERT",
+        name="Concurrent Test Certification",
+        issuer="Issuer",
+        issue_date=date(2024, 1, 1),
+        expiry_date=None,
+    )
+
+    first, second = await asyncio.gather(
+        knowledge_service.import_certification_row(org_id, batch.id, document.id, row, today=date(2026, 1, 1)),
+        knowledge_service.import_certification_row(org_id, batch.id, document.id, row, today=date(2026, 1, 1)),
+    )
+
+    assert first.status == "approved" and second.status == "approved"
+    assert first.target_knowledge_item_id == second.target_knowledge_item_id, (
+        "both concurrent attempts must converge on the SAME certification knowledge_item"
+    )
+    async with UnitOfWork() as uow:
+        items = await uow.knowledge.list_import_items_for_batch(batch.id)
+    assert len(items) == 1
+
+
+async def test_uq_employee_code_per_org_is_enforced_at_the_database_level():
+    """B16's own partial-index audit (KNOWN_LIMITATIONS.md): migration
+    005_knowledge.py created uq_employee_code_per_org directly via
+    op.create_index, never mirrored on the Employee model - meaning
+    Base.metadata.create_all() (every pytest test database) silently
+    lacked it until now. Proves the invariant itself, independent of
+    resolve_employee_duplicate's own application-level dedup (a separate
+    mechanism, tested elsewhere) - two direct repository-level creates,
+    same org + employee_code, different content_fingerprint so that
+    unrelated constraint can't be what fires instead.
+    """
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Employee Code Uniqueness Org",
+    )
+    org_id = registered.organization.id
+
+    async with UnitOfWork() as uow:
+        await uow.knowledge.create_employee(
+            organization_id=org_id,
+            name="First Employee",
+            content_fingerprint=uuid.uuid4().hex,
+            title="First Employee",
+            employee_code="EMP-DUP",
+        )
+        await uow.commit()
+
+    with pytest.raises(IntegrityError):
+        async with UnitOfWork() as uow:
+            await uow.knowledge.create_employee(
+                organization_id=org_id,
+                name="Second Employee",
+                content_fingerprint=uuid.uuid4().hex,
+                title="Second Employee",
+                employee_code="EMP-DUP",
+            )
+            await uow.commit()
+
+
 async def _org_and_resume_batch() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Returns (org_id, user_id, batch_id) for a bulk_resumes batch - shared
     setup for the import_resume/knowledge_item_chunks tests below."""
@@ -364,6 +516,46 @@ async def test_import_resume_associates_every_resume_chunk_with_the_new_employee
             assert [f.id for f in found] == [item.target_knowledge_item_id], (
                 f"chunk {chunk.id} (index {chunk.chunk_index}) did not resolve back to the employee"
             )
+
+
+async def test_import_resume_concurrent_delivery_converges_not_crashes():
+    """Same concurrency gap as the other two sites' own sibling tests, for
+    this file's third select-then-insert site - and the one that, unlike
+    the other two, had NO retry-resume guard at all before this pass
+    (import_resume went straight to create_import_item, no
+    get_import_item_by_source_ref check first - see the function's own
+    updated docstring). Two concurrent deliveries of the identical résumé
+    (same source_ref, same document, same chunks - the real "two RQ
+    workers picked up the same knowledge_document_uploaded event" shape)
+    must converge on one employee, not crash and not create two.
+    """
+    org_id, user_id, batch_id = await _org_and_resume_batch()
+    _document, chunks = await _resume_document_with_chunks(
+        org_id,
+        user_id,
+        "concurrent-candidate.docx",
+        ["Summary: concurrent delivery test candidate."],
+    )
+    profile = ExtractedEmployeeProfile(name="Concurrent Delivery Candidate", confidence=0.9)
+
+    first, second = await asyncio.gather(
+        knowledge_service.import_resume(
+            org_id, batch_id, "concurrent-candidate.docx", _document.id, profile,
+            [c.id for c in chunks],
+        ),
+        knowledge_service.import_resume(
+            org_id, batch_id, "concurrent-candidate.docx", _document.id, profile,
+            [c.id for c in chunks],
+        ),
+    )
+
+    assert first.status == "approved" and second.status == "approved"
+    assert first.target_knowledge_item_id == second.target_knowledge_item_id, (
+        "both concurrent deliveries must converge on the SAME employee knowledge_item"
+    )
+    async with UnitOfWork() as uow:
+        items = await uow.knowledge.list_import_items_for_batch(batch_id)
+    assert len(items) == 1, "a genuine race must not create a second import_items row"
 
 
 async def test_import_resume_duplicate_merge_adds_new_chunks_without_dropping_old_ones():

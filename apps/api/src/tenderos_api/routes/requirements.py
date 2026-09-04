@@ -8,8 +8,10 @@ from tenderos_api.dependencies import require_merge_permission, require_permissi
 from tenderos_api.schemas.requirements import (
     MergeRequirementsRequest,
     PatchRequirementRequest,
+    PatchSubmissionItemRequest,
     RequirementResponse,
     SplitRequirementRequest,
+    SubmissionItemResponse,
 )
 
 router = APIRouter(tags=["requirements"])
@@ -134,3 +136,51 @@ async def split_requirement(
         requirement_id, new_items, tender.organization_id, current_user.id
     )
     return [RequirementResponse.model_validate(r, from_attributes=True) for r in created]
+
+
+# review_requirements, not a dedicated action: Part H's RBAC matrix never
+# named submission items at all (the same gap B13 already found for the
+# whole 17-screen list) - reused deliberately, not inherited by default.
+# A reviewer editing/confirming a requirement and a reviewer marking a
+# submission item received are the same trust tier: both are "a human
+# with review authority over this tender's extracted checklist confirms
+# what's actually true," not a different kind of decision. If submission-
+# item handling ever needs its own escalation path (e.g. an approver-only
+# override once items feed into a formal sign-off), that's the point to
+# split this into a dedicated RBAC row - not assumed necessary now.
+@router.get(
+    "/tenders/{tender_id}/submission-items", response_model=list[SubmissionItemResponse]
+)
+async def list_submission_items(
+    tender_id: UUID,
+    current_user: User = Depends(require_permission("review_requirements")),
+) -> list[SubmissionItemResponse]:
+    items = await requirement_service.list_submission_items_for_tender(tender_id)
+    return [SubmissionItemResponse.model_validate(i, from_attributes=True) for i in items]
+
+
+@router.patch("/submission-items/{submission_item_id}", response_model=SubmissionItemResponse)
+async def patch_submission_item(
+    submission_item_id: UUID,
+    body: PatchSubmissionItemRequest,
+    current_user: User = Depends(require_permission("review_requirements")),
+) -> SubmissionItemResponse:
+    # Path param is submission_item_id, not item_id - dependencies.py's
+    # _resolve_organization_id already has an item_id branch wired to
+    # knowledge_import_items (B6), an unrelated resource; item_id here
+    # would have silently resolved organization from the wrong table.
+    item = await requirement_service.get_submission_item(submission_item_id)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission item not found")
+    tender = await tender_service.get_tender(item.tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+
+    updated = await requirement_service.patch_submission_item(
+        submission_item_id,
+        tender.organization_id,
+        current_user.id,
+        status=body.status,
+        matched_document_id=body.matched_document_id,
+    )
+    return SubmissionItemResponse.model_validate(updated, from_attributes=True)

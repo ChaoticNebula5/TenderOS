@@ -27,6 +27,12 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     model_config_json: Mapped[dict] = mapped_column("model_config", JSONB, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    # B16 Group 4: the real, mutable retry countdown - see migration 016's
+    # own docstring for why this exists instead of using TenderState.
+    # retry_budget_remaining (that field is LangGraph-checkpointed state,
+    # not a plain column, so nothing outside a running graph.ainvoke()
+    # call can read or decrement it).
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class WorkflowTask(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -73,7 +79,7 @@ class ApprovalGate(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "gate_type IN ('requirement_review','compliance_review','resource_selection',"
-            "'commercial_approval','finding_resolution','final_readiness')",
+            "'commercial_approval','finding_resolution','final_readiness','cost_budget')",
             name="ck_approval_gate_type",
         ),
         CheckConstraint(

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from tenderos_api.main import app
@@ -39,6 +41,55 @@ async def test_duplicate_idempotency_key_same_body_replays_response():
             headers={"Authorization": f"Bearer {token}"},
         )
         assert len(listing.json()) == 1
+
+
+async def test_concurrent_duplicate_idempotency_key_converges_to_one_tender_not_two():
+    """B16: the sequential test above (same_body_replays_response) proves
+    retry-safety - the second call sees a COMPLETED record and replays it.
+    It says nothing about genuine concurrency: two requests that both reach
+    get_idempotency_context's own uow.idempotency.get(...) before either
+    has committed a row would both see None and both attempt create_
+    in_progress, the loser hitting uq_idempotency_key - the same
+    "sequential retry tested, concurrency untested" shape already found for
+    document_service.create_document. asyncio.gather against the real ASGI
+    app, not a sequential await, so both requests are genuinely in flight
+    together.
+
+    What the fix actually guarantees, found to be narrower than first
+    assumed by this test itself: NOT "both succeed with the same tender" -
+    unlike create_document's own race (where a second, independent content-
+    hash constraint lets the loser converge on the winner's FINISHED row),
+    here the loser's reread finds only a marker that a sibling is
+    currently, actively doing the work - the tender doesn't exist yet to
+    converge on. create_tender has no uniqueness constraint of its own two
+    concurrent creates could otherwise collide on. So the real guarantee is
+    narrower but still real: exactly one request creates the tender: the
+    other gets a clean 409 IDEMPOTENCY_CONFLICT, never a 500, and never a
+    second, silently-duplicated tender.
+    """
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-concurrent@example.com", "Idem Concurrent Org")
+        headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "concurrent-create-tender"}
+        body = {"name": "Concurrent Idempotent RFP"}
+
+        first, second = await asyncio.gather(
+            client.post(f"/organizations/{org_id}/tenders", json=body, headers=headers),
+            client.post(f"/organizations/{org_id}/tenders", json=body, headers=headers),
+        )
+
+        statuses = sorted([first.status_code, second.status_code])
+        assert statuses == [201, 409], (
+            f"expected exactly one 201 and one 409 (IDEMPOTENCY_CONFLICT), "
+            f"got {first.status_code}: {first.text} / {second.status_code}: {second.text}"
+        )
+        conflict = first if first.status_code == 409 else second
+        assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+        listing = await client.get(
+            f"/organizations/{org_id}/tenders",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert len(listing.json()) == 1, "the race must not have created a duplicate tender"
 
 
 async def test_duplicate_idempotency_key_different_body_conflicts():

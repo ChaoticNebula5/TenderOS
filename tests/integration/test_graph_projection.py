@@ -541,3 +541,179 @@ async def test_no_extra_facts_every_node_traces_to_postgres():
     assert graph_requirement_ids == real_requirement_ids
     assert graph_evidence_ids <= real_evidence_ids
     assert graph_evidence_ids == real_evidence_ids
+
+
+async def test_a_damaged_graph_is_now_correctly_detected_fixed():
+    """B16 reliability scenario ('Neo4j wiped and rebuilt') - was `test_a_
+    damaged_graph_still_reads_as_fresh_reproduced_not_fixed`, a deliberate
+    reproduction (asserting the BUG - a damaged graph reading as fresh)
+    with the fix left open on purpose per that pass's own explicit
+    "reproduce only" instruction. Major finding #8 (KNOWN_LIMITATIONS.md)
+    is now fixed: `nodes.mark_projection_complete` writes a
+    `projection_complete` property on the Tender node as the genuinely
+    LAST statement of `project_tender`'s own write sequence (after
+    `merge_used_in`), and `check_freshness` now also checks it via
+    `queries.is_projection_complete`, not just the two Postgres integers
+    it used to compare alone. Same exact reproduction as before (`delete_
+    tender_scoped_subgraph` called directly - the real function project_
+    tender's own step 5 calls, not a simulated crash), assertion
+    inverted: `check_freshness` must now raise `GraphStaleError` with
+    `reason="damaged"`, not silently return the stale-but-Postgres-
+    matching run.
+    """
+    org_id, tender_id = await _org_and_tender("DamagedGraphDetected")
+    chunk_id = await _chunk(tender_id, "damaged-graph-req")
+    await _requirement(tender_id, chunk_id)
+
+    completed_run = await graph_service.project_tender(tender_id)
+    async with get_neo4j_session() as session:
+        fresh_before = await graph_service.check_freshness(tender_id, session)
+        assert fresh_before.id == completed_run.id
+
+        req_before = await session.run(
+            "MATCH (n:Requirement {tender_id: $tenderId}) RETURN count(n) AS c",
+            tenderId=str(tender_id),
+        )
+        assert (await req_before.single())["c"] == 1, "sanity check: the real node exists first"
+
+        # The real damage: project_tender's own step 5, called directly -
+        # not a simulation of a crash, the actual delete a crashed
+        # reprojection would have already committed before failing. The
+        # completion marker (step 9) is the Tender node's own property,
+        # and delete_tender_scoped_subgraph deletes the Tender node
+        # itself along with the other 6 tender-scoped labels - so this
+        # single call also destroys the marker, not just the Requirement
+        # node checked above.
+        from tenderos_backend.graph_projection.cypher.cleanup import (
+            delete_tender_scoped_subgraph,
+        )
+
+        await delete_tender_scoped_subgraph(session, str(tender_id))
+
+        req_after = await session.run(
+            "MATCH (n:Requirement {tender_id: $tenderId}) RETURN count(n) AS c",
+            tenderId=str(tender_id),
+        )
+        assert (await req_after.single())["c"] == 0, "the damage must be real, not a no-op"
+
+        # tender.state_version and graph_projection_runs are both
+        # completely untouched by the delete above - it only ever wrote
+        # to Neo4j. Postgres alone would still call this fresh; the fix
+        # is that check_freshness no longer trusts Postgres alone.
+        with pytest.raises(graph_service.GraphStaleError) as exc_info:
+            await graph_service.check_freshness(tender_id, session)
+        assert exc_info.value.reason == "damaged", (
+            "a damaged graph must raise with reason='damaged', distinguishable "
+            "from a genuine state_version mismatch"
+        )
+
+
+async def test_get_graph_status_reports_not_fresh_for_a_damaged_graph():
+    """Same fix, the other reader: get_graph_status never raises (its own
+    contract), so it must fold the same Neo4j-side check into its
+    fresh=False result instead - not just re-check Postgres, which alone
+    would still say fresh here."""
+    org_id, tender_id = await _org_and_tender("DamagedGraphStatus")
+    chunk_id = await _chunk(tender_id, "damaged-graph-status-req")
+    await _requirement(tender_id, chunk_id)
+
+    await graph_service.project_tender(tender_id)
+    status_before = await graph_service.get_graph_status(tender_id)
+    assert status_before["fresh"] is True
+
+    async with get_neo4j_session() as session:
+        from tenderos_backend.graph_projection.cypher.cleanup import (
+            delete_tender_scoped_subgraph,
+        )
+
+        await delete_tender_scoped_subgraph(session, str(tender_id))
+
+    status_after = await graph_service.get_graph_status(tender_id)
+    assert status_after["fresh"] is False, (
+        "get_graph_status must not report fresh=True for a damaged graph just "
+        "because Postgres's own state_version still matches"
+    )
+
+
+# ----------------------------------------------------------------------
+# 12. preview_impact's USED_IN match is OPTIONAL, not required (B16) -
+# scenarios 13/16's own gap. A knowledge item that genuinely backs a real
+# compliance decision but was never explicitly selected/deselected has no
+# USED_IN edge at all - the fix, plus a real cross-org observation, not
+# just an inference from reading the query.
+# ----------------------------------------------------------------------
+
+
+async def test_preview_impact_surfaces_a_never_selected_item_that_backs_real_evidence():
+    """The exact scenario 13/16 gap: compliance evidence materializes
+    independent of selection (confirmed elsewhere in this file/session),
+    so an employee that was never selected/deselected for this tender at
+    all - no USED_IN edge, not even selected=false - can still genuinely
+    back a real compliance decision. Before this fix, preview_impact's own
+    hard MATCH on USED_IN meant this returned nothing; the loosened
+    OPTIONAL MATCH must now surface it, with currentlySelected reading
+    None (never selected), not False (selected then deselected)."""
+    org_id, tender_id = await _org_and_tender("NeverSelectedImpact")
+    chunk_id = await _chunk(tender_id, "never-selected-req")
+    requirement_id = await _requirement(tender_id, chunk_id)
+    employee_id = await _employee(org_id, "Never Selected Employee")
+    # Deliberately no _select(...) call at all - this is the exact gap.
+    evidence_id = await _evidence_link(tender_id, employee_id)
+    await _compliance_entry(requirement_id, [evidence_id])
+
+    await graph_service.project_tender(tender_id)
+
+    impact = await graph_service.preview_impact(tender_id, employee_id)
+    assert len(impact) > 0, (
+        "a knowledge item backing real compliance evidence must show up in "
+        "impact preview even when it was never explicitly selected - this "
+        "is the scenario 13/16 gap the OPTIONAL MATCH fix closes"
+    )
+    assert all(row["currentlySelected"] is None for row in impact), (
+        "an item with no USED_IN edge at all must read currentlySelected=None "
+        "(never selected for this tender), not False (which would mean "
+        "selected then deselected)"
+    )
+
+
+async def test_preview_impact_still_rejects_cross_org_data_with_the_optional_match():
+    """Note 1 from the plan approval: the loosened match is the single
+    change that touches a cross-tenant-adjacent query, so its safety needs
+    a real observation, not only the traced reasoning that the destination
+    filter (affected.tender_id = $tenderId) already does the real work
+    regardless of whether USED_IN is required. Two separate orgs/tenders,
+    each with their own never-selected employee (the exact new code path
+    this fix opens up) - querying tender A's impact for org B's employee
+    id must return nothing, because there is genuinely no graph path
+    connecting a shared knowledge item merged for org B's own tender
+    projection to anything with tender A's own tender_id, not because of
+    any USED_IN-specific guard."""
+    org_a, tender_a = await _org_and_tender("CrossOrgImpactA")
+    chunk_a = await _chunk(tender_a, "cross-org-req-a")
+    requirement_a = await _requirement(tender_a, chunk_a)
+    employee_a = await _employee(org_a, "Org A Never Selected")
+    evidence_a = await _evidence_link(tender_a, employee_a)
+    await _compliance_entry(requirement_a, [evidence_a])
+    await graph_service.project_tender(tender_a)
+
+    org_b, tender_b = await _org_and_tender("CrossOrgImpactB")
+    chunk_b = await _chunk(tender_b, "cross-org-req-b")
+    requirement_b = await _requirement(tender_b, chunk_b)
+    employee_b = await _employee(org_b, "Org B Never Selected")
+    evidence_b = await _evidence_link(tender_b, employee_b)
+    await _compliance_entry(requirement_b, [evidence_b])
+    await graph_service.project_tender(tender_b)
+
+    # Sanity check first: each org's own preview_impact call for its own
+    # employee must be non-empty (proves the fixture setup is real,
+    # matching the positive test above) before checking the cross-org case
+    # actually means something.
+    same_org_impact = await graph_service.preview_impact(tender_b, employee_b)
+    assert len(same_org_impact) > 0
+
+    cross_org_impact = await graph_service.preview_impact(tender_a, employee_b)
+    assert cross_org_impact == [], (
+        "org A's own preview_impact must return nothing for org B's employee "
+        "id, even with the USED_IN match now optional - a real observation, "
+        "not just an inference from the destination-filter reasoning"
+    )

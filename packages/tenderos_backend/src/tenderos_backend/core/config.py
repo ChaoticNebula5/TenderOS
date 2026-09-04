@@ -18,13 +18,6 @@ class Settings(BaseSettings):
 
     max_upload_size_mb: int = 50
 
-    # A2's locked choice is a provider-neutral LLMClient interface with model
-    # IDs supplied purely as configuration - llm_provider selects which
-    # agents/llm/*_adapter.py implementation gets constructed. Defaulting to
-    # "gemini" here is this project's own choice (not the Build Guide's
-    # literal "Anthropic-compatible adapter" example), flagged in the B5
-    # commit message.
-    llm_provider: str = "gemini"
     gemini_api_key: str = ""
     # B16: one Gemini API key per specialist branch that dispatches in
     # PARALLEL via LangGraph's Send() - compliance_analysis, talent_analysis,
@@ -95,12 +88,32 @@ class Settings(BaseSettings):
     # construction now rather than deferred to B15.
     graph_max_hops: int = 4
 
-    # B11: B2.4's own locked value. Seeded into TenderState["max_revisions"]
-    # by load_context_node at run start - a Settings field (not a bare
-    # module constant) for the same reason graph_max_hops is one: it's an
-    # operator-tunable deployment knob, not a hardcoded language-level
-    # constant, even though the spec gives one fixed starting number.
-    max_proposal_revisions: int = 2
+    # I5 (Build Guide :2755-2763): "Every workflow tracks estimated model
+    # cost. When projected cost exceeds MAX_TENDER_COST_USD: pause, show
+    # current progress, require bid-manager approval to continue." A spec
+    # deviation now closed, not a feature added - this env var sat in
+    # .env.example claiming a real cap for 16 blocks (deleted as dead
+    # config in B16 once agent_traces.estimated_cost_usd was found to have
+    # zero writers; see KNOWN_LIMITATIONS.md's dead-instrument entry),
+    # while I5's own gate was never built at all, undetected the same way
+    # preview_impact's own USED_IN gap and Part F's tool layer were:
+    # spec names a real behaviour, code never builds it, nothing records
+    # the deviation.
+    #
+    # 25.0, derived not guessed: this deployment's real configured models
+    # (EXTRACTOR_MODEL/VERIFIER_MODEL/REASONING_MODEL) are all flash-lite
+    # tier ($0.30/$2.50 per 1M tokens - agents/llm/gemini_adapter.py's own
+    # price table), and every specialist/drafting/critique node calls
+    # settings.reasoning_model. Using the one real measured call-volume
+    # figure already on record here ("85 real compliance calls alone" in
+    # one live run, see compliance_gemini_api_key's own comment above) and
+    # typical per-call token sizes, a full run including up to
+    # max_revisions=2 extra passes prices at roughly $0.30-$1.00 today -
+    # this number is loose against that (mostly a backstop against a
+    # genuine runaway/bug), and a starting value to be tuned, not a final
+    # one, same posture already established for retrieval_top_k/
+    # MAX_EXTRACTION_BATCH_TOKENS.
+    max_tender_cost_usd: float = 25.0
 
 
 settings = Settings()

@@ -4,6 +4,10 @@ from pydantic import BaseModel, Field
 
 # Matches proposal_claims.claim_type's CHECK constraint (Part C) verbatim.
 ClaimType = Literal["capability", "experience", "team", "compliance", "commercial", "other"]
+# Matches proposal_claims.claim_kind's CHECK constraint (migration 017)
+# verbatim. Orthogonal to is_factual, not a replacement - see that field's
+# own comment below and KNOWN_LIMITATIONS.md's [B9/B16] entry.
+ClaimKind = Literal["current", "commitment"]
 
 
 class ProposalClaimDraft(BaseModel):
@@ -26,6 +30,15 @@ class ProposalClaimDraft(BaseModel):
     claim_text: str
     claim_type: ClaimType
     is_factual: bool = True
+    # "current" (default) if checkable against something the company
+    # already has or has done; "commitment" if checkable only against a
+    # promise being made for this specific contract (e.g. "will support
+    # SSO"). Independent of is_factual - a commitment claim is still
+    # is_factual=true and still goes through enforce_claim_grounding
+    # exactly like any other factual claim; this field only changes which
+    # bucket a citation-correctness measurement counts it into, not
+    # whether it needs evidence or stays visible.
+    claim_kind: ClaimKind = "current"
     requirement_refs: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     employee_refs: list[str] = Field(default_factory=list)

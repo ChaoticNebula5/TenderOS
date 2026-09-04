@@ -39,9 +39,18 @@ def finding_fingerprint(
     )
 
 
-async def _persist_draft(
+async def persist_finding_draft(
     uow: UnitOfWork, tender_id: uuid.UUID, draft: RedteamFindingDraft
 ) -> RedteamFinding:
+    """Public since B16: a second real caller (apps/worker/jobs/reanalysis.py)
+    needs this exact upsert-by-fingerprint logic for one category
+    (deselected_fact_in_use) without running run_red_team's full 5-check
+    sweep. Never call auto_retire_undetected_findings from that narrower
+    caller - its own docstring is explicit that retirement is only safe
+    because run_red_team's check list covers a tender's ENTIRE current
+    state every pass; a caller checking one category would wrongly retire
+    every other open finding it never even looked at.
+    """
     fingerprint = finding_fingerprint(
         tender_id, draft.target_type, draft.target_id, draft.finding_category,
         draft.violated_condition,
@@ -117,7 +126,7 @@ async def run_red_team(
     """Red Team's full 5-step check list (B11 build item), run in the order
     E8 requires: "Deterministic checks and graph queries run before LLM
     critique." Persists every finding via the upsert-by-fingerprint pattern
-    (_persist_draft) and returns the tender's CURRENT full set of open
+    (persist_finding_draft) and returns the tender's CURRENT full set of open
     critical+major finding ids - queried fresh after every upsert, not
     accumulated locally, since a finding from a previous pass that's no
     longer being re-detected must not linger in what this function reports
@@ -167,7 +176,7 @@ async def run_red_team(
 
     async with UnitOfWork() as uow:
         for draft in drafts:
-            await _persist_draft(uow, tender_id, draft)
+            await persist_finding_draft(uow, tender_id, draft)
 
         # All 5 checks above (plus the LLM critique) re-derive fully fresh
         # from this tender's CURRENT state on every pass, never

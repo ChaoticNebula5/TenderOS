@@ -1,5 +1,7 @@
 import uuid
+from decimal import Decimal
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.agent_trace import AgentTrace
@@ -57,3 +59,26 @@ class AgentTraceRepository:
         self._session.add(trace)
         await self._session.flush()
         return trace
+
+    async def sum_cost_for_run(self, workflow_run_id: uuid.UUID) -> Decimal:
+        """I5's own budget check reads this - accumulated real cost so far
+        for one workflow run, not a lifetime-per-tender or per-org total
+        (see cost_budget_gate_node's own docstring for why the run is the
+        right scope). COALESCE to 0, not NULL: a run with zero traces yet,
+        or where every trace's own estimated_cost_usd is still NULL (an
+        unmapped model id, or a cache hit - see gemini_adapter.py's own
+        _estimate_cost_usd), must read as "$0 spent," not "unknown," so
+        the budget check's own `< settings.max_tender_cost_usd` comparison
+        never has to special-case None."""
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(AgentTrace.estimated_cost_usd), 0)).where(
+                AgentTrace.workflow_run_id == workflow_run_id
+            )
+        )
+        # COALESCE guarantees a real, non-null value at the SQL level, but
+        # SQLAlchemy's own stubs still type scalar_one() as Decimal | None
+        # here (func.sum's own nullable type leaks through the wrapper) -
+        # the None branch is defensive against that typing gap, not a real
+        # runtime case this method expects to hit.
+        value = result.scalar_one()
+        return value if value is not None else Decimal(0)

@@ -238,7 +238,7 @@ async def test_gate_node_request_changes_does_not_advance(module, node, gate_typ
 @pytest.mark.parametrize(
     ("route_fn", "advance_target"),
     [
-        (routing.route_after_requirement_gate, "specialist_dispatch"),
+        (routing.route_after_requirement_gate, "cost_budget_gate"),
         (routing.route_after_compliance_gate, "resource_selection_gate"),
         (routing.route_after_resource_selection_gate, "commercial_approval_gate"),
         (routing.route_after_commercial_approval_gate, "proposal_drafting"),

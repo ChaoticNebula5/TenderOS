@@ -99,12 +99,14 @@ class ProposalRepository:
         is_factual: bool,
         grounding_status: str,
         content_fingerprint: str,
+        claim_kind: str = "current",
     ) -> ProposalClaim:
         claim = ProposalClaim(
             section_id=section_id,
             claim_text=claim_text,
             claim_type=claim_type,
             is_factual=is_factual,
+            claim_kind=claim_kind,
             grounding_status=grounding_status,
             content_fingerprint=content_fingerprint,
         )

@@ -83,15 +83,21 @@ class TestRouteAfterRedTeam:
 
 class TestRouteAfterTargetedReplan:
     def test_specialist_dispatch_target(self):
+        # cost_budget_gate now sits in front of BOTH live targets (I5,
+        # Build Guide :2755-2763 - B2.4's own "cost budget exceeded" stop
+        # condition at :731 covers the whole revision loop, not just the
+        # specialist-heavy half of it). The gate node itself reads
+        # revision_dispatch_target back out of state to pick the real
+        # downstream target on approval - see test_cost_budget_routing.py.
         assert (
             route_after_targeted_replan(_state(revision_dispatch_target="specialist_dispatch"))
-            == "specialist_dispatch"
+            == "cost_budget_gate"
         )
 
     def test_proposal_drafting_target(self):
         assert (
             route_after_targeted_replan(_state(revision_dispatch_target="proposal_drafting"))
-            == "proposal_drafting"
+            == "cost_budget_gate"
         )
 
     def test_none_target_goes_to_finding_gate(self):

@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta  # noqa: F401 - UTC/datetime used 
 from uuid import UUID
 
 from fastapi import Request
+from sqlalchemy.exc import IntegrityError
+from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
 from tenderos_api.dependencies import _resolve_organization_id
@@ -79,32 +81,98 @@ def get_idempotency_context(
             existing = await uow.idempotency.get(organization_id, operation, idempotency_key)
 
             if existing is None:
-                record = await uow.idempotency.create_in_progress(
-                    organization_id=organization_id,
-                    operation=operation,
-                    idempotency_key=idempotency_key,
-                    request_hash=request_hash,
-                    expires_at=datetime.now(UTC) + _RECORD_TTL,
-                )
-                await uow.commit()
+                # B16: select-then-insert - two genuinely concurrent requests
+                # with the same key can both observe "no existing record"
+                # here and both attempt to create one, the loser hitting
+                # uq_idempotency_key. NOT the same shape as document_
+                # service.create_document's own fix despite looking
+                # identical at first glance - checked, not assumed:
+                # create_document's reread finds the WINNER'S FINISHED row
+                # (a real Document, immediately usable), because a second,
+                # independent constraint (uq_tender_document_hash) is what
+                # both concurrent inserts actually race on. Here, the
+                # reread finds only a marker that a sibling is CURRENTLY
+                # doing the real work - the created tender doesn't exist
+                # yet.
+                try:
+                    record = await uow.idempotency.create_in_progress(
+                        organization_id=organization_id,
+                        operation=operation,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        expires_at=datetime.now(UTC) + _RECORD_TTL,
+                    )
+                    await uow.commit()
+                except IntegrityError:
+                    await uow.rollback()
+                    async with UnitOfWork() as reread_uow:
+                        existing = await reread_uow.idempotency.get(
+                            organization_id, operation, idempotency_key
+                        )
+                    if existing is None:
+                        raise
+                    return _context_for_existing_record(existing, request_hash)
 
                 return IdempotencyContext(
                     active=True,
                     record_id=record.id,
                 )
 
-            if existing.request_hash != request_hash:
-                raise IdempotencyConflictError()
-
-            if existing.status == "completed":
-                if existing.response_status is None or existing.response_body is None:
-                    raise RuntimeError("Completed idempotency record has no saved response")
-
-                return IdempotencyContext(
-                    active=True, replay_response=(existing.response_status, existing.response_body)
-                )
-
-            else:
-                return IdempotencyContext(active=True, record_id=existing.id)
+            return _context_for_existing_record(existing, request_hash)
 
     return _dependency
+
+
+def _context_for_existing_record(
+    existing: IdempotencyRecord, request_hash: str
+) -> IdempotencyContext:
+    """Shared by both call sites in _dependency above (the ordinary
+    "a record already existed" read, and the reread after a caught
+    IntegrityError) - one behavior, not two copies that could drift.
+
+    B16, found by this file's own concurrent test, not assumed correct
+    from the shape alone: an earlier version of this fix only changed the
+    IntegrityError branch, reasoning that a fresh constraint violation
+    means a sibling is live RIGHT NOW while an ordinary "existing, still
+    in_progress" read might legitimately be an hours-old crashed request's
+    leftover that a retry should be allowed to take over. That reasoning
+    was real but incomplete: create_in_progress's own commit (inside a
+    short-lived UnitOfWork) finishes well before the WINNING request's own
+    route handler finishes its real work and calls finalize() - so a
+    second, genuinely concurrent request very often reaches THIS ordinary
+    branch, not the IntegrityError branch, having simply run its own
+    SELECT a moment after the winner's INSERT already committed. Treating
+    that path as "safe to proceed" reproduced the exact bug this fix
+    exists to close: two real, different tenders for one Idempotency-Key,
+    confirmed live (asyncio.gather against the real ASGI app), not a
+    500 - a silent duplicate, arguably worse.
+
+    Consequence, named rather than silently accepted: this makes "not
+    completed" always conflict, closing the concurrency bug but also
+    closing the crash-recovery path this branch used to (nominally, if
+    imperfectly) allow - a request that died before ever calling
+    finalize() now leaves a permanently in_progress record that 409s
+    every future retry with the same key, forever, since nothing
+    currently reads expires_at to decide a record is abandoned rather
+    than live (KNOWN_LIMITATIONS.md already names this - "expires_at is
+    stored but never consulted by any read path"). That gap was already
+    real before this fix (the old "let it proceed" behavior would have
+    silently created a SECOND tender on a post-crash retry too, the
+    identical bug via a different trigger) - not introduced here, but
+    now surfaced loudly (409) instead of silently (a duplicate). Actually
+    consulting expires_at to distinguish a live sibling from an abandoned
+    one is real, separate design work, not a mechanical extension of
+    this fix.
+    """
+    if existing.request_hash != request_hash:
+        raise IdempotencyConflictError()
+
+    if existing.status == "completed":
+        if existing.response_status is None or existing.response_body is None:
+            raise RuntimeError("Completed idempotency record has no saved response")
+
+        return IdempotencyContext(
+            active=True, replay_response=(existing.response_status, existing.response_body)
+        )
+
+    raise IdempotencyConflictError()

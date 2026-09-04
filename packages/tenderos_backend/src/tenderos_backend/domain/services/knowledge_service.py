@@ -3,6 +3,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from sqlalchemy.exc import IntegrityError
+
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.dedup import (
     DuplicateVerdict,
@@ -19,7 +21,7 @@ from tenderos_backend.agents.knowledge.relationships import (
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
 from tenderos_backend.core.enums import Role
 from tenderos_backend.core.hashing import sha256_hex
-from tenderos_backend.db.models.document import Document, DocumentChunk
+from tenderos_backend.db.models.document import Document
 from tenderos_backend.db.models.knowledge import (
     Employee,
     KnowledgeImportBatch,
@@ -41,8 +43,7 @@ from tenderos_backend.domain.events.outbox_events import (
     knowledge_selection_changed_payload,
 )
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
-from tenderos_backend.ingestion.chunk import normalize_text
-from tenderos_backend.ingestion.embed import embed_texts
+from tenderos_backend.domain.services.document_service import create_synthetic_chunk
 
 
 @dataclass(frozen=True)
@@ -131,33 +132,191 @@ def _fingerprint(*parts: str) -> str:
     return sha256_hex("|".join(parts).encode("utf-8"))
 
 
-async def _create_synthetic_chunk(
-    uow: UnitOfWork, source_document_id: uuid.UUID, text: str
-) -> DocumentChunk:
-    """Retrieval is built entirely on document_chunks (Part C gives
-    knowledge_items no embedding column of its own), but mechanically
-    parsed rows (employee-master, certifications.xlsx) never go through
-    B4's parse->chunk->embed pipeline - there's no prose to chunk, just
-    spreadsheet rows. This does for one structured row what that pipeline
-    does for prose: render it to text, embed it, and store it as a real
-    document_chunks row against the already-uploaded source document, so a
-    knowledge_item built from a row can still set a real source_chunk_id
-    and be found by retrieval. chunk_index is derived from the existing
-    chunk count for source_document_id - safe for this codebase's
-    sequential (not concurrent) import scripts, same caveat B4's own
-    _persist_chunks never needed to consider for a single document's chunks.
+async def _claim_or_resume_import_item(
+    batch_id: uuid.UUID, source_ref: str, extracted_payload: dict
+) -> tuple[KnowledgeImportItem, bool]:
+    """B16: the insert-or-detect step for this file's own 3 select-then-
+    insert sites (import_employee_master_row, import_certification_row,
+    import_resume) - narrower than document_service.create_document's own
+    reread-after-rollback fix, deliberately: all 3 of these functions do
+    substantial further work (duplicate-resolution branching, conditional
+    create_employee/create_certification calls) between the insert and
+    their own commit, all inside one transaction - a bare reread the way
+    create_document does it could hand a caller a row still mid-resolution,
+    not the finished one (KNOWN_LIMITATIONS.md's own earlier analysis of
+    this exact gap).
+
+    Returns (import_item, needs_resolution):
+    - needs_resolution=False: `import_item` already reflects a FINISHED
+      prior attempt (status is not "pending") - the caller returns it
+      directly, exactly like each function's own existing retry-resume
+      check already did before this refactor.
+    - needs_resolution=True: the caller must run its own resolution logic
+      against `import_item.id`, in a fresh UnitOfWork it opens itself.
+      Covers three cases with one answer, not three: (a) this call just
+      created the row (the ordinary path); (b) an existing row is still
+      "pending" because a genuinely concurrent attempt is racing RIGHT
+      NOW; (c) an existing row is still "pending" because an earlier
+      attempt crashed before ever reaching its own update_import_item
+      call. (b) and (c) are indistinguishable from here, and don't need
+      to be distinguished - re-running resolution against the same row is
+      safe either way: create_employee/create_certification key on their
+      own content_fingerprint uniqueness (a second attempt converges on
+      the same knowledge_item, doesn't duplicate it), and
+      update_import_item is a plain UPDATE, not unique-constrained. A
+      true race means two callers redundantly run resolution once each
+      and land on the same correct final row - real duplicate WORK, not
+      duplicate DATA, and not a crash.
     """
-    normalized = normalize_text(text)
-    existing_count = len(await uow.documents.list_chunks_for_document(source_document_id))
-    embedding = (await embed_texts([normalized]))[0]
-    return await uow.documents.create_chunk(
-        document_id=source_document_id,
-        chunk_index=existing_count,
-        chunk_text=text,
-        normalized_text=normalized,
-        content_hash=sha256_hex(normalized.encode("utf-8")),
-        embedding=embedding,
-    )
+    async with UnitOfWork() as uow:
+        existing = await uow.knowledge.get_import_item_by_source_ref(batch_id, source_ref)
+        if existing is not None:
+            return existing, existing.status == "pending"
+        try:
+            import_item = await uow.knowledge.create_import_item(
+                batch_id=batch_id, source_ref=source_ref, extracted_payload=extracted_payload
+            )
+            await uow.commit()
+            return import_item, True
+        except IntegrityError:
+            await uow.rollback()
+            async with UnitOfWork() as reread_uow:
+                reread = await reread_uow.knowledge.get_import_item_by_source_ref(
+                    batch_id, source_ref
+                )
+            if reread is None:
+                raise
+            return reread, reread.status == "pending"
+
+
+async def _create_or_get_employee(
+    organization_id: uuid.UUID,
+    fingerprint: str,
+    name: str,
+    title: str,
+    employee_code: str | None = None,
+    email: str | None = None,
+    current_title: str | None = None,
+    professional_location: str | None = None,
+    years_experience: float | None = None,
+    resume_document_id: uuid.UUID | None = None,
+    source_document_id: uuid.UUID | None = None,
+    parsed_profile: dict | None = None,
+) -> uuid.UUID:
+    """B16 - found while testing _claim_or_resume_import_item above, not
+    part of the finding that sent this pass here: a SECOND, deeper
+    select-then-insert race, one layer below the import_items one.
+    _claim_or_resume_import_item's own "needs_resolution=True on a
+    pending row" case means two concurrent callers can both legitimately
+    reach a NEW-employee decision for the SAME fingerprint (same
+    duplicate-candidate query, both empty, both resolve NEW) and both
+    call create_employee - confirmed live by this file's own new
+    concurrent tests, not assumed: 2 of 3 crashed on
+    uq_knowledge_item_fingerprint before this existed.
+
+    Own transaction, deliberately separate from the caller's -
+    an IntegrityError here must not poison whatever uow the caller is
+    using for the surrounding update_knowledge_item/update_import_item/
+    associate_knowledge_item_chunks calls that still need to run after
+    this returns. Returns knowledge_item.id either way (created or
+    converged onto an existing row) - every call site in this file only
+    ever needed the id, never the typed Employee row itself.
+
+    Parameters mirror KnowledgeRepository.create_employee's own signature
+    exactly rather than a loose **fields: object passthrough - the
+    original **fields shape type-checked (mypy can't verify an unpacked
+    dict[str, object] against individually-typed keyword parameters) and
+    was only caught by running mypy, not by the tests.
+    """
+    async with UnitOfWork() as uow:
+        try:
+            knowledge_item, _employee = await uow.knowledge.create_employee(
+                organization_id=organization_id,
+                name=name,
+                content_fingerprint=fingerprint,
+                title=title,
+                employee_code=employee_code,
+                email=email,
+                current_title=current_title,
+                professional_location=professional_location,
+                years_experience=years_experience,
+                resume_document_id=resume_document_id,
+                source_document_id=source_document_id,
+                parsed_profile=parsed_profile,
+            )
+            await uow.commit()
+            return knowledge_item.id
+        except IntegrityError:
+            await uow.rollback()
+            async with UnitOfWork() as reread_uow:
+                existing = await reread_uow.knowledge.get_knowledge_item_by_fingerprint(
+                    organization_id, "employee", fingerprint
+                )
+            if existing is None:
+                raise
+            return existing.id
+
+
+async def _create_or_get_certification(
+    organization_id: uuid.UUID,
+    fingerprint: str,
+    source_document_id: uuid.UUID,
+    chunk_text: str,
+    title: str,
+    holder_employee_item_id: uuid.UUID | None = None,
+    issuer: str | None = None,
+    credential_id: str | None = None,
+    valid_from: date | None = None,
+    valid_until: date | None = None,
+    status: str = "active",
+) -> uuid.UUID:
+    """Same shape and same reason as _create_or_get_employee above, for
+    import_certification_row's own NEW-certification branch - with one
+    addition, because this call site is not like the employee ones.
+    import_employee_master_row/import_resume attach an already-committed
+    document's real chunk id; import_certification_row instead fabricates
+    a synthetic one (document_service.create_synthetic_chunk) for its own
+    source_chunk_id.
+    If that chunk were created on the CALLER's uow before calling this
+    function (this function's own separate UnitOfWork, a separate
+    connection), a losing racer's chunk would already be committed by the
+    time create_certification's IntegrityError fires here - an orphaned,
+    never-referenced document_chunks row left behind on every lost race.
+    Creating the chunk INSIDE this function's own transaction instead
+    means a loser's chunk rolls back together with its failed insert -
+    genuinely no orphan, not just a tolerated one.
+
+    Parameters mirror KnowledgeRepository.create_certification's own
+    signature exactly, same reasoning as _create_or_get_employee's own
+    docstring on why this isn't a **fields: object passthrough.
+    """
+    async with UnitOfWork() as uow:
+        try:
+            chunk = await create_synthetic_chunk(uow, source_document_id, chunk_text)
+            knowledge_item, _certification = await uow.knowledge.create_certification(
+                organization_id=organization_id,
+                title=title,
+                content_fingerprint=fingerprint,
+                holder_employee_item_id=holder_employee_item_id,
+                issuer=issuer,
+                credential_id=credential_id,
+                valid_from=valid_from,
+                valid_until=valid_until,
+                source_document_id=source_document_id,
+                source_chunk_id=chunk.id,
+                status=status,
+            )
+            await uow.commit()
+            return knowledge_item.id
+        except IntegrityError:
+            await uow.rollback()
+            async with UnitOfWork() as reread_uow:
+                existing = await reread_uow.knowledge.get_knowledge_item_by_fingerprint(
+                    organization_id, "certification", fingerprint
+                )
+            if existing is None:
+                raise
+            return existing.id
 
 
 async def import_employee_master_row(
@@ -167,29 +326,28 @@ async def import_employee_master_row(
     dedup-adjudicated via agents/knowledge/dedup.py. A duplicate/ambiguous
     match is a normal outcome recorded on the import item (needs_review),
     not a raised error - only a genuine persistence failure propagates.
+
+    B16: the claim step (retry-resume check + insert) is now
+    _claim_or_resume_import_item, shared with import_certification_row and
+    import_resume - see its own docstring for why a bare reread-after-
+    rollback (document_service.create_document's own pattern) isn't safe
+    here, and what "needs_resolution" actually covers.
     """
     source_ref = f"row_{row.row_number}"
+    import_item, needs_resolution = await _claim_or_resume_import_item(
+        batch_id,
+        source_ref,
+        {
+            "employee_code": row.employee_code,
+            "name": row.name,
+            "role": row.role,
+            "status": row.status,
+        },
+    )
+    if not needs_resolution:
+        return import_item
+
     async with UnitOfWork() as uow:
-        # A retried worker job re-parses the same file and re-walks every
-        # row from the start - without this check, any row already
-        # committed by a prior attempt hits uq_knowledge_import_item_
-        # source_ref and crashes the retry outright, instead of resuming
-        # past whatever already succeeded. See KNOWN_LIMITATIONS.md.
-        existing = await uow.knowledge.get_import_item_by_source_ref(batch_id, source_ref)
-        if existing is not None:
-            return existing
-
-        import_item = await uow.knowledge.create_import_item(
-            batch_id=batch_id,
-            source_ref=source_ref,
-            extracted_payload={
-                "employee_code": row.employee_code,
-                "name": row.name,
-                "role": row.role,
-                "status": row.status,
-            },
-        )
-
         candidates = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
         resolution = resolve_employee_duplicate(
             candidate_employee_code=row.employee_code,
@@ -237,18 +395,18 @@ async def import_employee_master_row(
         fingerprint = _fingerprint(
             str(organization_id), row.employee_code or "", normalize_employee_name(row.name)
         )
-        knowledge_item, _employee = await uow.knowledge.create_employee(
-            organization_id=organization_id,
+        knowledge_item_id = await _create_or_get_employee(
+            organization_id,
+            fingerprint,
             name=row.name,
-            content_fingerprint=fingerprint,
             title=row.name,
             employee_code=row.employee_code,
             current_title=row.role,
         )
         if item_status:
-            await uow.knowledge.update_knowledge_item(knowledge_item.id, status=item_status)
+            await uow.knowledge.update_knowledge_item(knowledge_item_id, status=item_status)
         updated = await uow.knowledge.update_import_item(
-            import_item.id, status="approved", target_knowledge_item_id=knowledge_item.id
+            import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
         )
         await uow.commit()
         return updated
@@ -278,12 +436,29 @@ async def import_resume(
     chunks (summary, experience, certifications, education) back to this
     employee - not just whichever one a scalar FK could have pointed at.
     See docs/eval/citation-correctness-fix-options.md.
-    """
-    async with UnitOfWork() as uow:
-        import_item = await uow.knowledge.create_import_item(
-            batch_id=batch_id, source_ref=source_ref, extracted_payload=profile.model_dump()
-        )
 
+    B16: two fixes, found together while giving this function the same
+    select-then-insert treatment as import_employee_master_row/
+    import_certification_row. First, the intended one: the claim step is
+    now _claim_or_resume_import_item (see its own docstring), covering
+    genuine concurrency the way the other two already did. Second, found
+    only by reading this function directly rather than trusting the
+    finding that sent this pass here: this function had NO retry-resume
+    check at all before this fix - unlike its two siblings, it went
+    straight to create_import_item with no get_import_item_by_source_ref
+    guard first. A plain sequential retry (a worker job re-processing the
+    same batch after a crash, zero concurrency involved) would have hit
+    uq_knowledge_import_item_source_ref and crashed outright, every time -
+    a real, separate, pre-existing gap this refactor closes as a side
+    effect, not something the original finding named.
+    """
+    import_item, needs_resolution = await _claim_or_resume_import_item(
+        batch_id, source_ref, profile.model_dump()
+    )
+    if not needs_resolution:
+        return import_item
+
+    async with UnitOfWork() as uow:
         candidates = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
         resolution = resolve_employee_duplicate(
             candidate_employee_code=None,
@@ -345,10 +520,10 @@ async def import_resume(
 
         # NEW
         fingerprint = _fingerprint(str(organization_id), "resume", str(resume_document_id))
-        knowledge_item, _employee = await uow.knowledge.create_employee(
-            organization_id=organization_id,
+        knowledge_item_id = await _create_or_get_employee(
+            organization_id,
+            fingerprint,
             name=profile.name,
-            content_fingerprint=fingerprint,
             title=profile.name,
             email=profile.email,
             current_title=profile.current_title,
@@ -358,9 +533,9 @@ async def import_resume(
             source_document_id=resume_document_id,
             parsed_profile=profile.model_dump(),
         )
-        await uow.knowledge.associate_knowledge_item_chunks(knowledge_item.id, resume_chunk_ids)
+        await uow.knowledge.associate_knowledge_item_chunks(knowledge_item_id, resume_chunk_ids)
         updated = await uow.knowledge.update_import_item(
-            import_item.id, status="approved", target_knowledge_item_id=knowledge_item.id
+            import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
         )
         await uow.commit()
         return updated
@@ -558,32 +733,29 @@ async def import_certification_row(
     against a fixed evaluation date is reproducible, matching this system's
     determinism-where-possible posture elsewhere (e.g. temperature=0).
     `source_document_id` is the already-uploaded certifications.xlsx
-    document (required, not resolved here) - _create_synthetic_chunk below
+    document (required, not resolved here) - create_synthetic_chunk below
     needs a real document to attach a chunk to.
+
+    B16: the claim step is now _claim_or_resume_import_item, shared with
+    import_employee_master_row and import_resume - see its own docstring.
     """
     source_ref = f"row_{row.row_number}"
+    import_item, needs_resolution = await _claim_or_resume_import_item(
+        batch_id,
+        source_ref,
+        {
+            "cert_key": row.cert_key,
+            "employee_ref": row.employee_ref,
+            "name": row.name,
+            "issuer": row.issuer,
+            "issue_date": row.issue_date.isoformat() if row.issue_date else None,
+            "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
+        },
+    )
+    if not needs_resolution:
+        return import_item
+
     async with UnitOfWork() as uow:
-        # Same retry-resume reasoning as import_employee_master_row. Named
-        # distinctly from `existing` below (the fingerprint-based dedup
-        # lookup, a KnowledgeItem | None) - same function, two different
-        # "does this already exist" checks against two different types.
-        existing_item = await uow.knowledge.get_import_item_by_source_ref(batch_id, source_ref)
-        if existing_item is not None:
-            return existing_item
-
-        import_item = await uow.knowledge.create_import_item(
-            batch_id=batch_id,
-            source_ref=source_ref,
-            extracted_payload={
-                "cert_key": row.cert_key,
-                "employee_ref": row.employee_ref,
-                "name": row.name,
-                "issuer": row.issuer,
-                "issue_date": row.issue_date.isoformat() if row.issue_date else None,
-                "expiry_date": row.expiry_date.isoformat() if row.expiry_date else None,
-            },
-        )
-
         holder: uuid.UUID | None = None
         # TODO(human): handle a blank employee cell (row.employee_ref is
         # None) - currently falls straight through the `if row.employee_ref`
@@ -674,21 +846,20 @@ async def import_certification_row(
             f"valid from {row.issue_date.isoformat() if row.issue_date else 'an unspecified date'} "
             f"to {row.expiry_date.isoformat() if row.expiry_date else 'an unspecified date'}."
         )
-        chunk = await _create_synthetic_chunk(uow, source_document_id, chunk_text)
-        knowledge_item, _certification = await uow.knowledge.create_certification(
-            organization_id=organization_id,
+        knowledge_item_id = await _create_or_get_certification(
+            organization_id,
+            fingerprint,
+            source_document_id,
+            chunk_text,
             title=row.name,
-            content_fingerprint=fingerprint,
             holder_employee_item_id=holder,
             issuer=row.issuer,
             valid_from=row.issue_date,
             valid_until=row.expiry_date,
-            source_document_id=source_document_id,
-            source_chunk_id=chunk.id,
             status=item_status,
         )
         updated = await uow.knowledge.update_import_item(
-            import_item.id, status="approved", target_knowledge_item_id=knowledge_item.id
+            import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
         )
         await uow.commit()
         return updated

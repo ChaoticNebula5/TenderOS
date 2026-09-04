@@ -17,6 +17,16 @@ COPY packages/tenderos_backend/pyproject.toml packages/tenderos_backend/pyprojec
 
 RUN uv sync --frozen --package tenderos-worker
 
+# ingestion/embed.py's SentenceTransformer(_MODEL_NAME) otherwise downloads
+# from Hugging Face on first real use - fine on a warm dev machine with
+# network access, a real failure mode for a fresh/offline deployment's
+# first ingestion job. Baked in at build time instead, in its own layer
+# before COPY of app code so it stays cached across ordinary code changes.
+# Model name matches ingestion/embed.py's own _MODEL_NAME exactly - keep
+# these in sync if that ever changes.
+RUN uv run --frozen --package tenderos-worker python -c \
+    "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
 COPY apps/worker apps/worker
 COPY packages/tenderos_backend packages/tenderos_backend
 COPY alembic.ini alembic.ini

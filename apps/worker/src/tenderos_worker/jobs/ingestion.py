@@ -33,29 +33,84 @@ def _extract_blocks(filename: str, content: bytes) -> tuple[list[ExtractedBlock]
 async def _persist_chunks(
     uow: UnitOfWork, document_id: uuid.UUID, drafts: list[ChunkDraft], embeddings: list[list[float]]
 ) -> None:
-    # Clear-then-reinsert within the caller's transaction (not committed
-    # until parse_and_embed_document does) - safe under retry because
-    # "stable chunking" guarantees the same chunk_index sequence for
-    # unchanged source content, and a delete+insert of the same key within
-    # one transaction never trips document_chunks' UNIQUE constraints.
-    existing_chunks = await uow.documents.list_chunks_for_document(document_id)
-    if existing_chunks:
-        await uow.documents.delete_chunks_for_document(document_id)
+    """Major finding #9's real fix: reconcile by content_hash instead of a
+    blanket delete-then-reinsert. The old shape deleted every existing
+    chunk unconditionally, then recreated them all with fresh ids - safe
+    for the chunks THEMSELVES (delete+insert of the same key never trips
+    document_chunks' own UNIQUE constraints, within one transaction), but
+    real, reachable damage for every OTHER table that cites a chunk by id:
+    `Requirement.source_chunk_id` has no `ondelete` at all (NOT NULL, so
+    Postgres blocks the delete outright with a real FK violation -
+    reachable via the ALREADY-BUILT, already-tested POST /documents/{id}/
+    reprocess route, no guard anywhere stops reprocessing a document that
+    already has real extracted requirements); `KnowledgeItem`/
+    `EvidenceLink.source_chunk_id` use `SET NULL`, so THEIR reprocessing
+    silently succeeds while quietly severing every citation - two
+    different failure modes, confirmed by reading every FK to document_
+    chunks directly, not assumed from the entry's own original framing.
+
+    document_chunks already carries a UNIQUE (document_id, content_hash)
+    constraint - a chunk whose content_hash still matches a fresh
+    re-parse IS the same chunk, by this project's own existing identity
+    rule, not a new one that happens to look similar. Reusing its row (via
+    update_chunk, same id) rather than deleting and reinserting means
+    every FK pointing at it - the NOT-NULL-blocked ones and the
+    SET-NULL-silenced ones alike - is simply never disturbed for
+    unchanged content, which is the overwhelmingly common real trigger
+    for reprocessing (a retry after a transient parse failure, not a
+    genuinely edited source document). Only chunks whose content is
+    genuinely NEW get inserted; only chunks whose content is genuinely
+    GONE get deleted - and a delete at that point is correct, not a
+    regression: a citation pointing at content no longer in the source
+    document SHOULD go stale (blocked for Requirement, nulled for
+    KnowledgeItem/EvidenceLink) exactly as it does today, since the fact
+    it cited may no longer be true. Real content changes that still hit
+    the Requirement block are a narrower, legitimate failure now, not
+    fixed further here - a stale requirement citation needs a human to
+    look at it, which is a real, separate re-extraction-cascade question,
+    not something this fix silently papers over.
+    """
+    existing_by_hash = {
+        chunk.content_hash: chunk
+        for chunk in await uow.documents.list_chunks_for_document(document_id)
+    }
+    reused_ids: set[uuid.UUID] = set()
 
     for chunk_index, (draft, embedding) in enumerate(zip(drafts, embeddings, strict=True)):
-        await uow.documents.create_chunk(
-            document_id=document_id,
-            chunk_index=chunk_index,
-            chunk_text=draft.chunk_text,
-            normalized_text=draft.normalized_text,
-            content_hash=draft.content_hash,
-            page_num=draft.page_num,
-            sheet_name=draft.sheet_name,
-            cell_range=draft.cell_range,
-            heading_path=draft.heading_path,
-            token_count=draft.token_count,
-            embedding=embedding,
-        )
+        existing = existing_by_hash.get(draft.content_hash)
+        if existing is not None:
+            reused_ids.add(existing.id)
+            await uow.documents.update_chunk(
+                existing.id,
+                chunk_index=chunk_index,
+                chunk_text=draft.chunk_text,
+                normalized_text=draft.normalized_text,
+                page_num=draft.page_num,
+                sheet_name=draft.sheet_name,
+                cell_range=draft.cell_range,
+                heading_path=draft.heading_path,
+                token_count=draft.token_count,
+                embedding=embedding,
+            )
+        else:
+            await uow.documents.create_chunk(
+                document_id=document_id,
+                chunk_index=chunk_index,
+                chunk_text=draft.chunk_text,
+                normalized_text=draft.normalized_text,
+                content_hash=draft.content_hash,
+                page_num=draft.page_num,
+                sheet_name=draft.sheet_name,
+                cell_range=draft.cell_range,
+                heading_path=draft.heading_path,
+                token_count=draft.token_count,
+                embedding=embedding,
+            )
+
+    stale_ids = [
+        chunk.id for chunk in existing_by_hash.values() if chunk.id not in reused_ids
+    ]
+    await uow.documents.delete_chunks(stale_ids)
 
 
 async def parse_and_embed_document(document_id: str) -> None:

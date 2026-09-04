@@ -33,6 +33,10 @@ class RequirementNotFoundError(Exception):
     pass
 
 
+class SubmissionItemNotFoundError(Exception):
+    pass
+
+
 class CrossTenderOperationError(Exception):
     """Raised by merge when the given requirement_ids don't all belong to the
     same tender - merging across tenders would violate the tenant invariant
@@ -152,6 +156,91 @@ async def persist_submission_items(
             persisted.append(created)
         await uow.commit()
     return persisted
+
+
+async def get_submission_item(item_id: uuid.UUID) -> SubmissionItem | None:
+    async with UnitOfWork() as uow:
+        return await uow.requirements.get_submission_item(item_id)
+
+
+async def list_submission_items_for_tender(tender_id: uuid.UUID) -> list[SubmissionItem]:
+    async with UnitOfWork() as uow:
+        return await uow.requirements.list_submission_items_for_tender(tender_id)
+
+
+async def patch_submission_item(
+    item_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    status: str,
+    matched_document_id: uuid.UUID | None = None,
+) -> SubmissionItem:
+    """The write path readiness_service.py's blocker 4
+    (missing_mandatory_submission_item) and redteam_checks.py's identical-
+    named finding have both been waiting on since B5 -
+    SubmissionRepository.update_submission_item existed with zero callers
+    until now (KNOWN_LIMITATIONS.md: "No screen manages submission-item
+    status"). Same before/after audit-event shape as patch_requirement
+    above.
+
+    Bumps tenders.state_version deliberately, not because Part D's
+    projection contract requires it - SubmissionItem is not one of Part
+    D1's 11 node labels and no D2 relationship touches it, confirmed by
+    reading Part D directly, not assumed. The bump exists purely so a
+    stale readiness_reports row (UNIQUE(tender_id, tender_state_version))
+    doesn't silently keep reporting a blocker that's already cleared -
+    readiness-report freshness, not a graph invariant. If this ever reads
+    as wrong because Part D still shows no SubmissionItem node, that's
+    not a contradiction to "fix" by removing the bump.
+    """
+    async with UnitOfWork() as uow:
+        item = await uow.requirements.get_submission_item(item_id)
+        if item is None:
+            raise SubmissionItemNotFoundError()
+
+        before = {
+            "status": item.status,
+            "matched_document_id": (
+                str(item.matched_document_id) if item.matched_document_id else None
+            ),
+        }
+        materially_changed = (
+            status != item.status or matched_document_id != item.matched_document_id
+        )
+
+        fields: dict[str, object] = {"status": status}
+        if matched_document_id is not None:
+            fields["matched_document_id"] = matched_document_id
+        updated = await uow.requirements.update_submission_item(item_id, **fields)
+
+        after = {
+            "status": updated.status,
+            "matched_document_id": (
+                str(updated.matched_document_id) if updated.matched_document_id else None
+            ),
+        }
+        await uow.audit.create(
+            organization_id=organization_id,
+            actor_type="user",
+            actor_id=str(actor_user_id),
+            action="submission_item_status_change",
+            tender_id=updated.tender_id,
+            target_type="submission_item",
+            target_id=updated.id,
+            before=before,
+            after=after,
+        )
+
+        # See docstring: deliberate for readiness-report freshness, not a
+        # Part D projection requirement. Gated the same way compliance_
+        # service.py gates its own bump (materially_changed) - a no-op
+        # PATCH (same status, no new document) shouldn't mark an
+        # otherwise-fresh graph/readiness state stale for nothing.
+        if materially_changed:
+            await uow.tenders.bump_state_version(updated.tender_id)
+
+        await uow.commit()
+        return updated
 
 
 async def persist_clarifications(

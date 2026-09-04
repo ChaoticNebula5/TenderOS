@@ -74,9 +74,26 @@ class TenderRepository:
     async def bump_state_version(self, tender_id: uuid.UUID) -> None:
         """Increment tenders.state_version. Per Build Guide Part C1, callers are
         graph-relevant mutations (knowledge selection, evidence, compliance, role
-        assignment, proposal claim, amendment impact changes) - none of which exist
-        yet in B2. No real caller today; covered by a direct unit test only."""
-        tender = await self._session.get(Tender, tender_id)
+        assignment, proposal claim, amendment impact changes).
+
+        B16: `with_for_update=True` - this used to be a plain SELECT (no lock)
+        + an in-Python `+= 1` + flush, a classic lost-update race under real
+        concurrency (reproduced live, 10 genuinely concurrent writers,
+        tests/integration/test_state_version.py). `SELECT ... FOR UPDATE`,
+        not an atomic `UPDATE ... SET state_version = state_version + 1
+        RETURNING`, deliberately: knowledge_service.py's own
+        set_knowledge_selection (its own comment, right after this call)
+        relies on the SAME identity-mapped Tender instance already
+        reflecting the increment with no extra query - a Core-level
+        RETURNING update bypasses the ORM's identity map and would leave
+        that caller reading a stale value, a real regression a theoretically
+        cleaner fix would have introduced silently. FOR UPDATE keeps the
+        exact same "load the ORM object, mutate the attribute, flush" shape
+        every caller already depends on; it just makes a second concurrent
+        SELECT ... FOR UPDATE for the same row block until this transaction
+        commits, instead of racing it.
+        """
+        tender = await self._session.get(Tender, tender_id, with_for_update=True)
         if tender is None:
             raise ValueError(f"Tender {tender_id} not found")
         tender.state_version += 1

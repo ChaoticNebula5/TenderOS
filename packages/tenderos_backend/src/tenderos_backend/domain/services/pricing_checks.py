@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 
 from tenderos_backend.agents.commercial.parse_pricing_workbook import ParsedPricingCell
@@ -54,6 +55,14 @@ class PricingFindingDraft:
     # so cell_refs alone is already unambiguous and these stay None.
     item_a_ref: dict | None = None
     item_b_ref: dict | None = None
+    # B16 Group 6: the inverse of item_a_ref/item_b_ref above - set for
+    # every finding type EXCEPT cross_doc_mismatch (whose two documents
+    # are already both named there instead). _draft_findings_for_tender
+    # (commercial_service.py) tags each single-document check's drafts
+    # with the pricing_document_id they came from, via dataclasses.
+    # replace - the check functions above stay pure (rows in, drafts
+    # out), with no document identity of their own to thread through.
+    pricing_document_id: uuid.UUID | None = None
 
 
 def group_rows(cells: list[ParsedPricingCell]) -> tuple[list[LogicalRow], ParsedPricingCell | None]:

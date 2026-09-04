@@ -24,6 +24,48 @@ from tenderos_backend.agents.llm.client import (
 _MAX_TRANSIENT_RETRIES = 3
 _BASE_BACKOFF_SECONDS = 5.0
 
+# Post-B16: agent_traces.estimated_cost_usd was NULL on all 2,455 rows ever
+# written, not because the SDK doesn't return token counts (it does -
+# response.usage_metadata below, already captured into input_tokens/
+# output_tokens) but because no price table existed to turn a token count
+# into a dollar figure. This is that table. A HARDCODED APPROXIMATION, NOT
+# A BILLING INTEGRATION: real (USD per 1M tokens, text/image/video input,
+# not audio - every call this project makes is text) as published at
+# https://ai.google.dev/gemini-api/docs/pricing, checked directly rather
+# than guessed, but Google can and does change these without this file
+# knowing - treat estimated_cost_usd as a rough order-of-magnitude signal
+# for relative cost comparison across runs, never as a real invoice figure.
+# Keyed by the exact model id string the API call actually used, not by
+# this project's role-based EXTRACTOR_MODEL/VERIFIER_MODEL/etc. env var
+# names - a role can point at any model string, and pricing is a property
+# of the model, not the role. A model id not in this table (e.g. the
+# "changeme" placeholder REASONING_MODEL/WRITER_MODEL/CRITIC_MODEL still
+# default to, which errors out as ModelNotFoundError before ever reaching
+# here anyway) leaves estimated_cost_usd None, honestly, rather than
+# guessing another model's price for it.
+_PRICE_PER_MILLION_TOKENS_USD: dict[str, tuple[float, float]] = {
+    # (input_rate, output_rate), both USD per 1,000,000 tokens.
+    "gemini-3.1-flash-lite": (0.25, 1.50),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-3.5-flash": (1.50, 9.00),
+    "gemini-3.7-flash": (0.75, 3.75),
+    "gemini-3.8-flash": (0.75, 3.75),
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-3.1-pro-preview": (2.00, 12.00),
+}
+
+
+def _estimate_cost_usd(
+    model: str, input_tokens: int | None, output_tokens: int | None
+) -> float | None:
+    if input_tokens is None or output_tokens is None:
+        return None
+    rates = _PRICE_PER_MILLION_TOKENS_USD.get(model)
+    if rates is None:
+        return None
+    input_rate, output_rate = rates
+    return (input_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate
+
 
 def _cache_key(model: str, system_prompt: str, user_prompt: str, schema_name: str) -> str:
     raw = f"gemini|{model}|{schema_name}|{system_prompt}|{user_prompt}"
@@ -109,18 +151,22 @@ class GeminiClient:
         usage = response.usage_metadata
         await self._redis.set(cache_key, response_text, ex=self._cache_ttl_seconds)
 
+        input_tokens = usage.prompt_token_count if usage else None
+        output_tokens = usage.candidates_token_count if usage else None
+
         return LLMResult(
             parsed=parsed,
             provider="gemini",
             model=model,
-            input_tokens=usage.prompt_token_count if usage else None,
-            output_tokens=usage.candidates_token_count if usage else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             latency_ms=latency_ms,
-            # No published per-token Gemini pricing is wired in yet - cost
-            # tracking (I5's MAX_TENDER_COST_USD budget) is real B11 scope;
-            # agent_traces.estimated_cost_usd stays NULL until that block
-            # adds a provider price table rather than a guessed constant here.
-            estimated_cost_usd=None,
+            # See _PRICE_PER_MILLION_TOKENS_USD's own module-level comment -
+            # a hardcoded approximation from published pricing, not a real
+            # billing integration. None (not 0.0) for a cache hit (no fresh
+            # token counts above) or an unmapped model id - honestly absent,
+            # not a false zero-cost claim.
+            estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),
         )
 
     async def _call_with_retry(

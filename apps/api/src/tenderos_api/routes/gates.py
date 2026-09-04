@@ -22,6 +22,7 @@ from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.gates import (
     CommercialApprovalGateResponse,
     ComplianceReviewGateResponse,
+    CostBudgetGateResponse,
     FinalReadinessGateResponse,
     FindingResolutionGateResponse,
     GateDecisionRequest,
@@ -45,6 +46,7 @@ _GATE_TYPE_TO_RESPONSE_CLASS: dict[str, type[BaseModel]] = {
     "commercial_approval": CommercialApprovalGateResponse,
     "finding_resolution": FindingResolutionGateResponse,
     "final_readiness": FinalReadinessGateResponse,
+    "cost_budget": CostBudgetGateResponse,
 }
 
 

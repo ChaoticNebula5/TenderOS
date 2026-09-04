@@ -22,6 +22,7 @@ async def supervisor_node(state: TenderState) -> dict:
     """
     workflow_run_id = uuid.UUID(state["workflow_run_id"])
     plan = build_plan(state["workflow_run_id"])
+    next_plan_version = state["plan_version"] + 1
 
     dispatch_task_ids: list[str] = []
     async with UnitOfWork() as uow:
@@ -39,11 +40,16 @@ async def supervisor_node(state: TenderState) -> dict:
                 input_refs=task["input_refs"],
             )
             dispatch_task_ids.append(str(created.id))
+        # B16: workflow_runs.plan_version used to stay 0 forever - only the
+        # checkpoint's own copy (returned below) ever advanced. Written in
+        # the same transaction as the task rows above, not a separate
+        # round trip.
+        await uow.workflow.update_plan_version(workflow_run_id, next_plan_version)
         await uow.commit()
 
     await sync_run_status(workflow_run_id, "extracting_requirements")
     return {
         "status": "extracting_requirements",
-        "plan_version": state["plan_version"] + 1,
+        "plan_version": next_plan_version,
         "dispatch_task_ids": dispatch_task_ids,
     }

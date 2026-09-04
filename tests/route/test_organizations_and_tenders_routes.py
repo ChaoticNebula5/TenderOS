@@ -232,3 +232,41 @@ def test_patch_tender_rejects_a_narrower_role(
     )
 
     assert response.status_code == 403, response.text
+
+
+def test_get_tender_rejects_a_caller_outside_the_organization(client: TestClient, register_actor):
+    # B16 item 3: tenders.py's own GET/PATCH routes had zero cross-org
+    # coverage - only test_patch_tender_rejects_a_narrower_role above,
+    # a same-org narrower-ROLE case (403 via permission), not a genuine
+    # different-org case (403 via ORG_ACCESS_DENIED). Real Admin of a
+    # DIFFERENT organization, same shape as test_create_tender_rejects_
+    # a_caller_outside_the_organization above.
+    admin_headers, _, org_id = register_actor()
+    created = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Cross-Org GET Bid"},
+        headers=admin_headers,
+    ).json()
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    response = client.get(f"/tenders/{created['id']}", headers=outsider_headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+def test_patch_tender_rejects_a_caller_outside_the_organization(client: TestClient, register_actor):
+    admin_headers, _, org_id = register_actor()
+    created = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Cross-Org PATCH Bid"},
+        headers=admin_headers,
+    ).json()
+    outsider_headers, _, _outsider_org_id = register_actor()
+
+    response = client.patch(
+        f"/tenders/{created['id']}", json={"name": "Hijacked"}, headers=outsider_headers
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "ORG_ACCESS_DENIED"

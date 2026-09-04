@@ -16,11 +16,19 @@ class Role(enum.StrEnum):
 # (not in orchestration/state.py, which re-exports it) so domain services can
 # reference it without importing from orchestration - A4.1's dependency
 # direction is orchestration -> domain services, never the reverse.
+#
+# "awaiting_cost_budget_review" is a real addition beyond R3's original
+# verbatim list, not a transcription - I5 (Build Guide :2755-2763) names the
+# cost-budget gate but R3's own status enum predates it. Same precedent as
+# rbac.py's own "cancel_workflow_run" addition (a real gap Part H's own
+# locked table never named, added with the reasoning on record rather than
+# silently folded in as if it had always been there).
 WorkflowStatus = Literal[
     "created",
     "extracting_requirements",
     "awaiting_requirement_review",
     "planning",
+    "awaiting_cost_budget_review",
     "running_specialists",
     "awaiting_compliance_review",
     "awaiting_resource_selection",
@@ -45,6 +53,7 @@ WorkflowStatus = Literal[
 _AWAITING_HUMAN: frozenset[WorkflowStatus] = frozenset(
     {
         "awaiting_requirement_review",
+        "awaiting_cost_budget_review",
         "awaiting_compliance_review",
         "awaiting_resource_selection",
         "awaiting_commercial_approval",

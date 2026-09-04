@@ -199,11 +199,6 @@ class DocumentRepository:
         documents = await self.list_for_tender(tender_id)
         return len(documents) > 0 and all(doc.parse_status == "parsed" for doc in documents)
 
-    async def delete_chunks_for_document(self, document_id: uuid.UUID) -> None:
-        for chunk in await self.list_chunks_for_document(document_id):
-            await self._session.delete(chunk)
-        await self._session.flush()
-
     async def create_chunk(
         self,
         document_id: uuid.UUID,
@@ -234,3 +229,59 @@ class DocumentRepository:
         self._session.add(chunk)
         await self._session.flush()
         return chunk
+
+    async def update_chunk(
+        self,
+        chunk_id: uuid.UUID,
+        chunk_index: int,
+        chunk_text: str,
+        normalized_text: str,
+        page_num: int | None,
+        sheet_name: str | None,
+        cell_range: str | None,
+        heading_path: list | None,
+        token_count: int | None,
+        embedding: list[float] | None,
+    ) -> DocumentChunk:
+        """Major finding #9's real fix - update an EXISTING chunk row in
+        place (same id) rather than delete-then-reinsert, for a chunk
+        whose content_hash still matches a fresh re-parse. Preserving the
+        row's own id is what actually protects every FK pointing at it
+        (Requirement.source_chunk_id has no ondelete at all, NOT NULL -
+        a delete Postgres would outright block; KnowledgeItem/EvidenceLink
+        use SET NULL, silently losing the citation) - a plain re-chunk of
+        unchanged content no longer disturbs either. Every field except
+        document_id/content_hash is still refreshed, not just chunk_index -
+        the same underlying content_hash doesn't guarantee page_num/
+        heading_path/embedding are unchanged too (pagination can shift for
+        reasons unrelated to this one chunk's own text).
+        """
+        chunk = await self._session.get(DocumentChunk, chunk_id)
+        if chunk is None:
+            raise ValueError(f"DocumentChunk {chunk_id} not found")
+        chunk.chunk_index = chunk_index
+        chunk.chunk_text = chunk_text
+        chunk.normalized_text = normalized_text
+        chunk.page_num = page_num
+        chunk.sheet_name = sheet_name
+        chunk.cell_range = cell_range
+        chunk.heading_path = heading_path
+        chunk.token_count = token_count
+        chunk.embedding = embedding
+        await self._session.flush()
+        return chunk
+
+    async def delete_chunks(self, chunk_ids: list[uuid.UUID]) -> None:
+        """Deletes specific chunks by id - major finding #9's fix uses this
+        for only the chunks whose content is genuinely GONE from a fresh
+        re-parse, not every chunk the document ever had (delete_chunks_
+        for_document above is now dead - its one caller, _persist_chunks,
+        is rewritten to use update_chunk/create_chunk/this method instead;
+        removed rather than left as unused)."""
+        if not chunk_ids:
+            return
+        for chunk_id in chunk_ids:
+            chunk = await self._session.get(DocumentChunk, chunk_id)
+            if chunk is not None:
+                await self._session.delete(chunk)
+        await self._session.flush()

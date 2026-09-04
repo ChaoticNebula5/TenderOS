@@ -9,6 +9,7 @@ from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.proposal import ProposalClaim, ProposalSection
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services.commercial_service import pricing_finding_evidence_fingerprint
 
 # Compliance statuses PRD 8.4/E4 treat as an actual affirmative compliance
 # position - anything else (non_compliant, evidence_unavailable,
@@ -237,30 +238,55 @@ async def _facts_from_team(uow: UnitOfWork, tender_id: uuid.UUID) -> list[Prepar
 async def _facts_from_pricing(
     uow: UnitOfWork, tender_id: uuid.UUID, start_index: int
 ) -> list[PreparedFact]:
-    """Resolved pricing_findings give the Commercial Summary section real
-    narrative context ("no critical pricing discrepancies remain
-    unresolved"), but they can never become citable claim evidence: Part
-    C's evidence_links.source_kind CHECK constraint has no pricing-sourced
-    value, and every evidence_links row requires a real knowledge_item_id or
-    source_chunk_id - a pricing_finding is neither. These facts are
-    therefore offered with evidence_link_id left unset; if the LLM cites one
-    anyway, materialize_claim_links resolves nothing for it (same
-    skip-unresolvable posture as an unrecognized label), so a factual claim
-    that leans on a pricing finding alone still correctly requires real
-    compliance evidence to be marked grounded. See KNOWN_LIMITATIONS.md.
+    """B16 Group 6: resolved pricing_findings CAN now become real, citable
+    claim evidence for most findings - commercial_service.py's own
+    _ground_pricing_finding materializes a real document_excerpt
+    EvidenceLink at resolve time (Option C; see KNOWN_LIMITATIONS.md's
+    [B9] entry for the full history and the two options rejected in
+    favor of it). Looked up here by the same deterministic fingerprint
+    scheme (pricing_finding_evidence_fingerprint), not a second,
+    independently-maintained copy of it.
+
+    cross_doc_mismatch gets up to two PreparedFacts (suffixes "a"/"b" -
+    _ground_pricing_finding creates one evidence link per document,
+    symmetric, neither side privileged), every other finding type gets
+    at most one. A finding with no evidence link yet - one that predates
+    this fix, or hit _ground_pricing_finding's own documented "neither
+    ref nor pricing_document_id" defensive gap - still gets offered with
+    evidence_link_id left unset, exactly B9's original behavior for
+    every finding. Strictly additive: nothing this function used to
+    offer stops being offered.
     """
     findings = await uow.commercial.list_pricing_findings_for_tender(tender_id)
     prepared: list[PreparedFact] = []
-    for i, finding in enumerate(
-        (f for f in findings if f.resolved), start=start_index
-    ):
-        prepared.append(
-            PreparedFact(
-                label=f"evidence_{i}",
-                kind="evidence",
-                excerpt=f"Resolved pricing finding ({finding.finding_type}): {finding.note}",
-            )
+    i = start_index
+    for finding in (f for f in findings if f.resolved):
+        suffixes: list[str | None] = (
+            ["a", "b"] if finding.finding_type == "cross_doc_mismatch" else [None]
         )
+        evidence_link_ids: list[uuid.UUID] = []
+        for suffix in suffixes:
+            fingerprint = pricing_finding_evidence_fingerprint(finding.id, suffix)
+            link = await uow.compliance.get_evidence_link_by_fingerprint(tender_id, fingerprint)
+            if link is not None:
+                evidence_link_ids.append(link.id)
+
+        excerpt = f"Resolved pricing finding ({finding.finding_type}): {finding.note}"
+        if not evidence_link_ids:
+            prepared.append(PreparedFact(label=f"evidence_{i}", kind="evidence", excerpt=excerpt))
+            i += 1
+            continue
+
+        for evidence_link_id in evidence_link_ids:
+            prepared.append(
+                PreparedFact(
+                    label=f"evidence_{i}",
+                    kind="evidence",
+                    excerpt=excerpt,
+                    evidence_link_id=evidence_link_id,
+                )
+            )
+            i += 1
     return prepared
 
 
@@ -328,6 +354,15 @@ class GroundableClaim(Protocol):
     def claim_type(self) -> str: ...
 
 
+# claim_kind (KNOWN_LIMITATIONS.md's [B9/B16] entry) is deliberately NOT a
+# parameter here and enforce_claim_grounding needs no change for it: a
+# commitment claim is still is_factual=true and goes through exactly the
+# same unsupported/grounded/needs_review logic as any other factual claim
+# below - that IS the design decision ("keep commitments visible rather
+# than exempt them"), not a gap in this function. claim_kind only changes
+# which bucket a citation-correctness measurement counts a claim into
+# afterward; it has no business inside a function that decides whether one
+# specific claim is currently grounded.
 # TODO(human): implement enforce_claim_grounding.
 #
 # Steps (plain-English, not code):
@@ -522,6 +557,7 @@ async def persist_section_and_claims(
                     claim_text=claim_draft.claim_text,
                     claim_type=claim_draft.claim_type,
                     is_factual=claim_draft.is_factual,
+                    claim_kind=claim_draft.claim_kind,
                     grounding_status=grounding.status,
                     content_fingerprint=fingerprint,
                 )
@@ -682,6 +718,7 @@ class ProposalClaimTrace:
     claim_text: str
     claim_type: str
     is_factual: bool
+    claim_kind: str
     grounding_status: str
     section_id: uuid.UUID
     section_name: str
@@ -793,6 +830,7 @@ async def get_proposal_trace(claim_id: uuid.UUID) -> ProposalClaimTrace:
         claim_text=claim.claim_text,
         claim_type=claim.claim_type,
         is_factual=claim.is_factual,
+        claim_kind=claim.claim_kind,
         grounding_status=claim.grounding_status,
         section_id=section.id,
         section_name=section.section_name,
