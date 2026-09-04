@@ -204,8 +204,16 @@ async def patch_submission_item(
                 str(item.matched_document_id) if item.matched_document_id else None
             ),
         }
-        materially_changed = (
-            status != item.status or matched_document_id != item.matched_document_id
+        # matched_document_id=None means "don't touch this field" (see
+        # `fields` below - it's only ever included when not None), not
+        # "clear it." materially_changed has to honor that same meaning:
+        # comparing None against an already-set item.matched_document_id
+        # unconditionally would read a PATCH that only touches status as
+        # having also changed the document, bumping state_version for a
+        # field nothing actually wrote (CodeRabbit-caught).
+        materially_changed = status != item.status or (
+            matched_document_id is not None
+            and matched_document_id != item.matched_document_id
         )
 
         fields: dict[str, object] = {"status": status}

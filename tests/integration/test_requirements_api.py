@@ -372,6 +372,69 @@ async def test_patch_submission_item_updates_status():
         assert listing.json()[0]["status"] == "present"
 
 
+async def test_patch_submission_item_repeating_status_does_not_bump_state_version():
+    """CodeRabbit-caught gap in requirement_service.patch_submission_item's
+    own materially_changed check: matched_document_id=None means "don't
+    touch this field" (see the function's own `fields` construction - it's
+    only included when not None), but the OLD materially_changed
+    computation compared None against the item's real, already-set
+    matched_document_id unconditionally, reading a status-only PATCH as
+    having also changed the document. That bumped tenders.state_version
+    for a field nothing actually wrote, marking an otherwise-fresh
+    readiness/graph state stale for no real reason - the exact case the
+    function's own comment says this gate exists to exclude.
+    """
+    async with await _client() as client:
+        token, tender_id, item_id = await _make_tender_with_submission_item(
+            client, "sub-api-3@example.com", "Sub API Org 3"
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async with UnitOfWork() as uow:
+            doc = await uow.documents.create(
+                side="company",
+                doc_type="other",
+                filename="cert.pdf",
+                storage_key="test/cert.pdf",
+                sha256=uuid.uuid4().hex,
+                mime_type="application/pdf",
+                file_size_bytes=1,
+                tender_id=uuid.UUID(tender_id),
+            )
+            await uow.commit()
+            document_id = str(doc.id)
+
+        first = await client.patch(
+            f"/submission-items/{item_id}",
+            json={"status": "present", "matched_document_id": document_id},
+            headers=headers,
+        )
+        assert first.status_code == 200
+        assert first.json()["matched_document_id"] == document_id
+
+        async with UnitOfWork() as uow:
+            tender_after_first = await uow.tenders.get(uuid.UUID(tender_id))
+        version_after_first = tender_after_first.state_version
+
+        # Same status, matched_document_id omitted entirely - the request
+        # schema defaults it to None, which the service reads as "don't
+        # touch," not "clear it." The item's own matched_document_id (set
+        # above) is genuinely unchanged by this call.
+        second = await client.patch(
+            f"/submission-items/{item_id}", json={"status": "present"}, headers=headers
+        )
+        assert second.status_code == 200
+        assert second.json()["matched_document_id"] == document_id, (
+            "matched_document_id must stay whatever it already was, not get cleared"
+        )
+
+        async with UnitOfWork() as uow:
+            tender_after_second = await uow.tenders.get(uuid.UUID(tender_id))
+        assert tender_after_second.state_version == version_after_first, (
+            "a status-only PATCH that changes nothing must not bump state_version"
+        )
+
+
 async def test_submission_items_are_not_visible_across_organizations():
     """Direct regression for the item_id/submission_item_id path-param
     collision caught while building this route: dependencies.py's

@@ -731,6 +731,63 @@ async def test_facts_from_pricing_sets_evidence_link_id_for_a_grounded_resolved_
     )
 
 
+async def test_facts_from_pricing_excludes_a_resolved_findings_evidence_once_it_goes_invalid():
+    """CodeRabbit-caught gap: _facts_from_pricing's own evidence_link_ids
+    loop had no verified/validity_status re-check at all, unlike every
+    other evidence path in this file (_prepare_evidence_facts' own
+    explicit re-filter, with its own docstring explaining why - evidence
+    can expire between materialization and a later drafting run). Same
+    real ingest -> resolve pipeline as the grounded-finding test above,
+    then the same "reach past the repository to simulate an external
+    invalidation" technique test_reground_claim_becomes_unsupported_
+    when_its_evidence_goes_invalid already uses (no repository write path
+    mutates validity_status directly today - real invalidation happens
+    elsewhere, a reevaluation or an expiry check).
+    """
+    org_id, tender_id = await _make_org_and_tender("Pricing Facts Invalidated Evidence Test")
+    content = (_PRICING_FIXTURES_DIR / "pricing_schedule_1.xlsx").read_bytes()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="pricing_schedule_1.xlsx",
+        content=content,
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    client = FakeLLMClient()
+    client.script(
+        "commercial_explanation",
+        FindingExplanation,
+        [
+            FindingExplanation(
+                severity="major", explanation="A deterministic pricing check found this issue."
+            )
+        ]
+        * 4,
+    )
+    findings = await commercial_service.evaluate_commercial_for_tender(
+        client, "fake-model", tender_id
+    )
+    await commercial_service.resolve_pricing_finding(findings[0].id, uuid.uuid4())
+
+    async with UnitOfWork() as uow:
+        facts_before = await proposal_service._facts_from_pricing(uow, tender_id, start_index=1)
+    assert facts_before[0].evidence_link_id is not None
+
+    async with get_session() as session:
+        link = await session.get(EvidenceLink, facts_before[0].evidence_link_id)
+        link.validity_status = "expired"
+        await session.commit()
+
+    async with UnitOfWork() as uow:
+        facts_after = await proposal_service._facts_from_pricing(uow, tender_id, start_index=1)
+
+    assert facts_after[0].evidence_link_id is None, (
+        "an invalidated pricing evidence link must not still be offered as citable - "
+        "the same re-check every other evidence path already applies"
+    )
+
+
 async def test_facts_from_pricing_leaves_evidence_link_id_unset_for_an_unresolved_finding():
     """Regression guard on the other half of the same function: an
     UNRESOLVED finding must still be filtered out entirely (unchanged B9

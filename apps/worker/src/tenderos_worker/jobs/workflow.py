@@ -79,8 +79,21 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
         return False
 
     async with UnitOfWork() as uow:
-        await uow.workflow.increment_retry_count(run_id, by=decision.budget_cost)
+        reserved = await uow.workflow.try_reserve_retry_budget(
+            run_id, cost=decision.budget_cost, ceiling=_RETRY_BUDGET_CEILING
+        )
         await uow.commit()
+    if not reserved:
+        # classify_task_failure's own decision above was computed against
+        # a plain read of run.retry_count, taken before this reservation -
+        # correct advice most of the time, but not a guarantee under real
+        # concurrency (two failure handlers for the same run, racing).
+        # The atomic reservation above is the actual source of truth: if
+        # it didn't happen, either this decision's own read was already
+        # stale (a concurrent caller spent the last unit first) or the
+        # run was genuinely already at the ceiling - either way, do not
+        # schedule a retry the budget doesn't actually cover.
+        return False
 
     connection = Redis.from_url(settings.redis_url)
     queue = Queue("workflow", connection=connection)

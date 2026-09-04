@@ -78,17 +78,60 @@ def _drop_scratch_database(admin_sync_dsn: str, name: str) -> None:
         engine.dispose()
 
 
-def _constraint_names(sync_dsn: str) -> set[tuple[str, str, str]]:
-    """(table_name, contype, constraint_name) triples - contype included
-    so a same-named object that somehow differs in kind between the two
-    builds would still show up as a real difference, not cancel out.
+def _normalize_definition(definition: str) -> str:
+    """Strips a real, pre-existing, whole-schema rendering difference
+    that isn't a real invariant difference: every migration file
+    declares its enum-like string columns as `Text`, while the ORM
+    models declare the same columns with a bare `str` type hint, which
+    SQLAlchemy 2's own default type map renders as `VARCHAR` - Postgres
+    then renders the identical CHECK constraint differently depending on
+    which one the column actually is (`status = ANY(ARRAY[...text])` vs
+    `(status)::text = ANY((ARRAY[...varchar])::text[])`), even though
+    unbounded VARCHAR and TEXT enforce identically in Postgres - no real
+    difference in what's actually allowed. Found live, not assumed: this
+    exact pattern showed up on all 32 CHECK constraints in the schema the
+    first time this test compared full definitions instead of just
+    names, none of them a real drift - normalizing it away here keeps
+    this test focused on genuine definitional differences (different
+    allowed values, different predicates, different columns), not this
+    cosmetic one. That whole-schema VARCHAR/TEXT mismatch is itself real
+    and pre-existing (not introduced this session) - named in
+    KNOWN_LIMITATIONS.md, not silently fixed by widening this test's own
+    scope beyond what CodeRabbit actually asked for.
+    """
+    normalized = definition.replace("::character varying", "::text")
+    normalized = re.sub(r"\(([\w.]+)\)::text\b", r"\1", normalized)
+    # (ARRAY[...])::text[] -> ARRAY[...] - the cast trails the closing
+    # paren of the array literal, not sits inside it; a first attempt at
+    # this pattern put ::text[] inside the capture group's own closing
+    # paren, which never matched the real Postgres output at all (caught
+    # by actually rerunning the test against real Postgres, not assumed
+    # correct from writing the regex).
+    normalized = re.sub(r"\((ARRAY\[[^\]]*\])\)::text\[\]", r"\1", normalized)
+    return normalized
+
+
+def _constraint_names(sync_dsn: str) -> set[tuple[str, str, str, str]]:
+    """(table_name, contype, constraint_name, definition) 4-tuples -
+    contype included so a same-named object that somehow differs in kind
+    between the two builds would still show up as a real difference, not
+    cancel out. The definition (CodeRabbit-caught gap: this used to be a
+    3-tuple with no definition at all) is what actually catches drift
+    under a matching name - a partial unique index or CHECK constraint
+    with the same name but different indexed columns/WHERE predicate/
+    allowed values passed this test before, silently, which defeats the
+    whole point: this session alone twice widened a CHECK constraint's
+    own allowed-values list (ck_approval_gate_type, ck_proposal_claim_
+    kind's sibling additions) - exactly the shape a name-only compare
+    cannot see.
     """
     engine = create_engine(sync_dsn)
     try:
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT rel.relname, con.contype, con.conname "
+                    "SELECT rel.relname, con.contype, con.conname, "
+                    "pg_get_constraintdef(con.oid) "
                     "FROM pg_constraint con "
                     "JOIN pg_class rel ON rel.oid = con.conrelid "
                     "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
@@ -98,12 +141,12 @@ def _constraint_names(sync_dsn: str) -> set[tuple[str, str, str]]:
             ).fetchall()
             unique_index_rows = conn.execute(
                 text(
-                    "SELECT tablename, 'unique_index', indexname FROM pg_indexes "
+                    "SELECT tablename, 'unique_index', indexname, indexdef FROM pg_indexes "
                     "WHERE schemaname = 'public' AND indexdef LIKE 'CREATE UNIQUE INDEX%'"
                 )
             ).fetchall()
-        names = {(r[0], r[1], r[2]) for r in rows} | {
-            (r[0], r[1], r[2]) for r in unique_index_rows
+        names = {(r[0], r[1], r[2], _normalize_definition(r[3])) for r in rows} | {
+            (r[0], r[1], r[2], _normalize_definition(r[3])) for r in unique_index_rows
         }
         # alembic_version is Alembic's own bookkeeping table (tracks which
         # migration a database is at) - it's not part of Base.metadata at

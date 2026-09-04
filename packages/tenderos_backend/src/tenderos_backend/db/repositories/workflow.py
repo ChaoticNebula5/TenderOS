@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.workflow import (
@@ -129,21 +130,41 @@ class WorkflowRepository:
             raise ValueError(f"WorkflowRun {run_id} not found")
         run.plan_version = plan_version
 
-    async def increment_retry_count(self, run_id: uuid.UUID, by: int = 1) -> WorkflowRun:
-        # B16 Group 4: the real countdown for the retry policy - see
-        # migration 016 and WorkflowRun.retry_count's own docstring for
-        # why this isn't TenderState.retry_budget_remaining. `by` is
-        # RetryDecision.budget_cost, not always 1 - some failure types may
-        # cost more of the shared run budget than others. No outbox
-        # event, same reasoning as update_plan_version above - nothing
-        # reads a "retry count changed" signal yet.
-        run = await self._session.get(WorkflowRun, run_id)
-        if run is None:
-            raise ValueError(f"WorkflowRun {run_id} not found")
-        run.retry_count += by
+    async def try_reserve_retry_budget(self, run_id: uuid.UUID, cost: int, ceiling: int) -> bool:
+        """Replaces the old increment_retry_count, which was a real,
+        CodeRabbit-caught instance of this project's own standing
+        "sequential retry tested, genuine concurrency untested" pattern -
+        session.get() + a Python-level `run.retry_count += by` + flush is
+        not atomic at either level: not the ceiling check (two concurrent
+        _handle_graph_failure calls can both read the same stale
+        retry_count, both see budget available, and both proceed) and not
+        even the increment itself (a plain last-write-wins on the ORM
+        attribute, the exact "lost update" shape bump_state_version had
+        before its own FOR UPDATE fix).
+
+        One atomic UPDATE does both the check and the reservation in a
+        single round-trip: the WHERE clause's own `retry_count + :cost <=
+        :ceiling` is evaluated against the row Postgres is already
+        locking for this UPDATE, so a concurrent second caller's own
+        UPDATE simply blocks until the first commits, then re-evaluates
+        the WHERE clause against the NEW value - it cannot see the same
+        stale ceiling-satisfying state twice. Returns whether the
+        reservation actually happened (a row was matched and updated) -
+        callers must treat False as "budget exhausted or already spent by
+        a concurrent caller," not proceed to schedule a retry regardless.
+        """
+        # .returning() + checking whether a row came back, not .rowcount -
+        # AsyncSession.execute()'s own static return type doesn't narrow
+        # to something mypy sees a rowcount attribute on, and this reads
+        # more directly as "did the reservation take" anyway.
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(WorkflowRun.id == run_id, WorkflowRun.retry_count + cost <= ceiling)
+            .values(retry_count=WorkflowRun.retry_count + cost)
+            .returning(WorkflowRun.id)
+        )
         await self._session.flush()
-        return run
-        await self._session.flush()
+        return result.scalar_one_or_none() is not None
 
     async def list_tasks(self, workflow_run_id: uuid.UUID) -> list[WorkflowTask]:
         result = await self._session.execute(

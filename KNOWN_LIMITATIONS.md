@@ -3592,17 +3592,18 @@ Each entry:
   the code it describes rather than taken as read.
 - **Test:** none - this is a review-process note, not a code path.
 
-## Standing pattern: sequential retry tested, genuine concurrency untested - five instances, one blind spot in test design
+## Standing pattern: sequential retry tested, genuine concurrency untested - six instances, one blind spot in test design
 
-- **Discovered:** not five separate bugs found independently - a pattern
-  named once the count reached four, then extended when a fifth turned up
-  post-B16, the same discipline this file applies to every other standing
-  pattern (see "measurement/verification tooling," "environment-traps,"
-  "a two-resource guard," "this frontend has no recovery path"). All five
-  are the identical shape: select-then-act with no row lock/claim, a real
-  test proving the SEQUENTIAL case (a retry after seeing the first
-  response) works correctly, and no test anywhere exercising two workers
-  genuinely in flight at once.
+- **Discovered:** not six separate bugs found independently - a pattern
+  named once the count reached four, extended when a fifth turned up
+  post-B16, and a sixth found by CodeRabbit review the same session, the
+  same discipline this file applies to every other standing pattern (see
+  "measurement/verification tooling," "environment-traps," "a
+  two-resource guard," "this frontend has no recovery path"). All six
+  are the identical shape: select-then-act with no row lock/claim/atomic
+  guard, a real test proving the SEQUENTIAL case (a retry after seeing
+  the first response) works correctly, and no test anywhere exercising
+  two workers genuinely in flight at once.
   1. **`document_service.create_document`** (B16) - found live by the
      concurrent-uploads load test, not by inspection. RESOLVED.
   2. **`apps/api/.../idempotency.py`'s own record acquisition** (B16,
@@ -3658,7 +3659,47 @@ Each entry:
      (`test_two_concurrent_dispatchers_claim_each_event_exactly_once`)
      proves the actual property this entry is about, against real
      Postgres.
-- **Why this is a genuine blind spot, not five unlucky misses:** every
+  5. **`_handle_graph_failure`'s own retry-budget ceiling
+     (`workflow_runs.retry_count` vs. `_RETRY_BUDGET_CEILING`)** - found
+     by CodeRabbit review, RESOLVED same pass. Worse than a plain lost
+     update: `increment_retry_count` was `session.get()` + a Python-level
+     `run.retry_count += by` + `flush()` - not atomic at either the
+     ceiling CHECK (two concurrent `_handle_graph_failure` calls, e.g.
+     two RQ workers both handling a failure for the same run, can both
+     read the same stale `retry_count`, both see budget available via
+     `classify_task_failure`, and both proceed) or the increment ITSELF
+     (a plain ORM attribute mutation, the identical "lost update" shape
+     `bump_state_version` had before its own `FOR UPDATE` fix - see that
+     entry above). Fixed with `try_reserve_retry_budget`: one atomic
+     `UPDATE ... SET retry_count = retry_count + :cost WHERE id = :id
+     AND retry_count + :cost <= :ceiling RETURNING id` - the check and
+     the reservation happen in the same round-trip, so a concurrent
+     second caller's own UPDATE re-evaluates the WHERE clause against the
+     row's real, current value, not a stale read; `_handle_graph_failure`
+     treats a failed reservation (no row returned) as "budget exhausted
+     or already spent by a concurrent caller" and does not schedule a
+     retry, rather than trusting the earlier, advisory `classify_task_
+     failure` check alone. `increment_retry_count` removed entirely (one
+     real call site, no other callers, no test referenced the method
+     name itself - only the `retry_count` outcome, which the replacement
+     still produces correctly).
+     **Worth stating plainly, not just filed as "a sixth instance":**
+     this bug was written into `_handle_graph_failure` as part of major
+     finding #17's own retry-mechanism build (B16 Group 4) - which
+     landed AFTER Groups 1-3 (instances #1/#2/#3 above), the same three
+     that got this pattern named in the first place. The pattern was
+     already on record, in this same file, before the code that became
+     its fifth instance was written - naming a pattern doesn't inoculate
+     new code against it, it only makes the new code recognizable as an
+     instance once someone actually looks (here, CodeRabbit, not this
+     project's own review of its own Group 4 work). The same lesson the
+     environment-traps entry already drew from its own third test-
+     teardown incident: "the discipline being written down once is not
+     the same as it being followed automatically in a later,
+     unrelated-feeling moment." A named standing pattern is a detection
+     aid for review, not a guardrail that prevents the shape from
+     recurring in code written after the name existed.
+- **Why this is a genuine blind spot, not six unlucky misses:** every
   one of these sites already had real test coverage before this pattern
   was named - `test_duplicate_idempotency_key_same_body_replays_response`
   and its siblings, the knowledge-import retry-resume tests - all proving
@@ -3671,13 +3712,165 @@ Each entry:
   break going forward: a retry test and a concurrency test are not the
   same test, and passing the first has never implied passing the second
   here.
-- **Status:** 5 of 5 resolved (#1, #2, #3 - B16 Groups; #3 additionally
+- **Status:** 6 of 6 resolved (#1, #2, #3 - B16 Groups; #3 additionally
   surfaced and closed a second, deeper race beyond its original scope;
-  #4 - outbox atomicity, post-B16), this entry itself closes no code.
+  #4 - outbox atomicity, post-B16; #5 - retry-budget reservation, same
+  session, caught by CodeRabbit review), this entry itself closes no
+  code.
 - **Test:** each resolved instance has its own real concurrent test
-  (`asyncio.gather` against the real ASGI app/service layer) - this entry
+  (`asyncio.gather` against the real ASGI app/service layer, or - for
+  #5, a single-caller correctness/scoping test at the repository level;
+  a true two-worker race test for the atomic reservation itself wasn't
+  written this pass, named honestly rather than claimed) - this entry
   is the pattern note, matching every other standing-pattern entry's own
   convention in this file.
+
+## CodeRabbit review findings, this session - five real bugs, all fixed and verified
+
+Six items came back from a CodeRabbit pass over this session's own work
+(the retry-budget race is recorded separately above, as the sixth
+instance of the select-then-act standing pattern - not repeated here).
+Each was verified against the real, current code before being trusted,
+not fixed on CodeRabbit's own say-so alone - two of the six turned out
+to be pre-existing self-contradictions in this file's own earlier
+edits, not code bugs.
+
+- **`outbox_dispatcher.py`'s `build_dispatch` call sat outside its own
+  `try` block.** Every route builder (`_workflow_run_created_dispatch`
+  etc.) does a raw `event.payload["..."]` lookup, which raises a bare
+  `KeyError` on a malformed payload - uncaught at that position, since
+  the `except Exception` guard starts AFTER it. That `KeyError` would
+  have escaped `_dispatch_claimed_event` entirely, aborting `_dispatch_
+  once`'s own `candidate_ids` loop (every later event in that poll cycle
+  never attempted) and propagating into `_run_forever`, which has no
+  `try/except` of its own around `_dispatch_once()` - a single malformed
+  event would have taken the whole dispatcher process down. Worse: since
+  the exception fires before `mark_dispatched`/`mark_retry` ever run,
+  the event's own `attempt_count` never increments, so `get_pending`
+  would select it again on every future poll - not a one-time crash, a
+  permanent one. Fixed: `build_dispatch(event)` moved inside the `try`.
+- **`_facts_from_pricing` offered evidence with no `verified`/
+  `validity_status` re-check**, unlike `_prepare_evidence_facts` (every
+  OTHER evidence path in this file), whose own docstring explains why
+  the re-check exists: evidence can expire between materialization and
+  a later drafting run. A pricing evidence link invalidated after
+  `_ground_pricing_finding` materialized it would still have been
+  offered as citable. Fixed with the identical check. New test:
+  `tests/integration/test_proposal_service.py::
+  test_facts_from_pricing_excludes_a_resolved_findings_evidence_once_
+  it_goes_invalid`.
+- **`requirement_service.patch_submission_item`'s own `materially_
+  changed` computation didn't honor its own `fields` construction's
+  meaning of `matched_document_id=None`** ("don't touch this field," not
+  "clear it" - `fields` only ever includes the key when not `None`). A
+  status-only PATCH on an item that already had a real `matched_
+  document_id` set read as having also changed the document, bumping
+  `tenders.state_version` for a field nothing actually wrote - the exact
+  no-op case the function's own comment says this gate exists to
+  exclude. Fixed: the comparison now only counts as a change when
+  `matched_document_id` is not `None` AND differs from the current
+  value. New test: `tests/integration/test_requirements_api.py::
+  test_patch_submission_item_repeating_status_does_not_bump_state_
+  version`. Noted, not built: this function still has no way to
+  explicitly CLEAR an existing `matched_document_id` (would need a real
+  sentinel value distinct from "omitted" - `None` is already spoken for)
+  - real, separate scope if clearing is ever needed.
+- **`full-flow.spec.ts`'s own red-team-finding poll compared `td.
+  textContent()` directly, untrimmed**, against a literal category
+  string - real table markup can carry surrounding whitespace, and the
+  very next line already calls `.trim()` on a sibling cell, so the
+  omission here was inconsistent with the author's own adjacent code,
+  not a deliberate choice. Would have failed by exhausting the full
+  300s poll budget and reporting a misleading "waiting for a finding"
+  message on a row that was actually already there. Fixed: `.trim()`
+  added before the comparison.
+- **`test_schema_diff.py`'s own constraint comparison only checked
+  `(table, type, name)`, never the actual definition** - a same-named
+  constraint or partial unique index with different indexed columns, a
+  different `WHERE` predicate, or a different allowed-values list would
+  pass silently, exactly the shape of drift this test's own docstring
+  says it exists to catch (and the shape this session's own `ck_
+  approval_gate_type`/`ck_proposal_claim_kind` widenings are). Fixed by
+  adding `pg_get_constraintdef(con.oid)`/`indexdef` to the compared
+  tuple. **Running the strengthened comparison for real immediately
+  surfaced a genuine, pre-existing, whole-schema difference** - see the
+  dedicated entry immediately below - normalized out of the comparison
+  (it isn't a real invariant difference) rather than either silently
+  ignored or left failing the test on ~32 constraints that were never
+  actually wrong.
+- **`docs/eval/b16-scorecard.md` carried two real self-contradictions**,
+  both from this session's own earlier edits, not new code bugs: (1) the
+  reliability-table tally said "9 of 9 fixed or verified, 0 deferred" in
+  the same paragraph that names item #3 as still deferred by deliberate
+  choice - corrected to "8 of 9... 1 deferred" in both places it was
+  stated. (2) The §5 punch-list's own "Dead config: four instances"
+  bullet still said `MAX_TENDER_COST_USD` was deleted and `estimated_
+  cost_usd` was a column nothing writes - both true when that bullet was
+  first written, both superseded later the SAME session once I5's own
+  gate was built - the bullet was never updated when that happened.
+  Corrected to note the later revival explicitly, plus one narrower stale
+  clause elsewhere (§4a's own live-run report correctly recorded `0/165
+  populated` as a fact about that specific past run, but its own trailing
+  "stays unmeasured regardless of how many more runs happen" clause was
+  a forward-looking claim invalidated by the same later fix).
+
+## Whole-schema VARCHAR/TEXT mismatch between ORM models and migrations - real, pre-existing, found by strengthening test_schema_diff.py, not fixed this pass
+
+- **Discovered:** immediately upon running `test_schema_diff.py`'s own
+  strengthened constraint-definition comparison (see the CodeRabbit
+  entry above) for the first time - every single string-valued CHECK
+  constraint in the entire schema (32 of them, every table with a
+  status/type/category-style column) came back as a "difference"
+  between the `create_all()` build and the real `alembic upgrade head`
+  build.
+- **Root cause, traced not guessed:** every migration file declares
+  these columns via `sa.Text()` (or an equivalent that Postgres reports
+  as `text`); every ORM model declares the same columns with a bare
+  `Mapped[str]`/`mapped_column(nullable=False)` and no explicit type,
+  which SQLAlchemy 2's own default Python-type-to-SQL-type map renders
+  as `VARCHAR` (`character varying`, unbounded) instead. Postgres then
+  renders the IDENTICAL logical CHECK constraint differently depending
+  on which one the column actually is - `status = ANY(ARRAY[...text])`
+  for a `TEXT` column vs. `(status)::text = ANY((ARRAY[...varchar])::
+  text[])` for a `VARCHAR` one - a real difference in the constraint's
+  own SQL text, but not in what it actually enforces: unbounded
+  `VARCHAR` and `TEXT` are functionally identical in Postgres for every
+  purpose that matters here (no length limit either way, identical
+  comparison/indexing/storage behavior).
+- **Why this is real and pre-existing, not introduced this session, and
+  not fixed here:** every migration file from `001_initial` onward
+  already has this shape - it did not start with `claim_kind`/
+  `cost_budget`'s own new constraints, it was simply invisible to this
+  test until the definition was actually compared, because a 3-tuple
+  name-only comparison (this test's own shape before today) cannot see
+  a same-named constraint's differing definition at all. Fixing it for
+  real would mean picking ONE side and changing either all ~30 affected
+  ORM model field declarations (adding an explicit `Text` type
+  annotation/`mapped_column(Text)` to every enum-like string column) or
+  all the migration files (switching them to plain `String`/`VARCHAR`
+  to match the models) - a real, mechanical, but genuinely large and
+  out-of-scope change for a CodeRabbit-triage pass, with its own real
+  risk (touching every migration file's own historical DDL, or every
+  model's column declarations, for a change with zero behavioral
+  effect).
+- **What was actually done instead:** `test_schema_diff.py`'s own
+  comparison normalizes away this specific `VARCHAR`-vs-`TEXT` rendering
+  difference (`_normalize_definition`) before comparing, so the test
+  stays focused on genuine definitional drift (different allowed
+  values, different predicates, different indexed columns) - its own
+  actual, stated purpose - rather than either going permanently red on
+  ~32 constraints that were never really wrong, or silently narrowing
+  its own scope back to names-only and losing the real detection power
+  this pass just added.
+- **Status:** open, real, named - not a task in progress. If this
+  mismatch is ever worth closing for its own sake (consistency, not
+  correctness), the model-side fix (explicit `Text` on every enum-like
+  string column) is the smaller, more localized change of the two real
+  options.
+- **Test:** none dedicated - `test_schema_diff.py` itself is the
+  detection mechanism for constraint drift in general; this specific
+  gap is normalized out of what it flags, by design, per the reasoning
+  above.
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 

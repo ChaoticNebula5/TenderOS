@@ -1242,7 +1242,8 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
         const count = await rows.count();
         for (let i = 0; i < count; i++) {
           const row = rows.nth(i);
-          if ((await row.locator("td").first().textContent()) === "deselected_fact_in_use") {
+          const category = (await row.locator("td").first().textContent())?.trim();
+          if (category === "deselected_fact_in_use") {
             return (await row.locator("td").nth(3).textContent())?.trim();
           }
         }

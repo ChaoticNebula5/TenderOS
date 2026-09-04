@@ -213,11 +213,26 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
         if event is None:
             return
 
-        build_dispatch = _ROUTES.get((event.aggregate_type, event.event_type), _default_dispatch)
-        queue_name, job_fn, job_args, job_id = build_dispatch(event)
-
         enqueue_succeeded = True
         try:
+            # build_dispatch(event) belongs inside this try, not before it -
+            # every route builder does a raw event.payload["..."] lookup
+            # (e.g. _workflow_run_created_dispatch), which raises a bare
+            # KeyError on a malformed payload. Outside this block, that
+            # KeyError isn't caught by anything: it escapes this function,
+            # aborts _dispatch_once's own candidate_ids loop (every event
+            # after this one in the same poll cycle never gets attempted),
+            # and _run_forever has no try/except of its own around
+            # _dispatch_once() either - it would take the whole dispatcher
+            # process down. Worse, since the exception happens before
+            # mark_dispatched/mark_retry ever run, this event's own
+            # attempt_count never increments, so get_pending selects it
+            # again on every future poll - a single malformed payload
+            # would otherwise crash the dispatcher forever, not once.
+            build_dispatch = _ROUTES.get(
+                (event.aggregate_type, event.event_type), _default_dispatch
+            )
+            queue_name, job_fn, job_args, job_id = build_dispatch(event)
             queues[queue_name].enqueue(
                 job_fn,
                 *job_args,
@@ -225,7 +240,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
                 job_timeout=_QUEUE_TIMEOUTS_SECONDS.get(queue_name),
             )
         except Exception:
-            logger.exception("Failed to enqueue outbox event %s", event.id)
+            logger.exception("Failed to dispatch outbox event %s", event.id)
             enqueue_succeeded = False
 
         if enqueue_succeeded:

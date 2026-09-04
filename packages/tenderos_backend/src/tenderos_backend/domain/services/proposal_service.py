@@ -268,7 +268,15 @@ async def _facts_from_pricing(
         for suffix in suffixes:
             fingerprint = pricing_finding_evidence_fingerprint(finding.id, suffix)
             link = await uow.compliance.get_evidence_link_by_fingerprint(tender_id, fingerprint)
-            if link is not None:
+            # Same re-check _prepare_evidence_facts does for every other
+            # evidence path, and for the same reason its own docstring
+            # gives - evidence can expire between when it was materialized
+            # (at resolve time here) and a later drafting run. Missing
+            # here would let a since-invalidated pricing evidence link
+            # keep getting cited as if still eligible, even though the
+            # identical evidence flowing through _facts_from_compliance/
+            # _facts_from_team would correctly be excluded.
+            if link is not None and link.verified and link.validity_status == "valid":
                 evidence_link_ids.append(link.id)
 
         excerpt = f"Resolved pricing finding ({finding.finding_type}): {finding.note}"
