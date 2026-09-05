@@ -7,6 +7,7 @@ from typing import Any
 
 from redis import Redis
 from rq import Queue
+from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -29,7 +30,7 @@ from tenderos_worker.jobs.knowledge_import import process_knowledge_document_imp
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
-from tenderos_worker.jobs.workflow import resume_workflow, run_workflow
+from tenderos_worker.jobs.workflow import resume_workflow_job, run_workflow_job
 from tenderos_worker.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -71,8 +72,13 @@ def _default_dispatch(event: OutboxEvent) -> tuple[str, Callable[..., Any], tupl
 def _workflow_run_created_dispatch(
     event: OutboxEvent,
 ) -> tuple[str, Callable[..., Any], tuple, str]:
+    # *_job (jobs/workflow.py), not the bare async run_workflow/
+    # resume_workflow - see _run_sync's own docstring for why: RQ owns the
+    # sync-to-async transition for a directly-enqueued async callable, which
+    # left run_workflow's own except block unreachable when RQ's death-
+    # penalty timeout fires. The *_job wrappers own that transition instead.
     workflow_run_id = event.payload["workflow_run_id"]
-    return "workflow", run_workflow, (workflow_run_id,), f"workflow-{workflow_run_id}"
+    return "workflow", run_workflow_job, (workflow_run_id,), f"workflow-{workflow_run_id}"
 
 
 def _gate_decision_recorded_dispatch(
@@ -82,7 +88,7 @@ def _gate_decision_recorded_dispatch(
     gate_id = event.payload["gate_id"]
     return (
         "workflow",
-        resume_workflow,
+        resume_workflow_job,
         (workflow_run_id, gate_id),
         # Underscore, not the dash B2 used for outbox-{event.id} - that job_id
         # has exactly one UUID, but this one has two, and UUIDs themselves
@@ -286,6 +292,11 @@ async def _run_forever() -> None:
 
 def main() -> None:
     configure_logging()
+    # B17: a real no-op unless LLM_PROVIDER=fake - see that function's own
+    # docstring. This process never calls an LLM itself, but installing it
+    # here too keeps all three real entrypoints identical, matching
+    # configure_logging()'s own placement.
+    install_fake_fallback_responses()
     asyncio.run(_run_forever())
 
 

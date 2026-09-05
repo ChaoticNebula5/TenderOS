@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { login, register, setTokens } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
@@ -12,6 +12,7 @@ import { useAuth } from "../auth/useAuth";
 export function Login() {
   const { meResponse, refresh } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -21,9 +22,18 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // RequireAuth.tsx sets this when it redirects here - the path a user was
+  // actually trying to reach, whether they arrived here genuinely logged
+  // out or via a transient /auth/me failure that temporarily (and
+  // incorrectly, per AuthContext.tsx's own refresh()) nulled meResponse.
+  // Read once, used in both branches below, so a real login and an
+  // auth-recovery bounce land the user in the same place instead of two
+  // different fixes for the same underlying "where was I going" question.
+  const from = (location.state as { from?: string } | null)?.from ?? "/";
+
   // Already logged in - don't show the login form again.
   if (meResponse) {
-    return <Navigate to="/" replace />;
+    return <Navigate to={from} replace />;
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -44,7 +54,7 @@ export function Login() {
         setTokens(result.access_token, result.refresh_token);
       }
       await refresh();
-      navigate("/", { replace: true });
+      navigate(from, { replace: true });
     } catch (err) {
       setError(formatErrorDetail(err));
     } finally {

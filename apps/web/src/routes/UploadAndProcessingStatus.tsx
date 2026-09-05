@@ -11,6 +11,7 @@ import {
   uploadDocument,
 } from "../api/client";
 import type { DocumentResponse, WorkflowTaskResponse } from "../api/client";
+import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useEventStream } from "../hooks/useEventStream";
 
 // Module-level, not inside the component: this Set never changes, so
@@ -140,7 +141,7 @@ export function UploadAndProcessingStatus() {
     }
   }
 
-  const { data: tasks } = useEventStream<WorkflowTaskResponse[]>(
+  const { data: tasks, error: tasksStreamError } = useEventStream<WorkflowTaskResponse[]>(
     () => listWorkflowTasks(workflowRunId as string),
     workflowRunId as string,
     workflowRunId !== null,
@@ -151,11 +152,20 @@ export function UploadAndProcessingStatus() {
   // screen stuck on the task list with no way back to "Start
   // processing" after the run actually completed, failed, or was
   // cancelled.
-  const { data: activeRun } = useEventStream(
+  const { data: activeRun, error: runStreamError } = useEventStream(
     () => getWorkflowRun(workflowRunId as string),
     workflowRunId as string,
     workflowRunId !== null,
   );
+  // Both streams' errors surfaced, not just their data - useEventStream.ts
+  // already computes a real terminal error (a 401 on ticket-minting, or
+  // mint/reconnect retries exhausted), but until now this was the only
+  // consumer and it destructured just { data }, so a dead stream left the
+  // task list frozen with no visible sign it had stopped updating. Kept
+  // separate from `tasks`/`activeRun` being possibly stale (not cleared on
+  // error) - the last-known state stays on screen, with a visible note that
+  // it may no longer be live, rather than the screen blanking entirely.
+  const streamError = tasksStreamError ?? runStreamError;
 
   useEffect(() => {
     if (activeRun && !NON_TERMINAL_STATUSES.has(activeRun.status)) {
@@ -230,14 +240,22 @@ export function UploadAndProcessingStatus() {
             </button>
           </>
         ) : (
-          <ul>
-            {(tasks ?? []).map((task) => (
-              <li key={task.id}>
-                {task.task_type}: {task.status}
-              </li>
-            ))}
-            {tasks !== null && tasks.length === 0 && <li>Waiting for tasks to start...</li>}
-          </ul>
+          <>
+            {streamError && (
+              <p role="alert" style={{ color: "var(--color-warning)" }}>
+                Live updates are currently unavailable ({formatErrorDetail(streamError)}). The list
+                below may be out of date.
+              </p>
+            )}
+            <ul>
+              {(tasks ?? []).map((task) => (
+                <li key={task.id}>
+                  {task.task_type}: {task.status}
+                </li>
+              ))}
+              {tasks !== null && tasks.length === 0 && <li>Waiting for tasks to start...</li>}
+            </ul>
+          </>
         )}
       </section>
     </main>

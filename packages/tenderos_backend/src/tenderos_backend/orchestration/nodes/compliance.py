@@ -2,10 +2,9 @@ import logging
 import uuid
 
 from langgraph.types import interrupt
-from redis.asyncio import Redis as AsyncRedis
 
 from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
+from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.compliance_service import evaluate_compliance_for_requirement
@@ -31,16 +30,15 @@ class AllItemsFailedError(Exception):
 def _build_llm_client() -> LLMClient:
     # Same "function, not module-level singleton" shape
     # requirement_extraction_node's own helper documents - tests monkeypatch
-    # this one name instead of touching a real GeminiClient.
-    # B16: compliance_gemini_api_key first, falling back to the shared
-    # gemini_api_key when unset - see Settings.compliance_gemini_api_key's
-    # own comment for why this branch specifically needs its own key.
-    redis_client = AsyncRedis.from_url(settings.redis_url)
-    return GeminiClient(
-        api_key=settings.compliance_gemini_api_key or settings.gemini_api_key,
-        redis_client=redis_client,
-        cache_ttl_seconds=settings.llm_cache_ttl_seconds,
-    )
+    # this one name instead of touching a real GeminiClient. B17: the actual
+    # gemini-vs-fake decision now lives in agents/llm/factory.py::
+    # build_llm_client - this delegates to it, still resolving ITS OWN key
+    # first (B16: compliance_gemini_api_key first, falling back to the
+    # shared gemini_api_key when unset - see Settings.compliance_gemini_api_key's
+    # own comment for why this branch specifically needs its own key; the
+    # factory only uses this value in real-provider mode, ignored entirely
+    # in fake mode).
+    return build_llm_client(api_key=settings.compliance_gemini_api_key or settings.gemini_api_key)
 
 
 async def compliance_analysis_node(state: SpecialistTaskState) -> dict:

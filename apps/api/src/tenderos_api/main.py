@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
+from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
 
@@ -48,6 +49,11 @@ from tenderos_api.routes import (
 # and doesn't care about import order beyond "before the process actually
 # starts serving").
 configure_logging()
+# B17: a real no-op unless LLM_PROVIDER=fake (see that function's own
+# docstring) - installed at the same three entrypoints configure_logging()
+# already documents, right after it, so a fake-provider process is fully
+# ready to answer before it starts serving.
+install_fake_fallback_responses()
 
 app = FastAPI(title="TenderOS API")
 # The web app is a separate origin in every configuration this project has

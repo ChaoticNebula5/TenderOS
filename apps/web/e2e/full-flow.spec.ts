@@ -151,11 +151,23 @@ const RATE_LIMIT_RECOVERY_WAIT_MS = 65_000;
 // a bare reloadAndSettle(page) - once B17 actually fixes the underlying
 // guard; there is no reason for this scaffolding to exist once a
 // transient auth failure can no longer strand the browser.
+// B17 Phase 1's own instrumentation, not a permanent addition: counts every
+// real bounce-recovery this wrapper performs across the WHOLE run, attached
+// as an artifact at the end (see "route-bounce-recovery-count" below) - the
+// concrete answer to "did Login.tsx's destination-loss fix actually work,"
+// not just "did this run happen to pass." Deliberately does not change the
+// wrapper's own behavior or remove it: per B17's own plan, this run is
+// meant to CONFIRM the fix, and removing the scaffolding in the same pass
+// that's supposed to verify it would leave no fallback if the fix turned
+// out incomplete.
+let routeBounceRecoveryCount = 0;
+
 async function reloadAndSettleOnRoute(page: Page, expectedPath: string): Promise<void> {
   await reloadAndSettle(page);
   let bounces = 0;
   while (!page.url().endsWith(expectedPath) && bounces < MAX_ROUTE_BOUNCE_RECOVERIES) {
     bounces += 1;
+    routeBounceRecoveryCount += 1;
     await page.waitForTimeout(RATE_LIMIT_RECOVERY_WAIT_MS);
     await page.goto(expectedPath);
     await reloadAndSettle(page);
@@ -1328,4 +1340,23 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     blockers.length,
     "expected at least one real blocker attached to the non-ready result",
   ).toBeGreaterThan(0);
+});
+
+// B17 Phase 1 verification artifact - see reloadAndSettleOnRoute's own
+// comment above. A hook, not an inline attach at the test's own end,
+// specifically so this still reports if the run fails on an unrelated step
+// partway through - exactly the case where "did Login.tsx's fix even get
+// exercised before this failed" is worth knowing, not just on a clean pass.
+// {} below is deliberate, not accidental: Playwright's own fixture-
+// injection requires an object DESTRUCTURING PATTERN as the first argument
+// to statically detect which fixtures a hook uses (confirmed directly - a
+// plain named parameter here fails at test-collection time with "First
+// argument must use the object destructuring pattern"); {} is correct for
+// "this hook uses no fixtures."
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(async ({}, testInfo) => {
+  await testInfo.attach("route-bounce-recovery-count", {
+    body: String(routeBounceRecoveryCount),
+    contentType: "text/plain",
+  });
 });

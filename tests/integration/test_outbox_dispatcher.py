@@ -40,9 +40,12 @@ async def test_dispatcher_marks_event_dispatched_on_success():
 
 async def test_workflow_run_created_routes_to_the_workflow_queue():
     """The routing table, not just generic dispatch success - WorkflowRunCreated
-    must land on the "workflow" queue running run_workflow, not "maintenance"
-    running the generic process_outbox_event placeholder every other event
-    type still falls back to."""
+    must land on the "workflow" queue running run_workflow_job, not
+    "maintenance" running the generic process_outbox_event placeholder every
+    other event type still falls back to. run_workflow_job (jobs/workflow.py),
+    not the bare run_workflow - B17's own fix for RQ's death-penalty timeout
+    bypassing run_workflow's except block requires RQ to call OUR sync
+    wrapper directly, not the async function (see _run_sync's docstring)."""
     registered, tender = await make_ready_run_inputs(
         "dispatch-routing@example.com", "Routing Org", "Routing Tender"
     )
@@ -59,7 +62,7 @@ async def test_workflow_run_created_routes_to_the_workflow_queue():
     assert f"workflow-{run.id}" in workflow_queue.job_ids
     job = workflow_queue.fetch_job(f"workflow-{run.id}")
     assert job is not None
-    assert job.func_name.endswith("run_workflow")
+    assert job.func_name.endswith("run_workflow_job")
 
 
 async def test_redis_unavailable_does_not_lose_the_event_or_touch_the_db_write(monkeypatch):

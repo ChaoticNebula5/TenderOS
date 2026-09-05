@@ -1052,6 +1052,99 @@ Each entry:
       written and tested earlier this session - `alembic upgrade head`
       ran all three (015, 016, 017) in one pass here, closing a real gap
       that predates this incident, not caused by it.
+  12. **A large, silent backlog in Redis's own scheduled-job registry -
+      not an infinite retry loop, a fifth trap mechanism distinct from
+      1/2/5/6/8/9/10/11.** During B17 planning's own E2E baseline
+      measurement, `docker compose up -d postgres redis neo4j minio`
+      reused this machine's existing named volumes rather than starting
+      fresh - deliberate at the time (the point was a real baseline
+      against real prior state), not an oversight. The first live E2E run
+      timed out at step 4 (extraction); `docker compose logs worker`
+      showed 56 `ERROR rq.worker` entries, `09:37:24`-`09:41:11` (about
+      3m47s), each a distinct `WorkflowRun {id} not found` or
+      `Document {id} not found` `ValueError`, roughly one every 4-8s.
+      Read directly against `jobs/workflow.py`, not inferred from the log
+      shape: `run_workflow`/`resume_workflow`/`retry_workflow_run` each
+      look up their row BEFORE the `try` block that calls
+      `_handle_graph_failure` (lines 121-127/193-199/242-245) - a "not
+      found" raises immediately, outside that function's own
+      retry-scheduling logic entirely, and `_handle_graph_failure`'s own
+      `queue.enqueue_in` (line 100) is never passed `retry=`, so RQ itself
+      never reschedules a failed job either. Each of the 56 is a genuine
+      one-shot: fires once, fails cleanly, reaches a terminal state in
+      RQ's `FailedJobRegistry` - **not** an unbounded retry loop, which is
+      what the failure volume and duration first suggested before the
+      code was actually read. The real mechanism: `_handle_graph_failure`
+      itself schedules *future* retries (for genuine transient failures,
+      not "not found") into RQ's `ScheduledJobRegistry`, which has no
+      expiry. Across roughly ten prior sessions (`backups/` holds ten
+      `b16_*` dump files), any workflow run that failed, scheduled a
+      retry, and then had its `workflow_runs`/`documents` row deleted or
+      rolled back before that retry's delay elapsed (a session reset, an
+      aborted test, a DB restore) left an orphaned entry sitting inertly
+      in Redis. `worker.py::main` runs `worker.work(with_scheduler=True)`
+      - this session's worker start was the first in a while with a live
+      scheduler thread to promote that backlog, so all ~56 fired in one
+      burst, ahead of this run's own real ingestion job, on the single
+      worker process this stack runs. Resolved for this session with
+      `redis-cli FLUSHALL` plus a worker/outbox_dispatcher restart,
+      confirmed via `DBSIZE`; the second, clean E2E run reached step 6
+      before failing on an unrelated, already-known bug (see the
+      `Login.tsx` destination-loss entry). **Open, named as B17's own
+      decision, not fixed here:** per-job retry is already bounded and
+      terminal, so that specific concern is already closed - the real gap
+      is that orphaned *scheduled* entries have no TTL and accumulate
+      indefinitely across resets, paid off as one serial burst whenever a
+      worker with scheduling next starts. Matters specifically for Phase 4
+      (single VM, one long-lived worker process) - a demo box whose data
+      gets reset periodically without an equivalent Redis reset will
+      accumulate the same backlog for real, not just in a dev environment
+      reusing volumes.
+  13. **A partial `docker compose` command silently drops every `-f`
+      override, and the containers come up looking healthy with the wrong
+      configuration - classified by consequence, matching incident 1's own
+      "stale image presenting as a correctness check silently returning
+      the wrong answer" shape, not by cause.** During B17's fake-provider
+      E2E work, `docker compose -f docker-compose.yml -f docker-compose.
+      e2e.yml -f docker-compose.e2e-fake.yml up -d --build worker
+      outbox_dispatcher` had already brought the stack up correctly in
+      fake mode. A later "fully stop and remove before restarting" cleanup
+      - `docker compose stop worker outbox_dispatcher`, `docker compose rm
+      -f worker outbox_dispatcher`, then `docker compose up -d worker
+      outbox_dispatcher` - reconstructed the third command from memory
+      with none of the three `-f` flags. Docker Compose's own behavior on
+      a bare `up` with no `-f` is to fall back to the base
+      `docker-compose.yml` alone, silently - no warning, no error, nothing
+      structurally different about the moment it happens, the same "the
+      only way to notice is to already know to check" shape this file's
+      other standing patterns share. Both containers reported healthy and
+      accepted work normally; `LLM_PROVIDER` was simply back to its base-
+      file default (the real Gemini provider) instead of `fake`. The next
+      E2E run was, without anything announcing it, a real, billed live run
+      - 92 real calls to `generativelanguage.googleapis.com` over about 10
+      minutes - and its step-4 stall (real-provider rate-limiting/latency,
+      the same shape this project's own live runs have hit before) was
+      briefly reasoned about as if it were a fake-provider defect, because
+      nothing checked which provider was actually running before treating
+      the result as evidence about the fake path at all.
+      **The detection, not the mistake itself, is this entry's real
+      value:** `docker exec <container> printenv LLM_PROVIDER` against the
+      running container, checked BEFORE treating any run as a fake run -
+      cheap, direct, and unambiguous, the same "verify which server
+      actually answered" discipline incidents 2/5's own SQL-identity check
+      already established for a different config-drift shape. Now a
+      standing step in the fake-run procedure itself (see the fake-client
+      entry's own standing note on harness reliability), not something to
+      remember unprompted a second time. **What this does and doesn't
+      settle:** the step-4 stall is fully explained by live-provider
+      variance - it is not evidence about the fake path at all, in either
+      direction. Two candidate explanations for a fake-run stall at the
+      same step (an unwarmed HuggingFace model cache after container
+      removal; a `ScheduledJobRegistry` backlog per incident 12, also
+      triggered by container removal) were never actually exercised by
+      this run, because this run was never a fake run - they remain open
+      questions for the first genuinely clean fake run that stalls the
+      same way, not closed by this incident either way.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -5945,7 +6038,7 @@ edits, not code bugs.
 - **Test:** none yet - the spec this entry's fix lives in hadn't been
   written when this entry was added; see §7 step 11a's own plan.
 
-## [B13, owner B16] `settings.llm_provider` is dead configuration - 12 sites construct `GeminiClient` directly, bypassing the provider-neutral interface it exists to select
+## [B13, owner B16, RESOLVED B17] `settings.llm_provider` is dead configuration - 12 sites construct `GeminiClient` directly, bypassing the provider-neutral interface it exists to select
 
 - **Discovered:** §7 step 11's own pre-run pre-flight - checking
   whether `FakeLLMClient` (already every automated test's own LLM
@@ -6005,8 +6098,68 @@ edits, not code bugs.
   section above still holds without qualification: there is still no way
   to run the system end-to-end against the real stack without spending
   real, billed LLM calls.
-- **Test:** none - this is dead-configuration characterization, not a
-  regression to guard yet.
+- **Test:** none at the time this entry was written - see the real
+  regression coverage listed below, once B17 actually built the fix this
+  entry's own text had already specified.
+
+- **RESOLVED in B17 - the real fix, not another deletion.** Both
+  previously-undone halves this entry named are now built: (1) all 12 call
+  sites (re-confirmed by direct grep, not re-trusted from this entry's own
+  count - B16's own correction from 11 to 12 was itself almost missed a
+  second time, this pass initially found only 9 and had to go back for the
+  3 route-level ones this entry's own text already named) now delegate to
+  one real decision point, `agents/llm/factory.py::build_llm_client`, which
+  reads a real, restored `settings.llm_provider: Literal["gemini", "fake"]
+  = "gemini"` - each of the 12 modules keeps its OWN `_build_llm_client()`
+  name unchanged (existing tests' `monkeypatch.setattr(module,
+  "_build_llm_client", ...)` calls, 27 of them across 12 test files, still
+  work exactly as before - verified by running the full suite, not
+  assumed), but its body is now a one-line delegate instead of an
+  independent `GeminiClient(...)` construction. (2) `FakeLLMClient` gained
+  the opt-in `set_fallback(...)` mode this entry's own text already
+  specified as "the actually-expensive part" - a default schema-valid
+  response per `(agent_name, response_schema)` pair, used once that pair's
+  exact-order queue (still the default, unchanged) is exhausted, which is
+  what makes answering an UNKNOWN number of calls from a real E2E run
+  possible at all, not just a flag flip.
+- **The hard guard this entry's own "no way to run end-to-end without
+  billed calls" framing implicitly needed, built alongside:**
+  `core/config.py::_reject_fake_provider_in_production` - checked at
+  import time, before any process using this Settings object can do
+  anything, refuses to start if `LLM_PROVIDER=fake` and `APP_ENV=production`
+  together. A public Phase 4 demo silently serving fabricated LLM output
+  would be a materially worse failure than the dead-configuration gap this
+  entry originally described.
+- **Test:** `tests/unit/test_branch_gemini_api_keys.py` (updated to patch
+  the one real `factory.GeminiClient` binding instead of three separate
+  per-module ones, plus 2 new tests for the fake-provider switch itself),
+  `tests/unit/test_fake_provider_guard.py` (6 tests, the hard guard
+  directly), `tests/unit/test_fake_llm_client_fallback.py` (5 tests,
+  `set_fallback`'s own contract including that strict-queue behavior is
+  unchanged by default). Full suite green throughout
+  (`uv run pytest`, `uv run mypy` unchanged at 59/12).
+- **Standing note, for whoever leans on this harness next - Phase 2 names
+  it as its own practical iteration loop:** the fake-client harness was
+  wrong four times inside this one block, not once. (1) A static
+  `resume_extraction` fallback gave 4 imported résumés the identical name,
+  collapsed into 1 employee by real duplicate-adjudication logic. (2) The
+  first attempted fix (a closure-captured counter) produced the identical
+  result a second way, because RQ forks a process per job and each fork's
+  own copy of the counter starts fresh. (3) A test written to prove the
+  second fix asserted that stale last-known data should survive a stream
+  error, when the real scenario (a 401 on the very first mint attempt)
+  structurally never populates that data in the first place - caught only
+  by actually running the test, not by writing it. (4) A static
+  `proposal_drafting` fallback gave every section, including the one
+  template `section_is_data_gated` deliberately excludes from grounding
+  checks, the identical claim - collapsing a real E2E assertion the same
+  way (1) collapsed real employee identities. Every one was found and
+  fixed properly, by running the harness and reading the real consequence,
+  not by inspection - which is the harness earning its place, not
+  disqualifying it. But four for four inside one block is a real prior:
+  the next time a fake-provider run comes back red, "is the harness wrong
+  again" is a first-class hypothesis to check early, not the last thing
+  reached for after the product code has already been re-read twice.
 
 ## [B13] No screen manages submission-item status - final readiness is unreachable through the UI by construction, independent of every other blocker
 
@@ -8413,3 +8566,328 @@ edits, not code bugs.
   one-off patches at two more call sites - the same lesson the "sibling-
   drift" pattern already in this file names for a different kind of
   duplication.
+
+---
+
+## [B12 escape, owner: B17] Part K's 21st and 22nd components - "audit timeline" and "cost and trace views for developers/admins" - were named by B12, never picked up by B13's screen list
+
+- **Discovered:** B17 planning, cross-checking Part K's 20-item component
+  list against what's actually built. `AuditTimeline` (Part K,
+  `TenderOS-Build-Guide.md:3815`, 21st in that list - `ImpactPreview` is
+  20th, not `AuditTimeline` as B17's own planning prompt first said) has
+  no frontend presence anywhere: grepped `apps/web/src` for
+  `AuditTimeline` and for any client-side caller of
+  `GET /workflow-runs/{run_id}/events` (the real endpoint,
+  `routes/workflow.py:201`, returning `AuditEventResponse[]`) - zero
+  matches, either search. The backend half exists and is real; nothing on
+  the frontend reads it.
+- **Traced to its actual origin, not just its absence:** Build Guide
+  line 3430 lists "audit timeline" as a **B12** (Readiness and Blockers)
+  deliverable, immediately followed at line 3431 by its sibling, "cost
+  and trace views for developers/admins." B12 itself has no UI block of
+  its own, and B13's "Screens" list (lines 3467-3483, the 17 screens
+  `Login.tsx`'s own comment counts) never names an audit or cost/trace
+  screen anywhere in it. B12 named both deliverables; nothing downstream
+  ever turned either into a screen. Classic sibling-drift shape - a
+  deliverable that escapes not because it was rejected, but because the
+  block that named it had nowhere of its own to build UI, and the next
+  block that owns UI never re-derived the list from B12's own text.
+- **The sibling is in worse shape, checked directly rather than assumed
+  from the shared paragraph:** grepped `apps/api/src/tenderos_api/routes`
+  for `agent_traces`, `AgentTrace`, `/costs`, `/traces`, `cost_usd` - zero
+  matches. `AgentTraceRepository.sum_cost_for_run`
+  (`db/repositories/agent_traces.py:63`) and the `AgentTrace` rows
+  themselves (`input_tokens`/`output_tokens`/`estimated_cost_usd`,
+  `db/models/agent_trace.py:37-49`) are real and already populated by
+  every one of the 10 agent modules' own `_write_trace` calls - but
+  unlike the audit timeline, there is no API route at all, not just a
+  missing frontend screen. "Cost and trace views for developers/admins"
+  is missing at both layers.
+- **Risk:** low on its own (nothing downstream depends on either screen
+  existing), but relevant to two things already in B17's own scope: B17's
+  Grafana dashboard 4 ("LLM cost and token usage") covers the same
+  `AgentTrace` data at the operator/infra layer, which is a different
+  audience than "developers/admins" reviewing cost per-tender or
+  per-agent inside the product itself - closing the Grafana dashboard
+  does not close this gap, the two are complementary, not substitutes.
+  And B17's own scope already includes `AuditTimeline` as new work (see
+  the UI-polish plan), so this entry exists to record *why* it was never
+  built, not to argue it should be.
+- **Status:** open, owner B17. Whether B17 actually builds either screen
+  is a scope decision for B17 to make explicitly, not something this
+  entry decides - Part N line 3931 accepts "limitations documented
+  without inflated claims" as a valid close for a deliverable a block
+  chooses not to pick up, provided it's written down rather than silently
+  dropped a second time.
+- **Test:** none - a provenance finding about a missing UI surface, not
+  application behavior.
+
+---
+
+## [owner: B17, scope decision pending] A3.2/Part F's typed tool layer - specified for organization authorization at a single choke point, never built
+
+- **Discovered:** B17 planning, investigating whether Part F's tool-
+  registry premise (Agent -> Tool Registry -> Authorization Context ->
+  Domain Service, F1) matches this codebase's actual architecture.
+- **Corrected finding, not the original framing.** An earlier pass of this
+  same investigation read Part F as assuming LLM-directed tool-calling and
+  concluded this codebase's actual architecture (single-shot structured
+  output, no `tools=`/`function_call` anywhere in `agents/llm/`) simply
+  never needed it. Checked directly before accepting that: grepped both
+  `TenderOS-Build-Guide.md` and `TenderOS-PRD.md` for "tool-calling",
+  "function calling", "tool_choice," and every phrasing of an agent
+  choosing or selecting a tool - zero hits in either document. Part F
+  never specifies LLM-directed selection. F1 (line 2323) says "Agents
+  invoke tools directly inside the Python application process" - in-
+  process and direct, consistent with A3.3 excluding MCP immediately
+  after. An "agent" in this codebase's own vocabulary is a module
+  (`agents/knowledge/`, `agents/compliance/`, ...), not an LLM turn
+  choosing among options - F1-F5 describe exactly the call pattern this
+  codebase actually uses (deterministic Python calling a fixed
+  operation), not a pattern it doesn't have. The original framing would
+  have retired a locked authorization requirement on the strength of an
+  architecture the spec never asked for.
+- **The actual load-bearing line, A3.2 (Build Guide line 246):** "The
+  tool layer applies organization authorization and calls domain
+  services directly." The layer's specified job is organization
+  authorization at one choke point in front of F3's seven operations,
+  independent of who the caller is. F5's "Validate organization and
+  tender ownership on every invocation" and "Reject tools not present in
+  the current agent's allowlist" are both satisfiable by deterministic
+  callers - nothing about either requirement needs an LLM in the loop.
+- **Confirmed via call-site reading, not inferred from a module being
+  empty:** none of F3's seven operations goes through any single choke
+  point. `search_company_knowledge`, `query_bid_impact`/
+  `query_bid_contradictions`, `evaluate_evidence_coverage` are called
+  directly from deterministic orchestration nodes/worker jobs, trusting
+  `state["tender_id"]`/`organization_id` as passed-in arguments;
+  `validate_pricing_document` and the functionality backing the
+  traceability screens are reachable only from human-facing FastAPI
+  routes. No `TenderTool`, `ToolContext`, `ToolRegistry`, or enum-
+  controlled dispatch exists anywhere in `packages/tenderos_backend/src`.
+- **The follow-up question, resolved directly rather than left open: does
+  the missing choke point leave a reachable tenant-isolation hole?**
+  Checked the one thing that actually settles it - every path that
+  CREATES a `WorkflowRun` (the source of the `state["tender_id"]`/
+  `organization_id` deterministic orchestration code trusts). Exactly one
+  exists: `POST /tenders/{tender_id}/workflow-runs`
+  (`routes/workflow.py:149`), gated by `require_permission("create_bid")`.
+  `require_permission`'s own `_resolve_organization_id`
+  (`dependencies.py:114`) resolves `organization_id` from the REAL tender
+  record via `tender_service.get_tender(tender_id).organization_id` - not
+  a client-supplied value - before `_check_permission` verifies the
+  caller has a permitted membership in THAT organization. The route
+  handler independently re-derives the same `tender.organization_id` a
+  second time (`routes/workflow.py:160`) and that's what actually gets
+  stored on the `WorkflowRun`/audit row - not a comparison of a value
+  against itself, the specific "guard that looks complete" shape this
+  file's other five standing-pattern instances warn about; the org_id
+  here comes from an independent DB lookup, checked against a real
+  membership row. No worker-initiated creation of a `WorkflowRun` exists
+  anywhere (`apps/worker/src` grepped for `create_workflow_run`: zero
+  matches - `run_workflow`/`resume_workflow`/`retry_workflow_run` in
+  `jobs/workflow.py` all operate on an EXISTING `run_id`, never create
+  one). `reanalysis.py`'s `reanalyze_knowledge_selection_change` - the
+  third candidate path checked - does not create a `WorkflowRun` at all;
+  read in full, it's a separate mechanism entirely (compliance
+  reevaluation, claim regrounding, graph-contradiction detection),
+  triggered by `KnowledgeSelectionChanged`, never touching
+  `workflow_runs`.
+- **What this settles, and what it doesn't.** The deterministic
+  orchestration/worker code's inherited `state["tender_id"]`/
+  `organization_id` trust IS sound for every workflow-run-initiated call
+  site (`compliance_analysis_node` and its siblings) - a defence-in-depth
+  gap, not a reachable defect, the legitimate documented-close shape Part
+  N line 3931 names. The human-route-reachable F3 operations
+  (`validate_pricing_document`, `query_bid_impact`/`query_bid_
+  contradictions` via `routes/graph.py`, etc.) are separately protected
+  the same correct way, via `_resolve_organization_id`'s own per-resource
+  branches (`pricing_document_id`, `tender_id`, ...) checked at the route
+  layer, not inside the "tool" itself, but checked. **What remains
+  genuinely unmet, not closed by this finding:** F5's other two
+  requirements - "Record tool name, latency, status, and referenced IDs"
+  (no invocation-level audit trail exists for any of the seven F3
+  operations; `AgentTraceRepository` records LLM calls, not these) and
+  "Reject tools not present in the current agent's allowlist" (no
+  allowlist exists in any form, confirmed directly - so nothing today
+  would catch a FUTURE call site that forgets the equivalent of
+  `require_permission`, the way the current seven all happen to remember
+  it). That's the real, still-open half of this finding.
+- **Status:** the authorization sub-claim is closed as sound (verified,
+  not assumed) - a defence-in-depth gap, Part N line 3931-eligible. The
+  observability (F5's audit trail) and allowlist sub-claims are open.
+  Whether B17 builds the formal tool layer A3.2 specifies, or accepts the
+  current per-route/per-creation-path protection as the permanent shape
+  and documents why, is a scope decision for B17 to make, not something
+  this entry decides.
+- **Test:** none - a provenance and call-site finding, not new
+  application behavior.
+
+---
+
+## [B17, resolved] RQ's own JobTimeoutException bypassed run_workflow's except block, leaving a run stuck "running" forever - fixed narrowly, two residuals documented rather than built
+
+- **Discovered:** B17 planning's own live E2E run. A worker job died with
+  `rq.timeouts.JobTimeoutException: Task exceeded maximum timeout value
+  (1800 seconds)` after ~28 minutes inside a real, sustained Gemini `503`
+  outage. Queried the actual `workflow_runs` row directly, not inferred:
+  `status='running'`, `completed_at=NULL`, `retry_count=0`, hours after
+  the job died. Worker logs for that run_id (3 lines total, confirmed
+  nothing missed): the enqueue log, `"starting workflow run ..."`, and
+  RQ's own `"exception raised while executing"` - no
+  `"workflow run ... failed"` line, which is the literal text
+  `run_workflow`'s own `except Exception` block would have logged had it
+  run.
+- **Root cause, traced to the actual mechanism, not assumed:** RQ's death-
+  penalty timeout (`rq/timeouts.py::UnixSignalDeathPenalty`, `SIGALRM`)
+  wraps the WHOLE `job.perform()` call (`rq/worker/base.py::perform_job`).
+  For a directly-enqueued async function, `rq/job.py::_execute` detects
+  the coroutine and calls `loop.run_until_complete(result)` ITSELF - so
+  when the signal fires, it interrupts asyncio's own event loop (traced to
+  `_run_once`/`selectors.select`, deep inside RQ's own `job.py`), not any
+  awaited line inside `run_workflow`'s own `try` block. Nothing of this
+  codebase's own code is on the call stack at that moment, so its
+  `except Exception` never runs.
+- **Fix:** `apps/worker/src/tenderos_worker/jobs/workflow.py::_run_sync`
+  is now the real RQ job entrypoint (`run_workflow_job`/
+  `resume_workflow_job`/`retry_workflow_run_job`, wired in
+  `outbox_dispatcher.py`'s dispatch functions and `_handle_graph_failure`'s
+  own `enqueue_in` call) - it owns the sync-to-async transition itself
+  (`asyncio.run(coro)`) instead of leaving it to RQ, which puts a real
+  stack frame of this codebase's own in the path a `JobTimeoutException`
+  unwinds through. Deliberately narrow: catches ONLY
+  `JobTimeoutException`, not a bare `except Exception` - every other
+  failure mode is already handled correctly inside
+  `run_workflow`/`resume_workflow`/`retry_workflow_run`'s own try/except,
+  and re-raising those unchanged is what keeps them in RQ's own
+  `FailedJobRegistry` (I4: "failed jobs remain inspectable"). On a real
+  timeout, `workflow_service.mark_run_failed_on_timeout` marks the run
+  `"failed"` and writes a distinguishing audit event
+  (`action="workflow_run_timed_out"`, `metadata={"error_code":
+  "job_timeout"}`) - deliberately distinct from a normal graph failure,
+  which writes no audit event describing why at all, so this one is
+  unique to this path by construction, not by a shared "failed" status
+  alone. Verified with real Postgres, not asserted from reading the code:
+  `tests/integration/test_workflow_timeout_handling.py`, 4 tests,
+  including one that drives `_run_sync` with a plain `ValueError` to
+  confirm it does NOT touch the run for any failure mode but the one it's
+  scoped to.
+- **A second, real bug found while writing the test for this, not assumed
+  away:** `db/session.py`'s `engine` is a module-level singleton whose
+  connection pool holds connections bound to whichever event loop created
+  them. `_run_sync`'s own two sequential `asyncio.run()` calls (the main
+  run, then the timeout-recovery write) reuse that same engine across two
+  different loops - reproduced directly, not hypothesized: without a fix,
+  the second call raised `RuntimeError: ... attached to a different loop`
+  from deep inside asyncpg's own connection-cleanup path. Fixed by calling
+  `await engine.dispose()` (SQLAlchemy's own documented remedy for reusing
+  an async engine across more than one `asyncio.run()` in the same
+  process) before the recovery write. See the entry immediately below -
+  scoped precisely, not broadly, to this one call site: RQ forks a fresh
+  process per job, so this exact double-call sequence is the only place
+  in this codebase two `asyncio.run()` calls ever share a process.
+- **Residual 1 - not a defect, a genuinely separate finding: a "failed"
+  workflow run, from ANY cause, is not resumable.** Grepped every real
+  (non-test, non-docstring) caller of `retry_workflow_run`: exactly one,
+  `_handle_graph_failure`'s own `enqueue_in`, fired only at the moment of
+  a failure inside `run_workflow`/`resume_workflow`/`retry_workflow_run`
+  themselves. No API route, no manual trigger, nothing resumes an already-
+  `"failed"` run on demand, for this failure or any other kind this
+  codebase has ever produced. Part N line 3918 ("the workflow pauses and
+  resumes after process restart") is a different guarantee - a still-
+  active run (`queued`/`running`/`waiting_for_human`) surviving a worker
+  process restart via LangGraph's own Postgres checkpointer, not "can a
+  human retry a run already marked failed." Pre-existing, not introduced
+  or closed by this fix.
+- **Residual 2 - named plainly, not built: SIGKILL, OOM, and container
+  restart mid-job are NOT covered.** `_run_sync`'s catch only works
+  because the process survives long enough for RQ's signal-based timeout
+  to raise a normal, catchable Python exception. A SIGKILL or an OOM kill
+  ends the process outright - no exception, no except block runs, nothing
+  persists the failure. A run killed this way is left exactly as before
+  this fix: stuck at whatever status it last had, forever. No
+  reconciliation job exists anywhere in this codebase to sweep a run
+  stuck this way (checked directly - grepped for any staleness/sweep
+  mechanism, found none). Not building one at this block, per B17's own
+  scope; a real Phase 4 consideration for a long-lived single-worker demo
+  VM, not resolved here.
+- **Connection to Phase 3:** this timeout is now a real, honest way to
+  produce a genuine `agent_failures_total`/queue-health-dashboard non-zero
+  value from a seeded case, without contriving one - see the metrics-
+  split note for Phase 3.
+- **Test:** `tests/integration/test_workflow_timeout_handling.py` (4
+  tests, real Postgres, no LLM cost) plus the two dispatch-routing tests
+  updated to expect the new `*_job` function names
+  (`test_outbox_dispatcher.py`, `test_workflow_retry.py`).
+
+---
+
+## [B17, resolved, scope corrected] db/session.py's module-level async engine is not safe to reuse across two asyncio.run() calls in the same process - one real call site, not a standing pattern
+
+- **Discovered:** B17, writing a real test for the JobTimeoutException fix
+  above. Every OTHER test in this suite runs inside pytest-asyncio's own
+  session-scoped shared event loop (`asyncio_default_test_loop_scope=
+  session` in `pyproject.toml`) and never calls `asyncio.run()` at all -
+  which is exactly why this has never surfaced before now, not because it
+  doesn't exist. The two new sync-context tests (deliberately not
+  `@pytest.mark.asyncio`, matching how RQ actually calls a job function -
+  from a plain synchronous context with no loop running) are the first
+  code in this test session to create more than one real event loop, and
+  hit it on the very first boundary: a plain setup call raised
+  `RuntimeError: ... attached to a different loop` from asyncpg, deep
+  inside `SQLAlchemy`'s own pool connection-cleanup path
+  (`_close_connection` -> `do_terminate` -> asyncpg trying to create a
+  cancellation `Task` on a `Loop` that's already closed).
+- **First written up as a standing pattern, across every consecutive job
+  pair a worker processes - wrong, corrected the same session, before it
+  shipped as a false breadth claim.** The original reasoning: "RQ creates
+  a new event loop for every job, so a long-lived worker has always been
+  reusing one module-level engine across consecutive jobs." Checked
+  directly against RQ's own source before letting that stand, not assumed
+  from the `_execute` code alone: `rq/worker/worker_classes.py`'s default
+  `Worker.execute_job` (lines 148-155) calls `self.fork_work_horse(job,
+  queue)`, which calls `os.fork()` (line 63) - confirmed the same way the
+  résumé-name counter bug already demonstrated empirically (this file's
+  own job-timeout entry). Every job runs in its own freshly forked CHILD
+  PROCESS, not a shared long-lived interpreter - `db/session.py`'s
+  `engine` singleton is re-created from scratch on import in every child,
+  so there is NO shared engine state across consecutive jobs at all, ever.
+  The "latent across every job pair" framing was a real, wrong breadth
+  claim, not a cautious generalization - the same "prose asserting a
+  wiring that doesn't exist" shape this file has now caught four other
+  times, corrected here before becoming a fifth.
+- **The actual exposed set, established by reading every `asyncio.run(`
+  call site in the codebase (grepped directly, not sampled): exactly
+  one.** `_run_sync`'s own timeout-recovery branch
+  (`apps/worker/src/tenderos_worker/jobs/workflow.py:312,329`) - and only
+  reached within the SAME forked child process, when that one job's own
+  execution raises `JobTimeoutException`. Every other call site in this
+  codebase calls `asyncio.run()` exactly once per process, checked
+  individually: five scripts (`run_eval.py`, `prune_checkpoints.py`,
+  `run_compliance_eval.py`, `verify_req073_074_divergence.py`,
+  `verify_prompt_injection_resistance.py`, `run_retrieval_eval.py`) each
+  call it once and `sys.exit()` immediately after;
+  `outbox_dispatcher.py::main` calls it once, wrapping an infinite loop
+  that runs for the whole process lifetime; `db/migrations/env.py`
+  (Alembic) calls it once per one-shot CLI invocation; every OTHER RQ job
+  in this codebase (ingestion, verification, knowledge_import, reanalysis,
+  and `_run_sync`'s own SUCCESS path) calls it exactly once, since none of
+  them has a second, conditional call the way the timeout-recovery branch
+  does.
+- **The fix stands, unchanged, now correctly scoped:** `AsyncEngine.
+  dispose()` before the recovery call - SQLAlchemy's own documented remedy
+  - applied at the one real call site above and at the new test's own
+  loop boundaries (which introduce additional `asyncio.run()` calls this
+  test file's own harness needs, not production code).
+- **Status:** resolved, scope corrected in the same pass rather than left
+  standing as a wider claim. Not a standing pattern - one call site, fixed.
+  A future `"attached to a different loop"` error elsewhere in this
+  codebase would need its own diagnosis, not an assumption that this same
+  mechanism explains it, since the fork-per-job model means most code
+  paths structurally can't hit this shape at all.
+- **Test:** the 4 tests in `test_workflow_timeout_handling.py` exercise
+  the one real call site directly (each test's own loop boundary
+  explicitly resets the engine, commented with why) - no dedicated
+  regression test for the underlying engine behavior itself, since
+  reproducing it outside this specific multi-loop shape isn't a
+  documented product requirement to test for its own sake.

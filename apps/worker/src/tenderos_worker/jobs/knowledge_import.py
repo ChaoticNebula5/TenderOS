@@ -2,7 +2,6 @@ import logging
 import uuid
 from datetime import date
 
-from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy import select
 from tenderos_backend.agents.knowledge.certifications_xlsx import (
     CertificationValidationError,
@@ -26,7 +25,7 @@ from tenderos_backend.agents.knowledge.relationships import (
     resolve_worked_on_verification,
 )
 from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
+from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.knowledge import PastProject
 from tenderos_backend.db.storage import storage
@@ -50,12 +49,9 @@ logger = logging.getLogger(__name__)
 def _build_llm_client() -> LLMClient:
     # Same per-job-invocation client construction as verification.py's
     # identical helper - no shared module-level singleton across jobs.
-    redis_client = AsyncRedis.from_url(settings.redis_url)
-    return GeminiClient(
-        api_key=settings.gemini_api_key,
-        redis_client=redis_client,
-        cache_ttl_seconds=settings.llm_cache_ttl_seconds,
-    )
+    # B17: delegates to tenderos_backend.agents.llm.factory.build_llm_client,
+    # the real gemini-vs-fake decision.
+    return build_llm_client()
 
 
 async def process_knowledge_document_import(document_id: str, batch_id: str) -> None:

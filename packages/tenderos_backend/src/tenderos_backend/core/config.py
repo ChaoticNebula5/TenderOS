@@ -1,8 +1,16 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Same field, same default, as apps/api/src/tenderos_api/config.py's own
+    # app_env - duplicated here for the identical reason neo4j_uri/user/
+    # password are (see that trio's own comment below): worker/orchestration
+    # code imports THIS Settings class, not the API's thinner one.
+    app_env: str = "local"
 
     postgres_dsn: str
     redis_url: str
@@ -42,6 +50,18 @@ class Settings(BaseSettings):
     compliance_gemini_api_key: str = ""
     talent_gemini_api_key: str = ""
     commercial_gemini_api_key: str = ""
+
+    # B17: which LLMClient implementation agents/llm/factory.py::
+    # build_llm_client actually constructs. "gemini" (the real provider) is
+    # the default and everywhere-except-explicit-opt-in value; "fake" makes
+    # every one of the nine call sites this factory replaced (see that
+    # module's own docstring) return FakeLLMClient instead - enabling
+    # infrastructure for a deterministic, no-cost E2E run of the golden
+    # path, not a feature for its own sake. Literal, not a plain str: an
+    # invalid value (a typo) fails loudly at Settings() construction,
+    # before anything runs, rather than silently falling through to
+    # whichever branch an if/else happened to default to.
+    llm_provider: Literal["gemini", "fake"] = "gemini"
     extractor_model: str = "changeme"
     verifier_model: str = "changeme"
     # A2.2's REASONING_MODEL alias - locked in the Build Guide's own env var
@@ -116,4 +136,33 @@ class Settings(BaseSettings):
     max_tender_cost_usd: float = 25.0
 
 
+def _reject_fake_provider_in_production(llm_provider: str, app_env: str) -> None:
+    """B17's hard guard, not a preference: a public single-VM demo (Phase 4)
+    silently serving fabricated LLM output under a real product's own name
+    would be the worst possible place for this project's own "no inflated
+    claims" standard (Part N line 3931) to fail. Called immediately below,
+    at import time, right after settings is constructed - specifically so
+    this fails before ANY process that imports this module (api, worker, a
+    script) can do anything at all, not deferred to whenever the first LLM
+    call happens to occur. A plain function, not an inline `if`, so this
+    exact logic is directly unit-testable with arbitrary inputs, not only
+    exercisable by actually setting real env vars and re-importing a
+    module.
+
+    This is one half of the real guard; the other half is structural, not
+    code: Phase 4's own deployment compose/env file must never define
+    LLM_PROVIDER at all (or must hardcode it to "gemini" with no override
+    path) - this assertion is what catches the case where that discipline
+    is forgotten or violated, not a substitute for it.
+    """
+    if llm_provider == "fake" and app_env == "production":
+        raise RuntimeError(
+            "LLM_PROVIDER=fake is not permitted when APP_ENV=production. "
+            "Fake mode exists only for local/E2E reachability testing - a "
+            "production deployment must never silently serve fabricated LLM "
+            "output. Refusing to start."
+        )
+
+
 settings = Settings()
+_reject_fake_provider_in_production(settings.llm_provider, settings.app_env)

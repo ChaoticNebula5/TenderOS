@@ -1,13 +1,22 @@
+import asyncio
 import logging
 import uuid
+from collections.abc import Coroutine
 from datetime import timedelta
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from redis import Redis
 from rq import Queue
+from rq.timeouts import JobTimeoutException
+from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
+from tenderos_backend.domain.services.workflow_service import (
+    is_cancelled,
+    mark_run_failed_on_timeout,
+    sync_run_status,
+)
 from tenderos_backend.orchestration.checkpoint import get_checkpointer
 from tenderos_backend.orchestration.graph import build_graph
 from tenderos_backend.orchestration.retry import classify_task_failure
@@ -97,7 +106,7 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
 
     connection = Redis.from_url(settings.redis_url)
     queue = Queue("workflow", connection=connection)
-    queue.enqueue_in(timedelta(seconds=decision.delay_seconds), retry_workflow_run, str(run_id))
+    queue.enqueue_in(timedelta(seconds=decision.delay_seconds), retry_workflow_run_job, str(run_id))
     logger.info(
         "workflow run %s: scheduled a retry in %.1fs after %s (task %s, attempt %d/%d)",
         run_id,
@@ -263,3 +272,71 @@ async def retry_workflow_run(workflow_run_id: str) -> None:
             if not retried:
                 await sync_run_status(run_id, "failed")
         raise
+
+
+def _run_sync(coro: Coroutine[Any, None, None], run_id: uuid.UUID) -> None:
+    """The actual RQ job entrypoint for run_workflow/resume_workflow/
+    retry_workflow_run - see outbox_dispatcher.py's own dispatch functions
+    and _handle_graph_failure's enqueue_in call above, all three now point
+    at *_job below instead of the bare coroutine functions.
+
+    Why this exists: rq/job.py::_execute detects that a directly-enqueued
+    async function returns a coroutine and calls `loop.run_until_complete`
+    on OUR BEHALF - which means when RQ's own death-penalty SIGALRM fires
+    on a job that's run too long, it interrupts asyncio's event loop
+    itself (confirmed against a real stuck run: the traceback bottoms out
+    inside asyncio's own _run_once/selectors.select, deep inside RQ's own
+    job.py, not at any awaited line inside run_workflow's own try block).
+    Nothing of OURS is on the call stack at that point, so run_workflow's
+    own `except Exception` never runs, and the run is left at whatever
+    non-terminal status it last had - forever, since nothing else
+    reconciles a run stuck this way (checked: no sweeper exists).
+
+    Providing our OWN asyncio.run() call as the thing RQ calls directly
+    instead puts a real stack frame of ours in the path a
+    JobTimeoutException unwinds through on its way up - it's a plain
+    Exception subclass (rq.timeouts.JobTimeoutException -> BaseTimeoutException
+    -> Exception), no special signal-handling needed on our side, just an
+    ordinary except clause in a position that's actually reachable.
+
+    Deliberately narrow: catches ONLY JobTimeoutException, not a bare
+    `except Exception`. Every OTHER failure mode is already handled
+    correctly inside run_workflow/resume_workflow/retry_workflow_run's own
+    try/except (which marks the run failed or schedules a retry, then
+    re-raises) - by the time any other exception reaches here, that
+    handling has already run, and re-raising it unchanged is what keeps it
+    in RQ's own FailedJobRegistry (I4: "failed jobs remain inspectable"),
+    the same reason those functions re-raise instead of swallowing.
+    """
+    try:
+        asyncio.run(coro)
+    except JobTimeoutException:
+        # A fresh asyncio.run(), not a continuation of the one above - the
+        # loop that just died is gone. db/session.py's `engine` is a
+        # module-level singleton whose connection pool can still be
+        # holding connections bound to that now-closed loop (confirmed
+        # directly - reproducing this exact sequence without disposing
+        # first raised "Future attached to a different loop" from asyncpg
+        # deep inside pool cleanup); SQLAlchemy's own documented remedy for
+        # reusing an async engine across more than one asyncio.run() call
+        # in the same process is AsyncEngine.dispose(), which resets the
+        # pool so the new loop opens fresh connections instead of reusing
+        # ones the old loop's shutdown left behind.
+        async def _recover() -> None:
+            await engine.dispose()
+            await mark_run_failed_on_timeout(run_id)
+
+        asyncio.run(_recover())
+        raise
+
+
+def run_workflow_job(workflow_run_id: str) -> None:
+    _run_sync(run_workflow(workflow_run_id), uuid.UUID(workflow_run_id))
+
+
+def resume_workflow_job(workflow_run_id: str, gate_id: str) -> None:
+    _run_sync(resume_workflow(workflow_run_id, gate_id), uuid.UUID(workflow_run_id))
+
+
+def retry_workflow_run_job(workflow_run_id: str) -> None:
+    _run_sync(retry_workflow_run(workflow_run_id), uuid.UUID(workflow_run_id))

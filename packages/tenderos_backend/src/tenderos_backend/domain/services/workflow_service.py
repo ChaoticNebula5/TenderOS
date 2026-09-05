@@ -109,6 +109,49 @@ async def sync_run_status(run_id: uuid.UUID, status: WorkflowStatus) -> None:
         await uow.commit()
 
 
+async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:
+    """B17: called only by the synchronous RQ job wrapper
+    (apps/worker/src/tenderos_worker/jobs/workflow.py) when RQ's own
+    rq.timeouts.JobTimeoutException kills a run mid-flight - the one
+    failure mode run_workflow/resume_workflow/retry_workflow_run's own
+    try/except can never see. RQ's death-penalty signal interrupts
+    asyncio's event loop itself while it's polling for I/O (confirmed
+    directly against a real stuck run: the traceback bottoms out inside
+    asyncio's own _run_once/selectors.select, not at any awaited line
+    inside those coroutines' own try blocks), so their internal `except
+    Exception` never runs and workflow_runs.status is left at whatever
+    non-terminal value it last had, forever - see KNOWN_LIMITATIONS.md's
+    own entry for the live run that exposed this (status stuck at
+    "running", completed_at NULL, retry_count 0, confirmed by querying the
+    row directly).
+
+    Distinct from a normal graph failure specifically so the two are
+    distinguishable after the fact, not both silently filed under the same
+    undifferentiated "failed": a normal failure (run_workflow's own except
+    block) writes no audit event describing why at all, so any audit event
+    at run-failure time is, by construction, unique to this path.
+    """
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.get_run(run_id)
+        if run is None:
+            return
+        await uow.workflow.update_run_status(run_id, "failed")
+        tender = await uow.tenders.get(run.tender_id)
+        if tender is not None:
+            await uow.audit.create(
+                organization_id=tender.organization_id,
+                actor_type="system",
+                actor_id="rq_death_penalty",
+                action="workflow_run_timed_out",
+                tender_id=run.tender_id,
+                workflow_run_id=run_id,
+                target_type="workflow_run",
+                target_id=run_id,
+                metadata={"error_code": "job_timeout"},
+            )
+        await uow.commit()
+
+
 async def cancel_workflow_run(
     run_id: uuid.UUID, organization_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> WorkflowRun | None:

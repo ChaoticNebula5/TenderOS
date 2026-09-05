@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -25,6 +25,10 @@ const decideGate = vi.mocked(apiClient.decideGate);
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Belt-and-braces alongside each fake-timer test's own vi.useRealTimers()
+  // - a real-timers reset here means a test that throws before reaching its
+  // own cleanup still can't leak fake timers into the next test.
+  vi.useRealTimers();
 });
 
 const BASE = {
@@ -254,7 +258,15 @@ describe("decision buttons", () => {
     );
   });
 
-  it("a 409 response shows the stale-readiness message", async () => {
+  it("a 409 response shows the stale-readiness message immediately, with no retry", async () => {
+    // retryTransient classifies 409 as terminal (an allowlist of retryable
+    // statuses - 408/429/5xx - not a denylist), for two independent reasons:
+    // Build Guide line 2707's IDEMPOTENCY_CONFLICT ("same key + different
+    // request returns 409") is deterministic and permanent - retrying with
+    // the same key this component already reuses can never resolve it - and
+    // this gate's own stale-readiness 409 isn't plausibly self-resolving
+    // within a few seconds of backoff either. No fake timers needed: a
+    // terminal error re-throws on the first attempt.
     const user = userEvent.setup();
     decideGate.mockRejectedValue(new apiClient.ApiError(409, { error: { code: "CONFLICT" } }));
     render(<GateDecisionPanel gate={finalReadinessGate({ ready: false })} onDecided={vi.fn()} />);
@@ -266,16 +278,53 @@ describe("decision buttons", () => {
         "This gate's readiness is stale or unresolved blockers block approval.",
       ),
     ).toBeInTheDocument();
+    expect(decideGate).toHaveBeenCalledTimes(1);
   });
 
-  it("a non-409 failure shows the generic error message", async () => {
-    const user = userEvent.setup();
+  it("a non-409 failure shows the generic error message, after retryTransient's own retries exhaust", async () => {
+    vi.useFakeTimers();
     decideGate.mockRejectedValue(new apiClient.ApiError(500, {}));
+    render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(screen.getByText("Failed to record the decision.")).toBeInTheDocument();
+    expect(decideGate).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
+  });
+
+  it("a terminal 401 shows the generic error message immediately, with no retry", async () => {
+    // The one case retryTransient must NOT retry - confirms the wiring
+    // didn't accidentally make every failure transient. No fake timers
+    // needed: a terminal error re-throws on the first attempt, so there's
+    // no backoff delay for a test to wait out.
+    const user = userEvent.setup();
+    decideGate.mockRejectedValue(new apiClient.ApiError(401, {}));
     render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
     expect(await screen.findByText("Failed to record the decision.")).toBeInTheDocument();
+    expect(decideGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the same idempotency key across retries of one decision", async () => {
+    vi.useFakeTimers();
+    decideGate.mockRejectedValue(new apiClient.ApiError(500, {}));
+    render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(decideGate).toHaveBeenCalledTimes(3);
+    const keysUsed = decideGate.mock.calls.map((call) => call[2]);
+    expect(new Set(keysUsed).size).toBe(1);
+    vi.useRealTimers();
   });
 });
 

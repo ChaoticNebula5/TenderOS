@@ -8,14 +8,23 @@ real live-run failure this fixes, and Settings.compliance_gemini_api_key's
 own comment (core/config.py) for why extraction/drafting/red-team don't
 need this (they run sequentially, never competing for the same window).
 
-Wiring only - no real LLM cost. Each test monkeypatches the target module's
-own GeminiClient binding (a direct `from ... import GeminiClient`, so each
-module has its own separate name to intercept) with a spy that records its
-constructor kwargs, then calls the real _build_llm_client() and asserts on
-the captured api_key - not a real network call, not FakeLLMClient (which
-implements LLMClient, not GeminiClient's own __init__ signature).
+B17: GeminiClient construction itself moved to agents/llm/factory.py::
+build_llm_client, the one real place this codebase now decides gemini vs
+fake - each node's own _build_llm_client() still resolves ITS OWN key
+first (unchanged) but delegates the actual construction there. So the spy
+now patches factory.GeminiClient (the one real binding left), not three
+separate per-module ones - proving the same thing this file always proved
+(the right key reaches the right branch), just through the collapsed
+choke point instead of three independent constructions.
+
+Wiring only - no real LLM cost. Each test patches the single GeminiClient
+binding with a spy that records its constructor kwargs, then calls the
+real per-module _build_llm_client() and asserts on the captured api_key -
+not a real network call, not FakeLLMClient (which implements LLMClient,
+not GeminiClient's own __init__ signature).
 """
 
+from tenderos_backend.agents.llm import factory
 from tenderos_backend.core.config import settings
 from tenderos_backend.orchestration.nodes import commercial, compliance, talent
 
@@ -28,7 +37,7 @@ class _SpyGeminiClient:
 
 
 def test_compliance_branch_uses_its_own_key_when_set(monkeypatch):
-    monkeypatch.setattr(compliance, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "compliance_gemini_api_key", "compliance-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -38,7 +47,7 @@ def test_compliance_branch_uses_its_own_key_when_set(monkeypatch):
 
 
 def test_compliance_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
-    monkeypatch.setattr(compliance, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "compliance_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -48,7 +57,7 @@ def test_compliance_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
 
 
 def test_talent_branch_uses_its_own_key_when_set(monkeypatch):
-    monkeypatch.setattr(talent, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "talent_gemini_api_key", "talent-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -58,7 +67,7 @@ def test_talent_branch_uses_its_own_key_when_set(monkeypatch):
 
 
 def test_talent_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
-    monkeypatch.setattr(talent, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "talent_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -68,7 +77,7 @@ def test_talent_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
 
 
 def test_commercial_branch_uses_its_own_key_when_set(monkeypatch):
-    monkeypatch.setattr(commercial, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "commercial-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -78,7 +87,7 @@ def test_commercial_branch_uses_its_own_key_when_set(monkeypatch):
 
 
 def test_commercial_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
-    monkeypatch.setattr(commercial, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
@@ -91,9 +100,7 @@ def test_the_three_branch_keys_are_independent_of_each_other(monkeypatch):
     """Not just "each falls back correctly in isolation" - the three
     fields don't alias one another. Sets all three to different real
     values in one test and confirms each node picks up only its own."""
-    monkeypatch.setattr(compliance, "GeminiClient", _SpyGeminiClient)
-    monkeypatch.setattr(talent, "GeminiClient", _SpyGeminiClient)
-    monkeypatch.setattr(commercial, "GeminiClient", _SpyGeminiClient)
+    monkeypatch.setattr(factory, "GeminiClient", _SpyGeminiClient)
     monkeypatch.setattr(settings, "compliance_gemini_api_key", "key-a")
     monkeypatch.setattr(settings, "talent_gemini_api_key", "key-b")
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "key-c")
@@ -107,3 +114,22 @@ def test_the_three_branch_keys_are_independent_of_each_other(monkeypatch):
 
     commercial._build_llm_client()
     assert _SpyGeminiClient.last_api_key == "key-c"
+
+
+def test_fake_provider_returns_the_shared_fake_client_regardless_of_branch(monkeypatch):
+    # settings.llm_provider == "fake" short-circuits build_llm_client before
+    # any per-branch key resolution or GeminiClient construction happens at
+    # all - confirmed by NOT patching GeminiClient here (if the fake branch
+    # were somehow skipped, this would fail loudly by trying to construct a
+    # real GeminiClient with no real api_key, not silently pass).
+    monkeypatch.setattr(settings, "llm_provider", "fake")
+
+    result = compliance._build_llm_client()
+
+    assert result is factory.fake_llm_client()
+
+
+def test_default_provider_is_gemini_not_fake():
+    # The one assertion that would catch a flipped default silently making
+    # every real deployment run against fabricated output.
+    assert settings.llm_provider == "gemini"

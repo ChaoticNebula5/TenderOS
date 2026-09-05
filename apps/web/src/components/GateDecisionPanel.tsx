@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { GateResponse } from "../api/client";
 import { ApiError, decideGate } from "../api/client";
+import { retryTransient } from "../api/retryTransient";
 
 interface GateDecisionPanelProps {
   gate: GateResponse;
@@ -48,15 +49,26 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   async function handleDecide(decision: "approve" | "reject" | "request_changes") {
     setError(null);
     setSubmitting(true);
+    // Generated once, outside retryTransient's own loop, and reused across
+    // every retry of THIS decision - the backend's idempotency middleware
+    // (apps/api/src/tenderos_api/idempotency.py) keys a stored response on
+    // (organization_id, operation, idempotency_key) and replays it on a
+    // repeat rather than re-running the decision. A fresh key per attempt
+    // would defeat that: a first attempt that actually succeeded server-
+    // side but timed out on the response would let a retry re-decide the
+    // gate under a new key instead of safely replaying the first outcome.
+    const idempotencyKey = crypto.randomUUID();
     try {
-      const updated = await decideGate(
-        gate.gate_id,
-        {
-          decision,
-          notes: notes.trim() === "" ? null : notes,
-          waive: gate.gate_type === "final_readiness" ? waive : false,
-        },
-        crypto.randomUUID(),
+      const updated = await retryTransient(() =>
+        decideGate(
+          gate.gate_id,
+          {
+            decision,
+            notes: notes.trim() === "" ? null : notes,
+            waive: gate.gate_type === "final_readiness" ? waive : false,
+          },
+          idempotencyKey,
+        ),
       );
       onDecided(updated);
     } catch (err) {

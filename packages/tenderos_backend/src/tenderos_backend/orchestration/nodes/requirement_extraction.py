@@ -1,10 +1,8 @@
 import logging
 import uuid
 
-from redis.asyncio import Redis as AsyncRedis
-
 from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
+from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.agents.requirements.extract import extract_requirements
 from tenderos_backend.agents.requirements.verify import verify_and_persist
 from tenderos_backend.core.config import settings
@@ -24,13 +22,12 @@ def _build_llm_client() -> LLMClient:
     # monkeypatch this one name (monkeypatch.setattr(module, "_build_llm_client",
     # lambda: fake_client)) instead of a real GeminiClient - every automated
     # test in this repo runs against FakeLLMClient (see agents/llm/fake_client.py's
-    # own docstring), never a live model.
-    redis_client = AsyncRedis.from_url(settings.redis_url)
-    return GeminiClient(
-        api_key=settings.gemini_api_key,
-        redis_client=redis_client,
-        cache_ttl_seconds=settings.llm_cache_ttl_seconds,
-    )
+    # own docstring), never a live model. B17: the actual gemini-vs-fake
+    # decision now lives in agents/llm/factory.py::build_llm_client, shared
+    # by all nine call sites that used to each make this decision
+    # independently - this is a one-line delegate, kept only so existing
+    # tests' monkeypatch target (this exact module-level name) still works.
+    return build_llm_client()
 
 
 async def requirement_extraction_node(state: TenderState) -> dict:

@@ -1,0 +1,32 @@
+# B17: fake-provider E2E overlay - a SEPARATE file from docker-compose.
+# e2e.yml, deliberately, not an addition to it. docker-compose.e2e.yml
+# also drives this project's real, live-cost E2E verification runs (the
+# rate-limit bypass it sets has nothing to do with which LLM provider is
+# used) - folding LLM_PROVIDER=fake into that same file would mean every
+# future "run the real live-cost E2E scenario" invocation silently became
+# a fake run unless someone remembered to strip this override back out.
+# Two separate, explicit choices instead: pass this file when the
+# reachability question is what's being answered (free, deterministic,
+# no provider dependency), and docker-compose.e2e.yml alone (or with this
+# file omitted) when a real provider run is what's needed - see
+# KNOWN_LIMITATIONS.md's own exit-criteria note: a fake-provider green run
+# proves the scenario/UI/orchestration/gates/SSE reachable; it proves
+# nothing about the provider path, and never substitutes for the one real
+# live run Part N line 3929 still requires.
+#
+# core/config.py's own hard guard refuses to start at all if this is ever
+# combined with APP_ENV=production - see
+# _reject_fake_provider_in_production.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+#        -f docker-compose.e2e-fake.yml up -d --build api web worker outbox_dispatcher
+services:
+  api:
+    environment:
+      LLM_PROVIDER: "fake"
+  worker:
+    environment:
+      LLM_PROVIDER: "fake"
+  outbox_dispatcher:
+    environment:
+      LLM_PROVIDER: "fake"

@@ -1,9 +1,8 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from redis.asyncio import Redis as AsyncRedis
 from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
+from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import proposal_service
@@ -30,12 +29,9 @@ def _build_llm_client() -> LLMClient:
     # file's own helper uses - kept here rather than imported from
     # orchestration.nodes.proposal, since A4.1 locks the dependency
     # direction as routes -> domain services, never routes -> orchestration.
-    redis_client = AsyncRedis.from_url(settings.redis_url)
-    return GeminiClient(
-        api_key=settings.gemini_api_key,
-        redis_client=redis_client,
-        cache_ttl_seconds=settings.llm_cache_ttl_seconds,
-    )
+    # B17: delegates to agents/llm/factory.py::build_llm_client - see
+    # commercial.py's identical comment for why.
+    return build_llm_client()
 
 
 @router.get(

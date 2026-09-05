@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -23,6 +23,9 @@ export function CommercialFindings() {
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  // handleValidate's own guard, not the mount effect's - see below.
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
 
   async function refreshFindings(isCancelled: () => boolean) {
     if (!tenderId) return;
@@ -76,9 +79,18 @@ export function CommercialFindings() {
   async function handleValidate(pricingDocumentId: string) {
     setError(null);
     setValidating(true);
+    // Captured now, compared against tenderIdRef.current (kept fresh by the
+    // render-time assignment above) once the awaits below resolve - the
+    // same "did the world move on since this async work started" check the
+    // mount effect's own `cancelled` closure already makes, just without a
+    // useEffect cleanup to flip a boolean, since this fires from a click,
+    // not a mount. If the user has navigated to a different tender by then,
+    // tenderIdRef.current no longer equals startedForTenderId and this
+    // write is skipped instead of landing on the wrong tender's screen.
+    const startedForTenderId = tenderId;
     try {
       await validatePricingDocument(pricingDocumentId);
-      await refreshFindings(() => false);
+      await refreshFindings(() => tenderIdRef.current !== startedForTenderId);
     } catch (err) {
       setError(err instanceof ApiError ? `Validation failed (${err.status})` : "Validation failed");
     } finally {

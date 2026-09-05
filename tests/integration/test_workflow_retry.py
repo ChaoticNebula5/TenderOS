@@ -61,7 +61,7 @@ def _scheduled_retry_job_ids(run_id: uuid.UUID) -> list[str]:
     matching = []
     for job_id in job_ids:
         job = queue.fetch_job(job_id)
-        if job is not None and job.func_name.endswith("retry_workflow_run") and job.args == (
+        if job is not None and job.func_name.endswith("retry_workflow_run_job") and job.args == (
             str(run_id),
         ):
             matching.append(job_id)

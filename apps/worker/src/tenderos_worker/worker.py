@@ -1,5 +1,6 @@
 from redis import Redis
 from rq import Queue, Worker
+from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 
 from tenderos_worker.settings import settings
@@ -10,6 +11,9 @@ QUEUE_NAMES = ["ingestion", "workflow", "projection", "evaluation", "maintenance
 
 def main() -> None:
     configure_logging()
+    # B17: a real no-op unless LLM_PROVIDER=fake - see that function's own
+    # docstring.
+    install_fake_fallback_responses()
     connection = Redis.from_url(settings.redis_url)
     queues = [Queue(name, connection=connection) for name in QUEUE_NAMES]
     worker = Worker(queues, connection=connection)
