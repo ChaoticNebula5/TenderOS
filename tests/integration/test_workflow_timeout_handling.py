@@ -90,6 +90,33 @@ async def test_mark_run_failed_on_timeout_is_a_noop_for_a_run_that_no_longer_exi
     await mark_run_failed_on_timeout(uuid.uuid4())
 
 
+@pytest.mark.asyncio
+async def test_mark_run_failed_on_timeout_does_not_overwrite_a_real_cancellation():
+    # CodeRabbit-caught race: cancel_workflow_run can flip a run to
+    # "cancelled" after RQ's death penalty has already started killing the
+    # same job, and before mark_run_failed_on_timeout runs. The old
+    # get()-then-write (update_run_status) would silently stomp "cancelled"
+    # back to "failed" and back it with a false "workflow_run_timed_out"
+    # audit event - this proves mark_failed_if_not_terminal's WHERE clause
+    # actually stops that, against a real Postgres row already sitting at
+    # "cancelled" when this fires.
+    _org_id, run_id = await _make_org_tender_and_run("TimeoutMarkCancelled")
+    async with UnitOfWork() as uow:
+        await uow.workflow.update_run_status(run_id, "cancelled")
+        await uow.commit()
+
+    await mark_run_failed_on_timeout(run_id)
+
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.get_run(run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+
+        events = await uow.audit.list_for_workflow_run(run_id)
+    timeout_events = [e for e in events if e.action == "workflow_run_timed_out"]
+    assert len(timeout_events) == 0
+
+
 # The two tests below are deliberately plain sync functions, not
 # @pytest.mark.asyncio - _run_sync's whole reason for existing is that it
 # owns the sync-to-async transition itself (asyncio.run(coro)), the same

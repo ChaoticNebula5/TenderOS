@@ -250,7 +250,8 @@ Each entry:
 ## Standing pattern: measurement/verification tooling is a recurring source of false signals
 
 - **Discovered:** first observed B5, confirmed as a genuine pattern (not a
-  one-off) B6, confirmed a third time B7. Three independent instances now:
+  one-off) B6, confirmed a third time B7, and a fourth, differently-shaped
+  time B17. Four independent instances now:
   1. **B5** — the ground-truth generator itself had a page/template-index
      coupling bug that mislabeled two identical-substance restatements as
      distinct planted items, producing an apparent recall gap that was
@@ -270,6 +271,18 @@ Each entry:
      call as runs 2 and 3. Caught only because the cache-hit path was
      inspected before trusting the number, not because anything failed
      loudly.
+  4. **B17** — a genuine, real regression test (`CommercialFindings.
+     test.tsx`, see that file's own KNOWN_LIMITATIONS entry) for
+     `handleValidate`'s stale-write guard, verified failing against the
+     original broken code before the fix landed - by every check this
+     project normally applies, real evidence the guard worked. It drove
+     only the guard's success path; the same function's `catch` block had
+     an identical, unguarded write CodeRabbit caught in the same session.
+     The green test wasn't wrong about what it tested, it just tested
+     less of the guarded function than a passing run implied - the first
+     instance of this pattern where the false signal came from a
+     *regression test for a specific bug*, not an eval/verification
+     script measuring an aggregate metric.
 - **The heuristic this establishes:** when a verification number comes back
   looking suspiciously clean — no misses, no variance, "3/3 consistent,"
   a suspiciously round or expected figure — suspect the measurement
@@ -278,21 +291,35 @@ Each entry:
   visibly wrong output). Broken *measurement* code reports a confident,
   plausible, clean number instead — which is a worse failure mode
   precisely because a clean result is the one result nobody double-checks.
-  All three instances above share this exact shape: the tooling was wrong
-  in a way that made the pipeline look *better* than it actually was (B5:
-  hid a real gap behind a mislabeled ground-truth item; B6: could have
-  hidden a real regression behind a stale cross-run score; B7: would have
-  hidden the fact that only one real trial ever ran behind an apparent
-  3-for-3).
+  All four instances above share this exact shape: the tooling was wrong
+  in a way that made the pipeline (or the fix) look *better* than it
+  actually was (B5: hid a real gap behind a mislabeled ground-truth item;
+  B6: could have hidden a real regression behind a stale cross-run score;
+  B7: would have hidden the fact that only one real trial ever ran behind
+  an apparent 3-for-3; B17: a green regression test hid the fact that only
+  one of the guarded function's two paths had ever been exercised).
+- **The concrete lesson B17 adds:** a regression test written for a guard
+  must drive every path that reaches the guarded write, not only the one
+  path that reproduced the original bug report. Verifying the test fails
+  against the original broken code (this project's own standard practice,
+  and followed correctly here) proves the test catches *that* path's
+  regression - it proves nothing about a sibling path with the identical
+  defect shape that the original report never mentioned. The same
+  question worth asking before trusting a green eval script - "does this
+  actually scope/measure what it claims to?" - applies to a green
+  regression test too: does it drive every code path the fix touched, or
+  only the one the bug report described?
 - **Status:** accepted as a standing risk, not something any one fix
-  closes out — this is a statement about how measurement code fails, not a
-  single bug with a single patch. Concretely: any future block writing a
-  new eval script, verification script, or repeated-trial check should
-  budget time to inspect the tooling's own correctness (does it scope
-  queries correctly, does it bypass caches when independence matters, does
-  the ground-truth data actually assert what it claims to) with the same
-  seriousness given to the pipeline it's measuring, *especially* when the
-  first result looks good.
+  closes out — this is a statement about how measurement code (eval
+  scripts and regression tests alike) fails, not a single bug with a
+  single patch. Concretely: any future block writing a new eval script,
+  verification script, repeated-trial check, or regression test for a
+  guarded write should budget time to inspect the tooling's own
+  correctness (does it scope queries correctly, does it bypass caches
+  when independence matters, does the ground-truth data actually assert
+  what it claims to, does it drive every path reaching the code under
+  test) with the same seriousness given to the pipeline it's measuring,
+  *especially* when the first result looks good.
 - **Test:** none dedicated to the pattern itself (it's a process note, not
   a code path). Each instance's own fix/workaround is tested or documented
   at its own entry.
@@ -3643,12 +3670,13 @@ Each entry:
   before that edit). Full suite 591 passed; mypy 59/12/244 baseline held
   as of this entry's own final state.
 
-## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - three instances, one blind spot in review
+## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - four instances, one blind spot in review
 
 - **Discovered:** named once the count reached three, across two separate
-  passes. The shape is more general than dead config specifically - it's
-  about how a false claim of connectedness survives review, not about
-  what kind of connection it falsely claims.
+  passes; a fourth turned up B17, in code (not a doc comment). The shape
+  is more general than dead config specifically - it's about how a false
+  claim of connectedness survives review, not about what kind of
+  connection it falsely claims.
   1. **`settings.llm_provider`**'s own comment (`config.py`, resolved
      B16): claimed the field "selects which `agents/llm/*_adapter.py`
      implementation gets constructed." Zero real read sites, anywhere -
@@ -3664,6 +3692,17 @@ Each entry:
      False - `jobs/workflow.py`'s `run_workflow` seeds that state key
      from a hardcoded literal `"max_revisions": 2`, never touching this
      setting. See the dead-config entry above.
+  4. **`run_workflow`/`resume_workflow`/`retry_workflow_run`'s shared
+     exception-handler comment** (`jobs/workflow.py`, open - see the
+     dedicated `workflow_runs` status-transitions entry below): claims
+     "re-checking here... is what stops 'failed' from silently
+     overwriting a real, deliberate cancellation." The `is_cancelled`
+     check it describes is real and correct; the claim that it CLOSES
+     the race is not - `is_cancelled` and the later `sync_run_status`
+     write are two separate awaits, not one atomic guard, so a
+     cancellation landing in that window is still overwritten. Unlike
+     instances 1-3, not a dead/unread field - working code with a
+     comment overselling what it actually guarantees.
 - **Why this is invisible to grep specifically:** a plain dead-config or
   dead-code check (grep for read sites, list unused symbols) catches a
   field or function with zero callers. It does NOT catch a field with
@@ -3677,15 +3716,17 @@ Each entry:
   comment names, or the real downstream consumer it describes) rather
   than trusting the comment's description of it once the symbol itself
   looked properly declared.
-- **Status:** all three known instances resolved (deleted or corrected).
-  The pattern itself is not closeable by a fix - it's a standing review
+- **Status:** instances 1-3 resolved (deleted or corrected). Instance 4
+  open by design decision, not oversight - see its own dedicated entry
+  below for why B17 audited and reported it rather than fixing it. The
+  pattern itself is not closeable by a fix - it's a standing review
   discipline, same posture as the "eval/measurement code needs the same
   scrutiny as pipeline code" entry above: a comment describing a
   connection is a claim, not evidence, and should be spot-checked against
   the code it describes rather than taken as read.
 - **Test:** none - this is a review-process note, not a code path.
 
-## Standing pattern: sequential retry tested, genuine concurrency untested - six instances, one blind spot in test design
+## Standing pattern: sequential retry tested, genuine concurrency untested - seven instances, one blind spot in test design
 
 - **Discovered:** not six separate bugs found independently - a pattern
   named once the count reached four, extended when a fifth turned up
@@ -3792,6 +3833,19 @@ Each entry:
      unrelated-feeling moment." A named standing pattern is a detection
      aid for review, not a guardrail that prevents the shape from
      recurring in code written after the name existed.
+  6. **`workflow_runs` status transitions, B17 - open, not resolved, and
+     a different shape than instances 1-5:** those five are each "one
+     call site found the naive shape, fixed it." This one is sibling
+     drift WITH the fix already present in the same file:
+     `mark_failed_if_not_terminal` (this session) and
+     `try_reserve_retry_budget` (`568755e`) both already use the atomic
+     `UPDATE ... WHERE <guard> RETURNING id` shape correctly - but
+     `cancel_workflow_run` and the shared `run_workflow`/`resume_
+     workflow`/`retry_workflow_run` exception handler (three more call
+     sites on the same table) still read-then-write. Two correct
+     instances did not make the other three notice. See the dedicated
+     entry below for both call sites and why this was reported, not
+     fixed, this pass.
 - **Why this is a genuine blind spot, not six unlucky misses:** every
   one of these sites already had real test coverage before this pattern
   was named - `test_duplicate_idempotency_key_same_body_replays_response`
@@ -3805,11 +3859,13 @@ Each entry:
   break going forward: a retry test and a concurrency test are not the
   same test, and passing the first has never implied passing the second
   here.
-- **Status:** 6 of 6 resolved (#1, #2, #3 - B16 Groups; #3 additionally
+- **Status:** 6 of 7 resolved (#1, #2, #3 - B16 Groups; #3 additionally
   surfaced and closed a second, deeper race beyond its original scope;
   #4 - outbox atomicity, post-B16; #5 - retry-budget reservation, same
-  session, caught by CodeRabbit review), this entry itself closes no
-  code.
+  session, caught by CodeRabbit review). #6 (`workflow_runs` sibling
+  drift) is open by deliberate decision, not oversight - out of B17's
+  own scope, named and audited rather than fixed. This entry itself
+  closes no code.
 - **Test:** each resolved instance has its own real concurrent test
   (`asyncio.gather` against the real ASGI app/service layer, or - for
   #5, a single-caller correctness/scoping test at the repository level;
@@ -7443,7 +7499,7 @@ edits, not code bugs.
 
 ---
 
-## [owner: B17] `CommercialFindings.tsx`'s `handleValidate` hardcodes its own stale-write guard to never fire
+## [owner: B17, RESOLVED - in two passes, the second one CodeRabbit-caught] `CommercialFindings.tsx`'s `handleValidate` hardcodes its own stale-write guard to never fire
 
 - **Discovered:** the same CodeRabbit pass as the tooling-finding entry
   above, and unlike most of that pass, confirmed real against current
@@ -7473,19 +7529,29 @@ edits, not code bugs.
   failure is silent - a reviewer looking at tender B's commercial
   findings could be looking at tender A's data with no indication
   anything is wrong.
-- **Status:** open. **Owner: B17 (UI Polish, Observability, and
-  Deployment)** - no currently-scoped block owns general frontend
-  correctness sweeps, and this is exactly the class of finding that
-  block's own pass should catch systematically (the same stale-write
-  guard shape recurring across screens) rather than one file at a time
-  as each gets individually reviewed. Not B14's - this file is untouched
-  by that block. Fix is mechanical once picked up: pass the same
-  `cancelled`-style closure `handleValidate` already has access to
-  (or restructure `refreshFindings` to own its own cancellation token),
-  matching the pattern the rest of this file already uses correctly.
-- **Test:** none - not yet reproduced live (would need a real
-  navigate-during-request race, not just code reading, to confirm the
-  actual write lands where this analysis says it does).
+- **Status:** RESOLVED, in two passes - and the gap between them is its
+  own finding, logged below under the measurement-tooling standing
+  pattern. **Pass 1 (B17 Phase 1):** `handleValidate`'s success path
+  fixed with a real `tenderIdRef`/`startedForTenderId` comparison,
+  mirroring the mount effect's own `cancelled` closure. New test
+  (`CommercialFindings.test.tsx`) drove the exact navigate-during-
+  request race described above, held `validatePricingDocument`'s
+  promise open under test control, and confirmed tender B's findings
+  survive a stale tender-A write - a real regression test, verified
+  failing against the original `() => false` guard before the fix
+  landed, not just written to match the fixed code.
+  **Pass 2 (CodeRabbit, same session):** that fix and its test both
+  covered only `handleValidate`'s success path - the `catch` block's own
+  `setError(...)` had no guard at all, so a stale-tender-A *rejection*
+  arriving after navigating to tender B could still paint "Validation
+  failed" onto tender B's screen, the identical bug in the other half of
+  the same function. Fixed with the same `tenderIdRef.current ===
+  startedForTenderId` check; new test drives the rejection path
+  specifically (a controlled reject, not resolve, on the held-open
+  promise) and confirms no alert renders on tender B's screen.
+- **Test:** `CommercialFindings.test.tsx` - one test per path (success
+  and rejection), both driving a real navigate-during-request race
+  rather than asserting on the guard's logic in isolation.
 
 ---
 
@@ -8445,7 +8511,7 @@ edits, not code bugs.
 
 ---
 
-## [B16, owner B17] `Login.tsx`'s "already logged in" guard drops the user's original destination on any transient `/auth/me` failure
+## [B16, owner B17, RESOLVED - with one coverage gap found by the same sibling sweep as the CommercialFindings measurement-bug entry] `Login.tsx`'s "already logged in" guard drops the user's original destination on any transient `/auth/me` failure
 
 - **Discovered:** B16, root-causing a live E2E run's own setup-phase
   failure - a Playwright poll stuck showing the Bids dashboard instead of
@@ -8488,17 +8554,33 @@ edits, not code bugs.
   a stop-gate that touches this, and it's exactly the class of finding a
   general frontend-correctness sweep should catch systematically rather
   than one screen at a time.
-- **Status:** open. **Owner: B17.** Candidate fix, named not built - a
-  standard React Router pattern, not a novel design question: capture the
-  intended pathname (`useLocation()` at the point `RequireAuth` redirects,
-  passed via `state` on the `Navigate` to `/login`) and have `Login.tsx`'s
-  own guard `navigate(intendedPath, { replace: true })` instead of the
-  hardcoded `"/"`.
-- **Test:** none - found by root-causing a harness failure, not by a
-  dedicated test. Worth a real regression test when B17 picks this up:
-  force a transient 401/429/500 on `/auth/me` while on a deep-linked
-  screen, assert the user lands back on that same screen once
-  re-authenticated, not on `/`.
+- **Status:** RESOLVED, B17 Phase 1 - built exactly as the candidate fix
+  above described: `RequireAuth` now passes `state={{ from: location.
+  pathname + location.search + location.hash }}` on its redirect (fragment
+  added after a CodeRabbit catch of its own - see below), and `Login.tsx`
+  reads `location.state.from` once, used in both the places it needs
+  somewhere to send the user back to.
+- **Coverage gap found by the same sibling sweep that produced the
+  CommercialFindings measurement-bug entry above:** `from` is read ONCE
+  but used in TWO places in `Login.tsx` - the top-of-render "already
+  logged in" guard (`<Navigate to={from} replace />`) and `handleSubmit`'s
+  own `navigate(from, { replace: true })` after a real login/register
+  submission. `destinationPreservation.test.tsx`'s three tests all drive
+  the FIRST path only (a harness button that flips `meResponse` directly,
+  standing in for a recovered `refresh()`) - none of them ever fills the
+  form and submits it, so `handleSubmit`'s own `navigate(from, ...)` call
+  has never been exercised by any test. Both call sites read the exact
+  same `from` value computed the same way, so this is a real but low-risk
+  gap (a bug in one would very likely show up in the other) rather than a
+  second hidden defect the way CommercialFindings' catch-block gap was -
+  logged for the same reason that entry was: a passing test suite implied
+  more coverage of this fix than actually exists. Not fixed this pass;
+  worth a fourth test (fill the form, submit, assert the deep link is
+  where `handleSubmit` navigates to) whenever this file is next touched.
+- **Test:** `destinationPreservation.test.tsx` - three tests, all via the
+  render-guard path (including one added this session for URL-fragment
+  preservation, CodeRabbit-caught); the `handleSubmit` path is untested,
+  per the gap noted above.
 - **A second live run, after throttling the E2E spec's own reload rate to
   a 2s floor, confirms this is about recovery, not about rate-limit
   tuning.** The first run's 429 burst was 24 consecutive requests; the
@@ -8550,22 +8632,49 @@ edits, not code bugs.
   component gets for free. Every call site that wants resilience has to
   build its own, and two independent call sites, built at different
   times by different reasoning, both didn't.
-- **Status:** open. **Owner: B17**, alongside the other frontend
-  correctness items already assigned there (the `CommercialFindings.tsx`
-  stale-write guard). Not B16's to fix - diagnosing this is what this
-  block's own live runs were for, not a mandate to rebuild this app's
-  data-fetching layer. The E2E spec's own workarounds for both instances
-  (`reloadAndSettleOnRoute` for #1, a bounded retry around the gate-
-  decision click for #2, both in `full-flow.spec.ts`) are real,
-  functioning scaffolding for THIS test - not fixes, and both should come
-  out once B17 gives this frontend a real answer to "one request failed,
-  now what."
-- **Test:** none - two live-run observations, not dedicated tests. A real
-  fix would want one shared, tested mechanism (a retry-capable fetch
-  wrapper, or a hook every mutating call site uses) rather than two more
-  one-off patches at two more call sites - the same lesson the "sibling-
-  drift" pattern already in this file names for a different kind of
-  duplication.
+- **Status:** RESOLVED, B17 Phase 1 - built exactly the shared, tested
+  mechanism this entry's own "Test" note below called for:
+  `api/retryTransient.ts`, a plain `() => Promise<T>` wrapper with a
+  retryable-status allowlist and bounded exponential backoff, wired into
+  both call sites named above. The E2E spec's own workarounds for both
+  instances have been removed now that the real fix exists.
+- **Coverage asymmetry found by the same sibling sweep that produced the
+  CommercialFindings and Login.tsx entries above, closed the same
+  session:** the two call sites did NOT have equal test coverage of the
+  real wiring. `GateDecisionPanel.test.tsx` renders the real component
+  with the real `retryTransient` (not mocked) and drives both a
+  retry-then-succeed case and the 409-is-terminal case - genuine coverage
+  of instance #2. Instance #1 (`AuthContext.tsx`'s `refresh()`) had none:
+  the only test file that touched this bug (`destinationPreservation.
+  test.tsx`) explicitly stands in for `AuthContext` with a hand-rolled
+  `AuthContext.Provider` harness (its own comment says so directly)
+  specifically so it doesn't depend on `retryTransient`'s timing - which
+  meant the real `AuthProvider` component, and its real `retryTransient
+  (() => me())` call, had never been rendered or exercised by any test in
+  this repo. Worse than the Login.tsx gap above (that one had the SAME
+  call site tested via a different path; this one had zero tests touching
+  the real production code at all). **Closed:** `AuthContext.test.tsx`
+  (new) renders the real `AuthProvider`, mocks only `me()`, and drives the
+  real backoff with fake timers - a transient 500 that recovers on retry,
+  and a 401 that terminates on the first attempt with no retry. Verified
+  against a real regression, not assumed: temporarily reverting `refresh()`
+  to a bare `await me()` (no `retryTransient`) made the transient-recovery
+  test fail exactly as expected (renders "logged out" instead of
+  "logged in," since a lone 500 still reaches the unconditional
+  `setMeResponse(null)` in the catch block) - and surfaced a real,
+  separate test-isolation bug in the process: `vi.clearAllMocks()` in
+  `afterEach` does not clear a queued-but-unconsumed `mockResolvedValueOnce`,
+  which leaked into the next test once the broken code stopped consuming
+  it. Fixed by switching to `vi.resetAllMocks()`. The 401 test passes
+  either way (401's terminal handling predates `retryTransient` and isn't
+  affected by removing it) - expected, and still worth keeping: paired
+  with the transient-recovery test, it pins the terminal/retryable
+  contract at this specific call site, which is what was actually asked
+  for.
+- **Test:** `GateDecisionPanel.test.tsx` covers instance #2 directly;
+  `AuthContext.test.tsx` now covers instance #1 directly. Both real call
+  sites verified, not just the shared `retryTransient.ts` unit tested in
+  isolation.
 
 ---
 
@@ -8891,3 +9000,86 @@ edits, not code bugs.
   regression test for the underlying engine behavior itself, since
   reproducing it outside this specific multi-loop shape isn't a
   documented product requirement to test for its own sake.
+
+## [found during B17, owner: NOT B17] `workflow_runs` status transitions: two more read-then-write races and a design question, sitting next to two now-correct atomic instances in the same file family
+
+- **Discovered:** B17, auditing every status transition on `workflow_runs`
+  after fixing `mark_run_failed_on_timeout`'s own race against
+  `cancel_workflow_run` (the timeout entry above). Fixing one instance
+  and then checking whether it was the only one is what this file's own
+  standing-pattern discipline asks for - it found two more.
+- **Instance A - the shared exception handler in `apps/worker/src/
+  tenderos_worker/jobs/workflow.py`, three call sites
+  (`run_workflow`/`resume_workflow`/`retry_workflow_run`):**
+  ```python
+  # Re-checking here, not just before, is what stops "failed" from
+  # silently overwriting a real, deliberate cancellation.
+  if not await is_cancelled(run_id):
+      retried = await _handle_graph_failure(run_id, exc)
+      if not retried:
+          await sync_run_status(run_id, "failed")
+  ```
+  That comment describes a working guard - and reads as one, which is
+  exactly why it survived: `is_cancelled` is a real, correct check, and
+  the surrounding prose says plainly that re-checking here (not just at
+  entry) closes the gap. It doesn't. `is_cancelled` and `sync_run_status`
+  are two separate awaits, not one atomic statement - a
+  `cancel_workflow_run` call landing in the window between them still
+  gets silently overwritten to `"failed"`, the identical bug
+  `mark_run_failed_on_timeout` had, just a narrower window (one await
+  gap, not a whole graph execution). The comment asserts a wiring
+  (race-closed) that the code one line below it doesn't actually provide
+  - **the fourth instance of this file's own "a comment asserting a
+  wiring that doesn't exist is invisible to grep" standing pattern**
+  (see that entry above): a plain race-hunting grep doesn't flag this,
+  because the code direction (check, then act) looks exactly like a
+  closed race unless the two-statement gap is noticed by reading it as
+  two separate awaits, not one guarded write.
+- **Instance B - `cancel_workflow_run` (`workflow_service.py`):**
+  ```python
+  if run.status in _CANCELLABLE_STATUSES:
+      await uow.workflow.update_run_status(run_id, "cancelled")
+  ```
+  Same shape: a run completing or failing independently between this
+  read and this write still gets force-cancelled over its real, later
+  outcome.
+- **The pattern across the file, stated as the finding it is:**
+  `mark_failed_if_not_terminal` (this session) and
+  `try_reserve_retry_budget` (`568755e`, CodeRabbit-caught) both landed
+  on the same atomic-conditional shape - `UPDATE ... WHERE <status
+  guard> RETURNING id` - but only after a live bug forced each one
+  individually. Instances A and B above are the same file's own
+  `WorkflowRepository`/`jobs/workflow.py` pair, still on the older
+  read-then-write shape, sitting right next to two call sites that
+  already prove the correct pattern compiles, tests, and works in this
+  exact codebase. **This is sibling drift with the fix already present
+  in the same file - the seventh instance of "sequential retry tested,
+  genuine concurrency untested"** (see that entry above): two of five
+  `workflow_runs` status-writing call sites are now atomic, three are
+  not, and nothing forces the other three to notice the two that are.
+- **`sync_run_status` itself - a design question, not a bug with a fix
+  attached:** it's an unconditional writer with no precondition of its
+  own; every guarantee about not overwriting a terminal status is
+  distributed across whichever caller checks `is_cancelled` (or nothing)
+  before calling it. Making `sync_run_status` itself status-guarded
+  would need deciding what a rejected write should do at every one of
+  its ~36 call sites across `orchestration/nodes/` (silently no-op?
+  raise? return a bool every caller must check?) - a real design
+  decision, not a mirror-the-atomic-pattern mechanical fix like
+  instances A and B above.
+- **Residual, named honestly:** the windows are small (one or two awaits,
+  not a whole graph execution), this demo runs a single worker process,
+  and no observed incident - live or in this session's own runs - traces
+  to instance A or B. This is a found-by-audit risk, not a reproduced
+  failure.
+- **Owner: explicitly NOT B17.** These are pre-existing concurrency races
+  in worker and service code untouched by this block's own scope (UI
+  polish, observability, deployment) - B17 is not the place to start
+  rewriting `workflow_runs` status transitions, and the one instance this
+  block DID fix (`mark_run_failed_on_timeout`) was fixed because B17's
+  own timeout-recovery work created the direct occasion to, not because
+  B17 owns concurrency correctness generally.
+- **Status:** open, not fixed. Deliberately - reported and audited, not
+  patched on the strength of "the pattern is right there to copy."
+- **Test:** none - a code-reading audit against the real source (both
+  call sites read directly, not inferred), not reproduced live.

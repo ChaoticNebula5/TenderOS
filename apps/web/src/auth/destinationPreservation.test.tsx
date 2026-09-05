@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MeResponse } from "../api/client";
@@ -58,6 +58,16 @@ function AuthHarness({ children }: { children: ReactNode }) {
   );
 }
 
+// Reads its own useLocation().hash rather than a hardcoded string, so this
+// renders proof RequireAuth's redirect state (and Login's navigate() back)
+// actually carried the fragment through, not just that the pathname/search
+// matched - the two other routes above don't need this because the fragment
+// bug can only show up on the leg that has one to lose.
+function ComplianceWithHash() {
+  const location = useLocation();
+  return <div>Compliance matrix content{location.hash}</div>;
+}
+
 function renderAt(initialPath: string) {
   render(
     <MemoryRouter initialEntries={[initialPath]}>
@@ -76,7 +86,7 @@ function renderAt(initialPath: string) {
             path="/tenders/:tenderId/compliance"
             element={
               <RequireAuth>
-                <div>Compliance matrix content</div>
+                <ComplianceWithHash />
               </RequireAuth>
             }
           />
@@ -108,6 +118,23 @@ describe("destination survives a transient auth failure mid-flow", () => {
     // pins the bug fixed: before this fix, this would render the bare "/"
     // route (BidDashboard in the real app) instead.
     expect(await screen.findByText("Compliance matrix content")).toBeInTheDocument();
+  });
+
+  it("a deep link with a URL fragment lands back with that fragment intact, not just the path and query", async () => {
+    // CodeRabbit-caught gap: RequireAuth's redirect state originally carried
+    // only pathname + search, silently dropping location.hash - a user who
+    // opened a protected URL pointing at a specific in-page section would
+    // return to the top of the right page, not the section they linked to.
+    const user = userEvent.setup();
+    renderAt("/tenders/t1/compliance?tab=findings#findings-section");
+
+    expect(await screen.findByText("TenderOS")).toBeInTheDocument();
+
+    await user.click(screen.getByText("simulate auth/me recovering"));
+
+    expect(
+      await screen.findByText("Compliance matrix content#findings-section"),
+    ).toBeInTheDocument();
   });
 
   it("landing on /login directly, with no prior redirect, still defaults to the app root", async () => {

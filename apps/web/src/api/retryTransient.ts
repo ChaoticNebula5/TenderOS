@@ -64,6 +64,13 @@ export async function retryTransient<T>(
   options: RetryTransientOptions = {},
 ): Promise<T> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  // A caller-supplied Infinity/NaN would make `attempt >= maxAttempts` never
+  // become true, so a permanently-failing operation retries forever instead
+  // of surfacing an error - in GateDecisionPanel that strands the UI in
+  // "submitting" indefinitely rather than showing the user a failure.
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new RangeError("maxAttempts must be a positive integer");
+  }
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();

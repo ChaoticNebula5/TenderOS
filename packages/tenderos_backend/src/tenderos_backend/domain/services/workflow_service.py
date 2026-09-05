@@ -130,12 +130,20 @@ async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:
     undifferentiated "failed": a normal failure (run_workflow's own except
     block) writes no audit event describing why at all, so any audit event
     at run-failure time is, by construction, unique to this path.
+
+    Guarded by mark_failed_if_not_terminal, not update_run_status: a
+    cancel_workflow_run call can land between when a run started and when
+    RQ's death penalty fires, and this must never overwrite that "cancelled"
+    with "failed" (or back the overwrite with a misleading timeout audit
+    event) just because it observed a stale, since-superseded status.
     """
     async with UnitOfWork() as uow:
+        moved = await uow.workflow.mark_failed_if_not_terminal(run_id)
+        if not moved:
+            return
         run = await uow.workflow.get_run(run_id)
         if run is None:
             return
-        await uow.workflow.update_run_status(run_id, "failed")
         tender = await uow.tenders.get(run.tender_id)
         if tender is not None:
             await uow.audit.create(

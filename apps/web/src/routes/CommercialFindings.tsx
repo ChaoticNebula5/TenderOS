@@ -92,7 +92,13 @@ export function CommercialFindings() {
       await validatePricingDocument(pricingDocumentId);
       await refreshFindings(() => tenderIdRef.current !== startedForTenderId);
     } catch (err) {
-      setError(err instanceof ApiError ? `Validation failed (${err.status})` : "Validation failed");
+      // Same guard as the success path above, applied here too: a rejection
+      // arriving after the user has already navigated to a different
+      // tender must not paint THIS tender's failure onto that other
+      // tender's screen.
+      if (tenderIdRef.current === startedForTenderId) {
+        setError(err instanceof ApiError ? `Validation failed (${err.status})` : "Validation failed");
+      }
     } finally {
       setValidating(false);
     }

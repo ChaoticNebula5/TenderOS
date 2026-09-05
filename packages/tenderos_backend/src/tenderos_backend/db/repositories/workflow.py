@@ -166,6 +166,44 @@ class WorkflowRepository:
         await self._session.flush()
         return result.scalar_one_or_none() is not None
 
+    async def mark_failed_if_not_terminal(self, run_id: uuid.UUID) -> bool:
+        """Atomic counterpart to update_run_status for exactly one caller:
+        mark_run_failed_on_timeout (domain/services/workflow_service.py).
+        RQ's own JobTimeoutException can fire after a concurrent
+        cancel_workflow_run has already moved this same run to "cancelled" -
+        a session.get() + Python-level status check has the identical lost-
+        update shape try_reserve_retry_budget's own docstring above already
+        covers: a plain read-then-write can still act on a status this
+        session read before the concurrent cancel committed, overwriting a
+        real cancellation with "failed" and backing it with a false
+        "workflow_run_timed_out" audit event. One atomic UPDATE, gated by
+        the WHERE clause seeing Postgres's actually-current row, closes that
+        window the same way try_reserve_retry_budget's does. Returns
+        whether the row was actually moved to "failed" - callers must skip
+        writing anything that describes a change that didn't happen (e.g.
+        the audit event) when this returns False.
+        """
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run_id,
+                WorkflowRun.status.not_in(("completed", "failed", "cancelled")),
+            )
+            .values(status="failed", completed_at=datetime.now(UTC))
+            .returning(WorkflowRun.id)
+        )
+        await self._session.flush()
+        moved = result.scalar_one_or_none() is not None
+        if moved:
+            await self._outbox.create(
+                aggregate_type=AGGREGATE_WORKFLOW_RUN,
+                aggregate_id=run_id,
+                event_type=EVENT_WORKFLOW_RUN_STATUS_CHANGED,
+                payload=workflow_run_status_changed_payload(run_id, "failed"),
+                idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
+            )
+        return moved
+
     async def list_tasks(self, workflow_run_id: uuid.UUID) -> list[WorkflowTask]:
         result = await self._session.execute(
             select(WorkflowTask)

@@ -132,4 +132,49 @@ describe("handleValidate's stale-write guard", () => {
     expect(screen.getByText("tender B finding")).toBeInTheDocument();
     expect(screen.queryByText("tender A finding")).not.toBeInTheDocument();
   });
+
+  it("a validate started on tender A that REJECTS after navigating away does not paint its error onto tender B's screen", async () => {
+    // CodeRabbit-caught gap: the success path above was guarded, but the
+    // catch block's setError call was not - a stale rejection would show
+    // "Validation failed" on tender B's screen even though tender B's own
+    // validate was never touched.
+    const user = userEvent.setup();
+    listWorkflowRuns.mockResolvedValue([]);
+    listGates.mockResolvedValue([]);
+    listPricingDocuments.mockImplementation((tenderId) =>
+      Promise.resolve(tenderId === "tender-a" ? [doc("tender-a")] : []),
+    );
+    listPricingFindings.mockImplementation((tenderId) =>
+      Promise.resolve([
+        finding(tenderId, tenderId === "tender-a" ? "tender A finding" : "tender B finding"),
+      ]),
+    );
+    let rejectValidate: ((err: unknown) => void) | undefined;
+    validatePricingDocument.mockImplementation(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectValidate = reject;
+        }),
+    );
+
+    render(<Harness />);
+
+    expect(await screen.findByText("tender A finding")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Re-validate" }));
+    expect(validatePricingDocument).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByText("switch to tender-b"));
+    expect(await screen.findByText("tender B finding")).toBeInTheDocument();
+
+    // Now let the stale, tender-A-scoped validate actually reject.
+    rejectValidate?.(new Error("stale failure"));
+
+    // Give the rejected promise's .catch a turn to run before asserting its
+    // absence - waitFor retries until either the guard holds (no alert ever
+    // appears) or the timeout proves it doesn't.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("tender B finding")).toBeInTheDocument();
+  });
 });
