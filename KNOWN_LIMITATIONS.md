@@ -9083,3 +9083,139 @@ edits, not code bugs.
   patched on the strength of "the pattern is right there to copy."
 - **Test:** none - a code-reading audit against the real source (both
   call sites read directly, not inferred), not reproduced live.
+
+## [B17, terminal block - documented, not built] A2's locked frontend-data stack (TanStack Query) and forms stack (React Hook Form + Zod) were never installed
+
+B17 is this project's last build block - there is no later block to hand
+this to. Confirmed directly against `apps/web/package.json` (the only
+`package.json` in the repo - no monorepo root, nothing else declares
+frontend deps) and `apps/web/package-lock.json` (checked independently,
+in case something were installed without being declared, or vice versa):
+neither `@tanstack/react-query`, `react-hook-form`, nor `zod` appears in
+either file. `dependencies` is exactly `react`, `react-dom`, `react-
+router-dom` - three packages. This entry documents the gap for the
+record at ship time; it is not a triage note pointing at future work,
+because none exists.
+
+The two absences are not the same severity, and are recorded separately
+rather than as one undifferentiated "missing libraries" line.
+
+### TanStack Query (Build Guide A2, line 163: `Frontend data | TanStack
+Query | Server state`) - load-bearing, no qualifier in the spec
+
+- **The unbuilt locked requirement:** line 163 names TanStack Query as
+  THE server-state layer, with no "nice to have" or "if time permits"
+  language anywhere in A2 - the same unconditional phrasing every other
+  row in that table uses for a requirement this project actually built
+  (Alembic, LangGraph, RQ, ...).
+- **The observable consequence, not a hypothetical one:** every screen's
+  data fetching is a hand-rolled `useState`/`useEffect` pair calling
+  `client.ts` directly, each one independently reinventing loading
+  state, error state, and stale-request cancellation. This is not an
+  abstract cost - four of this block's own Phase 1 findings are direct
+  symptoms of it: `CommercialFindings.tsx`'s stale-write guard (a
+  hand-rolled cancellation token, wrong on first landing, wrong again in
+  the half CodeRabbit caught), `Login.tsx`'s destination-loss bug (traced
+  through `AuthContext.tsx`'s own hand-rolled `refresh()`), `useEventStream`
+  errors silently swallowed by the one consumer that forgot to destructure
+  them, and the "no recovery path from a transient failure" standing
+  pattern itself (see that entry above) - all four are exactly the class
+  of bug a real server-state layer's own retry/error conventions exist to
+  prevent by construction, not bugs this project's engineers happened to
+  write independently four times. `api/retryTransient.ts` is this
+  block's own real, working answer to the retry piece specifically - but
+  it is a hand-built partial substitute for one slice of what TanStack
+  Query would have provided (retry-with-backoff), wired into exactly two
+  call sites (`AuthContext.refresh`, `GateDecisionPanel.handleDecide`),
+  with no caching, no request deduplication, no shared loading/error
+  convention, and no effect on the other data-fetching call sites in this
+  app.
+- **The residual, stated plainly because there is no later block to
+  absorb it:** every data-fetching call site this project ships with -
+  today, and any added in Phase 2 (see the containment rule below) -
+  inherits none of retry, caching, deduplication, or a shared error
+  convention, because no shared layer exists for it to inherit from.
+  This is permanent for this project as built, not a gap scheduled to
+  close.
+
+### React Hook Form + Zod (Build Guide A2, line 165: `Forms | React Hook
+Form + Zod | Client validation only; backend revalidates`) - degraded UX,
+not a correctness or security gap
+
+- **The unbuilt locked requirement:** line 165 names React Hook Form +
+  Zod for client-side form handling and validation - also absent from
+  `package.json`/`package-lock.json`, confirmed the same way as above.
+- **Why this is a different severity, per A2's own words:** unlike line
+  163, A2's own note on this row - "Client validation only; backend
+  revalidates" - declares this layer non-authoritative at the moment it
+  was locked. The spec itself does not ask this layer to be where
+  correctness or security lives. Treating its absence as equivalent to
+  the TanStack Query gap would overstate it - this file's own standard
+  holds an overstated finding to the same failure bar as an understated
+  one.
+- **Verified, not assumed, before writing this severity down:** audited
+  every real form in the frontend (8 found: `Login.tsx`, `CreateBid.tsx`,
+  `GateDecisionPanel.tsx`, `EmployeeProfile.tsx`, `RedteamFindings.tsx`,
+  `ProposalWorkspace.tsx`, `ComplianceMatrix.tsx`, `TalentLibrary.tsx`)
+  against their corresponding backend routes and Pydantic request
+  schemas. **Every one goes through a real `BaseModel`** - grepped every
+  route file for a raw `dict`, `Any`, or `Request`-body parameter
+  reachable from a form; found none. Several schemas carry real,
+  live constraints, not decorative type hints: `LoginRequest`/
+  `RegisterRequest.email: EmailStr` (format-checked), `GateDecisionRequest.
+  decision: Literal["approve", "reject", "request_changes"]`,
+  `PatchComplianceRequest.status: ComplianceStatus` (a `Literal` of five
+  values - confirmed live, not just present, because the frontend's own
+  `<select>` offers at least one value outside that `Literal` that would
+  be REJECTED with a 422 if submitted), `PatchKnowledgeItemRequest.status`
+  (a regex `Field(pattern=...)`). A minor, separate observation, not a
+  severity change: some fields on these same schemas are bare `str`/
+  `str | None` with no length or format constraint (`EmployeeProfile`'s
+  own `email` field, notably, is plain `str`, not `EmailStr` the way
+  `auth.py`'s is) - weaker validation than ideal, but A2 only promised
+  "backend revalidates," not "every field is maximally constrained," and
+  no endpoint trusts client-side shape.
+- **Actual severity, named at the level the evidence supports:** degraded
+  UX only - no inline client-side validation, so a malformed field
+  surfaces as a 422 after a round trip instead of before submission. Not
+  a correctness gap (every write is still validated server-side) and not
+  a security gap (nothing trusts the client).
+
+### Containment rule for Phase 2 - stated because this block still adds new data-fetching call sites
+
+Phase 2 is not exempt from the TanStack Query gap just because adopting
+the real library is out of scope for a terminal block - it adds at least
+two new read call sites of its own: `AuditTimeline` reads `GET
+/workflow-runs/{run_id}/events` (`routes/workflow.py:201` - see the Part
+K B12-escape entry above), and the Cytoscape graph view reads `GET
+/tenders/{tender_id}/graph/status` and `GET /tenders/{tender_id}/graph/
+trace` (`routes/graph.py`). Left to each screen's own judgment the way
+every existing screen was, those become the 18th and 19th bespoke
+`useState`/`useEffect` pair in this codebase, growing the exact gap this
+entry documents during the one block left to ship it.
+
+**Rule: any new data-fetching call site Phase 2 adds goes through one
+small, shared internal hook - not TanStack Query, not a rewrite of any
+existing call site.** Proposed shape (to be confirmed as part of the
+Phase 2 plan, not built here): a `useApiResource<T>(fetchFn, deps)` hook
+factoring the exact pattern already hand-written per-screen (a mount
+effect with its own `cancelled` flag, a `try`/`catch` setting `error`,
+`retryTransient` wrapping the call for transient recovery) into one
+place, returning `{ data, error, loading, refetch }`. Deliberately not a
+cache, not cross-component state, not query invalidation - a shared
+implementation of the retry/error/cancellation convention this block
+already proved out at two call sites, extended to cover new ones instead
+of a third and fourth hand-rolled copy.
+- **Why this belongs in this entry, not only stated in conversation:**
+  it gives this finding a real "what was done about it" line rather than
+  only a confession that the gap exists and will grow. Whether Phase 2's
+  own plan adopts this exact shape is a decision for that planning pass,
+  not settled here.
+- **Status:** the TanStack Query and React Hook Form + Zod absences are
+  both open, permanently, for this project as scoped - B17 is terminal
+  and no block exists to pick either up. The containment rule above is a
+  proposal for Phase 2's own plan to accept, amend, or reject - not
+  committed code.
+- **Test:** none - a dependency/config audit (`package.json`, `package-
+  lock.json`, 8 forms and their backend schemas each read directly) and a
+  proposal, not a code path.
