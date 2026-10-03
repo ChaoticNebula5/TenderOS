@@ -15,3 +15,15 @@ export function bringToFront(i: number) {
   off += Math.round((input.hoffT - off) / HN) * HN;
   input.hoffT = off;
 }
+
+/** Evidence tracing: select statement i. The thread redraws from its start. */
+export function selectClaim(i: number) {
+  input.sel = i;
+  input.threadP = 0;
+}
+
+/** Evidence tracing: clear the selection. The cited document returns to the wall. */
+export function clearClaims() {
+  input.sel = -1;
+  input.threadP = 0;
+}

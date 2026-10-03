@@ -4,7 +4,7 @@
 import { N } from "../data/tender";
 import { CH, CW, F, clamp } from "./math";
 import { L, NC, ZMAX, type Pose } from "./arrangements";
-import { ctx, els } from "./store";
+import { CT, ctx, els } from "./store";
 
 export type Rect = { x: number; y: number; w: number; h: number; cx: number; cy: number };
 const rect = (): Rect => ({ x: 0, y: 0, w: 1, h: 1, cx: 0, cy: 0 });
@@ -86,6 +86,12 @@ export function measure() {
   }
   Object.assign(ctx, save);
   els.wires?.setAttribute("viewBox", `0 0 ${vw} ${vh}`);
+
+  // where each document's cited line sits, so the evidence thread lands on the exact line
+  for (let i = 0; i < N; i++) {
+    const ct = els.card[i]?.querySelector<HTMLElement>(".ct");
+    CT[i] = ct ? ct.offsetTop + ct.offsetHeight / 2 - CH / 2 : 0;
+  }
 }
 
 /** Scroll position to chapter progress: k inside chapter k's hold, k + f between holds k and k + 1. */

@@ -1,13 +1,15 @@
 // The one frame loop (architecture rule 2) and the world's lifecycle.
 
-import { MAND, N, REQ, isM } from "../data/tender";
+import { CLAIMS } from "../data/claims";
+import { MAND, N, REQ, isEv, isM } from "../data/tender";
 import { NAMES, SIDE } from "../data/chapters";
 import { DL, L, NC, ZMAX, type Pose } from "./arrangements";
 import { placeLabels, resetLabels } from "./labels";
 import { W, W0, W1, measure, pOf, view } from "./layout";
 import { attachPointer } from "./manipulation";
-import { F, RM, clamp, ease, lerp } from "./math";
+import { CH, CW, F, RM, clamp, ease, lerp } from "./math";
 import { HF, ctx, drag, els, input, resetStore, rv, scr } from "./store";
+import { placeThread, resetThread } from "./thread";
 import { placeWires, resetWires } from "./wires";
 
 /** Coarse scale steps per e-fold: about 4%, so the GPU never stretches a page more than 2%. */
@@ -28,6 +30,10 @@ let lastNear = -1;
 let lastSw = -1;
 let hotPrev = -1;
 let idxOn = -1;
+/** Eased 0..1: whether a statement is selected. */
+let selW = 0;
+/** Eased 0..1 per document: how far it has moved to the reading plane. */
+const fw = new Float32Array(N);
 
 let last = 0;
 let ys = 0;
@@ -44,6 +50,8 @@ function resetCaches() {
   lastSw = -1;
   hotPrev = -1;
   idxOn = -1;
+  selW = 0;
+  fw.fill(0);
   for (const w of els.wrap) {
     if (!w) continue;
     delete w.dataset.s;
@@ -58,6 +66,10 @@ function desired(i: number, near: number): string {
   if (near === 2) {
     const r = REQ.find((q) => q.pg === i);
     return r ? (r.st === "met" ? "lit" : r.st) : "";
+  }
+  if (near === 3) {
+    const cl = input.sel >= 0 ? CLAIMS[input.sel] : null;
+    return cl && "src" in cl && cl.src === i ? "lit" : "";
   }
   return "";
 }
@@ -98,9 +110,14 @@ function frame(now: number) {
   /** How present chapter k is: 1 inside its hold, 0 from 0.4 of a transition away. */
   const cw = (k: number) => clamp(1 - Math.abs(P - k) * 2.5, 0, 1);
   const near = Math.round(P);
+  const sel = input.sel;
+
+  // the one layout read this frame needs, before anything is written (rule 9)
+  const rcSel = sel >= 0 && !ctx.portrait && cw(3) > 0.02 ? (els.claimBtn[sel]?.getBoundingClientRect() ?? null) : null;
 
   // the world slides to the opposite side of the text as chapters alternate
-  const sw = ctx.portrait ? 0 : lerp(SIDE[c], SIDE[c + 1], t);
+  const sw = ctx.portrait ? 0 : lerp(SIDE[c], SIDE[c + 1], t),
+    dir = sw < 0.5 ? 1 : -1;
   W.x = lerp(W0.x, W1.x, sw);
   W.y = W0.y;
   W.w = W0.w;
@@ -130,22 +147,45 @@ function frame(now: number) {
   // the highlighted helix page: the hovered index row's page, else the hovered page
   const hotPg = near === 1 ? (input.idxHover >= 0 ? MAND[input.idxHover] : input.hoverCard) : -1;
 
+  // evidence tracing: the cited document comes to the reading plane beside the text
+  const inProof = cw(3);
+  const cl = sel >= 0 ? CLAIMS[sel] : null;
+  const focusId = cl && "src" in cl ? cl.src : -1;
+  const kf = 1 - Math.exp(-dt * 5);
+  selW += ((sel >= 0 ? 1 : 0) - selW) * (RM ? 1 : kf);
+  // reading scale, floored onto a coarse step so the page lands with no fine scale left
+  const FS = Math.exp(Math.floor(Math.log(Math.min(1, (W.w * 0.56) / CW, (W.h * 0.84) / CH)) * QSTEP + 1e-6) / QSTEP);
+  const FX = W.cx + dir * W.w * 0.06,
+    FY = W.cy;
+  if (sel >= 0) input.threadP = RM ? 1 : Math.min(1, input.threadP + dt * 1.5);
+
   for (let i = 0; i < N; i++) {
     const wr = els.wrap[i];
     if (!wr) continue;
     L[c](i, A);
     L[c + 1](i, B);
     const ti = RM ? t : ease(clamp((f - DL[i]) / 0.78, 0, 1));
-    const z = Math.min(lerp(A.z, B.z, ti), ZMAX),
-      r = lerp(A.r, B.r, ti);
-    let o = lerp(A.o, B.o, ti);
+    const z = Math.min(lerp(A.z, B.z, ti), ZMAX);
+    let r = lerp(A.r, B.r, ti),
+      o = lerp(A.o, B.o, ti);
     const s = F / (F - z);
     // the readability rule lives here: nothing is ever drawn above its natural size
-    const sc = Math.min(1, s * G),
+    let sc = Math.min(1, s * G),
       sx = W.cx + lerp(A.x, B.x, ti) * sc,
       sy = W.cy + lerp(A.y, B.y, ti) * sc;
     o *= 1 - FADE * (1 - clamp((s - 0.2) / 0.38, 0, 1)); // depth reads as falling into the dark
-    const zi = 5000 + Math.round(z);
+
+    // the cited document glides to the reading plane: upright, opaque, on top
+    fw[i] += ((i === focusId && !ctx.portrait ? inProof : 0) - fw[i]) * (RM ? 1 : kf);
+    const w = ease(clamp(fw[i], 0, 1));
+    if (w > 0.001) {
+      sx = lerp(sx, FX, w);
+      sy = lerp(sy, FY, w);
+      sc = lerp(sc, FS, w);
+      r = lerp(r, 0, w);
+      o = lerp(o, 1, w);
+    } else if (isEv(i) && near === 3) o *= 1 - 0.74 * selW * inProof; // the rest of the wall dims
+    const zi = w > 0.5 ? 9000 : 5000 + Math.round(z);
 
     scr.x[i] = sx;
     scr.y[i] = sy;
@@ -217,6 +257,8 @@ function frame(now: number) {
 
   placeLabels(cw, hotPg);
   placeWires(cw(2));
+  // the evidence thread, from the statement's rect read at the top of the frame
+  placeThread(sel, rcSel, ctx.portrait ? 0 : inProof * selW, input.threadP, dir);
 }
 
 let stopCurrent: (() => void) | null = null;
@@ -237,6 +279,7 @@ export function startWorld(): () => void {
   resetCaches();
   resetLabels();
   resetWires();
+  resetThread();
   measure();
   ys = scrollY;
 

@@ -1,4 +1,5 @@
 import { els } from "../world/store";
+import { tend, thread, threadGlow } from "../world/thread";
 import { MATCH_WIRES, gapWire, matchWire } from "../world/wires";
 
 /**
@@ -34,9 +35,25 @@ export function Wires() {
       </g>
       <g id="wh" />
       <g id="wd" />
-      <path id="threadGlow" />
-      <path id="thread" />
-      <circle id="tend" r="5" />
+      <path
+        id="threadGlow"
+        ref={(el) => {
+          threadGlow.el = el;
+        }}
+      />
+      <path
+        id="thread"
+        ref={(el) => {
+          thread.el = el;
+        }}
+      />
+      <circle
+        id="tend"
+        r="5"
+        ref={(el) => {
+          tend.el = el;
+        }}
+      />
     </svg>
   );
 }

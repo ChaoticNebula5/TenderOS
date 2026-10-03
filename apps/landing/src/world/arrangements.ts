@@ -2,7 +2,7 @@
 // in world px (origin at the centre of the world area, z toward the viewer),
 // rotation in degrees and opacity. Projection to the screen happens in the frame.
 
-import { EVROW, N, NE, NP, REQ, isDr, isM, isPg } from "../data/tender";
+import { EVROW, N, NE, NP, REQ, isDr, isEv, isM, isPg } from "../data/tender";
 import { F, RM, TAU, clamp, hash } from "./math";
 import { HF, ctx } from "./store";
 
@@ -157,12 +157,31 @@ const match: Arrangement = (i, o) => {
   }
 };
 
+/** Evidence tracing: the twelve evidence files as a wall in two staggered rows, curving away at the sides. */
+const proof: Arrangement = (i, o) => {
+  if (!isEv(i)) return park(i, o);
+  const e = i - NP;
+  o.r = (hash(i * 7) - 0.5) * 4;
+  o.o = 1;
+  if (ctx.portrait) {
+    o.x = ((e % 4) - 1.5) * 380;
+    o.y = (((e / 4) | 0) - 1) * 520;
+    o.z = -1500 - (e % 2) * 160;
+  } else {
+    const row = e % 2,
+      c = e >> 1;
+    o.x = (c - 2.5) * 400 + (row ? 110 : -60);
+    o.y = row ? 300 : -300;
+    o.z = -1500 - Math.pow(o.x / 1100, 2) * 700 - row * 160;
+  }
+};
+
 /**
  * One arrangement per chapter, indexed by data-ch. Chapters whose arrangement is
- * not built yet hold their documents in the park shell: proof (V3), impact (V4)
- * and submission (V5) replace these entries.
+ * not built yet hold their documents in the park shell: impact (V4) and
+ * submission (V5) replace these entries.
  */
-export const L: readonly Arrangement[] = [pile, pack, match, park, park, park];
+export const L: readonly Arrangement[] = [pile, pack, match, proof, park, park];
 export const NC = L.length;
 
 /** Per-document delay in every morph, so documents move as a loose crowd. */

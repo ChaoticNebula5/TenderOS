@@ -16,6 +16,7 @@ export const els = {
   whereN: null as HTMLElement | null,
   whereT: null as HTMLElement | null,
   idxBtn: [] as HTMLButtonElement[], // tender analysis index rows, by MAND position
+  claimBtn: [] as HTMLButtonElement[], // evidence tracing statements, by CLAIMS index
 };
 
 /** Inputs to the arrangement functions. */
@@ -44,6 +45,9 @@ export const scr = {
 /** How squarely each tender page faces the reader in the helix, 0..1. */
 export const HF = new Float32Array(NP);
 
+/** Vertical offset of each document's cited line (`.ct`) from its centre, at scale 1. Set by measure(). */
+export const CT = new Float32Array(N);
+
 /** Pointer input that the loop eases toward, and hover/selection state from the page. */
 export const input = {
   curP: 0, // chapter progress from the last frame, used to route pointer events
@@ -52,6 +56,8 @@ export const input = {
   idxHover: -1, // index row under the pointer or keyboard focus, by MAND position
   hoverCard: -1, // mandatory page under the pointer in the helix, by card id
   hoffT: 0, // helix offset target set by bringToFront()
+  sel: -1, // selected statement in evidence tracing, by CLAIMS index; mirrors the chapter's React state
+  threadP: 0, // how much of the evidence thread is drawn, 0..1; restarts on every selection
 };
 
 export type DragMode = null | "pending" | "rotate" | "tap";
@@ -72,7 +78,7 @@ export const rv = { y: 0, p: 0 };
 /** Back to the state of a fresh page load. Called when the world starts. */
 export function resetStore() {
   Object.assign(ctx, { T: 0, yv: 0, mx: 0, my: 0, portrait: false, dyaw: 0, dpitch: 0, y1: 1, hoff: 0 });
-  Object.assign(input, { curP: 0, mxT: 0, myT: 0, idxHover: -1, hoverCard: -1, hoffT: 0 });
+  Object.assign(input, { curP: 0, mxT: 0, myT: 0, idxHover: -1, hoverCard: -1, hoffT: 0, sel: -1, threadP: 0 });
   Object.assign(drag, { mode: null, sx: 0, sy: 0, lx: 0, ly: 0, lt: 0 });
   Object.assign(rv, { y: 0, p: 0 });
   for (const a of Object.values(scr)) a.fill(0);
