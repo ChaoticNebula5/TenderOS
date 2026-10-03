@@ -1,0 +1,1856 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="TenderOS reads the tender pack and your evidence, drafts only what the evidence supports, and shows what breaks when a fact changes.">
+<meta name="theme-color" content="#15110D">
+<title>TenderOS · one world behind every chapter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200;0,6..72,300;0,6..72,400;1,6..72,200;1,6..72,300&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<style>
+:root{
+  --bg:#15110D; --bg-2:#100D09; --raise:#221B14;
+  --ink:#F3ECE1; --ink-2:#BCB0A0; --ink-3:#8B8073;
+  --amber:#C98A47; --slate:#7FA5AA; --alarm:#CF5F45; --sand:#4A4036;
+  --paper:#F6F0E4; --paper-ink:#1D1812; --paper-ink-2:#5B5046; --paper-rule:rgba(29,24,18,.14);
+  --rule:rgba(243,236,225,.15); --rule-2:rgba(243,236,225,.07);
+  --display:"Newsreader",Georgia,serif; --ui:"Archivo",system-ui,sans-serif;
+  --col:min(470px,40vw);--col-wide:min(620px,46vw);
+}
+[data-theme="light"]{
+  --bg:#EFEAE1; --bg-2:#E5DFD3; --raise:#FBF8F2;
+  --ink:#241F1A; --ink-2:#4A423A; --ink-3:#7A7066;
+  --amber:#8A5A2B; --slate:#3E6167; --alarm:#9E3B2B; --sand:#B9A98F;
+  --rule:rgba(36,31,26,.17); --rule-2:rgba(36,31,26,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:auto}
+body{background:var(--bg);color:var(--ink);font-family:var(--ui);-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;transition:background .45s,color .45s}
+::selection{background:var(--amber);color:var(--bg)}
+button{font-family:var(--ui)}
+button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+
+/* ── the world: one canvas behind every chapter ── */
+#world{position:fixed;inset:0;width:100vw;height:100vh;display:block;z-index:0}
+#links{position:fixed;inset:0;width:100vw;height:100vh;z-index:2;pointer-events:none;overflow:visible}
+#vig{position:fixed;inset:0;z-index:1;pointer-events:none;
+  background:radial-gradient(ellipse 80% 70% at 62% 50%,transparent 40%,rgba(6,5,4,.55) 100%)}
+[data-theme="light"] #vig{background:radial-gradient(ellipse 80% 70% at 62% 50%,transparent 45%,rgba(120,100,80,.16) 100%)}
+.tag{position:fixed;left:0;top:0;z-index:3;pointer-events:none;font-size:11px;font-weight:600;
+  color:var(--ink-2);white-space:nowrap;opacity:0;transition:opacity .3s;will-change:transform}
+.tag.on{opacity:1}
+.tag.amb{color:var(--amber)} .tag.bad{color:var(--alarm)}
+
+header{position:fixed;top:0;left:0;right:0;z-index:70;display:flex;align-items:center;
+  justify-content:space-between;padding:15px clamp(18px,4vw,52px);
+  background:color-mix(in oklab,var(--bg) 80%,transparent);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--rule-2)}
+.mark{font-family:var(--display);font-weight:300;font-size:19px}
+.mark span{color:var(--amber)}
+header nav{display:flex;gap:22px;font-size:13px;align-items:center}
+header nav a{color:var(--ink-2);text-decoration:none;transition:color .15s}
+header nav a:hover,header nav a.on{color:var(--amber)}
+#th{background:none;border:1px solid var(--rule);color:var(--ink-2);cursor:pointer;border-radius:4px;
+  padding:6px 12px;font-size:12px;transition:.15s}
+#th:hover{border-color:var(--amber);color:var(--amber)}
+
+/* ── chapters scroll over the world ── */
+main{position:relative;z-index:3;pointer-events:none}
+.ch{position:relative;min-height:112vh;display:flex;align-items:center;
+  padding:110px clamp(24px,4.5vw,64px) 80px;pointer-events:none}
+.ch .col{width:var(--col);pointer-events:auto;position:relative}
+.ch .col.wide-col{width:var(--col-wide)}
+.ch[data-side="right"]{justify-content:flex-end}
+.ch::before{content:"";position:absolute;top:0;bottom:0;width:calc(var(--col) + 280px);pointer-events:none;
+  background:linear-gradient(90deg,var(--bg) 0%,color-mix(in oklab,var(--bg) 82%,transparent) 62%,transparent 100%)}
+.ch[data-side="left"]::before{left:0}
+.ch[data-side="right"]::before{right:0;transform:scaleX(-1)}
+.ch.wide .col{width:min(1180px,100%);margin:0 auto}
+.ch.wide::before{width:100%;left:0;background:color-mix(in oklab,var(--bg) 78%,transparent)}
+
+.eyebrow{font-size:11.5px;color:var(--amber);font-weight:600;margin-bottom:14px;display:flex;gap:10px;align-items:baseline}
+.eyebrow .no{color:var(--ink-3);font-variant-numeric:tabular-nums}
+h1{font-family:var(--display);font-weight:200;line-height:1;letter-spacing:-.03em;font-size:clamp(40px,5.2vw,78px)}
+h2{font-family:var(--display);font-weight:200;line-height:1.05;letter-spacing:-.025em;font-size:clamp(30px,3.3vw,48px)}
+h1 i,h2 i{font-weight:200;font-style:italic;color:var(--amber)}
+.lead{font-size:16px;line-height:1.62;color:var(--ink-2);margin-top:20px;max-width:44ch}
+.note{font-size:12.5px;color:var(--ink-3);margin-top:18px;line-height:1.55;max-width:44ch}
+.row{display:flex;gap:12px;margin-top:28px;flex-wrap:wrap}
+.btn{padding:12px 24px;font-size:14px;font-weight:600;text-decoration:none;border-radius:4px;transition:.16s;
+  border:1px solid transparent;cursor:pointer;display:inline-block;background:none}
+.btn.p{background:var(--ink);color:var(--bg)} .btn.p:hover{background:var(--amber)}
+.btn.s{border-color:var(--rule);color:var(--ink-2)} .btn.s:hover{border-color:var(--amber);color:var(--amber)}
+.rev{opacity:0;transform:translateY(22px)}
+
+/* hero */
+.quote{margin-top:34px;padding:14px 16px;border-left:2px solid var(--amber);max-width:40ch;
+  background:color-mix(in oklab,var(--raise) 70%,transparent)}
+.quote .k{font-size:10.5px;color:var(--ink-3);font-weight:600}
+.quote p{font-family:var(--display);font-weight:300;font-size:17px;line-height:1.4;margin-top:6px}
+.quote mark{background:none;color:var(--ink);box-shadow:inset 0 -2px 0 color-mix(in oklab,var(--amber) 70%,transparent)}
+
+/* pack */
+.clauses{list-style:none;margin-top:24px;border-top:1px solid var(--rule-2)}
+.clauses li{padding:11px 0;border-bottom:1px solid var(--rule-2);cursor:default;transition:background .2s}
+.clauses li:hover,.clauses li.hot{background:color-mix(in oklab,var(--amber) 8%,transparent)}
+.clauses .t{font-family:var(--display);font-weight:300;font-size:15.5px;line-height:1.38}
+.clauses .t b{font-weight:400;color:var(--amber);font-style:italic}
+.clauses .p{font-size:11px;color:var(--ink-3);margin-top:4px;font-variant-numeric:tabular-nums}
+.clauses .p span{color:var(--ink-2)}
+
+/* reading */
+#read{min-height:100vh;padding:0}
+#read .stagebox{height:100vh;width:100%;display:flex;align-items:center;padding:90px clamp(18px,4vw,52px) 40px}
+#read .col{align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+#page{position:fixed;left:0;top:0;width:380px;height:517px;z-index:3;transform-origin:0 0;pointer-events:none;
+  background:var(--paper);color:var(--paper-ink);border-radius:2px;padding:30px 30px 24px;opacity:0;
+  box-shadow:0 40px 70px -40px rgba(0,0,0,.9),0 0 0 1px rgba(0,0,0,.06);overflow:hidden;will-change:transform,opacity}
+#page .ph{display:flex;justify-content:space-between;font-size:9.5px;font-weight:600;color:#8A5A2B;
+  border-bottom:1px solid var(--paper-rule);padding-bottom:8px}
+#page .ph span:last-child{color:var(--paper-ink-2);font-weight:500}
+#page h4{font-family:var(--display);font-weight:300;font-size:25px;line-height:1.1;margin:16px 0 4px;letter-spacing:-.01em}
+#page .sub{font-size:10.5px;color:var(--paper-ink-2)}
+#page h5{font-size:9.5px;font-weight:700;color:#8A5A2B;margin:15px 0 5px}
+#page p,#page li{font-family:var(--display);font-weight:400;font-size:12.6px;line-height:1.5;color:#2F2820}
+#page ul{list-style:none}
+#page li{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--paper-rule);padding:3px 0}
+#page li span:last-child{color:var(--paper-ink-2);font-family:var(--ui);font-size:10.5px}
+#page table{width:100%;border-collapse:collapse;font-size:10.5px;margin-top:6px}
+#page td,#page th{border-bottom:1px solid var(--paper-rule);padding:4px 3px;text-align:left}
+#page th{font-weight:700;color:var(--paper-ink-2);font-size:9.5px}
+#page td.n{text-align:right;font-variant-numeric:tabular-nums}
+#page .centre{text-align:center}
+#page .seal{width:74px;height:74px;border-radius:50%;border:1.5px solid rgba(138,90,43,.55);margin:16px auto 10px;
+  display:grid;place-items:center;font-size:9px;font-weight:700;color:#8A5A2B}
+#page .sig{font-family:var(--display);font-style:italic;font-size:22px;color:#3B3128;margin-top:14px}
+#page .bars div{height:9px;background:rgba(29,24,18,.22);margin:5px 0;border-radius:1px}
+#page .bars div.a{background:rgba(138,90,43,.6)}
+#page .pf{position:absolute;left:30px;right:30px;bottom:14px;display:flex;justify-content:space-between;
+  font-size:9px;color:var(--paper-ink-2);border-top:1px solid var(--paper-rule);padding-top:6px}
+
+#page tr.hit td{background:rgba(201,138,71,.16)}
+#page .cmp{font-family:var(--display);font-weight:300;font-size:13.5px;line-height:1.45;margin-top:4px}
+#page .cmp.bad{color:#9E3B2B}
+#page .cmp.ok{color:#3E6167}
+#page .cmp b{font-weight:600}
+#seal{position:fixed;left:0;top:0;z-index:4;pointer-events:none;width:172px;height:172px;border-radius:50%;
+  border:2px solid color-mix(in oklab,var(--amber) 85%,transparent);
+  box-shadow:inset 0 0 0 4px color-mix(in oklab,var(--amber) 16%,transparent);
+  display:grid;place-items:center;align-content:center;gap:4px;text-align:center;padding:0 16px;
+  background:color-mix(in oklab,var(--bg) 92%,transparent);opacity:0;transform-origin:50% 50%;
+  box-shadow:inset 0 0 0 4px color-mix(in oklab,var(--amber) 16%,transparent),0 22px 44px -26px rgba(0,0,0,.9)}
+#seal .s1{font-size:12px;font-weight:700;color:var(--amber);letter-spacing:.07em;line-height:1.25}
+#seal .s2{font-size:11px;color:var(--ink-2);line-height:1.3}
+#seal .s3{font-size:10.5px;color:var(--alarm);font-weight:600}
+@media(max-width:900px){#seal{display:none}}
+#page mark{background:linear-gradient(transparent 12%,rgba(227,161,90,.55) 12%,rgba(227,161,90,.55) 88%,transparent 88%) no-repeat 0 0/0% 100%;
+  color:inherit;padding:0 1px;transition:background-size .5s cubic-bezier(.6,0,.2,1)}
+#page.hl mark{background-size:100% 100%}
+
+.lenscard{margin-top:22px;padding:15px 17px 14px;background:var(--raise);border:1px solid var(--rule);border-radius:4px;min-height:164px}
+.lenscard .lk{display:flex;gap:10px;font-size:11px;color:var(--ink-3)}
+.lenscard .ln{color:var(--amber);font-weight:700;font-variant-numeric:tabular-nums}
+.lenscard .lf{font-size:12.5px;font-weight:600;color:var(--ink-2);margin-top:6px;word-break:break-all}
+.lenscard .lx{font-family:var(--display);font-weight:300;font-size:17px;line-height:1.36;margin-top:8px}
+.lenscard .lx span{display:inline-block}
+.lenscard.sw .lx span{animation:wordIn .3s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(.5s + var(--i) * 22ms)}
+@keyframes wordIn{from{opacity:0;transform:translateY(4px);filter:blur(3px)}to{opacity:1;transform:none;filter:none}}
+.lr{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px;font-size:11px}
+.rq{border:1px solid var(--rule);padding:2px 7px;border-radius:2px;color:var(--ink-2)}
+.st{padding:2px 7px;border-radius:2px;font-weight:600;font-size:11px}
+.st.ok{color:var(--slate);background:rgba(127,165,170,.13)}
+.st.exp{color:var(--amber);background:rgba(201,138,71,.15)}
+.st.old,.st.gap{color:var(--alarm);background:rgba(207,95,69,.14)}
+.hud{margin-top:18px}
+.hud .hrow{display:flex;gap:14px;font-size:11.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.hud .hrow b{color:var(--ink-2);font-weight:600}
+.hg{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;margin-top:9px}
+.rc{height:21px;display:grid;place-items:center;font-size:9.5px;font-weight:600;color:var(--ink-3);
+  border:1px solid var(--rule-2);border-radius:2px;font-variant-numeric:tabular-nums;transition:background .3s,color .3s,border-color .3s}
+.rc.cov{background:rgba(201,138,71,.16);border-color:rgba(201,138,71,.42);color:var(--ink)}
+.rc.hit{animation:rcHit .7s cubic-bezier(.2,.7,.2,1)}
+@keyframes rcHit{0%{background:rgba(227,161,90,.9);color:#15110D;transform:scale(1.2)}100%{transform:none}}
+.rc.gap{background:rgba(207,95,69,.16);border-color:rgba(207,95,69,.7);color:var(--alarm)}
+
+/* compliance */
+.mx{margin-top:24px;border-top:1px solid var(--rule)}
+.mx .r{display:grid;grid-template-columns:52px 1fr auto;gap:12px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--rule-2);font-size:12.5px}
+.mx .c{color:var(--ink-3);font-weight:600;font-variant-numeric:tabular-nums}
+.mx .d{color:var(--ink)} .mx .d small{display:block;color:var(--ink-3);font-size:11px;margin-top:2px}
+.mx .r.gap .d small{color:var(--alarm)}
+
+/* drafting */
+.proposal{margin-top:22px;background:var(--paper);color:var(--paper-ink);border-radius:3px;padding:18px 20px 12px;
+  box-shadow:0 26px 54px -30px rgba(0,0,0,.85)}
+.proposal .sh{font-size:10.5px;font-weight:700;color:#8A5A2B;padding-bottom:9px;border-bottom:1px solid var(--paper-rule)}
+.pc{padding:10px 8px;margin:0 -8px;border-radius:2px;cursor:pointer;transition:background .18s}
+.pc:hover,.pc.on{background:rgba(138,90,43,.1)}
+.pc .tx{font-family:var(--display);font-weight:300;font-size:15.5px;line-height:1.4}
+.pc .tg{display:inline-block;margin-top:5px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:2px}
+.pc .tg.g{color:#3E6167;background:rgba(62,97,103,.12)}
+.pc .tg.u{color:#9E3B2B;background:rgba(158,59,43,.1)}
+.pc .tg.c{color:#6B6056;background:rgba(29,24,18,.07)}
+.pc .hops{max-height:0;overflow:hidden;transition:max-height .45s;font-size:11.5px;color:var(--paper-ink-2)}
+.pc.on .hops{max-height:120px}
+.pc .hops div{display:flex;gap:10px;padding:4px 0;border-top:1px solid var(--paper-rule);margin-top:5px}
+.pc .hops b{color:var(--paper-ink);font-weight:600;min-width:98px}
+
+/* red team */
+.claim{padding:13px 0 13px 18px;border-left:2px solid var(--rule);transition:.5s;font-family:var(--display);
+  font-weight:300;font-size:17px;line-height:1.4;cursor:pointer}
+.claim.dead{border-left-color:var(--alarm);color:var(--ink-3)}
+.claim.dead .t{text-decoration:line-through;text-decoration-color:var(--alarm);text-decoration-thickness:1.5px}
+.claim.live{border-left-color:var(--amber)}
+.why{font-family:var(--ui);font-size:12px;line-height:1.5;margin-top:7px;color:var(--alarm);max-height:0;overflow:hidden;transition:max-height .5s}
+.claim.op .why{max-height:64px}
+.claim.live .why{color:var(--amber)}
+.checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:20px}
+.checks span{font-size:11px;padding:3px 9px;border:1px solid var(--rule);border-radius:99px;color:var(--ink-2)}
+.checks span.m{border-color:rgba(201,138,71,.5);color:var(--amber)}
+
+/* two-column panels for the flat chapters */
+.g2{display:grid;grid-template-columns:1fr 1.1fr;gap:clamp(26px,4vw,64px);align-items:center}
+.win{background:color-mix(in oklab,var(--raise) 94%,transparent);border:1px solid var(--rule);border-radius:7px;
+  overflow:hidden;box-shadow:0 30px 66px -48px rgba(0,0,0,.9);backdrop-filter:blur(8px)}
+.bar{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--rule-2)}
+.bar i{width:9px;height:9px;border-radius:50%;background:var(--sand)}
+.bar span{font-size:11.5px;color:var(--ink-3);margin-left:8px}
+
+/* impact */
+#ic{width:100%;aspect-ratio:8/5;display:block;cursor:pointer}
+.causes{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--rule-2)}
+.cl-lbl{font-size:11px;font-weight:700;color:var(--ink-3);margin-right:2px}
+.causes button{background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:99px;padding:6px 14px;font-size:12px;cursor:pointer;transition:.15s}
+.causes button:hover{border-color:var(--amber);color:var(--amber)}
+.causes button.on{background:var(--alarm);border-color:var(--alarm);color:var(--bg);font-weight:600}
+.fallout{margin-top:22px;border-top:1px solid var(--rule-2);padding-top:14px;min-height:150px}
+.fnote{font-size:12.5px;color:var(--ink-3)}
+.fr{display:flex;gap:12px;padding:7px 0;font-size:12.5px;align-items:baseline;opacity:0;transform:translateX(-6px)}
+.fr .h{font-size:10px;font-weight:700;color:var(--ink-3);min-width:44px}
+.fr .b{color:var(--ink-2);line-height:1.45}
+.fr .b b{color:var(--ink);font-weight:600}
+.fr.bad .b b{color:var(--alarm)}
+.ftot{font-family:var(--display);font-weight:200;font-size:30px;letter-spacing:-.02em;margin-top:12px}
+.ftot em{font-style:normal;color:var(--alarm)}
+
+/* pricing */
+.wb{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.wb th{font-size:10.5px;font-weight:600;color:var(--ink-3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule)}
+.wb td{padding:9px 12px;border-bottom:1px solid var(--rule-2);color:var(--ink-2)}
+.wb td.n,.wb th.n{text-align:right}
+.wb tr.bad td{background:rgba(207,95,69,.08)}
+.wb tr.bad td.flag{color:var(--alarm);font-weight:600}
+.wb tr.fixed td{background:rgba(127,165,170,.08)}
+.wb tr.tot td{color:var(--ink);font-weight:600;border-bottom:0}
+.wb .ref{color:var(--ink-3);font-size:10.5px}
+.findings{padding:14px;border-top:1px solid var(--rule-2);display:grid;gap:9px}
+.fd{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:10px 12px;border:1px solid rgba(207,95,69,.35);border-radius:4px;background:rgba(207,95,69,.05)}
+.fd .fh{font-size:12px;font-weight:600;color:var(--ink)}
+.fd .fv{grid-column:1/-1;display:flex;gap:16px;font-size:11.5px;color:var(--ink-3)}
+.fd .fv b{color:var(--ink-2);font-weight:600}
+.fd .fv b.dl{color:var(--alarm)}
+.fd .fn{grid-column:1/-1;font-family:var(--display);font-weight:300;font-size:14px;line-height:1.4;color:var(--ink-2)}
+.fd button{background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:3px;padding:5px 10px;font-size:11.5px;cursor:pointer}
+.fd button:hover{border-color:var(--amber);color:var(--amber)}
+.gate{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-top:1px solid var(--rule-2);font-size:12.5px}
+.gate b{font-weight:600} .gate .x{color:var(--alarm)} .gate .v{color:var(--slate)}
+
+/* close */
+#close h2{font-size:clamp(34px,4vw,58px)}
+footer{position:relative;z-index:3;padding:26px clamp(18px,4vw,52px);border-top:1px solid var(--rule-2);
+  display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3);background:var(--bg)}
+
+
+/* compliance: the retrieval trace */
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.chips button{background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:99px;
+  padding:7px 14px;font-size:12px;cursor:pointer;transition:.15s;font-family:var(--ui)}
+.chips button b{color:var(--ink-3);font-weight:700;margin-right:5px;font-variant-numeric:tabular-nums}
+.chips button:hover{border-color:var(--amber);color:var(--amber)}
+.chips button.on{border-color:var(--amber);background:rgba(201,138,71,.14);color:var(--ink)}
+.chips button.on b{color:var(--amber)}
+.trace{margin-top:20px}
+.tr-head{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);
+  padding-bottom:7px;border-bottom:1px solid var(--rule-2);font-weight:600}
+.tr{padding:11px 0 12px;border-bottom:1px solid var(--rule-2);animation:trIn .4s both;
+  animation-delay:calc(var(--i) * 90ms);opacity:1}
+@keyframes trIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.tr.no{opacity:.5}
+.tf{font-size:12.5px;font-weight:600;color:var(--ink-2);display:flex;justify-content:space-between;gap:10px}
+.tr.yes .tf{color:var(--ink)}
+.vd{font-size:10px;font-weight:700;padding:1px 7px;border-radius:2px}
+.vd.y{color:var(--slate);background:rgba(127,165,170,.14)}
+.vd.n{color:var(--alarm);background:rgba(207,95,69,.13)}
+.bars{display:grid;grid-template-columns:56px 1fr 34px;gap:8px;align-items:center;margin-top:5px}
+.bk{font-size:10px;color:var(--ink-3)}
+.mbar{height:5px;background:rgba(243,236,225,.1);border-radius:99px;overflow:hidden}
+.mbar i{display:block;height:100%;background:var(--ink-3);border-radius:99px;
+  transition:width .6s cubic-bezier(.2,.7,.2,1)}
+.mbar i.k{background:var(--amber)}
+.bv{font-size:10.5px;color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums}
+.tn{font-size:11.5px;color:var(--ink-3);margin-top:6px;line-height:1.45}
+.tv{display:flex;gap:12px;align-items:flex-start;margin-top:14px;padding-top:13px;border-top:1px solid var(--rule)}
+.tv p{font-family:var(--display);font-weight:300;font-size:16px;line-height:1.4;color:var(--ink)}
+
+/* drafting: the claim and its page */
+.dnote{margin-top:18px;padding:14px 16px;border:1px solid var(--rule);border-radius:4px;background:var(--raise)}
+.dk{font-size:11.5px;font-weight:700;color:var(--amber);display:flex;align-items:center;gap:8px}
+.dk.bad{color:var(--alarm)}
+.dk .pip{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+.dl{display:flex;gap:10px;font-size:12px;color:var(--ink-2);padding:6px 0;border-top:1px solid var(--rule-2);margin-top:7px}
+.dl b{color:var(--ink-3);font-weight:600;min-width:104px;font-size:11px}
+.dw{font-size:12.5px;color:var(--ink-2);line-height:1.5;margin-top:8px}
+
+/* pricing: editable cells */
+.wb td.edit{cursor:text;border-radius:2px;outline:none}
+.wb td.edit:hover{background:rgba(243,236,225,.06)}
+.wb td.edit:focus{background:rgba(201,138,71,.12);color:var(--ink)}
+
+/* red team: checks running, then a bounded revision */
+.rtpanel{margin-top:20px}
+.rtchecks{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px}
+.rtc{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3);border:1px solid var(--rule-2);
+  border-radius:99px;padding:5px 11px;opacity:.4;transition:opacity .18s,color .18s,border-color .18s}
+.rtc.run{opacity:1;color:var(--ink-2)}
+.rtc .dot{font-size:10px;font-weight:700}
+.rtc.pass{border-color:rgba(127,165,170,.4)} .rtc.pass .dot{color:var(--slate)}
+.rtc.fail{border-color:var(--alarm);color:var(--alarm);background:rgba(207,95,69,.1)}
+.rtc.fail .dot{color:var(--alarm)}
+.rtq{border-left:2px solid var(--rule);padding:12px 0 12px 18px}
+.rtq .was{font-family:var(--display);font-weight:300;font-size:18px;line-height:1.4;color:var(--ink)}
+.rtq .was del{text-decoration:line-through;text-decoration-color:rgba(207,95,69,.8);
+  text-decoration-thickness:1.5px;color:var(--ink-3);transition:color .3s}
+.rtq .was ins{text-decoration:none;background:rgba(201,138,71,.22);box-shadow:inset 0 -1px 0 var(--amber);
+  padding:0 3px;opacity:0;display:inline-block;transform:translateY(4px);transition:.4s}
+.rtq.rev2 .was ins{opacity:1;transform:none}
+.rtq .why{font-size:12px;color:var(--alarm);margin-top:8px;line-height:1.5;max-height:0;overflow:hidden;
+  transition:max-height .45s}
+.rtq.done .why{max-height:80px}
+.rtq .now{font-family:var(--display);font-weight:300;font-size:17.5px;line-height:1.38;color:var(--ink);
+  margin-top:14px;opacity:0;transform:translateY(6px);transition:.5s}
+.rtq.rev2 .now{opacity:1;transform:none}
+.rtq .now ins{text-decoration:none;background:rgba(201,138,71,.22);box-shadow:inset 0 -1px 0 var(--amber);padding:0 2px}
+.rtq .now del{display:none}
+.rtfoot{display:flex;gap:14px;align-items:center;margin-top:14px;font-size:11.5px;color:var(--ink-3);
+  opacity:0;transition:opacity .4s}
+.rtq.rev2 ~ .rtfoot{opacity:1}
+.rtfoot b{color:var(--ink-2);font-weight:600}
+.rtbadge{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:2px;color:var(--amber);
+  background:rgba(201,138,71,.14)}
+.rtbadge.hold{color:var(--slate);background:rgba(127,165,170,.13)}
+
+/* drafting: when there is no page to open */
+.ghost{position:fixed;left:0;top:0;z-index:3;width:380px;height:517px;transform-origin:0 0;pointer-events:none;
+  border:1px solid var(--rule);border-left:2px solid var(--alarm);border-radius:3px;
+  background:color-mix(in oklab,var(--raise) 96%,transparent);opacity:0;transition:opacity .3s;
+  padding:26px 26px 22px;display:flex;flex-direction:column;
+  box-shadow:0 34px 64px -40px rgba(0,0,0,.9)}
+.ghost .gk{font-size:10.5px;font-weight:700;color:var(--alarm);letter-spacing:.04em}
+.ghost .g1{font-family:var(--display);font-weight:300;font-size:24px;color:var(--ink);line-height:1.22;margin-top:12px}
+.ghost .gb{font-size:12.5px;color:var(--ink-2);margin-top:12px;line-height:1.55}
+.ghost .gr{margin-top:auto;border-top:1px solid var(--rule-2);padding-top:12px}
+.ghost .gq{font-size:10.5px;font-weight:700;color:var(--ink-3);margin-bottom:8px}
+.ghost .gl{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:11.5px;color:var(--ink-3);
+  padding:5px 0;border-bottom:1px solid var(--rule-2);font-variant-numeric:tabular-nums}
+.ghost .gl s{text-decoration-color:rgba(207,95,69,.6)}
+.ghost .gt{font-size:11px;color:var(--alarm);margin-top:10px}
+
+/* ── shape 1: each chapter owns a box, and the world moves into it ── */
+.viz{display:none}
+.mode-sections .ch{display:flex;gap:clamp(24px,4vw,56px);align-items:center;max-width:1340px;margin:0 auto;
+  min-height:100vh;padding:110px clamp(18px,4vw,52px) 80px}
+.mode-sections .ch::before{display:none}
+.mode-sections .ch .col{width:46%}
+.mode-sections .ch[data-side="right"]{justify-content:flex-start}
+.mode-sections .ch[data-side="right"] .col{order:2}
+.mode-sections .viz{display:block;width:54%;aspect-ratio:1/1;max-height:76vh;position:relative}
+.mode-sections .ch.wide{display:block}
+.mode-sections #world{position:fixed;width:auto;height:auto;transition:opacity .35s}
+.mode-sections #vig{display:none}
+.mode-sections #read .stagebox{display:flex;gap:clamp(24px,4vw,56px);align-items:center;
+  max-width:1340px;margin:0 auto;padding:100px clamp(18px,4vw,52px) 60px;height:100vh}
+.mode-sections #read .col{width:46%}
+.mode-sections #read .viz{width:54%}
+
+/* ── shape 2: one pinned timeline, chapters cross-fade in place ── */
+.mode-pinned .ch{position:fixed;inset:0;min-height:0;opacity:0;pointer-events:none;
+  padding:110px clamp(18px,4vw,52px) 80px;padding-left:clamp(96px,8vw,132px);display:flex;align-items:center}
+.mode-pinned .ch::before{opacity:.9}
+.mode-pinned #read .stagebox{height:auto;padding:0;width:100%}
+.mode-pinned footer{display:none}
+.mode-pinned #timeline{position:relative;z-index:-1}
+.mode-pinned #stage{position:fixed;inset:0;z-index:3}
+.mode-pinned main{position:static}
+#rail{position:fixed;left:clamp(10px,1.6vw,20px);top:50%;transform:translateY(-50%);z-index:60;
+  display:flex;flex-direction:column;gap:7px}
+#rail button{background:none;border:0;color:var(--ink-3);font-size:10px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;text-align:left;cursor:pointer;opacity:.55;padding:2px 0;transition:.2s}
+#rail button::before{content:"";display:inline-block;width:12px;height:1px;background:currentColor;
+  margin-right:7px;vertical-align:middle;transition:width .25s}
+#rail button.on{color:var(--amber);opacity:1}
+#rail button.on::before{width:26px}
+@media(max-width:900px){#rail{display:none}.mode-sections .ch,.mode-sections #read .stagebox{display:block}
+  .mode-sections .ch .col,.mode-sections .viz,.mode-sections #read .col,.mode-sections #read .viz{width:100%}}
+
+@media(max-width:900px){
+  :root{--col:100%}
+  header nav a{display:none}
+  .ch{min-height:auto;padding:96px 18px 64px}
+  .ch::before{width:100%!important;transform:none!important;background:color-mix(in oklab,var(--bg) 72%,transparent)}
+  .g2{grid-template-columns:1fr}
+  #read .stagebox{height:auto;padding:96px 18px 64px}
+  #page,.tag,.ghost,#seal{display:none}
+  #links{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.001ms!important;animation:none!important}}
+</style>
+</head>
+<body>
+<canvas id="world" aria-hidden="true"></canvas>
+<div id="vig"></div>
+<svg id="links" aria-hidden="true"></svg>
+<div id="page" aria-hidden="true"></div>
+<div id="ghost" class="ghost" aria-hidden="true"></div>
+<div id="seal" aria-hidden="true"><span class="s1">EVIDENCE COMPLETE</span><span class="s2">40 of 40 pages cited</span><span class="s3">1 gap flagged</span></div>
+
+<header>
+  <div class="mark">Tender<span>OS</span></div>
+  <nav><a href="#pack">Pack</a><a href="#read">Reading</a><a href="#comply">Compliance</a>
+    <a href="#draft">Drafting</a><a href="#red">Red team</a><a href="#impact">Impact</a><a href="#price">Pricing</a>
+    <button id="th">Light</button></nav>
+</header>
+
+<main>
+<section class="ch" id="hero" data-side="left" data-form="sphere" data-viz="1">
+  <div class="col">
+    <h1 class="rev">Nothing enters the bid <i>without a source.</i></h1>
+    <p class="lead rev">TenderOS reads the tender pack and your own evidence, drafts only what that evidence
+      supports, and shows you what breaks when a fact changes.</p>
+    <div class="row rev"><a class="btn p" href="#pack">See how it reads</a><a class="btn s" href="#close">Start a tender</a></div>
+    <div class="quote rev"><div class="k">A sentence from a live bid, and the three pages behind it</div>
+      <p id="heroSentence"><mark>A. Mehta</mark> leads delivery, under <mark>₹100 crore</mark> of professional indemnity cover, on a team that
+      <mark>resignalled the Blue Line</mark>.</p></div>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="pack" data-side="left" data-form="pack" data-viz="1">
+  <div class="col">
+    <p class="eyebrow rev"><span class="no">01</span>The pack</p>
+    <h2 class="rev">The clause that sinks you <i>is on page 214.</i></h2>
+    <p class="lead rev">PDF, DOCX and XLSX are parsed down to the page, the sheet and the cell, with OCR for
+      scanned pages. Mandatory language is caught by rule before a model sees it, so a <i>shall</i> is never read as a <i>should</i>.</p>
+    <ul class="clauses rev" id="clauses"></ul>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="read" data-side="left" data-form="helix" data-viz="1">
+  <div class="stagebox"><div class="col">
+    <p class="eyebrow"><span class="no">02</span>Reading</p>
+    <h2>Every page read. <i>Every fact kept.</i></h2>
+    <p class="lead" style="font-size:14.5px">Scroll to read the knowledge base one document at a time. The highlighted line
+      becomes a fact, and the fact lands on the requirement it answers.</p>
+    <div class="lenscard" id="lenscard"><div class="lk"><span class="ln">00 / 40</span><span>Waiting for the first page</span></div>
+      <p class="lx" style="color:var(--ink-3)">Nothing read yet.</p></div>
+    <div class="hud"><div class="hrow"><span><b id="hRead">00</b> of 40 read</span><span><b id="hCov">0</b> of 23 requirements covered</span></div>
+      <div class="hg" id="reqGrid"></div></div>
+  </div></div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="comply" data-side="left" data-form="retrieve" data-viz="1">
+  <div class="col">
+    <p class="eyebrow rev"><span class="no">03</span>Compliance</p>
+    <h2 class="rev">A status has to <i>survive a check.</i></h2>
+    <p class="lead rev">Hybrid retrieval pulls candidate chunks, a cross-encoder reranks them, and then a gate
+      written in code decides what may be cited. Pick a requirement and watch it run.</p>
+    <div class="chips rev" id="reqchips"></div>
+    <div class="trace rev" id="trace"></div>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="draft" data-side="left" data-form="draft" data-viz="1">
+  <div class="col">
+    <p class="eyebrow rev"><span class="no">04</span>Drafting</p>
+    <h2 class="rev">Every sentence <i>opens its page.</i></h2>
+    <p class="lead rev">Each section is drafted from a narrow bundle of verified facts, and every claim is tagged.
+      Click a sentence: the page it came from opens beside it, with the line highlighted.</p>
+    <div class="proposal rev"><div class="sh">Section 4 · Capability and experience</div><div id="pclaims"></div></div>
+    <div class="dnote rev" id="draftnote"></div>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="red" data-side="left" data-form="redteam" data-viz="1">
+  <div class="col">
+    <p class="eyebrow rev"><span class="no">05</span>Red team</p>
+    <h2 class="rev">It argues with the draft <i>before the buyer does.</i></h2>
+    <p class="lead rev">Five checks read every claim adversarially. Four are code, one is a model critique.
+      A failed check does not delete the sentence: it proposes a narrower one that the evidence can carry.</p>
+    <div class="chips rev" id="rtchips"></div>
+    <div class="rtpanel rev" id="rtpanel"></div>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch wide" id="impact" data-side="center" data-form="recede">
+  <div class="col"><div class="g2">
+    <div class="win rev"><div class="bar"><i></i><i></i><i></i><span>Dependency graph</span></div>
+      <canvas id="ic"></canvas>
+      <div class="causes"><span class="cl-lbl">Break something:</span>
+        <button data-s="0">ISO 27001 lapses</button><button data-s="1">A. Mehta leaves</button><button data-s="2">Rates change</button></div>
+    </div>
+    <div>
+      <p class="eyebrow rev"><span class="no">06</span>Impact</p>
+      <h2 class="rev">Change one fact. <i>See what it breaks.</i></h2>
+      <p class="lead rev">The bid is held as a graph, so the blast radius of a lapsed certificate or a departing engineer
+        is one query. A stale graph refuses to answer rather than answer wrong.</p>
+      <div class="fallout" id="fallout"><p class="fnote">Pick a cause, or click any node.</p></div>
+    </div>
+  </div></div>
+</section>
+
+<section class="ch" id="price" data-side="left" data-form="crossdoc" data-viz="1">
+  <div class="col wide-col">
+    <p class="eyebrow rev"><span class="no">07</span>Pricing</p>
+    <h2 class="rev">Arithmetic <i>the model never does.</i></h2>
+    <p class="lead rev">Row arithmetic, currency, grand totals and cross-document figures are checked in code.
+      The model only explains a finding it is handed, and it cannot change the numbers in it.</p>
+    <div class="win rev" style="margin-top:22px"><div class="bar"><i></i><i></i><i></i><span>Price_Bid.xlsx · Sheet 1</span></div>
+      <table class="wb" id="wb"></table><div class="findings" id="findings"></div><div class="gate" id="gate"></div></div>
+    <p class="note rev">Type into any rate or total. The checks re-run on what you typed, and the rate card the
+      bid cites is the document held up on the right.</p>
+  </div>
+    <div class="viz"></div>
+  </section>
+
+<section class="ch" id="close" data-side="left" data-form="bid" data-viz="1">
+  <div class="col">
+    <h2 class="rev">Win the bid you can <i>actually defend.</i></h2>
+    <p class="lead rev">Agents over one shared state, human approval at the gates that matter, and a graph that
+      answers what breaks when the facts move.</p>
+    <div class="row rev"><a class="btn p" href="#">Start a tender</a><a class="btn s" href="#">Read the architecture</a></div>
+  </div>
+    <div class="viz"></div>
+  </section>
+</main>
+<footer><span>TenderOS</span><span>Evidence-grounded bid operations</span></footer>
+<script>
+/* ══════════ shared ══════════ */
+const MODE='world';                    /* world | sections | pinned */
+document.documentElement.classList.add('mode-'+MODE);
+const V=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MOB=matchMedia('(max-width: 900px)').matches;
+const DPR=()=>Math.min(devicePixelRatio||1,MOB?1.5:2);
+const clamp01=v=>v<0?0:v>1?1:v;
+const ease=e=>e<.5?4*e*e*e:1-Math.pow(-2*e+2,3)/2;
+const approach=(rate,dt)=>1-Math.exp(-rate*dt);
+gsap.registerPlugin(ScrollTrigger);
+
+if(MODE==='pinned')document.querySelectorAll('.rev').forEach(el=>{el.style.opacity=1;el.style.transform='none';});
+else document.querySelectorAll('.rev').forEach(el=>gsap.to(el,{opacity:1,y:0,duration:RM?.001:.85,
+  ease:'power2.out',scrollTrigger:{trigger:el,start:'top 88%'}}));
+
+let light=false;
+document.getElementById('th').onclick=()=>{light=!light;
+  document.documentElement.dataset.theme=light?'light':'dark';
+  document.getElementById('th').textContent=light?'Dark':'Light';
+  if(window.onThemeChange)window.onThemeChange();};
+
+function fit(c){
+  const d=DPR(),r=c.getBoundingClientRect();
+  if(!r.width||!r.height)return null;
+  const w=Math.min(Math.round(r.width*d),4096),h=Math.min(Math.round(r.height*d),4096);
+  if(c.width!==w||c.height!==h){c.width=w;c.height=h;}
+  const x=c.getContext('2d');x.setTransform(w/r.width,0,0,h/r.height,0,0);
+  return[x,r.width,r.height];}
+
+/* ══════════ the knowledge base, in the order scroll reads it ══════════ */
+const REQ={'R-01':'Instructions','R-02':'Scope','R-03':'Financial standing','R-04':'Security certification',
+ 'R-05':'Quality','R-06':'Environment','R-07':'Relevant experience','R-08':'Business continuity',
+ 'R-09':'Site constraints','R-10':'Method','R-11':'Key personnel','R-12':'Governance','R-13':'Supply chain',
+ 'R-14':'Programme','R-15':'Health and safety','R-16':'Vetting','R-17':'Social value','R-18':'Carbon',
+ 'R-19':'Insurance','R-20':'Risk','R-21':'Data protection','R-22':'Pricing','R-23':'Commercial'};
+const REQ_CODES=Object.keys(REQ);
+const ST_LABEL={ok:'Valid',exp:'Expiring',old:'Superseded'};
+
+const KB=[
+ {ty:'Résumé',pg:3,f:'A_Mehta_CV.pdf',fact:'Fourteen years on metro rail programmes, RDSO signalling competency current.',req:'R-11 Key personnel',st:'ok',claim:0,tex:['cv',['A. Mehta']]},
+ {ty:'Clarification log',pg:4,f:'ClarificationLog_07.pdf',fact:'The buyer confirms GST at 12% applies to this works contract.',req:'R-02 Scope',st:'ok',claim:-1,tex:['letter',['CLARIFICATION LOG','Response 7']]},
+ {ty:'Certificate',pg:2,f:'ISO27001_2024.pdf',fact:'Certified to ISO/IEC 27001:2022, expiring four months before contract start.',req:'R-04 Security certification',st:'exp',claim:-1,tex:['cert',['CERTIFICATE OF REGISTRATION','ISO 27001','Information security','EXPIRING']]},
+ {ty:'Rate card',pg:1,f:'RateCard_Band3.xlsx',fact:'Band 3 engineer day rate ₹22,000, fixed for 24 months.',req:'R-22 Pricing',st:'ok',claim:-1,tex:['table',['RATE CARD','Band 3 rates',5]]},
+ {ty:'Résumé',pg:2,f:'R_Iyer_CV.pdf',fact:'Chartered civil engineer, nine years on live railway blocks.',req:'R-11 Key personnel',st:'ok',claim:-1,tex:['cv',['R. Iyer']]},
+ {ty:'Addendum',pg:2,f:'Addendum_02.pdf',fact:'The submission deadline moves to 14 November, superseding the RFP timetable.',req:'R-01 Instructions',st:'ok',claim:-1,tex:['letter',['ADDENDUM','Timetable change','ISSUED']]},
+ {ty:'Org chart',pg:1,f:'OrgChart_Delivery.pdf',fact:'A three-tier delivery team with eleven named roles.',req:'R-12 Governance',st:'ok',claim:-1,tex:['org',['ORGANISATION','Delivery team']]},
+ {ty:'Policy',pg:12,f:'HealthSafety_Policy_v6.pdf',fact:'Lost time injury frequency 0.12 per lakh hours worked, three-year average.',req:'R-15 Health and safety',st:'ok',claim:-1,tex:['policy',['POLICY','Health and safety']]},
+ {ty:'Site plan',pg:1,f:'SitePlan_Depot.pdf',fact:'Depot access through Gate 4 only, with no deliveries between 07:00 and 09:30.',req:'R-09 Site constraints',st:'ok',claim:-1,tex:['drawing',['DEPOT GA']]},
+ {ty:'Insurance certificate',pg:2,f:'PI_Certificate.pdf',fact:'Professional indemnity limit ₹100 crore any one claim, policy year 2026.',req:'R-19 Insurance',st:'ok',claim:1,tex:['cert',['CERTIFICATE OF INSURANCE','₹100 cr','Professional indemnity']]},
+ {ty:'Insurance schedule',pg:3,f:'PI_Schedule_2023.pdf',fact:'PI limit ₹40 crore, replaced by the 2026 certificate and never cited.',req:'R-19 Insurance',st:'old',claim:-1,tex:['letter',['SCHEDULE','PI limits 2023','VOID']]},
+ {ty:'Programme',pg:6,f:'Programme_Baseline.pdf',fact:'Mobilisation completes six weeks after award.',req:'R-14 Programme',st:'ok',claim:-1,tex:['gantt',['PROGRAMME','Baseline rev C']]},
+ {ty:'Certificate',pg:2,f:'ISO9001_Cert.pdf',fact:'Quality management certified, valid to 2028.',req:'R-05 Quality',st:'ok',claim:-1,tex:['cert',['CERTIFICATE OF REGISTRATION','ISO 9001','Quality management']]},
+ {ty:'Résumé',pg:3,f:'S_Nair_CV.pdf',fact:'Signalling design lead on two metro resignalling schemes.',req:'R-11 Key personnel',st:'ok',claim:-1,tex:['cv',['S. Nair']]},
+ {ty:'Register',pg:2,f:'Subcontractor_Register.xlsx',fact:'Seven approved subcontractors, two of them registered MSMEs.',req:'R-13 Supply chain',st:'ok',claim:-1,tex:['table',['REGISTER','Subcontractors',4]]},
+ {ty:'Method statement',pg:9,f:'MS_NightPossessions.pdf',fact:'Night traffic blocks run 01:00 to 04:30 with a thirty minute handback buffer.',req:'R-10 Method',st:'ok',claim:-1,tex:['policy',['METHOD STATEMENT','Night possessions']]},
+ {ty:'Accounts',pg:24,f:'Accounts_FY25.pdf',fact:'Turnover ₹402 crore, three-year average above the ₹200 crore threshold.',req:'R-03 Financial standing',st:'ok',claim:-1,tex:['table',['ANNUAL ACCOUNTS','FY 2025',3]]},
+ {ty:'Case study',pg:5,f:'PastPerf_Metro.docx',fact:'Blue Line resignalling for DMRC, ₹48 crore, completed 2023.',req:'R-07 Relevant experience',st:'ok',claim:3,tex:['report',['Blue Line','resignalling',[['CLIENT','DMRC'],['VALUE','₹48 crore'],['YEAR','2023'],['ROLE','Principal contractor']]]]},
+ {ty:'Reference',pg:1,f:'Reference_DMRC.pdf',fact:'The client reference rates delivery excellent on programme and on safety.',req:'R-07 Relevant experience',st:'ok',claim:-1,tex:['letter',['CLIENT REFERENCE','Delhi Metro Rail Corporation']]},
+ {ty:'Register',pg:2,f:'Security_Clearances.xlsx',fact:'Police verification complete for eleven staff, four hold restricted-area passes.',req:'R-16 Vetting',st:'ok',claim:-1,tex:['table',['REGISTER','Security clearances',4]]},
+ {ty:'Case study',pg:4,f:'PastPerf_Crossrail.docx',fact:'Station fit-out package, ₹30 crore, completed 2021.',req:'R-07 Relevant experience',st:'ok',claim:-1,tex:['report',['Station','fit-out',[['CLIENT','NCRTC'],['VALUE','₹30 crore'],['YEAR','2021'],['ROLE','Subcontractor']]]]},
+ {ty:'Plan',pg:8,f:'Carbon_Plan.pdf',fact:'Net zero by 2070, in line with the national target.',req:'R-18 Carbon',st:'ok',claim:-1,tex:['policy',['CARBON REDUCTION PLAN','Net zero 2070']]},
+ {ty:'Risk register',pg:3,f:'RiskRegister.xlsx',fact:'Twenty-three live risks, four of them rated high.',req:'R-20 Risk',st:'ok',claim:-1,tex:['table',['RISK REGISTER','Live risks',5]]},
+ {ty:'Résumé',pg:2,f:'J_Patel_CV.pdf',fact:'Commercial manager, FIDIC contracts accredited.',req:'R-11 Key personnel',st:'ok',claim:-1,tex:['cv',['J. Patel']]},
+ {ty:'Audit report',pg:9,f:'CERTIn_Audit_2026.pdf',fact:'CERT-In empanelled audit closed with no high findings, January 2026.',req:'R-04 Security certification',st:'ok',claim:-1,tex:['report',['CERT-In','security audit',[['AUDITOR','Empanelled'],['SCOPE','SCADA and IT'],['FINDINGS','0 high'],['DATE','Jan 2026']]]]},
+ {ty:'Statement',pg:4,f:'Labour_Compliance.pdf',fact:'EPF and ESI contributions current for all 212 employees.',req:'R-17 Social value',st:'ok',claim:-1,tex:['policy',['STATEMENT','Labour compliance']]},
+ {ty:'Case study',pg:4,f:'PastPerf_TramDepot.docx',fact:'Depot upgrade for CMRL, ₹19 crore, completed 2022.',req:'R-07 Relevant experience',st:'ok',claim:-1,tex:['report',['Depot','upgrade',[['CLIENT','CMRL'],['VALUE','₹19 crore'],['YEAR','2022'],['ROLE','Principal contractor']]]]},
+ {ty:'Training matrix',pg:2,f:'Training_Matrix.xlsx',fact:'Track competency current for 42 of 44 operatives, two renewals due.',req:'R-15 Health and safety',st:'exp',claim:-1,tex:['table',['TRAINING MATRIX','Competence',6]]},
+ {ty:'Certificate',pg:2,f:'ISO14001_Cert.pdf',fact:'Environmental management certified, valid to 2027.',req:'R-06 Environment',st:'ok',claim:-1,tex:['cert',['CERTIFICATE OF REGISTRATION','ISO 14001','Environmental management']]},
+ {ty:'Data agreement',pg:6,f:'DPA_Processor_Terms.docx',fact:'Processor terms drafted to the DPDP Act 2023.',req:'R-21 Data protection',st:'ok',claim:-1,tex:['policy',['AGREEMENT','Data processing']]},
+ {ty:'Plant list',pg:1,f:'Plant_Register.xlsx',fact:'Two road-rail vehicles owned outright, both RDSO certified.',req:'R-10 Method',st:'ok',claim:-1,tex:['table',['PLANT REGISTER','Owned plant',4]]},
+ {ty:'Plan',pg:7,f:'SocialValue_Plan.pdf',fact:'Twelve NAPS apprenticeships committed over the contract term.',req:'R-17 Social value',st:'ok',claim:-1,tex:['gantt',['SOCIAL VALUE','Delivery plan']]},
+ {ty:'Insurance certificate',pg:2,f:'WC_Policy.pdf',fact:"Employees' compensation policy in force for all site staff.",req:'R-19 Insurance',st:'ok',claim:-1,tex:['cert',['CERTIFICATE OF INSURANCE','₹25 crore',"Employees' compensation"]]},
+ {ty:'Quality plan',pg:10,f:'Quality_Plan.docx',fact:'An inspection and test plan with fourteen hold points.',req:'R-05 Quality',st:'ok',claim:-1,tex:['policy',['QUALITY PLAN','Inspection and test']]},
+ {ty:'Minutes',pg:3,f:'Board_Minutes_Q2.pdf',fact:'The bid is approved and signed by two directors.',req:'R-01 Instructions',st:'ok',claim:-1,tex:['letter',['BOARD MINUTES','Quarter two']]},
+ {ty:'Site plan',pg:1,f:'Possession_Limits.pdf',fact:'Worksite limits run between chainage 12.0 and 14.0 km.',req:'R-09 Site constraints',st:'ok',claim:-1,tex:['drawing',['WORKSITE']]},
+ {ty:'Register',pg:2,f:'Environmental_Aspects.xlsx',fact:'CPCB noise limit 70 dB at the boundary for night working.',req:'R-06 Environment',st:'ok',claim:-1,tex:['table',['ASPECTS REGISTER','Environment',4]]},
+ {ty:'Plan',pg:5,f:'Handover_Plan.pdf',fact:'Operation and maintenance manuals within 28 days of completion.',req:'R-14 Programme',st:'ok',claim:-1,tex:['gantt',['HANDOVER','Close-out plan']]},
+ {ty:'Warranty',pg:3,f:'Warranty_Terms.pdf',fact:'A twelve-month defect liability period on all installed equipment.',req:'R-23 Commercial',st:'ok',claim:-1,tex:['letter',['WARRANTY','Defects period']]},
+ {ty:'Lessons learned',pg:6,f:'LessonsLearned_2023.pdf',fact:'Block overruns cut by forty percent after the 2023 review.',req:'R-10 Method',st:'ok',claim:-1,tex:['policy',['REVIEW','Lessons learned']]}
+];
+const N=KB.length;
+const reqOf=j=>KB[j].req.slice(0,4);
+const GAPS=REQ_CODES.filter(c=>!KB.some(d=>d.req.startsWith(c)));
+
+/* the page you can actually read: the same document, as DOM */
+const CO='Northline Rail Pvt Ltd';
+const fill=(n,f)=>Array.from({length:n},(_,i)=>f(i)).join('');
+function excerpt(j){
+  const d=KB[j],a=d.tex[1],mk=`<mark>${d.fact}</mark>`;
+  const head=`<div class="ph"><span>${d.ty.toUpperCase()}</span><span>${d.f}</span></div>`;
+  const foot=`<div class="pf"><span>${CO}</span><span>page ${Math.min(2,d.pg)} of ${d.pg}</span></div>`;
+  const body={
+   cv:()=>`<h4>${a[0]}</h4><div class="sub">Curriculum vitae · ${CO}</div>
+     <h5>PROFILE</h5><p>${mk}</p>
+     <h5>EXPERIENCE</h5><ul>
+     <li><span>Senior engineer, metro programmes</span><span>2019 to date</span></li>
+     <li><span>Project engineer, station works</span><span>2015 to 2019</span></li>
+     <li><span>Graduate engineer, permanent way</span><span>2012 to 2015</span></li></ul>
+     <h5>CERTIFICATION</h5><ul><li><span>RDSO signalling competency</span><span>current</span></li>
+     <li><span>FIDIC contracts, PMP</span><span>2021</span></li></ul>`,
+   cert:()=>`<div class="centre"><h5>${a[0]}</h5><h4>${a[1]}</h4><div class="sub">${a[2]}</div>
+     <div class="seal">${a[3]||'VALID'}</div></div>
+     <p>This is to certify that ${CO} operates a management system assessed and found to comply with the
+     requirements above. ${mk}</p>
+     <ul><li><span>Certificate number</span><span>NR-${2400+j}</span></li>
+     <li><span>Issued</span><span>12 March 2024</span></li>
+     <li><span>Scope</span><span>Metro signalling and civils</span></li></ul>`,
+   report:()=>`<h5>PAST PERFORMANCE</h5><h4>${a[0]} ${a[1]}</h4>
+     <ul>${a[2].map(([k,v])=>`<li><span>${k[0]+k.slice(1).toLowerCase()}</span><span>${v}</span></li>`).join('')}</ul>
+     <h5>SUMMARY</h5><p>${mk}</p>
+     <p>Works were delivered under night traffic blocks with no reportable safety incidents and handed back
+     to the client ahead of the contract programme.</p>`,
+   table:()=>`<h5>${a[0]}</h5><h4>${a[1]}</h4>
+     <table><tr><th>Item</th><th>Detail</th><th class="n">Value</th></tr>
+     ${fill(5,i=>`<tr><td>Line ${i+1}</td><td>${['Band 2 engineer','Band 3 engineer','Supervisor','Testing','Plant hire'][i]}</td><td class="n">₹${['16,000','22,000','18,500','24,000','38,000'][i]}</td></tr>`)}</table>
+     <h5>NOTE</h5><p>${mk}</p>`,
+   letter:()=>`<h5>${a[0]}</h5><h4>${a[1]}</h4>
+     <p>Dear Tenderer,</p><p>${mk}</p>
+     <p>All other terms of the invitation to tender remain unchanged. Please acknowledge receipt through the
+     portal within two working days.</p><div class="sig">H. Iqbal</div>
+     <div class="sub">Procurement lead</div>`,
+   policy:()=>`<h5>${a[0]}</h5><h4>${a[1]}</h4>
+     <p><b>1. Purpose.</b> This document sets out how ${CO} manages the subject above across all rail contracts.</p>
+     <p><b>2. Performance.</b> ${mk}</p>
+     <p><b>3. Review.</b> The policy is reviewed annually by the board and after any reportable event.</p>`,
+   org:()=>`<h5>${a[0]}</h5><h4>${a[1]}</h4>
+     <div class="bars"><div class="a" style="width:40%;margin:0 auto"></div>
+     ${fill(2,()=>'<div style="width:70%"></div>')}${fill(4,()=>'<div style="width:46%"></div>')}</div>
+     <h5>NOTE</h5><p>${mk}</p>`,
+   drawing:()=>`<h5>DRAWING</h5><h4>${a[0]}</h4>
+     <div class="bars">${fill(3,()=>'<div style="width:88%"></div>')}</div>
+     <h5>GENERAL NOTES</h5><p>${mk}</p>
+     <ul><li><span>Scale</span><span>1:500 at A1</span></li><li><span>Revision</span><span>C</span></li></ul>`,
+   gantt:()=>`<h5>${a[0]}</h5><h4>${a[1]}</h4>
+     <div class="bars">${fill(6,i=>`<div class="${i===2?'a':''}" style="width:${34+i*9}%;margin-left:${i*7}%"></div>`)}</div>
+     <h5>KEY DATES</h5><p>${mk}</p>`
+  }[d.tex[0]];
+  return head+body()+foot;
+}
+
+/* ── document artwork: recognisable by shape at a glance. Anything that must be read lives in the DOM card. ── */
+const TEXW=330,TEXH=450;
+function paper(){const c=document.createElement('canvas');c.width=TEXW;c.height=TEXH;
+  const x=c.getContext('2d');x.scale(TEXW/440,TEXH/600);
+  x.fillStyle='#F4EDDE';x.fillRect(0,0,440,600);return[c,x];}
+function fin(c){const t=new THREE.CanvasTexture(c);t.encoding=THREE.sRGBEncoding;
+  t.anisotropy=8;return t;}
+function rules(x,x0,y0,n,w,gap,a){x.fillStyle='rgba(34,27,18,'+a+')';
+  for(let i=0;i<n;i++)x.fillRect(x0,y0+i*gap,w*(.45+Math.random()*.55),4.5);}
+function head(x,kick,title,size){
+  x.fillStyle='#8A5A2B';x.font='700 13px Archivo, sans-serif';x.fillText(kick,34,54);
+  x.fillStyle='#221B12';x.font='300 '+(size||28)+'px Newsreader, Georgia, serif';x.fillText(title,34,92);
+  x.strokeStyle='rgba(34,27,18,.28)';x.lineWidth=1.4;
+  x.beginPath();x.moveTo(34,112);x.lineTo(406,112);x.stroke();}
+
+const TEX={
+ cv(a){const [c,x]=paper();
+  x.fillStyle='rgba(34,27,18,.10)';x.fillRect(318,30,88,108);
+  x.fillStyle='#221B12';x.font='300 34px Newsreader, Georgia, serif';x.fillText(a[0],34,70);
+  x.fillStyle='#8A5A2B';x.font='700 14px Archivo, sans-serif';x.fillText('CURRICULUM VITAE',34,94);
+  x.strokeStyle='rgba(34,27,18,.3)';x.lineWidth=1.4;x.beginPath();x.moveTo(34,150);x.lineTo(406,150);x.stroke();
+  [['EXPERIENCE',178,7],['CERTIFICATIONS',384,3],['EDUCATION',492,3]].forEach(([h,y,n])=>{
+    x.fillStyle='#8A5A2B';x.font='700 12px Archivo, sans-serif';x.fillText(h,34,y);
+    rules(x,34,y+16,n,290,26,.32);
+    x.fillStyle='rgba(34,27,18,.2)';for(let i=0;i<n;i++)x.fillRect(352,y+16+i*26,54,4.5);});
+  x.fillStyle='rgba(138,90,43,.5)';x.fillRect(34,220,290,4.5);
+  return fin(c);},
+ cert(a){const [c,x]=paper();
+  x.strokeStyle='rgba(138,90,43,.55)';x.lineWidth=4;x.strokeRect(22,22,396,556);
+  x.lineWidth=1.2;x.strokeRect(32,32,376,536);
+  x.textAlign='center';
+  x.fillStyle='#8A5A2B';x.font='700 13px Archivo, sans-serif';x.fillText(a[0],220,92);
+  x.fillStyle='#221B12';x.font='300 38px Newsreader, Georgia, serif';x.fillText(a[1],220,164);
+  x.font='300 19px Newsreader, Georgia, serif';x.fillText(a[2],220,196);
+  x.strokeStyle='rgba(34,27,18,.3)';x.lineWidth=1.2;
+  x.beginPath();x.arc(220,300,58,0,7);x.stroke();x.beginPath();x.arc(220,300,48,0,7);x.stroke();
+  for(let i=0;i<36;i++){const t=i/36*Math.PI*2;x.beginPath();
+    x.moveTo(220+Math.cos(t)*48,300+Math.sin(t)*48);x.lineTo(220+Math.cos(t)*58,300+Math.sin(t)*58);x.stroke();}
+  x.fillStyle='rgba(138,90,43,.75)';x.font='700 15px Archivo, sans-serif';x.fillText(a[3]||'VALID',220,306);
+  x.textAlign='left';rules(x,74,392,3,290,26,.3);
+  x.strokeStyle='rgba(34,27,18,.4)';x.beginPath();x.moveTo(74,506);x.lineTo(226,506);x.stroke();
+  x.beginPath();x.moveTo(254,506);x.lineTo(366,506);x.stroke();
+  return fin(c);},
+ report(a){const [c,x]=paper();
+  x.fillStyle='#8A5A2B';x.font='700 13px Archivo, sans-serif';x.fillText('PAST PERFORMANCE',34,54);
+  x.fillStyle='#221B12';x.font='300 30px Newsreader, Georgia, serif';x.fillText(a[0],34,96);x.fillText(a[1],34,128);
+  x.strokeStyle='rgba(34,27,18,.28)';x.lineWidth=1.4;x.beginPath();x.moveTo(34,148);x.lineTo(406,148);x.stroke();
+  a[2].forEach(([k,v],i)=>{
+    x.fillStyle='rgba(34,27,18,.4)';x.font='700 10px Archivo, sans-serif';x.fillText(k,34,178+i*38);
+    x.fillStyle='#221B12';x.font='400 16px Archivo, sans-serif';x.fillText(v,140,178+i*38);});
+  rules(x,34,352,8,340,26,.3);x.fillStyle='rgba(138,90,43,.5)';x.fillRect(34,378,340,4.5);
+  return fin(c);},
+ table(a){const [c,x]=paper();head(x,a[0],a[1]);
+  const cols=a[2]||4,y0=142,rh=30,rows=13,w=372/cols;
+  x.fillStyle='rgba(138,90,43,.16)';x.fillRect(34,y0,372,rh);
+  x.fillStyle='rgba(138,90,43,.14)';x.fillRect(34,y0+rh*(4+(a[1].length%6)),372,rh);
+  x.strokeStyle='rgba(34,27,18,.16)';x.lineWidth=1;
+  for(let r=0;r<=rows;r++){x.beginPath();x.moveTo(34,y0+r*rh);x.lineTo(406,y0+r*rh);x.stroke();}
+  for(let k=1;k<cols;k++){x.beginPath();x.moveTo(34+k*w,y0);x.lineTo(34+k*w,y0+rows*rh);x.stroke();}
+  for(let r=1;r<rows;r++)for(let k=0;k<cols;k++){x.fillStyle='rgba(34,27,18,'+(k?.24:.34)+')';
+    x.fillRect(42+k*w,y0+r*rh+13,(w-18)*(.35+Math.random()*.6),4.5);}
+  return fin(c);},
+ letter(a){const [c,x]=paper();
+  x.fillStyle='rgba(138,90,43,.8)';x.fillRect(34,40,372,6);
+  x.fillStyle='#8A5A2B';x.font='700 13px Archivo, sans-serif';x.fillText(a[0],34,78);
+  x.fillStyle='#221B12';x.font='300 26px Newsreader, Georgia, serif';x.fillText(a[1],34,114);
+  rules(x,254,146,4,150,20,.26);
+  rules(x,34,236,6,372,24,.28);rules(x,34,396,5,372,24,.28);
+  x.strokeStyle='rgba(34,27,18,.55)';x.lineWidth=2;x.beginPath();x.moveTo(40,540);
+  for(let i=0;i<9;i++)x.quadraticCurveTo(52+i*14,510+(i%2)*40,62+i*14,532);x.stroke();
+  if(a[2]){x.strokeStyle='rgba(158,59,43,.55)';x.lineWidth=3;x.save();x.translate(330,510);x.rotate(-.22);
+    x.strokeRect(-58,-24,116,48);x.fillStyle='rgba(158,59,43,.65)';x.font='700 15px Archivo, sans-serif';
+    x.textAlign='center';x.fillText(a[2],0,6);x.restore();}
+  return fin(c);},
+ policy(a){const [c,x]=paper();head(x,a[0],a[1]);
+  [140,262,384,488].forEach((y,i)=>{x.fillStyle='rgba(138,90,43,.8)';x.font='700 14px Archivo, sans-serif';
+    x.fillText((i+1)+'.',34,y+10);x.fillStyle='rgba(34,27,18,.42)';x.fillRect(60,y,160,6);
+    rules(x,60,y+26,i===3?2:3,346,24,.26);});
+  return fin(c);},
+ org(a){const [c,x]=paper();head(x,a[0],a[1]);
+  x.strokeStyle='rgba(34,27,18,.35)';x.lineWidth=1.4;
+  const box=(cx,cy,hi)=>{x.fillStyle=hi?'rgba(138,90,43,.2)':'rgba(34,27,18,.06)';
+    x.fillRect(cx-44,cy-20,88,40);x.strokeRect(cx-44,cy-20,88,40);
+    x.fillStyle='rgba(34,27,18,.38)';x.fillRect(cx-28,cy-3,56,4.5);};
+  const L=[[220],[110,330],[70,170,270,370]],Y=[180,300,420];
+  L.forEach((row,r)=>row.forEach(cx=>{
+    if(r){const pr=L[r-1],px=pr.reduce((b,p)=>Math.abs(p-cx)<Math.abs(b-cx)?p:b,pr[0]);
+      x.beginPath();x.moveTo(px,Y[r-1]+20);x.lineTo(px,Y[r]-40);x.lineTo(cx,Y[r]-40);x.lineTo(cx,Y[r]-20);x.stroke();}
+    box(cx,Y[r],r===0);}));
+  rules(x,34,500,3,372,24,.24);
+  return fin(c);},
+ drawing(a){const [c,x]=paper();
+  x.strokeStyle='rgba(60,88,94,.55)';x.lineWidth=1.2;x.strokeRect(24,24,392,552);
+  x.strokeStyle='rgba(60,88,94,.18)';
+  for(let i=1;i<14;i++){x.beginPath();x.moveTo(24,24+i*40);x.lineTo(416,24+i*40);x.stroke();}
+  for(let i=1;i<10;i++){x.beginPath();x.moveTo(24+i*40,24);x.lineTo(24+i*40,576);x.stroke();}
+  x.strokeStyle='rgba(40,62,68,.8)';x.lineWidth=2.2;
+  x.strokeRect(70,90,170,120);x.strokeRect(260,150,110,190);x.strokeRect(90,270,120,90);
+  x.setLineDash([10,7]);x.beginPath();x.moveTo(30,420);x.bezierCurveTo(160,380,300,470,410,410);x.stroke();
+  x.beginPath();x.moveTo(30,440);x.bezierCurveTo(160,400,300,490,410,430);x.stroke();x.setLineDash([]);
+  x.beginPath();x.moveTo(372,70);x.lineTo(384,40);x.lineTo(396,70);x.closePath();x.stroke();
+  x.fillStyle='rgba(244,237,222,1)';x.fillRect(256,486,160,90);x.strokeRect(256,486,160,90);
+  x.fillStyle='rgba(40,62,68,.8)';x.font='700 12px Archivo, sans-serif';x.fillText(a[0],268,510);
+  x.fillStyle='rgba(40,62,68,.4)';x.fillRect(268,526,120,4);x.fillRect(268,542,90,4);x.fillRect(268,558,104,4);
+  return fin(c);},
+ gantt(a){const [c,x]=paper();head(x,a[0],a[1]);
+  x.strokeStyle='rgba(34,27,18,.12)';x.lineWidth=1;
+  for(let k=0;k<9;k++){x.beginPath();x.moveTo(150+k*32,136);x.lineTo(150+k*32,560);x.stroke();}
+  for(let r=0;r<14;r++){const y=150+r*29,s=150+((r*37)%180),w=40+((r*53)%120);
+    x.fillStyle='rgba(34,27,18,.3)';x.fillRect(34,y+8,88*(.5+((r*29)%10)/20),4.5);
+    x.fillStyle=r%5===2?'rgba(138,90,43,.7)':'rgba(34,27,18,.34)';x.fillRect(s,y,w,14);}
+  x.fillStyle='rgba(158,59,43,.7)';x.save();x.translate(360,556);x.rotate(Math.PI/4);x.fillRect(-7,-7,14,14);x.restore();
+  return fin(c);}
+};
+
+/* ══════════ the world: one scene behind every chapter ══════════ */
+const TAU=Math.PI*2;
+const SW=2.6,SH=SW*1.36;
+const R_SPHERE=SH*3.75;
+const TURNS=Math.max(1,Math.round(N/12));
+const STEP=TAU*TURNS/N;
+const R_HELIX=(SW*1.3)/STEP;
+const RISE=1.266*R_HELIX*TURNS/N;
+const PM=.2;                                     /* the share of the reading scroll spent morphing */
+
+const cv=document.getElementById('world');
+const sc=new THREE.Scene();
+sc.fog=new THREE.FogExp2(new THREE.Color('#0E0B08'),.012);
+const cam=new THREE.PerspectiveCamera(44,1,.1,600);
+const ren=new THREE.WebGLRenderer({canvas:cv,antialias:!MOB,alpha:true});
+ren.setPixelRatio(DPR());
+ren.outputEncoding=THREE.sRGBEncoding;
+ren.toneMapping=THREE.ACESFilmicToneMapping;
+ren.toneMappingExposure=1.05;
+sc.add(new THREE.AmbientLight(0xffe9d2,.44));
+const kL=new THREE.DirectionalLight(0xffe0b6,1.5);kL.position.set(-10,14,16);sc.add(kL);
+const fL=new THREE.DirectionalLight(0x9fc2c8,.4);fL.position.set(14,-6,8);sc.add(fL);
+const bL=new THREE.DirectionalLight(0xffd9a8,.35);bL.position.set(4,8,-22);sc.add(bL);
+(function(){
+  const c=document.createElement('canvas');c.width=512;c.height=256;const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,0,256);
+  g.addColorStop(0,'#5D462E');g.addColorStop(.44,'#241B13');g.addColorStop(1,'#090706');
+  x.fillStyle=g;x.fillRect(0,0,512,256);
+  const k=x.createRadialGradient(140,44,0,140,44,180);
+  k.addColorStop(0,'rgba(255,228,186,1)');k.addColorStop(1,'rgba(255,228,186,0)');
+  x.fillStyle=k;x.fillRect(0,0,512,256);
+  const t=new THREE.CanvasTexture(c);
+  t.mapping=THREE.EquirectangularReflectionMapping;t.encoding=THREE.sRGBEncoding;
+  const pm=new THREE.PMREMGenerator(ren);pm.compileEquirectangularShader();
+  sc.environment=pm.fromEquirectangular(t).texture;t.dispose();pm.dispose();
+})();
+
+function relaxedSphere(n){
+  const g=Math.PI*(3-Math.sqrt(5)),p=[];
+  for(let i=0;i<n;i++){const y=1-(i/(n-1))*2,r=Math.sqrt(1-y*y);
+    p.push(new THREE.Vector3(Math.cos(g*i)*r,y,Math.sin(g*i)*r));}
+  const f=p.map(()=>new THREE.Vector3()),d=new THREE.Vector3();
+  for(let it=0;it<60;it++){
+    f.forEach(v=>v.set(0,0,0));
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+      d.subVectors(p[i],p[j]);const l2=Math.max(d.lengthSq(),1e-6);
+      d.multiplyScalar(1/(l2*Math.sqrt(l2)));f[i].add(d);f[j].sub(d);}
+    const k=(.35/n)*(1-it/60);
+    p.forEach((v,i)=>v.addScaledVector(f[i],k).normalize());}
+  return p;}
+const SPH=relaxedSphere(N);
+
+/* flat sheet with a morph target that wraps it onto the helix wall */
+const GEO=(function(){
+  const g=new THREE.PlaneGeometry(SW,SH,MOB?8:18,1),p=g.attributes.position,n=p.count;
+  const bp=new Float32Array(n*3),bn=new Float32Array(n*3);
+  for(let i=0;i<n;i++){const th=p.getX(i)/R_HELIX;
+    bp[i*3]=Math.sin(th)*R_HELIX;bp[i*3+1]=p.getY(i);bp[i*3+2]=Math.cos(th)*R_HELIX-R_HELIX;
+    bn[i*3]=Math.sin(th);bn[i*3+2]=Math.cos(th);}
+  g.morphAttributes.position=[new THREE.Float32BufferAttribute(bp,3)];
+  g.morphAttributes.normal=[new THREE.Float32BufferAttribute(bn,3)];
+  return g;})();
+const BACK=new THREE.MeshStandardMaterial({color:new THREE.Color('#E2D9C6'),roughness:.86,metalness:.02,
+  envMapIntensity:.9,side:THREE.BackSide,morphTargets:true,morphNormals:true});
+const EMIT=new THREE.Color('#C98A47');
+
+const docs=[],byRead=[],srcOf={};
+const reqOrder={};                                  /* position of each doc inside its requirement column */
+for(let idx=0;idx<N;idx++){
+  const j=((N/2-idx)%N+N)%N,meta=KB[j],code=reqOf(j);
+  reqOrder[j]=(reqOrder[code]=(reqOrder[code]||0)+1)-1;
+  const g=new THREE.Group();
+  const m=new THREE.MeshStandardMaterial({map:TEX[meta.tex[0]](meta.tex[1]),roughness:.78,metalness:.02,
+    envMapIntensity:1,transparent:true,opacity:.92,morphTargets:true,morphNormals:true,
+    emissive:EMIT,emissiveIntensity:0});
+  g.add(new THREE.Mesh(GEO,m),new THREE.Mesh(GEO,BACK));
+  Object.assign(g.userData,{idx,j,meta,code,col:REQ_CODES.indexOf(code),row:reqOrder[j],mat:m,
+    meshes:g.children,ph:Math.random()*7,jx:(Math.random()-.5),jz:(Math.random()-.5),
+    lens:0,rd:0,op:.92,lit:0,page:0,dropA:0,fall:0});
+  sc.add(g);docs.push(g);byRead[j]=g;
+  if(meta.claim>=0)srcOf[meta.claim]=g;
+}
+const MAND=[3,8,14,21,29,35];                        /* stack positions of the mandatory clauses */
+
+/* ══════════ formations ══════════ */
+let readP=0,readTravel=0,lensJ=-1,readUpTo=-1,lensT=0;
+let RETR={},CEIL={},worldGrabbable=0,packOpen=0,packRaw=0;
+const packPos=new THREE.Vector3(),qTmp=new THREE.Quaternion(),eTmp=new THREE.Euler();
+const Q_ID=new THREE.Quaternion(),yAxis=new THREE.Vector3(0,1,0),xAxis=new THREE.Vector3(1,0,0);
+const Q_FLAT=new THREE.Quaternion().setFromAxisAngle(xAxis,-Math.PI/2);
+const pageAnchor=new THREE.Vector3(),helV=new THREE.Vector3();
+const spinQ=new THREE.Quaternion(),spinE2=new THREE.Euler();
+const hand={yaw:0,pitch:0,vy:0,vp:0,grab:false};   /* the hero sphere turns under the pointer */
+(function(){
+  let px=0,py=0,pt=0;
+  cv.style.touchAction='pan-y';
+  cv.addEventListener('pointerdown',e=>{if(worldGrabbable<.4)return;
+    hand.grab=true;px=e.clientX;py=e.clientY;pt=e.timeStamp;hand.vy=hand.vp=0;
+    cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing';});
+  addEventListener('pointerup',()=>{hand.grab=false;cv.style.cursor='';});
+  cv.addEventListener('pointermove',e=>{
+    if(!hand.grab){cv.style.cursor=worldGrabbable>.4?'grab':'';return;}
+    const sec=Math.max(.004,(e.timeStamp-pt)/1000);pt=e.timeStamp;
+    const dx=(e.clientX-px)*.0055,dy=(e.clientY-py)*.004;
+    hand.yaw+=dx;hand.pitch=Math.max(-.5,Math.min(.5,hand.pitch+dy));
+    hand.vy=dx/sec;hand.vp=dy/sec;px=e.clientX;py=e.clientY;});
+})();
+
+const FORM={
+ sphere:{halfW:R_SPHERE+SH*.6,halfH:R_SPHERE+SH*.6,front:R_SPHERE,grab:1,
+  f(u,o,t){const a=t*.055+hand.yaw;
+    const p=SPH[u.idx];
+    o.p.set(p.x*Math.cos(a)+p.z*Math.sin(a),p.y,-p.x*Math.sin(a)+p.z*Math.cos(a)).multiplyScalar(R_SPHERE);
+    o.p.applyAxisAngle(xAxis,hand.pitch);
+    o.p.y+=Math.sin(t*.4+u.ph)*.2;
+    o.q.setFromAxisAngle(xAxis,hand.pitch*.5);
+    o.bend=0;o.s=1;o.op=.92;o.lit=u.meta.claim>=0?.34:0;}},
+
+ pack:{halfW:10,halfH:13,front:9,
+  f(u,o,t){const k=u.idx-(N-1)/2,m=MAND.indexOf(u.idx);
+    const open=packOpen;
+    packPos.set(m>=0?1.2+open*6.4:0,k*(.3+open*.12),0);   /* aligned pages, no jitter */
+    qTmp.setFromAxisAngle(yAxis,.42+t*.015);
+    packPos.applyQuaternion(qTmp);
+    eTmp.set(.5,0,0);o.q.setFromEuler(eTmp);
+    packPos.applyQuaternion(o.q);
+    o.p.copy(packPos);
+    o.q.multiply(qTmp).multiply(Q_FLAT);
+    o.bend=0;o.s=1.55;
+    o.op=m>=0?1:.8;
+    o.lit=m>=0?(hotClause===m?1:.3+open*.35):0;}},
+
+ helix:{halfW:R_HELIX+SW,halfH:N*RISE/2+SH,front:R_HELIX,
+  f(u,o,t){
+    const e=ease(clamp01((readP-.01-(u.idx/N)*.06)/.12));
+    const k=u.idx+readTravel,ta=(k-N/2)*STEP,kk=((k%N)+N)%N-N/2;
+    o.p.copy(SPH[u.idx]).multiplyScalar(R_SPHERE);
+    helV.set(Math.sin(ta)*R_HELIX,-kk*RISE,Math.cos(ta)*R_HELIX);
+    o.p.lerp(helV,e);
+    o.q.setFromAxisAngle(yAxis,ta);o.q.slerp(Q_ID,1-e);
+    o.bend=e;o.s=1;
+    const edge=Math.abs(kk+.5)/(N/2);
+    const fade=1-(1-(edge>.8?clamp01(1-(edge-.8)/.2):1))*e;
+    o.op=fade*(.94-.5*e*(1-Math.max(u.rd,u.lens)));
+    o.lit=u.lens*.14;
+    if(u.lens>.001){                                  /* the read document flies to the page position */
+      o.p.lerp(pageAnchor,u.lens);o.q.slerp(Q_ID,u.lens);o.bend*=1-u.lens;o.op=Math.max(o.op,u.lens);}}},
+
+ skyline:{halfW:17.5,halfH:6.2,front:2,
+  f(u,o,t){const s=.46;
+    o.p.set((u.col-11)*SW*s*1.34,-4.6+u.row*SH*s*.62+Math.sin(t*.5+u.ph)*.05,-u.row*.18);
+    eTmp.set(-.06,0,u.jx*.012);o.q.setFromEuler(eTmp);
+    o.bend=0;o.s=s;o.op=.95;o.lit=u.meta.st==='exp'?.5:(u.meta.st==='old'?.2:0);}},
+
+ draft:{halfW:16,halfH:9.5,front:8,
+  f(u,o,t){
+    if(u.meta.claim>=0){const i=[0,1,3].indexOf(u.meta.claim);
+      o.p.set(3.4,5.2-i*5.2,5);o.q.copy(Q_ID);o.bend=0;o.s=1.15;o.op=.9;
+      o.lit=SENT&&SENT[openClaim]&&SENT[openClaim].claim===u.meta.claim?.45:.12;}
+    else{const a=u.idx/N*TAU+t*.05;
+      o.p.set(Math.cos(a)*16,-1.5+Math.sin(u.idx*2.3)*2.4,-11+Math.sin(a)*8);
+      o.q.copy(Q_ID);o.bend=0;o.s=.85;o.op=.16;o.lit=0;}}},
+
+ retrieve:{halfW:11,halfH:9,front:9,      /* the candidate chunks, ranked, then judged */
+  f(u,o,t){const r=RETR[u.j];
+    if(!r){const a=u.idx/N*TAU+t*.04;
+      o.p.set(Math.cos(a)*17,-2+Math.sin(u.idx*1.7)*3,-13+Math.sin(a)*7);
+      o.q.copy(Q_ID);o.bend=0;o.s=.8;o.op=.1;o.lit=0;return;}
+    const drop=r.drop;
+    o.p.set(.6+r.rank*.5+drop*1.6,4.6-r.rank*4.6-drop*1.6,9-r.rank*1.2-drop*3);
+    eTmp.set(0,0,drop*.22);o.q.setFromEuler(eTmp);
+    o.bend=0;o.s=1.5-r.rank*.06;
+    o.op=1-drop*.55;
+    o.lit=r.judged?(r.ok?.5:0):.2;}},
+
+ redteam:{halfW:13,halfH:9,front:8,        /* the records the claim has to live under */
+  f(u,o,t){const r=CEIL[u.j];
+    if(!r){const a=u.idx/N*TAU+t*.035,p=SPH[u.idx];
+      o.p.set(p.x*Math.cos(a)+p.z*Math.sin(a),p.y,-p.x*Math.sin(a)+p.z*Math.cos(a)).multiplyScalar(R_SPHERE*1.2);
+      o.p.z-=20;o.q.copy(Q_ID);o.bend=0;o.s=.85;o.op=.1;o.lit=0;return;}
+    o.p.set(r.n>1?(r.i-(r.n-1)/2)*5.4:0,-3.4+r.h*6.2+Math.sin(t*.5+u.ph)*.08,7);
+    o.q.copy(Q_ID);o.bend=0;o.s=r.n>1?1.25:1.7;o.op=1;o.lit=r.top?.5:.22;}},
+
+ crossdoc:{halfW:R_SPHERE,halfH:R_SPHERE,front:R_SPHERE,   /* the cited rate card, held up beside the bid */
+  f(u,o,t){
+    if(u.meta.f==='RateCard_Band3.xlsx'){
+      o.p.set(0,1,20);o.q.copy(Q_ID);o.bend=0;o.s=2.6;o.op=1;o.lit=crossOpen?.7:.12;}
+    else{const a=u.idx/N*TAU+t*.03,p=SPH[u.idx];
+      o.p.set(p.x*Math.cos(a)+p.z*Math.sin(a),p.y,-p.x*Math.sin(a)+p.z*Math.cos(a))
+        .multiplyScalar(R_SPHERE*1.3);
+      o.p.z-=24;o.q.copy(Q_ID);o.bend=0;o.s=.9;o.op=.1;o.lit=0;}}},
+
+ recede:{halfW:R_SPHERE+SH*.6,halfH:R_SPHERE+SH*.6,front:R_SPHERE,
+  f(u,o,t){const a=t*.03,p=SPH[u.idx];
+    o.p.set(p.x*Math.cos(a)+p.z*Math.sin(a),p.y,-p.x*Math.sin(a)+p.z*Math.cos(a))
+      .multiplyScalar(R_SPHERE*1.45);
+    o.p.z-=26;o.p.y+=Math.sin(t*.3+u.ph)*.3;
+    o.q.copy(Q_ID);o.bend=0;o.s=.95;o.op=.14;o.lit=0;}},
+
+ bid:{halfW:SW*2.2,halfH:SH*2.2,front:3,   /* one bound submission */
+  f(u,o,t){
+    packPos.set(u.jx*.06-3.4,u.jz*.06,-u.idx*.075);
+    eTmp.set(.06,-.34+Math.sin(t*.12)*.03,u.jx*.004);o.q.setFromEuler(eTmp);
+    o.p.copy(packPos).applyQuaternion(o.q);
+    o.bend=0;o.s=1.9;o.op=1;o.lit=u.idx===0?.4:0;}}
+};
+
+/* ══════════ chapter wiring: the three page shapes differ only here ══════════ */
+const chapters=[...document.querySelectorAll('.ch')].map(el=>({el,form:el.dataset.form,side:el.dataset.side,
+  viz:el.dataset.viz==='1'}));
+const prog=chapters.map(()=>0);
+let pinST=null,sect={a:0,b:0,t:1},pinF=0;
+
+if(MODE==='world'){                       /* shape 3: chapters scroll over one fixed world */
+  chapters.forEach((c,k)=>{if(!k)return;
+    ScrollTrigger.create({trigger:c.el,start:'top 88%',end:'top 34%',scrub:true,
+      onUpdate:s=>{prog[k]=s.progress;}});});
+}
+ScrollTrigger.create({trigger:'#pack',start:'top 55%',end:'bottom 70%',scrub:true,
+  onUpdate:s=>{packRaw=s.progress*1.35;}});      /* the pack opens as you read the clauses */
+
+if(MODE==='sections'){                    /* shape 1: each chapter owns its own box, no continuity */
+  chapters.forEach((c,k)=>{
+    ScrollTrigger.create({trigger:c.el,start:'top 58%',end:'bottom 42%',
+      onEnter:()=>goSection(k),onEnterBack:()=>goSection(k)});});
+  window.goSection=k=>{
+    if(sect.b===k)return;
+    sect={a:sect.b,b:k,t:0};
+    gsap.to(sect,{t:1,duration:RM?.001:.85,ease:'power2.inOut',overwrite:true});};
+}
+
+if(MODE==='pinned'){                      /* shape 2: the whole page is one pinned timeline */
+  const WEIGHT=chapters.map(c=>c.form==='helix'?5:1);
+  const TOT=WEIGHT.reduce((a,b)=>a+b,0);
+  const main=document.querySelector('main');
+  const stage=document.createElement('div');stage.id='stage';
+  chapters.forEach(c=>stage.appendChild(c.el));
+  main.appendChild(stage);
+  const spacer=document.createElement('div');
+  spacer.id='timeline';spacer.style.height=(TOT*100)+'vh';
+  main.appendChild(spacer);
+  const HOLD=.74;                        /* each chapter holds, then hands over in its last quarter */
+  const update=p=>{
+      let x=p*TOT,k=0;
+      while(k<WEIGHT.length-1&&x>WEIGHT[k]){x-=WEIGHT[k];k++;}
+      const u=Math.min(1,x/WEIGHT[k]);
+      pinF=Math.min(chapters.length-1,k+clamp01((u-HOLD)/(1-HOLD)));
+      if(chapters[k].form==='helix')readP=clamp01(u/HOLD);
+      const hand=clamp01((u-HOLD)/(1-HOLD));      /* a chapter holds, then hands over to the next */
+      chapters.forEach((c,i)=>{
+        const near=i===k?1-hand:(i===k+1?hand:0);
+        c.el.style.opacity=near;
+        c.el.style.pointerEvents=near>.6?'auto':'none';
+        const dot=document.querySelector(`#rail [data-k="${i}"]`);
+        if(dot)dot.classList.toggle('on',i===k);});};
+  ScrollTrigger.create({trigger:'#timeline',start:'top top',end:'bottom bottom',scrub:true,
+    refreshPriority:1,onUpdate:s=>update(s.progress)});
+  update(0);
+  const rail=document.createElement('div');rail.id='rail';
+  rail.innerHTML=chapters.map((c,i)=>`<button data-k="${i}">${c.el.id}</button>`).join('');
+  document.body.appendChild(rail);
+  rail.onclick=e=>{const k=e.target.dataset.k;if(k===undefined)return;
+    const before=WEIGHT.slice(0,+k).reduce((a,b)=>a+b,0)+WEIGHT[+k]*.3;
+    const tl=document.getElementById('timeline').getBoundingClientRect();
+    const top=tl.top+scrollY+(before/TOT)*(tl.height-innerHeight);
+    scrollTo({top,behavior:RM?'auto':'smooth'});};
+}
+
+if(MODE!=='pinned'){
+  if(!MOB){
+    pinST=ScrollTrigger.create({trigger:'#read',start:'top top',end:'+=300%',pin:true,
+      anticipatePin:1,refreshPriority:1,onUpdate:s=>{readP=s.progress;},
+      snap:{snapTo:v=>v<PM*.98?v:PM+Math.round((v-PM)/(1-PM)*(N-1))/(N-1)*(1-PM),
+        duration:{min:.15,max:.45},delay:.12,ease:'power1.inOut'}});
+  }else{
+    ScrollTrigger.create({trigger:'#read',start:'top 70%',end:'bottom 30%',scrub:true,
+      onUpdate:s=>{readP=s.progress;}});
+  }
+}
+/* the header follows the chapter you are in */
+chapters.forEach(c=>{const link=document.querySelector(`header nav a[href="#${c.el.id}"]`);
+  if(link)ScrollTrigger.create({trigger:c.el,start:'top 55%',end:'bottom 45%',
+    onToggle:s=>link.classList.toggle('on',s.isActive)});});
+
+if(ScrollTrigger.sort)ScrollTrigger.sort();
+ScrollTrigger.refresh();
+
+/* ══════════ camera framing, from the formation and the free half of the screen ══════════ */
+let region={cx:0,cy:0,w:1,h:1},camD=40,colW=0;
+const header=document.querySelector('header');
+function measureRegion(side,W,H,topIn,wide){
+  colW=(wide?Math.min(W*.46,620):Math.min(W*.42,470))+Math.min(W*.04,52);
+  let cx,w;
+  if(MOB||side==='center'){cx=W/2;w=W;}
+  else if(side==='left'){cx=(colW+W)/2;w=W-colW;}
+  else{cx=(W-colW)/2;w=W-colW;}
+  return{cx,w,cy:(topIn+H)/2,h:H-topIn};
+}
+function distanceFor(m,W,H){
+  const tanF=Math.tan(cam.fov*Math.PI/360);
+  const tanV=tanF*region.h/H,tanH=tanF*region.w/H;
+  return Math.max(m.halfH/tanV,m.halfW/tanH)+m.front;
+}
+
+/* ══════════ overlays: links in SVG, tags and the page in the DOM ══════════ */
+const svg=document.getElementById('links'),pageEl=document.getElementById('page');
+const linkPool=[],tagPool=[];
+function linkPath(i){
+  while(linkPool.length<=i){const p=document.createElementNS('http://www.w3.org/2000/svg','path');
+    p.setAttribute('fill','none');p.setAttribute('stroke-linecap','round');svg.appendChild(p);linkPool.push(p);}
+  return linkPool[i];}
+function tagEl(i){
+  while(tagPool.length<=i){const d=document.createElement('div');d.className='tag';document.body.appendChild(d);tagPool.push(d);}
+  return tagPool[i];}
+let linkN=0,tagN=0;
+function link(d,color,width,opacity,prog,dash){
+  const p=linkPath(linkN++);
+  p.setAttribute('d',d);p.setAttribute('stroke',color);p.setAttribute('stroke-width',width);
+  p.setAttribute('stroke-opacity',opacity);
+  if(dash){p.setAttribute('stroke-dasharray','7 7');p.setAttribute('stroke-dashoffset',0);}
+  else{const L=p.getTotalLength()||1;
+    p.setAttribute('stroke-dasharray',L);p.setAttribute('stroke-dashoffset',L*(1-clamp01(prog)));}
+  p.style.filter=opacity>.5?'drop-shadow(0 0 6px rgba(201,138,71,.45))':'none';}
+function tag(text,x,y,cls,on){
+  const e=tagEl(tagN++);
+  if(e.textContent!==text)e.textContent=text;
+  e.className='tag '+(cls||'')+(on?' on':'');
+  e.style.transform=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;}
+function endFrameOverlays(){
+  for(let i=linkN;i<linkPool.length;i++)linkPool[i].setAttribute('d','');
+  for(let i=tagN;i<tagPool.length;i++)tagPool[i].className='tag';
+  linkN=0;tagN=0;}
+
+const proj=new THREE.Vector3(),camR=new THREE.Vector3(),camU=new THREE.Vector3(),tmpV=new THREE.Vector3();
+function screenOf(v){proj.copy(v).project(cam);      /* page coordinates, wherever the canvas sits */
+  return{x:canvasOrigin.x+(proj.x*.5+.5)*canvasSize.x,
+         y:canvasOrigin.y+(-proj.y*.5+.5)*canvasSize.y,z:proj.z};}
+function boxOf(g){
+  const c=screenOf(g.position);if(c.z>1)return null;
+  const e=screenOf(tmpV.copy(g.position).addScaledVector(camR,SW/2*g.scale.x));
+  const t=screenOf(tmpV.copy(g.position).addScaledVector(camU,SH/2*g.scale.x));
+  return{x:c.x,y:c.y,hw:Math.abs(e.x-c.x),hh:Math.abs(c.y-t.y)};}
+const ray=new THREE.Raycaster();
+function pointAt(sx,sy,depth){
+  ray.setFromCamera({x:(sx-canvasOrigin.x)/canvasSize.x*2-1,y:-((sy-canvasOrigin.y)/canvasSize.y*2-1)},cam);
+  return ray.ray.direction.clone().multiplyScalar(depth/-ray.ray.direction.z).add(cam.position);}
+
+/* helpers shared by the chapters */
+const jOf=f=>KB.findIndex(d=>d.f===f);
+const INR=v=>'₹'+v.toLocaleString('en-IN');
+
+/* ══════════ 01 · the pack ══════════ */
+const CLAUSES=[
+ ['The Contractor <b>shall</b> hold professional indemnity insurance of not less than ₹100 crore.','RFP_Volume2.pdf','p. 14 · §8.2'],
+ ['Bidders <b>must</b> hold ISO/IEC 27001 certification valid for the contract term.','Spec_Security.pdf','p. 6 · §3.1'],
+ ['Key personnel <b>shall</b> be named and <b>shall not</b> be substituted without consent.','RFP_Volume2.pdf','p. 22 · §11.4'],
+ ['The Contractor <b>must</b> provide a business continuity plan tested within 12 months.','Spec_Resilience.pdf','p. 3 · §2.2'],
+ ['Prices <b>shall</b> be quoted in INR, exclusive of GST.','Price_Bid_Instructions.xlsx','sheet Notes · cell B4'],
+ ['All site staff <b>must</b> hold track competency certification before mobilisation.','Addendum_02.pdf','p. 1 · item 3']];
+let hotClause=-1;
+(function(){
+  const ul=document.getElementById('clauses');
+  CLAUSES.forEach((c,i)=>{const li=document.createElement('li');
+    li.innerHTML=`<div class="t">${c[0]}</div><div class="p"><span>${c[1]}</span> · ${c[2]}</div>`;
+    li.onmouseenter=()=>hotClause=i;li.onmouseleave=()=>{if(hotClause===i)hotClause=-1;};
+    ul.appendChild(li);});
+})();
+
+/* ══════════ 02 · reading ══════════ */
+const lensCard=document.getElementById('lenscard'),reqGrid=document.getElementById('reqGrid');
+const hRead=document.getElementById('hRead'),hCov=document.getElementById('hCov');
+const cells={};
+REQ_CODES.forEach(c=>{const e=document.createElement('span');e.className='rc';e.textContent=c.slice(2);
+  e.title=c+' '+REQ[c];reqGrid.appendChild(e);cells[c]=e;});
+let lensShown=-1;
+function fillLens(j){
+  const d=KB[j];
+  lensCard.innerHTML=`<div class="lk"><span class="ln">${String(j+1).padStart(2,'0')} / ${N}</span>
+    <span>${d.ty} · ${d.pg} page${d.pg>1?'s':''}</span></div>
+    <div class="lf">${d.f}</div>
+    <p class="lx">${d.fact.split(' ').map((w,i)=>`<span style="--i:${i}">${w}</span>`).join(' ')}</p>
+    <div class="lr"><span class="rq">${d.req}</span><span class="st ${d.st}">${ST_LABEL[d.st]}</span></div>
+    ${d.claim>=0?'<div style="font-size:11.5px;color:var(--amber);margin-top:9px">Grounds a sentence in Section 4</div>':''}`;
+  lensCard.classList.remove('sw');void lensCard.offsetWidth;lensCard.classList.add('sw');
+  lensT=RM?9:0;lensShown=j;
+}
+function readingHud(){
+  const n=readUpTo+1,cov=new Set();
+  for(let j=0;j<=readUpTo;j++)if(j!==lensJ||lensT>1.02)cov.add(reqOf(j));
+  hRead.textContent=String(n).padStart(2,'0');hCov.textContent=cov.size;
+  const done=n>=N&&lensT>1.02;
+  REQ_CODES.forEach(c=>{const e=cells[c];
+    e.classList.toggle('cov',cov.has(c));
+    e.classList.toggle('gap',done&&GAPS.includes(c));
+    e.classList.toggle('hit',lensJ>=0&&reqOf(lensJ)===c&&lensT>1.02&&lensT<1.75);});
+}
+
+/* ══════════ 03 · compliance: retrieve, rerank, then a gate in code decides ══════════ */
+const SCEN=[
+ {code:'R-04',title:'Security certification',status:'Partial',st:'exp',
+  cands:[{f:'ISO27001_2024.pdf',r:.94,k:.91,ok:1,note:'Names the certification. Expires four months before contract start.'},
+         {f:'CERTIn_Audit_2026.pdf',r:.86,k:.78,ok:1,note:'Independent audit closed with no high findings.'},
+         {f:'DPA_Processor_Terms.docx',r:.71,k:.24,ok:0,note:'Reranker drops it. Data protection, not certification.'}],
+  verdict:'In scope, but not in force for the whole term. The gate holds the status at partial.'},
+ {code:'R-08',title:'Business continuity',status:'Gap',st:'gap',
+  cands:[{f:'HealthSafety_Policy_v6.pdf',r:.58,k:.11,ok:0,note:'Nearest chunk by vector distance. Never mentions continuity.'},
+         {f:'RiskRegister.xlsx',r:.52,k:.09,ok:0,note:'A risk list is not a tested continuity plan.'}],
+  verdict:'Nothing clears the threshold. The gate reports a gap instead of writing around it.'},
+ {code:'R-19',title:'Insurance',status:'Met',st:'ok',
+  cands:[{f:'PI_Certificate.pdf',r:.96,k:.95,ok:1,note:'₹100 crore any one claim, policy year 2026.'},
+         {f:'WC_Policy.pdf',r:.88,k:.80,ok:1,note:"Employees' compensation for all site staff."},
+         {f:'PI_Schedule_2023.pdf',r:.90,k:.12,ok:0,note:'Superseded by the 2026 certificate, so never cited.'}],
+  verdict:'Two accepted, one superseded document dropped. The citation pins to the 2026 certificate.'}];
+let scen=0,scenStage=0,scenTimer=null;
+const trace=document.getElementById('trace');
+function paintTrace(){
+  const s=SCEN[scen];
+  trace.innerHTML=
+    `<div class="tr-head"><span>${s.cands.length} chunks retrieved</span>
+      <span>${scenStage?s.cands.filter(c=>c.ok).length+' cited':'reranking'}</span></div>`
+   +s.cands.map((c,i)=>`<div class="tr ${scenStage?(c.ok?'yes':'no'):''}" style="--i:${i}">
+      <div class="tf">${c.f}${scenStage?`<span class="vd ${c.ok?'y':'n'}">${c.ok?'Cited':'Dropped'}</span>`:''}</div>
+      <div class="bars"><span class="bk">retrieval</span><span class="mbar"><i style="width:${c.r*100}%"></i></span><span class="bv">${c.r.toFixed(2)}</span></div>
+      <div class="bars"><span class="bk">rerank</span><span class="mbar"><i class="k" style="width:${scenStage?c.k*100:0}%"></i></span><span class="bv">${scenStage?c.k.toFixed(2):'·'}</span></div>
+      <div class="tn">${scenStage?c.note:'&nbsp;'}</div></div>`).join('')
+   +(scenStage?`<div class="tv"><span class="st ${s.st}">${s.status}</span><p>${s.verdict}</p></div>`:'');
+}
+function runScen(i){
+  scen=i;scenStage=0;
+  document.querySelectorAll('#reqchips button').forEach((b,k)=>b.classList.toggle('on',k===i));
+  paintTrace();
+  clearTimeout(scenTimer);
+  scenTimer=setTimeout(()=>{scenStage=1;paintTrace();},RM?0:1500);
+}
+(function(){
+  const chips=document.getElementById('reqchips');
+  SCEN.forEach((s,i)=>{const b=document.createElement('button');
+    b.innerHTML=`<b>${s.code}</b> ${s.title}`;b.onclick=()=>runScen(i);chips.appendChild(b);});
+  runScen(0);
+})();
+
+/* ══════════ 04 · drafting: click a sentence and its page opens ══════════ */
+const SENT=[
+ {t:'Three named engineers hold five years of metro delivery experience.',tag:'g',claim:0},
+ {t:'Professional indemnity cover meets the ₹100 crore threshold set by clause 8.2.',tag:'g',claim:1},
+ {t:'We have delivered comparable engagements at this scale.',tag:'u',claim:-1,
+  why:'No past-performance record above ₹48 crore exists in the knowledge base, so there is no page to open.'},
+ {t:'Our team delivered the Blue Line resignalling package in 2023.',tag:'g',claim:3},
+ {t:'We guarantee 99.9% availability from the commencement date.',tag:'c',claim:-1,
+  why:'Forward-looking, so no evidence can ground it. Classified as a commitment and routed to the approver.'}];
+const TAGL={g:'Factual · grounded',u:'Factual · unsupported',c:'Commitment · classified separately'};
+let openClaim=0;
+const pClaims=[],draftNote=document.getElementById('draftnote');
+function srcOfClaim(i){const c=SENT[i].claim;return c<0?null:KB.find(d=>d.claim===c);}
+function selectClaim(i){
+  openClaim=i;
+  pClaims.forEach((e,k)=>e.classList.toggle('on',k===i));
+  const s=SENT[i],src=srcOfClaim(i);
+  draftNote.innerHTML=src
+   ?`<div class="dk"><span class="pip"></span>Grounded in one page, open on the right</div>
+     <div class="dl"><b>Knowledge item</b>${src.fact}</div>
+     <div class="dl"><b>Document chunk</b>${src.ty}, page ${Math.min(2,src.pg)}</div>
+     <div class="dl"><b>Source file</b>${src.f}</div>`
+   :`<div class="dk bad"><span class="pip"></span>${s.tag==='u'?'No page to open':'Not a factual claim'}</div>
+     <p class="dw">${s.why}</p>`;
+}
+(function(){
+  const w=document.getElementById('pclaims');
+  SENT.forEach((s,i)=>{
+    const d=document.createElement('div');d.className='pc';d.tabIndex=0;
+    d.innerHTML=`<div class="tx">${s.t}</div><span class="tg ${s.tag}">${TAGL[s.tag]}</span>`;
+    d.onclick=()=>selectClaim(i);
+    d.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectClaim(i);}};
+    w.appendChild(d);pClaims.push(d);});
+  selectClaim(0);
+})();
+
+/* ══════════ 05 · red team: five checks, then a sentence the evidence can carry ══════════ */
+const CHECKS=['Evidence present','Numbers match source','Dates in force','Named people exist','Model critique'];
+const RT=[
+ {chip:'Scale claim',fail:1,src:'PastPerf_Metro.docx',
+  was:'We have delivered comparable engagements <del>at this scale</del><ins>up to ₹48 crore</ins>.',
+  why:'The largest record in the knowledge base is ₹48 crore. The sentence implied more, and nothing supports it.',
+  badge:'Narrowed to what the record shows',
+  world:'values',docs:['PastPerf_Metro.docx','PastPerf_Crossrail.docx','PastPerf_TramDepot.docx'],
+  vals:['₹48 crore','₹30 crore','₹19 crore'],ceiling:'what the sentence implied'},
+ {chip:'Certification claim',fail:2,src:'ISO27001_2024.pdf',
+  was:'Our team holds <del>every certification the tender requires</del><ins>ISO 27001, with renewal scheduled before contract start</ins>.',
+  why:'The certificate expires four months before contract start, so the claim was not true for the whole term.',
+  badge:'Narrowed to what is in force',
+  world:'dates',docs:['ISO27001_2024.pdf'],vals:['valid to 30 Jun 2027'],ceiling:'contract runs to 2029'},
+ {chip:'Availability promise',fail:4,src:'no source',
+  was:'We guarantee 99.9% availability from the commencement date.',
+  why:'Forward-looking. No document can ground a promise about the future, so the red team cannot narrow it either.',
+  badge:'Held for the approver',hold:1,world:'none',docs:[],vals:[]}];
+let rtI=0,rtStep=-1,rtTimer=null;
+const rtPanel=document.getElementById('rtpanel');
+function paintRT(){
+  const r=RT[rtI],done=rtStep>CHECKS.length;
+  rtPanel.innerHTML=
+    `<div class="rtchecks">${CHECKS.map((c,i)=>{
+      const run=rtStep>i,bad=run&&i===r.fail;
+      return `<div class="rtc ${run?'run':''} ${bad?'fail':(run?'pass':'')}">
+        <span class="dot">${run?(bad?'✕':'✓'):'·'}</span><span>${c}</span></div>`;}).join('')}</div>
+     <div class="rtq ${rtStep>r.fail?'done':''} ${done?'rev2':''}">
+       <div class="was">${r.was}</div><div class="why">${r.why}</div></div>
+     <div class="rtfoot" style="opacity:${done?1:0}">
+       <span class="rtbadge ${r.hold?'hold':''}">${r.badge}</span>
+       <span>Original kept in the audit trail. <b>The approver decides.</b></span></div>`;
+}
+function runRT(i){
+  rtI=i;rtStep=RM?CHECKS.length+1:0;
+  document.querySelectorAll('#rtchips button').forEach((b,k)=>b.classList.toggle('on',k===i));
+  paintRT();
+  clearInterval(rtTimer);
+  if(RM)return;
+  rtTimer=setInterval(()=>{rtStep++;paintRT();
+    if(rtStep>CHECKS.length)clearInterval(rtTimer);},130);   /* the whole sweep takes under a second */
+}
+(function(){
+  const chips=document.getElementById('rtchips');
+  RT.forEach((r,i)=>{const b=document.createElement('button');
+    b.innerHTML=`<b>${i+1}</b> ${r.chip}`;b.onclick=()=>runRT(i);chips.appendChild(b);});
+  let started=false;
+  window.strikeRedTeam=()=>{if(started)return;started=true;runRT(0);};
+  if(MODE!=='pinned')ScrollTrigger.create({trigger:'#red',start:'top 62%',once:true,onEnter:()=>strikeRedTeam()});
+})();
+
+/* ══════════ 06 · impact ══════════ */
+(function(){
+  const c=document.getElementById('ic'),out=document.getElementById('fallout');
+  const NODES=[
+   {t:'ISO 27001 certificate'},{t:'A. Mehta, profile'},{t:'Band 3 rate card'},
+   {t:'R-04 Security'},{t:'R-11 Key personnel'},{t:'R-19 Insurance'},{t:'R-22 Pricing'},
+   {t:'§4 Capability'},{t:'§6 Delivery team'},{t:'§9 Pricing narrative'},
+   {t:'Readiness gate'}];
+  const E=[[0,3],[0,5],[1,4],[1,3],[2,6],[2,5],[3,7],[4,7],[4,8],[5,7],[6,9],[7,10],[8,10],[9,10]];
+  const COLS=[[0,1,2],[3,4,5,6],[7,8,9],[10]];
+  const COLT=['Sources','Requirements','Proposal','Gate'];
+  let W=0,H=0,pos=[],hop=[],wave=0,src=-1,vis=false,last=performance.now(),BW=150,hover=-1;
+  function layout(w,h){W=w;H=h;BW=Math.min(w*.2,168);
+    const m=BW/2+10,span=(w-m*2)/3,top=52,bot=h-22;
+    pos=[];
+    COLS.forEach((col,ci)=>col.forEach((n,ri)=>{
+      pos[n]={x:m+ci*span,y:top+(bot-top)*((ri+.5)/col.length)};}));}
+  function seed(s){src=s;hop=new Array(NODES.length).fill(99);hop[s]=0;
+    for(let k=0;k<5;k++)E.forEach(([a,b])=>{if(hop[a]+1<hop[b])hop[b]=hop[a]+1;});
+    wave=0;report();
+    [...document.querySelectorAll('.causes button')].forEach(b=>b.classList.toggle('on',+b.dataset.s===s));}
+  function report(){
+    const at=d=>NODES.map((n,i)=>hop[i]===d?n.t:null).filter(Boolean);
+    const reqs=at(1),secs=at(2).concat(at(3)).filter(t=>t!=='Readiness gate');
+    const gate=hop[10]<99,n=hop.filter(h=>h>0&&h<99).length;
+    out.innerHTML=
+      `<div class="fr"><span class="h">source</span><span class="b"><b>${NODES[src].t}</b> changes</span></div>`
+     +`<div class="fr"><span class="h">hop 1</span><span class="b">${reqs.length
+        ?`<b>${reqs.length} requirement${reqs.length>1?'s':''}</b> lose evidence: ${reqs.join(', ')}`:'nothing'}</span></div>`
+     +`<div class="fr"><span class="h">hop 2</span><span class="b">${secs.length
+        ?`<b>${secs.length} section${secs.length>1?'s':''}</b> now carry ungrounded claims: ${secs.join(', ')}`:'nothing'}</span></div>`
+     +(gate?'<div class="fr bad"><span class="h">hop 3</span><span class="b"><b>The readiness gate blocks submission.</b></span></div>':'')
+     +`<div class="ftot"><em>${n}</em> downstream facts affected</div>`;
+    [...out.querySelectorAll('.fr')].forEach((r,i)=>gsap.to(r,{opacity:1,x:0,duration:RM?.001:.4,delay:RM?0:.1+i*.2}));
+    gsap.fromTo(out.querySelector('.ftot'),{opacity:0},{opacity:1,duration:RM?.001:.5,delay:RM?0:.6});}
+  function rr(x,X,Y,w,h,r){x.beginPath();x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);
+    x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath();}
+  function cubic(p,q,t){                            /* the wave travels along the curve itself */
+    const mx=(p.x+q.x)/2,u=1-t;
+    const x=u*u*u*p.x+3*u*u*t*mx+3*u*t*t*mx+t*t*t*q.x;
+    const y=u*u*u*p.y+3*u*u*t*p.y+3*u*t*t*q.y+t*t*t*q.y;
+    return{x,y};}
+  function curve(x,p,q){const mx=(p.x+q.x)/2;
+    x.beginPath();x.moveTo(p.x,p.y);x.bezierCurveTo(mx,p.y,mx,q.y,q.x,q.y);x.stroke();}
+  function segment(x,p,q,t0,t1){
+    x.beginPath();
+    for(let i=0;i<=14;i++){const pt=cubic(p,q,t0+(t1-t0)*(i/14));
+      i?x.lineTo(pt.x,pt.y):x.moveTo(pt.x,pt.y);}
+    x.stroke();}
+  function draw(){
+    const f=fit(c);if(!f)return;
+    const[x,w,h]=f;
+    if(w!==W||h!==H)layout(w,h);
+    x.clearRect(0,0,w,h);
+    x.textAlign='center';x.font='600 9.5px Archivo';x.fillStyle=V('--ink-3');x.globalAlpha=.8;
+    COLS.forEach((col,ci)=>x.fillText(COLT[ci].toUpperCase(),pos[col[0]].x,26));
+    x.globalAlpha=1;
+    E.forEach(([a,b])=>{
+      const p={x:pos[a].x+BW/2,y:pos[a].y},q={x:pos[b].x-BW/2,y:pos[b].y};
+      const d=hop.length?Math.max(hop[a],hop[b]):99;
+      const on=src>=0&&d<99;
+      x.strokeStyle=V('--rule');x.globalAlpha=src<0?.5:(on?.3:.12);x.lineWidth=1;
+      curve(x,p,q);
+      if(!on)return;
+      const ph=wave-(d-1);                           /* one pulse per hop, travelling outward */
+      if(ph<-.05||ph>1.5)return;
+      const t1=Math.min(1,Math.max(0,ph)),t0=Math.max(0,t1-.4);
+      x.strokeStyle=V('--alarm');x.lineWidth=2;x.lineCap='round';
+      x.globalAlpha=.9*Math.min(1,1.6-ph);
+      segment(x,p,q,t0,t1);
+      if(t1<1){const h=cubic(p,q,t1);
+        x.fillStyle=V('--alarm');x.globalAlpha=.9;
+        x.beginPath();x.arc(h.x,h.y,2.6,0,7);x.fill();}
+      x.lineCap='butt';});
+    x.globalAlpha=1;
+    NODES.forEach((n,i)=>{
+      const p=pos[i],bh=30,on=src>=0&&hop[i]<99;
+      const k=src<0?0:Math.max(0,1-Math.abs(wave-hop[i])*1.3);
+      x.globalAlpha=src<0?1:(on?1:.3);
+      x.fillStyle=V('--raise');rr(x,p.x-BW/2,p.y-bh/2,BW,bh,5);x.fill();
+      x.strokeStyle=i===src?V('--alarm'):(on?V('--amber'):V('--rule'));
+      x.lineWidth=(i===src||hover===i)?1.8:1;
+      x.globalAlpha=src<0?(hover===i?.9:.45):(on?.45+k*.55:.22);
+      rr(x,p.x-BW/2,p.y-bh/2,BW,bh,5);x.stroke();
+      x.globalAlpha=src<0?.95:(on?1:.4);
+      x.fillStyle=i===src?V('--alarm'):(on?V('--ink'):V('--ink-3'));
+      x.font=(i===src?'600 ':'400 ')+'11.5px Archivo';
+      x.fillText(n.t,p.x,p.y+4,BW-16);x.globalAlpha=1;});
+    x.textAlign='left';}
+  new IntersectionObserver(e=>vis=e[0].isIntersecting,{threshold:.05}).observe(c);
+  const shown=()=>vis&&parseFloat(getComputedStyle(c.closest('.ch')).opacity)>.05;
+  const pick=e=>{const r=c.getBoundingClientRect(),px=e.clientX-r.left,py=e.clientY-r.top;
+    let best=-1,bd=1e9;
+    pos.forEach((p,i)=>{const d=Math.max(Math.abs(p.x-px)-BW/2,Math.abs(p.y-py)-15);if(d<bd){bd=d;best=i;}});
+    return bd<14?best:-1;};
+  c.addEventListener('mousemove',e=>{hover=pick(e);c.style.cursor=hover>=0?'pointer':'default';});
+  c.addEventListener('mouseleave',()=>{hover=-1;});
+  c.addEventListener('click',e=>{const i=pick(e);if(i>=0)seed(i);});
+  document.querySelectorAll('.causes button').forEach(b=>b.onclick=()=>seed(+b.dataset.s));
+  seed(0);
+  (function tick(now){requestAnimationFrame(tick);
+    const dt=Math.min((now-last)/1000,.05);last=now;
+    if(!shown())return;
+    if(src>=0&&!RM){wave+=dt*.9;if(wave>5.2)wave=0;}
+    draw();})(performance.now());
+})();
+
+/* ══════════ 07 · pricing: every check runs in code, on whatever you type ══════════ */
+let crossOpen=false,priceState={card:22000,rate:25000,cur:'INR',version:0};
+(function(){
+  const CARD_RATE=22000,USD=83;
+  const ROWS=[
+   {d:'Signalling design',q:120,u:'days',r:25000,c:'INR',stated:3000000,card:CARD_RATE},
+   {d:'Site supervision',q:210,u:'days',r:18500,c:'INR',stated:3885000},
+   {d:'Night block management',q:64,u:'shifts',r:38000,c:'INR',stated:2432000},
+   {d:'Testing and commissioning',q:45,u:'days',r:24000,c:'INR',stated:1125000},
+   {d:'Software licences',q:1,u:'lot',r:21000,c:'USD',stated:21000}];
+  let grand=10463000;
+  const money=(v,c)=>c==='USD'?'$'+v.toLocaleString('en-US'):INR(v);
+  const wb=document.getElementById('wb'),fs=document.getElementById('findings'),gate=document.getElementById('gate');
+  function checks(){
+    const out=[];
+    ROWS.forEach((r,i)=>{
+      if(r.q*r.r!==r.stated)out.push({row:i,t:'Row arithmetic',h:`Row ${i+1}, ${r.d}`,
+        exp:money(r.q*r.r,r.c),act:money(r.stated,r.c),dl:money(Math.abs(r.q*r.r-r.stated),r.c),
+        n:'Quantity times rate does not equal the line total.',fix:'Recompute the line',
+        go:()=>{r.stated=r.q*r.r;}});
+      if(r.c!=='INR')out.push({row:i,t:'Currency',h:`Row ${i+1}, ${r.d}`,
+        exp:'INR',act:r.c,dl:'instruction §4.1',
+        n:'The price bid instruction requires INR. A foreign currency line cannot be summed into the total.',
+        fix:`Convert at ₹${USD}`,go:()=>{r.r*=USD;r.stated*=USD;r.c='INR';}});
+      if(r.card&&r.c==='INR'&&r.r!==r.card)out.push({row:i,t:'Cross-document',h:`Row ${i+1}, ${r.d}`,
+        exp:INR(r.card)+' per day',act:INR(r.r)+' per day',dl:INR(Math.abs(r.r-r.card)),
+        n:'The rate does not match RateCard_Band3.xlsx, the document this bid cites for band 3.',
+        fix:'Use the rate card',cross:1,go:()=>{r.r=r.card;r.stated=r.q*r.r;}});});
+    const sum=ROWS.reduce((a,r)=>a+(r.c==='INR'?r.stated:0),0);
+    if(sum!==grand)out.push({row:-1,t:'Grand total',h:'Sum of the INR lines',
+      exp:INR(sum),act:INR(grand),dl:INR(Math.abs(sum-grand)),
+      n:'The submitted total does not equal the sum of the lines above.',
+      fix:'Use the computed total',go:()=>{grand=sum;}});
+    return out;}
+  function render(){
+    const F=checks(),bad=new Set(F.filter(f=>f.row>=0).map(f=>f.row));
+    crossOpen=F.some(f=>f.cross);
+    priceState={card:CARD_RATE,rate:ROWS[0].r,cur:ROWS[0].c,version:priceState.version+1};
+    wb.innerHTML=`<tr><th>Line</th><th>Item</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Total</th></tr>`
+      +ROWS.map((r,i)=>`<tr class="${bad.has(i)?'bad':'fixed'}"><td class="ref">${i+1}</td><td>${r.d}</td>
+        <td class="n">${r.q} ${r.u}</td>
+        <td class="n edit ${bad.has(i)?'flag':''}" contenteditable="true" data-i="${i}" data-k="r">${money(r.r,r.c)}</td>
+        <td class="n edit ${bad.has(i)?'flag':''}" contenteditable="true" data-i="${i}" data-k="stated">${money(r.stated,r.c)}</td></tr>`).join('')
+      +`<tr class="tot"><td></td><td>Grand total, as submitted</td><td></td><td></td>
+        <td class="n edit" contenteditable="true" data-i="-1" data-k="grand">${INR(grand)}</td></tr>`;
+    wb.querySelectorAll('.edit').forEach(td=>{
+      td.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();td.blur();}};
+      td.onblur=()=>{
+        const v=parseInt(td.textContent.replace(/[^0-9]/g,''),10);
+        if(!isNaN(v)){const i=+td.dataset.i;
+          if(i<0)grand=v;else ROWS[i][td.dataset.k]=v;}
+        render();};});
+    fs.innerHTML='';
+    F.forEach(f=>{const d=document.createElement('div');d.className='fd';
+      d.innerHTML=`<span class="fh"><b>${f.t}</b> · ${f.h}</span><button>${f.fix}</button>
+        <div class="fv"><span>expected <b>${f.exp}</b></span><span>actual <b>${f.act}</b></span><span>delta <b class="dl">${f.dl}</b></span></div>
+        <div class="fn">${f.n}</div>`;
+      d.querySelector('button').onclick=()=>{f.go();render();};
+      fs.appendChild(d);});
+    if(!F.length)fs.innerHTML=`<p class="fnote">No findings. Every line recomputes from quantity and rate, one
+      currency, rates matching the cited rate card, and a total that equals its lines. Edit any cell to break it again.</p>`;
+    gate.innerHTML=F.length
+      ?`<span>Price bid gate</span><span class="x"><b>Blocked.</b> ${F.length} finding${F.length>1?'s':''} open</span>`
+      :`<span>Price bid gate</span><span class="v"><b>Passed.</b> Re-validated in code</span>`;}
+  render();
+})();
+
+
+/* the cited rate card, rendered as a page that answers the workbook */
+function ratecardPage(){
+  const p=priceState,same=p.rate===p.card;
+  const rows=[['Band 1 · assistant engineer','₹12,000'],['Band 2 · engineer','₹16,000'],
+    ['Band 3 · senior engineer','₹22,000'],['Band 4 · lead engineer','₹28,000'],['Supervisor','₹18,500']];
+  return `<div class="ph"><span>RATE CARD</span><span>RateCard_Band3.xlsx</span></div>
+    <h4>Band rates</h4><div class="sub">Northline Rail Pvt Ltd · fixed for 24 months</div>
+    <table><tr><th>Band</th><th class="n">Day rate</th></tr>
+    ${rows.map((r,i)=>`<tr${i===2?' class="hit"':''}><td>${r[0]}</td><td class="n">${i===2?`<mark>${r[1]}</mark>`:r[1]}</td></tr>`).join('')}</table>
+    <h5>CROSS-DOCUMENT CHECK</h5>
+    <p class="cmp ${same?'ok':'bad'}">The price bid quotes <b>${p.cur==='INR'?INR(p.rate):'$'+p.rate.toLocaleString('en-US')}</b>
+      for band 3. This card says <b>₹22,000</b>. ${same?'They match, so the line is citable.':'They differ, so the line cannot be cited.'}</p>
+    <div class="pf"><span>Northline Rail Pvt Ltd</span><span>page 1 of 1</span></div>`;
+}
+
+/* the cover sheet on top of the finished submission */
+function coverPage(){
+  const covered=REQ_CODES.length-GAPS.length;
+  return `<div class="ph"><span>SUBMISSION PACK</span><span>Package S-4</span></div>
+    <h4>Signalling and systems</h4><div class="sub">Metro Rail Corporation · two envelope bid</div>
+    <h5>WHAT IS IN THIS PACK</h5>
+    <ul><li><span>Documents indexed</span><span>${N}</span></li>
+      <li><span>Requirements evidenced</span><span>${covered} of ${REQ_CODES.length}</span></li>
+      <li><span>Open gap</span><span>${GAPS[0]} ${REQ[GAPS[0]]}</span></li>
+      <li><span>Factual claims without a source</span><span>0 after revision</span></li>
+      <li><span>Price bid gate</span><span>re-validated in code</span></li></ul>
+    <h5>DECLARATION</h5>
+    <p>Every factual sentence in this submission cites a page in the documents listed above.
+      Claims the evidence could not carry were narrowed or held for approval, and the audit trail records both.</p>
+    <div class="sig">A. Mehta</div><div class="sub">Authorised signatory</div>
+    <div class="pf"><span>Northline Rail Pvt Ltd</span><span>cover sheet</span></div>`;
+}
+
+
+/* what the retrieval actually returned when nothing could be cited */
+function receipt(kind,title,why,rows,foot){
+  return `<div class="gk">${kind}</div><div class="g1">${title}</div><div class="gb">${why}</div>
+    <div class="gr">${rows.length?`<div class="gq">WHAT RETRIEVAL RETURNED</div>
+    ${rows.map(r=>`<div class="gl"><s>${r[0]}</s><span>rerank ${r[1]}</span></div>`).join('')}`:''}
+    <div class="gt">${foot}</div></div>`;
+}
+const MISS=[['PastPerf_Metro.docx · p. 3','0.19'],['PastPerf_Crossrail.docx · p. 2','0.14'],
+  ['Reference_DMRC.pdf · p. 1','0.11']];
+
+/* ══════════ one render loop for the world ══════════ */
+const A={p:new THREE.Vector3(),q:new THREE.Quaternion(),bend:0,s:1,op:1,lit:0};
+const B={p:new THREE.Vector3(),q:new THREE.Quaternion(),bend:0,s:1,op:1,lit:0};
+let ct=0,tPrev=performance.now(),camWant=40,pageOp=0,pageShown=-1,pageKindShown='',pageT=0,priceVer=-1,ghostShow=0;
+const ghostEl=document.getElementById('ghost'),sealEl=document.getElementById('seal');
+let sealed=false,sealT=0,ownsS=0,pageOwner=null;
+const canvasOrigin={x:0,y:0},canvasSize={x:1,y:1};
+let pageRect={x:0,y:0,w:380,h:517};
+const headerEl=document.querySelector('header');
+
+function formWeights(){
+  if(MODE==='sections')return{a:chapters[sect.a],b:chapters[sect.b],t:sect.t,F:sect.b};
+  let F=MODE==='pinned'?pinF:0;
+  if(MODE==='world')for(let k=1;k<chapters.length;k++)F+=prog[k];
+  const k=Math.min(chapters.length-1,Math.floor(F));
+  const t=Math.min(1,F-k);
+  const kb=Math.min(chapters.length-1,k+1);
+  return{a:chapters[k],b:chapters[kb],t,F};
+}
+/* shape 1 keeps the world inside the chapter's own box; the others fill the screen */
+function placeCanvas(w){
+  const c=w.t>.5?w.b:w.a;
+  const box=c.viz?c.el.querySelector('.viz'):null;
+  if(!box){cv.style.opacity=0;return null;}
+  const r=box.getBoundingClientRect();
+  cv.style.opacity=1;
+  cv.style.left=r.left+'px';cv.style.top=r.top+'px';
+  cv.style.width=r.width+'px';cv.style.height=r.height+'px';
+  return r;
+}
+function weightOf(w,name){return (w.a.form===name?1-w.t:0)+(w.b.form===name?w.t:0);}
+
+(function loop(now){
+  requestAnimationFrame(loop);
+  const t=now||performance.now();
+  const dt=Math.min((t-tPrev)/1000,.05);tPrev=t;
+  if(document.hidden)return;
+  ct+=dt;
+
+  const w=formWeights();
+  let W=innerWidth,H=innerHeight,ox=0,oy=0;
+  if(MODE==='sections'){const r=placeCanvas(w);
+    if(!r){endFrameOverlays();pageEl.style.opacity=0;return;}
+    W=r.width;H=r.height;ox=r.left;oy=r.top;}
+  if(MODE==='pinned'&&pinF>4.2&&window.strikeRedTeam)strikeRedTeam();
+  if(cv.width!==Math.round(W*DPR())||cv.height!==Math.round(H*DPR())){
+    ren.setSize(W,H,false);cam.aspect=W/H;}
+  svg.setAttribute('viewBox',`0 0 ${innerWidth} ${innerHeight}`);
+  svg.setAttribute('width',innerWidth);svg.setAttribute('height',innerHeight);
+  const hw=weightOf(w,'helix');
+
+  /* which document is open as a readable page, and which chapter is grabbable */
+  const wRead=weightOf(w,'helix'),wDraft=weightOf(w,'draft');
+  worldGrabbable=weightOf(w,'sphere');
+
+  /* reading state */
+  readTravel=clamp01((readP-PM)/(1-PM))*(N-1);
+  const reading=readP>=PM*.98&&hw>.5;
+  if(reading){readUpTo=Math.max(readUpTo,Math.round(readTravel));lensJ=Math.round(readTravel);}
+  else if(hw<.2)lensJ=-1;
+  if(lensJ>=0&&lensShown!==lensJ)fillLens(lensJ);
+  if(lensJ>=0&&byRead[lensJ].userData.lens>.8)lensT+=dt;
+
+  const wRed=weightOf(w,'redteam'),wPrice=weightOf(w,'crossdoc'),wBid=weightOf(w,'bid');
+  packOpen+=(clamp01(packRaw)-packOpen)*approach(4,dt);
+
+  /* a page belongs to whichever chapter is under the middle of the screen, and to no other */
+  const cur=w.t>.5?w.b:w.a;
+  const curCol=cur.el.querySelector('.col')||cur.el;
+  const cr=curCol.getBoundingClientRect();
+  const owns=(cr.top<=H*.62&&cr.bottom>=H*.38)?1:0;   /* the chapter's own copy is on screen */
+  pageOwner=owns?cr:pageOwner;
+  ownsS+=(owns-ownsS)*approach(6,dt);
+  let pageJ=-1,pageKind='',ghost='';
+  if(owns){
+    if(cur.form==='helix'){pageJ=lensJ;pageKind='read';}
+    else if(cur.form==='draft'){pageKind='draft';const sc=srcOfClaim(openClaim);
+      if(sc)pageJ=KB.indexOf(sc);
+      else{const s=SENT[openClaim];
+        ghost=s.tag==='u'
+          ?receipt('NO CITABLE PAGE','Nothing cleared the threshold.',s.why,MISS,
+            'Cited evidence must rerank above 0.45. Nothing here does, so the sentence stays unsupported.')
+          :receipt('NOT A FACTUAL CLAIM','No evidence can ground a promise.',s.why,[],
+            'Classified as a commitment and routed to the approver.');}}
+    else if(cur.form==='redteam'){pageKind='red';
+      if(RT[rtI].world==='none')ghost=receipt('NOTHING TO WEIGH IT AGAINST',
+        'No document can ground it.',RT[rtI].why,[],
+        'Held for the approver. The original sentence stays in the audit trail.');}
+    else if(cur.form==='crossdoc'){pageKind='price';pageJ=jOf('RateCard_Band3.xlsx');}
+    else if(cur.form==='bid'){pageKind='cover';pageJ=docs[0].userData.j;}
+  }
+
+  if(pageJ!==pageShown||pageKind!==pageKindShown){
+    pageShown=pageJ;pageKindShown=pageKind;pageT=0;pageEl.classList.remove('hl');priceVer=-1;
+    if(pageJ>=0)pageEl.innerHTML=pageKind==='price'?ratecardPage()
+      :pageKind==='cover'?coverPage():excerpt(pageJ);}
+  if(pageKind==='price'&&priceState.version!==priceVer){priceVer=priceState.version;
+    pageEl.innerHTML=ratecardPage();pageEl.classList.add('hl');}
+  if(pageJ>=0)pageT+=dt;
+  if(pageT>(pageKind==='read'?.15:.35))pageEl.classList.add('hl');
+  if(ghost)ghostEl.innerHTML=ghost;
+  ghostShow=ghost?ownsS:0;
+
+  /* the chapters hand the world their state */
+  CEIL={};
+  {const r=RT[rtI],n=r.docs.length;
+   r.docs.forEach((f,i)=>{const j=jOf(f);
+     if(j>=0)CEIL[j]={i,n,h:n>1?(n-1-i)/(n-1):.5,top:i===0};});}
+  const scObj=SCEN[scen];
+  RETR={};
+  scObj.cands.forEach((c,rank)=>{const j=jOf(c.f);
+    if(j>=0)RETR[j]={rank,ok:c.ok,judged:scenStage,drop:0};});
+
+
+  /* framing: blend the region and the distance between the two chapters in play */
+  const topIn=MODE==='sections'?0:Math.max(0,headerEl.getBoundingClientRect().bottom);
+  const wideA=!!w.a.el.querySelector('.wide-col'),wideB=!!w.b.el.querySelector('.wide-col');
+  const ra=measureRegion(MODE==='sections'?'center':w.a.side,W,H,topIn,wideA),
+        rb=measureRegion(MODE==='sections'?'center':w.b.side,W,H,topIn,wideB);
+  region={cx:ra.cx+(rb.cx-ra.cx)*w.t,cy:ra.cy,w:ra.w+(rb.w-ra.w)*w.t,h:ra.h};
+  canvasOrigin.x=ox;canvasOrigin.y=oy;canvasSize.x=W;canvasSize.y=H;
+  cam.setViewOffset(W,H,W/2-region.cx,H/2-region.cy,W,H);
+  const da=distanceFor(FORM[w.a.form],W,H),db=distanceFor(FORM[w.b.form],W,H);
+  camWant=(da+(db-da)*w.t)*1.08;
+  camD+=(camWant-camD)*approach(6,dt);
+  cam.position.set(0,0,camD);cam.updateMatrixWorld();
+  camR.setFromMatrixColumn(cam.matrixWorld,0);camU.setFromMatrixColumn(cam.matrixWorld,1);
+  sc.fog.density=.7/(camD+R_SPHERE);
+
+  /* the page sits at a fixed depth so it always projects to a readable size */
+  const tanF=Math.tan(cam.fov*Math.PI/360);
+  const colRight=(MOB||MODE==='sections')?0:Math.min(W*.42,470)+Math.min(W*.04,52);
+  const pageH=MODE==='sections'?Math.min(H*.86,520)
+    :Math.min(H*.62,540,Math.max(240,(W-colRight-40-300)*1.36));
+  const pageW=pageH/1.36;
+  const depth=SH*H/(2*tanF*pageH);
+  const wideCol=!!(w.t>.5?w.b:w.a).el.querySelector('.wide-col');
+  const colR=MOB?0:(wideCol?Math.min(W*.46,620):Math.min(W*.42,470))+Math.min(W*.04,52);
+  const pageCx=canvasOrigin.x+(MODE==='sections'?W*.36
+    :weightOf(w,'bid')>.35?region.cx-canvasOrigin.x+pageW*.42:colR+28+pageW/2);
+  const colMid=pageOwner?pageOwner.top+pageOwner.height/2:H*.5;   /* the page rides with its chapter's copy */
+  const pageCy=Math.max(pageH/2+74,Math.min(H-pageH/2-24,colMid));
+  pageAnchor.copy(pointAt(pageCx,canvasOrigin.y+pageCy,depth));
+  pageRect={x:pageCx-pageW/2,y:canvasOrigin.y+pageCy-pageH/2,w:pageW,h:pageH};
+
+  const fa=FORM[w.a.form],fb=FORM[w.b.form];
+  docs.forEach(g=>{
+    const u=g.userData;
+    const lensTarget=(u.j===lensJ&&reading)?1:0;
+    u.lens+=(lensTarget*hw-u.lens)*approach(7,dt);
+    u.page+=(((u.j===pageJ)?ownsS:0)-u.page)*approach(6,dt);
+    const r=RETR[u.j];
+    if(r){const want=(scenStage&&!r.ok)?1:0;
+      u.dropT=Math.max(0,Math.min(1,(u.dropT||0)+(want?dt/1.1:-dt/.5)));
+      r.drop=ease(u.dropT);}
+
+    u.rd+=(((u.j<=readUpTo?1:0)*hw)-u.rd)*approach(4,dt);
+    fa.f(u,A,ct);fb.f(u,B,ct);
+    const s=ease(clamp01((w.t-(u.idx/N)*.3)/.7));
+    g.position.lerpVectors(A.p,B.p,s);
+    g.quaternion.copy(A.q).slerp(B.q,s);
+    const bend=A.bend+(B.bend-A.bend)*s;
+    g.scale.setScalar(A.s+(B.s-A.s)*s);
+    u.mat.opacity=A.op+(B.op-A.op)*s;
+    u.mat.emissiveIntensity=(A.lit+(B.lit-A.lit)*s)*.34;
+    let bendOut=bend;
+    if(u.page>.001){                                   /* the open page flies to a readable size */
+      g.position.lerp(pageAnchor,u.page);
+      g.quaternion.slerp(Q_ID,u.page);
+      bendOut*=1-u.page;
+      g.scale.setScalar(g.scale.x+(1-g.scale.x)*u.page);
+      u.mat.opacity=Math.max(u.mat.opacity,u.page);}
+    u.meshes[0].morphTargetInfluences[0]=bendOut;
+    u.meshes[1].morphTargetInfluences[0]=bendOut;
+    g.visible=u.mat.opacity>.012&&(!MOB||u.idx%2===0||u.page>.01);   /* reduced density on small screens */
+  });
+
+  /* ── overlays: every readable thing is DOM or SVG ── */
+  const sw=weightOf(w,'sphere'),pw=weightOf(w,'pack'),cw=weightOf(w,'retrieve');
+  const amber=V('--amber'),alarm=V('--alarm'),slate=V('--slate');
+
+  /* the open page tracks its sheet, wherever the chapter puts it */
+  const pdoc=pageJ>=0?byRead[pageJ]:null;
+  const pageFade=ownsS;                              /* the page fades with its own chapter */
+  if(pdoc&&!MOB){
+    const b=boxOf(pdoc);
+    if(b){pageEl.style.opacity=pdoc.userData.page*pageFade;
+      pageEl.style.transform=`translate(${(b.x-b.hw).toFixed(1)}px,${(b.y-b.hh).toFixed(1)}px) scale(${(b.hw*2/380).toFixed(4)})`;}
+    else pageEl.style.opacity=0;
+  }else pageEl.style.opacity=0;
+
+  if(sw>.05&&!MOB){                                  /* hero: the sentence and the pages behind it */
+    const marks=[...document.querySelectorAll('#heroSentence mark')];
+    marks.forEach((m,i)=>{
+      const g=srcOf[[0,1,3][i]];if(!g)return;
+      const b=boxOf(g);if(!b)return;
+      const r=m.getBoundingClientRect(),ax=r.right,ay=r.top+r.height/2;
+      const bx=b.x-b.hw*.7,by=b.y;
+      link(`M ${ax} ${ay} C ${ax+120} ${ay} ${bx-140} ${by} ${bx} ${by}`,amber,1.6,.5*sw,sw);
+      tag(g.userData.meta.f,b.x+b.hw+10,b.y-7,'amb',sw>.5);});
+  }
+  if(pw>.05&&!MOB){                                  /* the pack: each mandatory clause to its page */
+    CLAUSES.forEach((c,i)=>{
+      const li=document.getElementById('clauses').children[i];if(!li)return;
+      const g=docs[MAND[i]],b=boxOf(g);if(!b)return;
+      const r=li.getBoundingClientRect(),ax=r.left,ay=r.top+r.height/2;
+      const hot=hotClause===i;
+      li.classList.toggle('hot',hot);
+      link(`M ${ax} ${ay} C ${ax-90} ${ay} ${b.x+b.hw+90} ${b.y} ${b.x+b.hw} ${b.y}`,
+        amber,hot?1.9:1,(hot?.8:.22)*pw,pw);});
+  }
+  if(wRead>.05&&!MOB&&lensJ>=0){                     /* reading: highlighted line, fact, requirement */
+    const mk=pageEl.querySelector('mark'),lx=lensCard.querySelector('.lx'),rq=lensCard.querySelector('.rq');
+    if(mk&&lx&&pageEl.style.opacity>.5){
+      const m=mk.getBoundingClientRect(),c=lx.getBoundingClientRect();
+      link(`M ${m.left} ${m.top+m.height/2} C ${m.left-70} ${m.top} ${c.right+70} ${c.top+12} ${c.right+6} ${c.top+12}`,
+        amber,1.4,.7*wRead,(pageT-.35)/.35);
+      const g2=byRead[lensJ],bx=boxOf(g2);
+      if(bx){const L=bx.x-bx.hw-7,R=bx.x+bx.hw+7,T=bx.y-bx.hh-7,B=bx.y+bx.hh+7,cc=14;
+        link(`M ${L} ${T+cc} V ${T} H ${L+cc} M ${R-cc} ${T} H ${R} V ${T+cc} M ${R} ${B-cc} V ${B} H ${R-cc} M ${L+cc} ${B} H ${L} V ${B-cc}`,
+          amber,1.6,.85*wRead,1);}}
+    if(rq){const cell=cells[reqOf(lensJ)];
+      if(cell){const a=rq.getBoundingClientRect(),d=cell.getBoundingClientRect();
+        link(`M ${a.left+a.width/2} ${a.bottom} C ${a.left+a.width/2} ${a.bottom+40} ${d.left+d.width/2} ${d.top-40} ${d.left+d.width/2} ${d.top}`,
+          amber,1.2,.6*wRead,(pageT-.7)/.35);}}
+  }
+  if(cw>.05&&!MOB){                                  /* compliance: each candidate row to its chunk */
+    const rows=[...document.querySelectorAll('#trace .tr')];
+    SCEN[scen].cands.forEach((c,i)=>{
+      const g=byRead[jOf(c.f)],row=rows[i];if(!g||!row)return;
+      const b=boxOf(g);if(!b)return;
+      const r=row.getBoundingClientRect(),ax=r.right+4,ay=r.top+18;
+      const cited=scenStage&&c.ok,dropped=scenStage&&!c.ok;
+      link(`M ${ax} ${ay} C ${ax+110} ${ay} ${b.x-b.hw-120} ${b.y} ${b.x-b.hw-5} ${b.y}`,
+        dropped?alarm:amber,cited?1.7:1.1,(cited?.75:dropped?.35:.45)*cw,cw);
+      tag(scenStage?(c.ok?'cited':'dropped'):'candidate',b.x+b.hw+10,b.y-7,
+        dropped?'bad':'amb',cw>.5);});
+  }
+  if(wDraft>.05&&!MOB){                              /* drafting: the sentence to its open page */
+    const el=pClaims[openClaim];
+    if(el){const r=el.getBoundingClientRect(),ax=r.right+2,ay=r.top+r.height/2;
+      if(pdoc){const b=boxOf(pdoc);
+        if(b)link(`M ${ax} ${ay} C ${ax+130} ${ay} ${b.x-b.hw-150} ${b.y} ${b.x-b.hw-6} ${b.y}`,amber,1.8,.85*wDraft,wDraft);
+        const mk=pageEl.querySelector('mark');
+        if(mk&&pageT>.5&&b){const m=mk.getBoundingClientRect();
+          tag('the line this sentence cites',b.x+b.hw+14,m.top+m.height/2-7,'amb',pageT>.8);}}
+      else link(`M ${ax} ${ay} L ${ax+Math.min(260,(innerWidth-ax)*.45)} ${ay-30}`,alarm,1.5,.5*wDraft,wDraft);}
+  }
+  if(ghostShow>.2&&!MOB){                          /* the slot where a page would have been */
+    ghostEl.style.opacity=ghostShow;
+    ghostEl.style.transform=`translate(${pageRect.x.toFixed(1)}px,${pageRect.y.toFixed(1)}px) scale(${(pageRect.w/380).toFixed(4)})`;
+    const src=wRed>.35?document.querySelector('#rtpanel .rtq'):pClaims[openClaim];
+    if(src){const r=src.getBoundingClientRect(),ax=r.right+4,ay=r.top+Math.min(28,r.height/2);
+      const bx=pageRect.x-6,by=pageRect.y+46;
+      link(`M ${ax} ${ay} C ${ax+120} ${ay} ${bx-130} ${by} ${bx} ${by}`,alarm,1.5,.6*ghostShow,ghostShow);}
+  }else ghostEl.style.opacity=0;
+  if(wRed>.05&&!MOB){                              /* red team: the records the claim must live under */
+    const r=RT[rtI];
+    const q=document.querySelector('#rtpanel .rtq');
+    let topBox=null;
+    r.docs.forEach((f,i)=>{
+      const g=byRead[jOf(f)];if(!g)return;
+      const b=boxOf(g);if(!b)return;
+      if(!i)topBox=b;
+      tag(r.vals[i],b.x-b.hw,b.y+b.hh+12,i?'':'amb',wRed>.4);
+      if(!i&&q){const rr=q.getBoundingClientRect();
+        link(`M ${rr.right+4} ${rr.top+22} C ${rr.right+120} ${rr.top+22} ${b.x-b.hw-130} ${b.y} ${b.x-b.hw-6} ${b.y}`,
+          amber,1.6,.7*wRed,wRed);}});
+    if(topBox){                                     /* the line the sentence claimed to be above */
+      const y=topBox.y-topBox.hh-34;
+      link(`M ${topBox.x-topBox.hw*2.4} ${y} L ${topBox.x+topBox.hw*2.4} ${y}`,alarm,1.4,.7*wRed,1,true);
+      tag(r.ceiling,topBox.x-topBox.hw*2.4,y-20,'bad',wRed>.4);}
+  }
+  if(wPrice>.05&&!MOB&&pdoc){                      /* pricing: the finding points at the cited card */
+    const b=boxOf(pdoc);
+    const fd=[...document.querySelectorAll('#findings .fd')]
+      .find(e=>e.querySelector('.fh b')&&e.querySelector('.fh b').textContent==='Cross-document');
+    if(b&&fd){const r=fd.getBoundingClientRect();
+      link(`M ${r.right-4} ${r.top+20} C ${r.right+120} ${r.top+20} ${b.x-b.hw-130} ${b.y} ${b.x-b.hw-6} ${b.y}`,
+        alarm,1.5,.65*wPrice,wPrice);}}
+  const atClose=owns&&cur.form==='bid';
+  if(atClose&&!MOB){                               /* close: the pack, bound and sealed */
+    tag(`${N} documents · every factual sentence cites a page`,
+      pageRect.x,pageRect.y+pageRect.h+16,'amb',wBid>.5);
+    if(ownsS>.6)sealed=true;
+    if(sealed)sealT+=dt;
+    const sp=clamp01((sealT-.55)/.5);                /* the stamp lands once the pack is bound */
+    const eb=sp>=1?1:1+2.7*Math.pow(sp-1,3)+1.7*Math.pow(sp-1,2);
+    const sS=RM?1:2.6+(1-2.6)*eb;
+    sealEl.style.transform=`translate(${(pageRect.x-86).toFixed(1)}px,${(pageRect.y+pageRect.h-196).toFixed(1)}px) rotate(-9deg) scale(${sS.toFixed(3)})`;
+    sealEl.style.opacity=RM?(sealed?1:0):clamp01(sp*2.4)*ownsS;
+  }else{sealEl.style.opacity=0;if(!atClose){sealed=false;sealT=0;}}
+  endFrameOverlays();
+  readingHud();
+  ren.render(sc,cam);
+})(performance.now());
+
+window.onThemeChange=()=>{                           /* paper has to read darker than the page in light mode */
+  sc.fog.color.set(light?'#CFC7B7':'#0E0B08');
+  ren.toneMappingExposure=light?.74:1.05;
+  BACK.color.set(light?'#B6AA92':'#E2D9C6');
+  docs.forEach(g=>g.userData.mat.color.set(light?'#BEB39B':'#FFFFFF'));};
+addEventListener('resize',()=>{ren.setPixelRatio(DPR());ScrollTrigger.refresh();});
+
+</script>
+</body>
+</html>

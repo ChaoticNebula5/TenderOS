@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TenderOS, evidence-grounded bid management</title>
+<meta name="description" content="TenderOS reads the tender document and your company records, checks every eligibility criterion, and drafts a bid in which each statement links to the document that supports it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200;0,6..72,300;0,6..72,400;1,6..72,200;1,6..72,300&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens. Dark is the default; light is the alternate. Paper colours are
+   constant across themes because the documents are paper in both. */
+:root{
+  --bg:#15110D; --bg-2:#100D09; --raise:#221B14;
+  --ink:#F3ECE1; --ink-2:#BCB0A0; --ink-3:#8B8073;
+  --amber:#C98A47; --slate:#7FA5AA; --alarm:#CF5F45;
+  --rule:rgba(243,236,225,.14); --rule-2:rgba(243,236,225,.07);
+  --pool:rgba(201,138,71,.12); --vig:rgba(6,5,4,.62);
+  --cshadow:0 26px 44px -26px rgba(0,0,0,.9),0 0 0 1px rgba(0,0,0,.25);
+  --edge:rgba(243,236,225,.2);
+  --display:"Newsreader",Georgia,"Times New Roman",serif;
+  --ui:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --gx:clamp(20px,4.2vw,64px);
+  --colw:min(470px,36vw);
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#E9E2D4; --bg-2:#E1D9C9; --raise:#F5F0E6;
+  --ink:#231E19; --ink-2:#4A423A; --ink-3:#716759;
+  --amber:#8A5A2B; --slate:#3E6167; --alarm:#9E3B2B;
+  --rule:rgba(35,30,25,.17); --rule-2:rgba(35,30,25,.08);
+  --pool:rgba(138,90,43,.10); --vig:rgba(120,96,64,.16);
+  --cshadow:0 22px 36px -24px rgba(70,48,24,.55),0 0 0 1px rgba(70,48,24,.14);
+  --edge:rgba(35,30,25,.22);
+  color-scheme:light;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+  scroll-padding-top:calc(env(safe-area-inset-top,0px) + 64px);-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--ui);-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;transition:background-color .45s,color .45s}
+body.grab{cursor:grab}
+body.point{cursor:pointer}
+body.grabbing,body.grabbing *{cursor:grabbing!important;user-select:none;-webkit-user-select:none}
+a{color:inherit}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--amber);outline-offset:3px;border-radius:2px}
+::selection{background:var(--amber);color:var(--bg)}
+
+/* ---------- the world: fixed behind everything, never takes pointer events ---------- */
+#world{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}
+/* glow and vignette are one layer, moved by transform, never by restyling the document */
+#atmo{position:absolute;left:0;top:0;width:200vw;height:200vh;will-change:transform;
+  background:radial-gradient(circle min(49vw,540px) at 50% 50%,var(--pool),transparent),
+             radial-gradient(ellipse 42.5% 37.5% at 50% 50%,transparent 42%,var(--vig) 100%)}
+#cards,#flying{position:absolute;inset:0}
+#flying{position:fixed;z-index:8;pointer-events:none}
+.scrim{position:fixed;top:0;bottom:0;width:min(60vw,860px);z-index:2;pointer-events:none;will-change:opacity}
+#scrimL{left:0;background:linear-gradient(90deg,var(--bg) 0%,var(--bg) 42%,color-mix(in oklab,var(--bg) 72%,transparent) 66%,transparent 100%)}
+#scrimR{right:0;opacity:0;background:linear-gradient(270deg,var(--bg) 0%,var(--bg) 42%,color-mix(in oklab,var(--bg) 72%,transparent) 66%,transparent 100%)}
+#labels{position:fixed;inset:0;z-index:3;pointer-events:none}
+#wires{position:fixed;inset:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:visible}
+#wires path{fill:none;stroke-linecap:round}
+/* grain lives in the page background, so it costs nothing per frame */
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.07;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E")}
+
+/* ---------- documents: real HTML, so every word on them is sharp and readable ----------
+   Each document is a wrapper and a page. The wrapper carries position, rotation and a
+   fine scale of at most a few percent, all applied by the GPU without re-rendering. The
+   page carries a coarse scale that changes in steps; only a step re-renders its text. */
+.cw{position:absolute;left:0;top:0;width:0;height:0;visibility:hidden;will-change:transform}
+.sc{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+.card{position:absolute;left:-160px;top:-218px;width:320px;height:436px;padding:22px 24px 20px;border-radius:3px;
+  overflow:hidden;
+  background:linear-gradient(168deg,#F8F2E6 0%,#EEE5D3 100%);color:#221B12;
+  font-family:var(--ui);font-size:11.5px;line-height:1.5;box-shadow:var(--cshadow)}
+/* state rings switch instantly; glows sit on their own layers and fade by opacity alone,
+   because animating a shadow re-renders the whole page on every frame of the fade */
+.card::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none}
+[data-s="lit"] .card::after{box-shadow:inset 0 0 0 6px #C98A47}
+.hot .card::after{box-shadow:inset 0 0 0 10px #C98A47}
+[data-s="part"] .card::after{box-shadow:inset 0 0 0 6px #6E979C}
+[data-s="gap"] .card::after,[data-s="hit"] .card::after{box-shadow:inset 0 0 0 6px #CF5F45}
+[data-s="src"] .card::after{box-shadow:inset 0 0 0 10px #CF5F45}
+/* an inactive glow is not painted at all, so its blur never enlarges the document's layer */
+.glow{position:absolute;left:-160px;top:-218px;width:320px;height:436px;border-radius:3px;pointer-events:none;
+  opacity:0;visibility:hidden;transition:opacity .45s,visibility 0s .45s}
+.ga{box-shadow:0 0 80px -4px rgba(201,138,71,.62)}
+.gr{box-shadow:0 0 80px -4px rgba(207,95,69,.62)}
+[data-s="lit"] .ga,.hot .ga,[data-s="gap"] .gr,[data-s="hit"] .gr,[data-s="src"] .gr{opacity:1;visibility:visible;transition:opacity .45s,visibility 0s}
+.card.held{box-shadow:0 60px 90px -36px rgba(0,0,0,.8),0 0 0 1px rgba(0,0,0,.2)}
+.c-top{display:flex;justify-content:space-between;gap:10px;font-size:9.5px;color:#7A6B58;
+  padding-bottom:9px;border-bottom:1px solid rgba(34,27,18,.16)}
+.c-top b{color:#8A5A2B;font-weight:600;white-space:nowrap}
+.c-ref{font-size:9.5px;color:#9A8B78;margin-top:6px}
+.c-t{font-family:var(--display);font-weight:300;font-size:23px;line-height:1.14;letter-spacing:-.01em;margin:14px 0 9px;color:#1C160F}
+.c-sub{font-size:11px;color:#8A5A2B;font-weight:600;margin:-4px 0 4px}
+.c-k{font-size:9.5px;font-weight:600;color:#8A5A2B;margin:14px 0 5px}
+.c-p{font-family:var(--display);font-size:13.5px;line-height:1.5;color:#2A2218}
+.c-row{padding:3px 0;color:#2A2218}
+.clause{border-left:3px solid rgba(138,90,43,.3);padding-left:10px}
+[data-s="lit"] .clause,.hot .clause{border-color:#C98A47}
+[data-s="gap"] .clause{border-color:#CF5F45}
+[data-s="part"] .clause{border-color:#6E979C}
+.rb{display:block;height:5px;border-radius:1px;background:rgba(34,27,18,.14);margin:10px 0}
+.c-foot{position:absolute;left:24px;right:24px;bottom:15px;font-size:9.5px;color:#9A8B78;display:flex;justify-content:space-between}
+.row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid rgba(34,27,18,.12)}
+.row span{color:#7A6B58}.row b{font-weight:600;text-align:right;color:#221B12}
+.ct{border-radius:2px}
+[data-s="lit"] .ct{background:rgba(201,138,71,.32);box-shadow:-7px 0 0 #C98A47,7px 0 0 rgba(201,138,71,.32)}
+.frame{position:absolute;inset:11px;border:3px double rgba(138,90,43,.45);pointer-events:none}
+.ctr{text-align:center}
+.c-small{font-size:10.5px;color:#5E5141;margin-top:8px;line-height:1.45}
+.c-big{font-size:27px;margin:8px 0 4px}
+.seal{width:82px;height:82px;border-radius:50%;margin:14px auto 10px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;color:#8A5A2B;border:1.5px solid rgba(138,90,43,.6);
+  box-shadow:inset 0 0 0 7px #F3ECDD,inset 0 0 0 8.5px rgba(138,90,43,.4)}
+.sig{display:flex;gap:26px;margin-top:20px}.sig i{flex:1;height:1px;background:rgba(34,27,18,.35)}
+.chk{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(34,27,18,.1);font-size:12px}
+.chk i{flex:0 0 auto;width:14px;height:14px;border:1.5px solid #8A5A2B;border-radius:2px;position:relative}
+.chk i::after{content:"";position:absolute;left:3.5px;top:0;width:4px;height:8px;border:solid #8A5A2B;border-width:0 2px 2px 0;transform:rotate(42deg)}
+.stamp{position:absolute;right:24px;bottom:52px;transform:rotate(-8deg);border:2.5px solid currentColor;border-radius:3px;
+  padding:5px 12px;font-weight:700;font-size:16px;color:#3E6167}
+.stamp .b{display:none}
+.card.blocked .stamp{color:#B4452F}.card.blocked .stamp .a{display:none}.card.blocked .stamp .b{display:inline}
+.card.blocked .chk:nth-child(n+4) i{border-color:#B4452F}.card.blocked .chk:nth-child(n+4) i::after{display:none}
+
+/* labels drawn beside documents, outside the transform so they never scale */
+.lb{position:absolute;left:0;top:0;font-size:11.5px;line-height:1.35;color:var(--ink-2);white-space:nowrap;visibility:hidden;
+  padding:2px 7px;border-radius:3px;background:color-mix(in oklab,var(--bg) 80%,transparent);transition:color .4s,box-shadow .3s}
+.lb b{color:var(--ink);font-weight:600;margin-right:5px;transition:color .4s}
+.lb em{display:block;font-style:normal;font-weight:600;font-size:11px}
+.lb.wrap{white-space:normal}
+.lb.stack b,.lb.stack span{display:block;margin:0}
+.lb.met em{color:var(--amber)}.lb.part em{color:var(--slate)}.lb.gap em{color:var(--alarm)}
+.lb.ctr{text-align:center}
+.lb.hit,.lb.hit b{color:var(--alarm)}
+.lb.on{color:var(--ink);box-shadow:0 0 0 1px var(--amber)}.lb.on b{color:var(--amber)}
+.w-met{stroke:var(--amber);stroke-width:1.4}
+.w-part{stroke:var(--slate);stroke-width:1.4;stroke-dasharray:5 5}
+.w-gap{stroke:var(--alarm);stroke-width:1.6;stroke-dasharray:3 5}
+.w-edge{stroke:var(--edge);stroke-width:1.2}
+.w-hot{stroke:var(--alarm);stroke-width:2.4}
+.pulse{fill:var(--alarm);stroke:var(--alarm);stroke-opacity:.28;stroke-width:9}
+#thread{stroke-width:2.4}
+#threadGlow{stroke-width:9;stroke-opacity:.16}
+#tend{fill:none;stroke-width:2}
+
+/* ---------- chrome ---------- */
+header{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:20px;
+  padding:calc(env(safe-area-inset-top,0px) + 15px) var(--gx) 15px;
+  background:color-mix(in oklab,var(--bg) 82%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--rule-2)}
+.mark{font-family:var(--display);font-weight:300;font-size:20px;text-decoration:none;letter-spacing:-.01em}
+.mark span{color:var(--amber)}
+#where{font-size:12.5px;color:var(--ink-3);display:flex;gap:8px;align-items:baseline}
+#where b{color:var(--amber);font-weight:600}
+header nav{display:flex;gap:22px;align-items:center;font-size:13px}
+header nav a{color:var(--ink-2);text-decoration:none}
+header nav a:hover{color:var(--amber)}
+#th{background:none;border:1px solid var(--rule);color:var(--ink-2);cursor:pointer;border-radius:4px;padding:6px 12px;font-size:12px}
+#th:hover{border-color:var(--amber);color:var(--amber)}
+
+/* ---------- chapters: ordinary scrolling content over the fixed world ---------- */
+main{position:relative;z-index:4}
+.ch{position:relative;min-height:100vh;display:flex;align-items:center;padding:110px var(--gx) 80px}
+.pin{height:170vh;display:block;padding:0}
+.stick{position:sticky;top:0;height:100vh;display:flex;align-items:center;padding:80px var(--gx) 32px}
+.ch.r,.ch.r .stick{justify-content:flex-end}
+.col{width:var(--colw)}
+.lbl{font-size:12.5px;font-weight:600;color:var(--ink-3);margin-bottom:16px;display:flex;gap:10px;align-items:baseline}
+.lbl span{color:var(--amber)}
+h1{font-family:var(--display);font-weight:200;font-size:clamp(40px,4.5vw,72px);line-height:1.02;letter-spacing:-.032em}
+h2{font-family:var(--display);font-weight:200;font-size:clamp(30px,2.9vw,45px);line-height:1.07;letter-spacing:-.022em}
+h1 i,h2 i{font-style:italic;font-weight:200;color:var(--amber)}
+.lead{font-size:16.5px;line-height:1.62;color:var(--ink-2);margin-top:22px;max-width:44ch}
+.txt{font-size:15px;line-height:1.62;color:var(--ink-2);margin-top:16px;max-width:46ch}
+.note{font-size:13px;line-height:1.55;color:var(--ink-3);margin-top:18px;max-width:44ch}
+.row-b{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+.btn{display:inline-block;padding:12px 22px;border-radius:4px;font-size:14px;font-weight:600;text-decoration:none;
+  border:1px solid transparent;cursor:pointer;transition:background-color .16s,color .16s,border-color .16s}
+.btn.p{background:var(--ink);color:var(--bg)}.btn.p:hover{background:var(--amber)}
+.btn.s{border-color:var(--rule);color:var(--ink-2);background:none}.btn.s:hover{border-color:var(--amber);color:var(--amber)}
+
+/* tender analysis index: two-way link with the highlighted pages */
+.idx{list-style:none;margin-top:22px;border-top:1px solid var(--rule-2)}
+.idx button{display:flex;gap:14px;width:100%;padding:8px 0;border:0;border-bottom:1px solid var(--rule-2);background:none;
+  font-size:13.5px;color:var(--ink-3);text-align:left;cursor:pointer;transition:color .25s}
+.idx button span{min-width:52px;font-variant-numeric:tabular-nums;transition:color .25s}
+.idx button.on,.idx button:hover{color:var(--ink)}
+.idx button.on span,.idx button:hover span{color:var(--amber)}
+
+/* eligibility tally */
+.tally{margin-top:26px;border-top:1px solid var(--rule-2)}
+.tally p{display:flex;gap:14px;padding:11px 0;border-bottom:1px solid var(--rule-2);font-size:14px;line-height:1.5;color:var(--ink-2)}
+.tally b{font-family:var(--display);font-weight:300;font-size:26px;line-height:1;min-width:22px}
+.tally .m b{color:var(--amber)}.tally .pt b{color:var(--slate)}.tally .g b{color:var(--alarm)}
+
+/* the draft: a real sheet of paper in the DOM */
+.sheet{margin-top:20px;background:#F6EFE2;color:#1A150E;border-radius:3px;padding:14px 16px 8px;
+  box-shadow:0 26px 54px -30px rgba(0,0,0,.85),0 0 0 1px rgba(0,0,0,.08);position:relative}
+.sheet::before{content:"";position:absolute;left:44px;top:0;bottom:0;width:1px;background:rgba(158,59,43,.22)}
+.sh{font-size:11px;font-weight:600;color:#8A5A2B;padding-bottom:9px;border-bottom:1px solid rgba(26,21,14,.15)}
+.cls{list-style:none}
+.cl{display:flex;gap:12px;align-items:flex-start;width:calc(100% + 12px);margin:0 -6px;padding:8px 6px;background:none;border:0;
+  text-align:left;cursor:pointer;border-radius:2px;color:#1A150E;transition:background-color .18s}
+.cl:hover{background:rgba(26,21,14,.05)}
+.cl.on{background:rgba(138,90,43,.13)}
+.bx{flex:0 0 auto;width:16px;height:16px;margin-top:3px;border:2px solid rgba(26,21,14,.3);border-radius:2px;position:relative}
+.tx{font-family:var(--display);font-weight:300;font-size:15px;line-height:1.38}
+.cl.ok .bx{border-color:#8A5A2B}
+.cl.ok .bx::after{content:"";position:absolute;left:3.5px;top:-.5px;width:5px;height:9px;border:solid #8A5A2B;border-width:0 2.5px 2.5px 0;transform:rotate(42deg)}
+.cl.no .bx{border-color:#9E3B2B}
+.cl.no .bx::before,.cl.no .bx::after{content:"";position:absolute;left:5px;top:0;width:2.5px;height:11px;background:#9E3B2B}
+.cl.no .bx::before{transform:rotate(45deg)}.cl.no .bx::after{transform:rotate(-45deg)}
+.cl.no .tx{color:#7A5647;text-decoration:line-through;text-decoration-color:#9E3B2B}
+.cl.flag .bx{border-color:#3E6167}
+.cl.flag .bx::after{content:"";position:absolute;left:2px;top:5px;width:8px;height:2.5px;background:#3E6167}
+.cl.flag .tx{color:#3E5257}
+.trace{margin-top:16px;min-height:124px}
+.kick{font-size:12px;font-weight:600;color:var(--amber);display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.kick.bad{color:var(--alarm)}.kick.flag{color:var(--slate)}
+.kick i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.hop{display:flex;gap:12px;padding:6px 0;border-top:1px solid var(--rule-2);font-size:12.5px;line-height:1.4}
+.hop span{color:var(--ink-3);min-width:116px}.hop b{font-weight:500;color:var(--ink)}
+.why{font-size:13px;line-height:1.55;color:var(--ink-2)}
+.ctl{display:flex;gap:16px;align-items:center;margin-top:12px;font-size:12.5px;color:var(--ink-3)}
+.ghost{background:none;border:1px solid var(--rule);color:var(--ink-3);border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer}
+.ghost:hover{border-color:var(--amber);color:var(--amber)}
+
+/* change impact */
+.causes{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+.causes button{background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:99px;padding:8px 15px;font-size:13px;cursor:pointer;
+  transition:background-color .25s,border-color .25s,color .25s}
+.causes button:hover{border-color:var(--alarm);color:var(--alarm)}
+.causes button[aria-pressed="true"]{background:var(--alarm);border-color:var(--alarm);color:var(--bg);font-weight:600}
+.fall{margin-top:22px;border-top:1px solid var(--rule-2);min-height:262px}
+.fall p{display:flex;gap:14px;padding:9px 0;border-bottom:1px solid var(--rule-2);font-size:13.5px;line-height:1.5;color:var(--ink-2);animation:fin .6s cubic-bezier(.2,.7,.2,1) both}
+.fall p span{min-width:58px;color:var(--ink-3);font-size:12px;padding-top:2px}
+.fall p b{color:var(--ink);font-weight:600}
+.fall p.bad b{color:var(--alarm)}
+.fall .tot{display:block;border:0;font-family:var(--display);font-weight:200;font-size:30px;letter-spacing:-.02em;color:var(--ink);padding-top:14px}
+.fall .tot em{font-style:normal;color:var(--alarm)}
+.fall .idle{display:block;border:0;color:var(--ink-3);animation:none}
+@keyframes fin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+footer{position:relative;z-index:4;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  padding:26px var(--gx) calc(26px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--rule-2);
+  font-size:12.5px;color:var(--ink-3);background:var(--bg)}
+
+.reader{display:none}
+.h-t{display:none}
+@media (hover:none){.h-m{display:none}.h-t{display:inline}#top{touch-action:pan-y}}
+@media (max-height:780px) and (min-width:761px){
+  .stick{padding-top:70px}
+  h2{font-size:clamp(28px,2.5vw,38px)}
+  .txt{font-size:14px;margin-top:12px}
+  .cl{padding:6px 6px}.tx{font-size:14px}
+  .sheet{margin-top:14px}
+  .trace{min-height:96px}
+  .idx button{padding:6px 0}
+}
+/* small screens: the world sits in the top of the viewport, chapters read below it */
+@media (max-width:760px){
+  :root{--colw:100%}
+  .scrim{display:none}
+  #where{display:none}
+  header nav a{display:none}
+  .ch{align-items:flex-end;padding:56vh 0 0}
+  .pin{padding:0}
+  .stick{align-items:flex-end;padding:56vh 0 0}
+  .mfree{height:auto}
+  .mfree .stick{position:relative;height:auto;min-height:100vh}
+  .col{position:relative;background:var(--bg);padding:22px var(--gx) 40px}
+  .col::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:56px;background:linear-gradient(to bottom,transparent,var(--bg))}
+  h1{font-size:40px}
+  .lead{font-size:15.5px}
+  .fall{min-height:0}
+  .reader{display:block;position:relative;margin-top:16px}
+  .reader .card{left:0;top:0;transform-origin:0 0}
+  .trace{min-height:0}
+}
+@media (prefers-reduced-motion:reduce){
+  .fall p{animation:none}
+  *{transition-duration:.001ms!important}
+}
+</style>
+</head>
+<body>
+
+<div id="world" aria-hidden="true"><div id="atmo"></div><div id="cards"></div></div>
+<div class="scrim" id="scrimL" aria-hidden="true"></div><div class="scrim" id="scrimR" aria-hidden="true"></div>
+<div id="labels" aria-hidden="true"></div>
+<svg id="wires" aria-hidden="true"><g id="wg"></g><g id="wh"></g><g id="wd"></g>
+  <path id="threadGlow"/><path id="thread"/><circle id="tend" r="5"/></svg>
+<div id="flying" aria-hidden="true"></div>
+
+<header>
+  <a class="mark" href="#top">Tender<span>OS</span></a>
+  <p id="where" aria-live="polite"><b>1</b><span>Overview</span></p>
+  <nav><a href="#pack">Analysis</a><a href="#proof">Evidence</a><a href="#stress">Impact</a>
+    <button id="th" type="button">Light</button></nav>
+</header>
+
+<main>
+<section class="ch" id="top" data-ch="0">
+  <div class="col">
+    <h1>Every claim in your bid, <i>traced to its source.</i></h1>
+    <p class="lead">TenderOS reads the tender document and your company records, checks each eligibility
+      criterion, and drafts a technical bid in which every statement links to the document that supports it.</p>
+    <div class="row-b"><a class="btn p" href="#bid">Start a tender</a>
+      <a class="btn s" href="#pack">See how it works</a></div>
+    <p class="note"><span class="h-m">Drag to rotate the documents.</span><span class="h-t">Swipe sideways to rotate the documents.</span></p>
+  </div>
+</section>
+
+<section class="ch pin mfree r" id="pack" data-ch="1" data-hold=".32"><div class="stick">
+  <div class="col">
+    <p class="lbl"><span>2</span>Tender analysis</p>
+    <h2>240 pages read. Six mandatory criteria extracted.</h2>
+    <p class="txt">Eligibility conditions are spread across the notice inviting tender, annexures, corrigenda
+      and pre-bid clarifications. TenderOS reads the full set in sequence and records each criterion with
+      its clause and page reference.</p>
+    <ol class="idx" id="idx" aria-label="Mandatory criteria"></ol>
+    <p class="note">Select a criterion to bring its page forward.</p>
+  </div>
+</div></section>
+
+<section class="ch" id="match" data-ch="2" data-hold=".18">
+  <div class="col">
+    <p class="lbl"><span>3</span>Eligibility check</p>
+    <h2>Each criterion assessed against your own evidence.</h2>
+    <p class="txt">TenderOS searches your records for supporting documents, decides every criterion and cites
+      the file behind each decision. Reviewers check a citation instead of repeating the search.</p>
+    <div class="tally">
+      <p class="m"><b>4</b><span>Met, each supported by a cited document.</span></p>
+      <p class="pt"><b>1</b><span>Partially met. Two qualifying similar works against the three required.</span></p>
+      <p class="g"><b>1</b><span>Not met. Clause 11.7 requires subcontractors to be named at bid stage, and no subcontractor records exist.</span></p>
+    </div>
+  </div>
+</section>
+
+<section class="ch pin mfree r" id="proof" data-ch="3" data-hold=".42"><div class="stick">
+  <div class="col">
+    <p class="lbl"><span>4</span>Evidence tracing</p>
+    <h2>Select a statement to see the evidence behind it.</h2>
+    <p class="txt">Every sentence in the draft resolves to a knowledge item, a document extract and a source
+      file. Statements without support are flagged before the bid is submitted.</p>
+    <div class="sheet"><p class="sh">Technical bid, Section 4: Capability and experience</p>
+      <ol class="cls" id="claims"></ol></div>
+    <div class="reader" id="reader" aria-hidden="true"></div>
+    <div class="trace" id="trace" aria-live="polite"></div>
+    <div class="ctl"><button class="ghost" id="reset" type="button">Reset</button><span id="cstat">0 of 5 statements reviewed</span></div>
+  </div>
+</div></section>
+
+<section class="ch pin mfree" id="stress" data-ch="4" data-hold=".42"><div class="stick">
+  <div class="col">
+    <p class="lbl"><span>5</span>Change impact</p>
+    <h2>Know what a change affects before you submit.</h2>
+    <p class="txt">Each bid is stored as a dependency graph linking source documents, requirements and proposal
+      sections. When a certificate expires or a team member leaves, TenderOS identifies every affected
+      section in seconds.</p>
+    <div class="causes" id="causes">
+      <button type="button" data-s="0" aria-pressed="false">ISO 27001 certificate expires</button>
+      <button type="button" data-s="1" aria-pressed="false">A. Mehta leaves the team</button>
+      <button type="button" data-s="2" aria-pressed="false">Rate schedule revised</button>
+    </div>
+    <div class="fall" id="fall" aria-live="polite"><p class="idle">Select a change to trace its impact through the bid.</p></div>
+  </div>
+</div></section>
+
+<section class="ch r" id="bid" data-ch="5">
+  <div class="col">
+    <p class="lbl"><span>6</span>Submission</p>
+    <h2>Submit a bid you can <i>defend clause by clause.</i></h2>
+    <p class="txt">Seven specialised agents work from a single shared state, with human approval at every
+      gate. The submitted bid keeps a complete audit trail from each statement to its source.</p>
+    <div class="row-b"><a class="btn p" href="#top">Start a tender</a>
+      <a class="btn s" href="#top">Read the architecture</a></div>
+    <p class="note">Built with LangGraph, Gemini, PostgreSQL and Neo4j.</p>
+  </div>
+</section>
+</main>
+
+<footer><span>TenderOS</span><span>Evidence-grounded bid management</span></footer>
+
+<script>
+(() => {
+'use strict';
+
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CW = 320, CH = 436;      // natural card size: the size a document is read at
+const F = 1100;                // focal length in world px
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+
+/* ================================ DATA ================================ */
+const BUYER = 'Kaveri Metro Rail Corporation';
+const TNO = 'KMRC/S&amp;T/2026/14';
+
+// [page, heading, text, short name, full name] (names only on mandatory pages)
+const PAGES = [
+ [4,'Notice inviting tender','Online bids are invited for signalling and telecom works on the Phase 2 corridor, estimated at ₹96 crore.'],
+ [11,'Instructions to bidders','Bids are submitted on the e-procurement portal in two covers, technical and financial.'],
+ [18,'Section 3.2, earnest money','Bidders shall furnish earnest money of ₹1.92 crore as a bank guarantee, valid 45 days beyond bid validity.','Earnest money','Earnest money deposit'],
+ [27,'Section 3.6, bid validity','Bids shall remain valid for 180 days from technical bid opening.'],
+ [34,'Section 3.9, pre-bid meeting','Queries received seven days before the pre-bid meeting are answered in a clarification log.'],
+ [41,'Clause 4.1, financial standing','Average annual turnover over the last three financial years shall be at least ₹50 crore, certified by a chartered accountant.','Turnover','Average annual turnover'],
+ [49,'Clause 4.2, net worth','Net worth in the last audited financial year shall be positive.'],
+ [58,'Corrigendum 1','Bid submission is extended to 14 November 2026. All other terms are unchanged.'],
+ [67,'Clause 4.3, similar works','The bidder shall have completed three similar works in the last seven years, each costing at least 40% of the estimated cost.','Similar works','Similar works experience'],
+ [76,'Clause 4.5, joint ventures','A joint venture may have at most three members. The lead member holds at least 51%.'],
+ [85,'Section 5, scope of work','Design, supply, installation and commissioning of CBTC signalling across 14 stations.'],
+ [94,'Section 5.4, interfaces','Interfaces with rolling stock, traction power and platform screen doors are listed in Annex F.'],
+ [103,'Section 5.7, testing','Factory acceptance tests are witnessed by the Employer\'s engineer.'],
+ [112,'Pre-bid clarification log','Reply 23: work done as a subcontractor counts as a similar work only with a client certificate.'],
+ [122,'Clause 6.1, key personnel','The signalling lead and two deputies shall each have at least five years of metro signalling experience.','Key personnel','Key personnel'],
+ [131,'Clause 6.4, training','Forty operations staff are trained before revenue service begins.'],
+ [142,'Section 7, quality plan','A quality assurance plan is due within 30 days of the letter of award.'],
+ [153,'Section 8, safety','An independent safety assessor certifies the system to SIL 4.'],
+ [164,'Clause 8.6, site security','Site access is restricted to personnel holding a valid permit.'],
+ [173,'Annex B, information security','The Contractor shall hold ISO/IEC 27001 certification, valid for the full contract term.','ISO 27001','ISO/IEC 27001 certification'],
+ [186,'Annex C, data handling','Signalling data is stored only on servers located in India.'],
+ [199,'Schedule of rates, part B','Rates are quoted in Indian rupees, inclusive of all taxes except GST.'],
+ [214,'Clause 11.7, subcontracting','All subcontractors shall be named at bid stage. Any later change needs the Employer\'s written consent.','Subcontracting','Subcontractor disclosure'],
+ [228,'Integrity pact','The bidder signs the integrity pact. Bids without it are rejected.']
+];
+const MAND = [2, 5, 8, 14, 19, 22];
+
+const EV = [
+ {f:'A_Mehta_CV.pdf',k:'cv',name:'A. Mehta',role:'Signalling lead',ct:0,
+  rows:['2018 to 2025, signalling lead, Nagpur Metro Reach 2','2015 to 2018, signalling engineer, Kochi Metro Phase 1','2012 to 2015, site engineer, railway S&amp;T works'],
+  extra:['IRSE licence, category 4','B.Tech, electrical engineering']},
+ {f:'R_Iyer_CV.pdf',k:'cv',name:'R. Iyer',role:'Deputy lead, interlocking',
+  rows:['2017 to 2025, interlocking design, Chennai Metro','2014 to 2017, testing engineer, Bengaluru Metro','2011 to 2014, graduate engineer'],
+  extra:['IRSE licence, category 3','M.Tech, control systems']},
+ {f:'S_Khan_CV.pdf',k:'cv',name:'S. Khan',role:'Deputy lead, telecom',
+  rows:['2019 to 2025, telecom lead, Pune Metro Line 1','2016 to 2019, network engineer, Mumbai Metro Line 1','2013 to 2016, field engineer'],
+  extra:['TETRA radio system design','B.E., electronics']},
+ {f:'ISO27001_2022.pdf',k:'cert'},
+ {f:'Turnover_CA_Cert.pdf',k:'ca'},
+ {f:'Completion_Nagpur.pdf',k:'done',proj:'Nagpur Metro, Reach 2',work:'Signalling and train control',val:'₹41.2 crore',date:'30 June 2023'},
+ {f:'Completion_Kochi.pdf',k:'done',proj:'Kochi Metro, Phase 1',work:'Signalling and telecom',val:'₹39.0 crore',date:'12 March 2021'},
+ {f:'Completion_Bhopal.pdf',k:'done',proj:'Bhopal Metro, priority corridor',work:'Telecom systems',val:'₹22.5 crore',date:'3 October 2024'},
+ {f:'EMD_BankGuarantee.pdf',k:'bg'},
+ {f:'RateSchedule_2026.xlsx',k:'sheet'},
+ {f:'Udyam_Registration.pdf',k:'reg',title:'Udyam registration',rows:[['Enterprise type','Medium'],['Major activity','Services'],['Registered on','4 August 2021']]},
+ {f:'GST_Registration.pdf',k:'reg',title:'GST registration',rows:[['Form','GST REG-06'],['Taxpayer type','Regular'],['Valid from','1 July 2017']]}
+];
+
+const DR = [
+ {k:'Technical bid, section 4',t:'Capability and experience',p:'Our signalling lead, A. Mehta, has seven years of metro signalling experience.'},
+ {k:'Technical bid, section 6',t:'Delivery team',p:'Three named engineers lead signalling, interlocking and telecom delivery.'},
+ {k:'Financial bid, section 9',t:'Pricing narrative',p:'Rates follow the 2026 schedule and are quoted in Indian rupees, exclusive of GST.'},
+ {k:'Technical bid',t:'Executive summary',p:'CBTC signalling commissioned on two Indian metro corridors, delivered under ISO/IEC 27001 controls.'},
+ {k:'Readiness gate',t:'Before submission',gate:1}
+];
+
+// groups by card id: pages 0..23, evidence 24..35, drafts 36..40
+const NP = PAGES.length, NE = EV.length, N = NP + NE + DR.length;
+const isPg = i => i < NP, isEv = i => i >= NP && i < NP + NE, isDr = i => i >= NP + NE;
+const E = j => NP + j, D = j => NP + NE + j;
+const isM = Array.from({length:N}, (_, i) => MAND.includes(i));
+
+// eligibility: each mandatory page and the evidence that settled it
+const REQ = [
+ {pg:2,st:'met',ev:[E(8)]},{pg:5,st:'met',ev:[E(4)]},{pg:8,st:'part',ev:[E(5),E(6)]},
+ {pg:14,st:'met',ev:[E(0),E(1),E(2)]},{pg:19,st:'met',ev:[E(3)]},{pg:22,st:'gap',ev:[]}];
+const EVROW = [E(8),E(4),E(5),E(6),E(0),E(1),E(2),E(3)];
+const ST = {met:'Met',part:'Partially met',gap:'Not met'};
+
+// evidence tracing
+const CLAIMS = [
+ {t:'Our signalling lead, A. Mehta, has seven years of metro signalling experience.',src:E(0),
+  k:'Employee profile, A. Mehta',c:'Résumé, page 2, experience',d:'A_Mehta_CV.pdf'},
+ {t:'Our average annual turnover over the last three financial years is ₹68.4 crore.',src:E(4),
+  k:'Financial record, turnover',c:'CA certificate, three-year average',d:'Turnover_CA_Cert.pdf'},
+ {t:'We have completed three similar works, each exceeding 40% of the estimated cost.',kind:'no',
+  why:'Only two completion certificates exceed ₹38.4 crore, which is 40% of the ₹96 crore estimated cost. The Bhopal contract, at ₹22.5 crore, does not qualify.'},
+ {t:'Our information security management system is certified to ISO/IEC 27001:2022.',src:E(3),
+  k:'Certification, ISO 27001',c:'Certificate, standard and scope',d:'ISO27001_2022.pdf'},
+ {t:'We guarantee 99.9% system availability from commissioning.',kind:'flag',
+  why:'A forward-looking commitment that existing records cannot evidence. TenderOS classifies it separately from factual claims and flags it for approval.'}
+];
+
+// change impact: [card id, column, label, name in the impact summary]
+const NODES = [
+ [E(3),0,'ISO27001_2022.pdf','ISO27001_2022.pdf'],[E(0),0,'A_Mehta_CV.pdf','A_Mehta_CV.pdf'],[E(9),0,'RateSchedule_2026.xlsx','RateSchedule_2026.xlsx'],
+ [19,1,'<b>p. 173</b>Information security','information security (p. 173)'],[14,1,'<b>p. 122</b>Key personnel','key personnel (p. 122)'],
+ [20,1,'<b>p. 186</b>Data handling','data handling (p. 186)'],[21,1,'<b>p. 199</b>Schedule of rates','schedule of rates (p. 199)'],
+ [D(0),2,'Section 4, capability','Section 4'],[D(1),2,'Section 6, delivery team','Section 6'],[D(2),2,'Section 9, pricing','Section 9'],[D(3),2,'Executive summary','Executive summary'],
+ [D(4),3,'Readiness gate','readiness gate']];
+const EDGES = [[0,3],[0,5],[1,4],[1,5],[2,6],[3,7],[3,10],[4,7],[4,8],[5,8],[6,9],[6,10],[7,11],[8,11],[9,11],[10,11]];
+const CAUSE_V = ['is no longer valid','is withdrawn from the bid','is revised'];
+const WAVE = .9;                // hops per second: slow enough to follow
+const nodeOf = new Array(N).fill(-1); NODES.forEach((n, j) => nodeOf[n[0]] = j);
+const colCount = [0,0,0,0], rowOf = NODES.map(n => colCount[n[1]]++);
+
+// submission: evidence plus drafts, executive summary on top. Reordered as pages are thrown.
+const STACK = [E(10),E(11),E(7),E(9),E(5),E(6),E(8),E(4),E(1),E(2),E(0),E(3),D(4),D(2),D(1),D(0),D(3)];
+const stackOf = new Array(N).fill(-1); STACK.forEach((id, k) => stackOf[id] = k);
+
+// which side the world sits on per chapter: 0 right of the text, 1 left of it
+const SIDE = [0, 1, 0, 1, 0, 1];
+const NAMES = ['Overview','Tender analysis','Eligibility check','Evidence tracing','Change impact','Submission'];
+
+/* ============================ DOCUMENTS ============================ */
+const bars = (n, s, lo = .5) => Array.from({length:n}, (_, j) =>
+  `<i class="rb" style="width:${Math.round((lo + hash(s * 13 + j) * (1 - lo)) * 100)}%"></i>`).join('');
+const rows = r => r.map(([k, v]) => `<div class="row"><span>${k}</span><b>${v}</b></div>`).join('');
+
+function pageHTML(p, i){
+  const [n, h, t, m] = p;
+  return `<div class="c-top"><span>${BUYER}</span><b>p. ${n}</b></div><p class="c-ref">Tender ${TNO}</p>
+    <p class="c-t">${h}</p><p class="c-p${m ? ' clause' : ''}">${t}</p>${bars(m ? 6 : 8, i)}
+    <div class="c-foot"><span>${TNO}</span><span>Page ${n} of 240</span></div>`;
+}
+function evHTML(e, i){
+  const top = tag => `<div class="c-top"><span>${e.f}</span><b>${tag}</b></div>`;
+  switch (e.k){
+  case 'cv': return top('Résumé') + `<p class="c-t">${e.name}</p><p class="c-sub">${e.role}</p>
+    <p class="c-k">Experience</p>${e.rows.map((r, j) => `<p class="c-row${j === e.ct ? ' ct' : ''}">${r}</p>`).join('')}
+    <p class="c-k">Licences and education</p>${e.extra.map(r => `<p class="c-row">${r}</p>`).join('')}
+    ${bars(3, i, .4)}<div class="c-foot"><span>Page 2 of 3</span><span>Updated April 2026</span></div>`;
+  case 'cert': return `<div class="frame"></div><div class="ctr"><p class="c-small" style="margin-top:14px">Certificate of registration</p>
+    <p class="c-t c-big"><span class="ct">ISO/IEC 27001:2022</span></p><p class="c-p">Information security management system</p>
+    <div class="seal">Valid</div><p class="c-small">Scope: design, supply and commissioning of rail signalling and telecom systems</p>
+    <p class="c-small"><b>Valid until 14 March 2027</b></p><div class="sig"><i></i><i></i></div></div>`;
+  case 'ca': return top('Raman and Rao') + `<p class="c-t">Certificate of turnover</p>
+    <p class="c-p">From the audited accounts of the company, turnover was as follows.</p><div style="margin-top:10px">
+    ${rows([['FY 2022-23','₹61.2 crore'],['FY 2023-24','₹68.9 crore'],['FY 2024-25','₹75.1 crore']])}
+    <div class="row ct"><span>Average of three years</span><b>₹68.4 crore</b></div></div>
+    <p class="c-small" style="margin-top:14px">Issued at the request of the company for tender purposes only.</p>
+    <div class="sig"><i></i><i></i></div><div class="c-foot"><span>UDIN 25041873BMKX1042</span><span>Chartered accountants</span></div>`;
+  case 'done': return top('Completion') + `<p class="c-t">Completion certificate</p>
+    <p class="c-p">Certified that the work below was completed to the satisfaction of the Employer.</p><div style="margin-top:10px">
+    ${rows([['Project',e.proj],['Work',e.work],['Contract value',e.val],['Completed on',e.date],['Performance','Satisfactory']])}</div>
+    <div class="sig"><i></i><i></i></div>`;
+  case 'bg': return top('Guarantee') + `<p class="c-t">Bank guarantee for earnest money</p><div style="margin-top:10px">
+    ${rows([['Amount','₹1.92 crore'],['Beneficiary',BUYER],['Tender','KMRC/S&amp;T/2026/14'],['Valid until','31 May 2027']])}</div>
+    ${bars(3, i, .45)}<div class="sig"><i></i><i></i></div>`;
+  case 'sheet': return top('Rates') + `<p class="c-t">Schedule of rates, 2026</p><div style="margin-top:6px">
+    ${rows([['Axle counter, per set','₹2.4 lakh'],['LED signal, each','₹1.1 lakh'],['Point machine, each','₹6.8 lakh'],['Quad cable, per km','₹3.2 lakh'],['Route interlocking, per route','₹4.5 lakh'],['Site supervision, per month','₹9.6 lakh']])}</div>
+    <div class="c-foot"><span>Sheet 1 of 3</span><span>Excl. GST</span></div>`;
+  default: return top('Registration') + `<p class="c-t">${e.title}</p><div style="margin-top:10px">${rows(e.rows)}</div>
+    ${bars(4, i, .4)}<div class="sig"><i></i><i></i></div>`;
+  }
+}
+function drHTML(d, i){
+  if (d.gate) return `<div class="c-top"><span>Bid KMRC-14</span><b>Gate</b></div><p class="c-t">Readiness checklist</p>
+    <div class="chk"><i></i>All six mandatory criteria addressed</div><div class="chk"><i></i>Pricing arithmetic verified</div>
+    <div class="chk"><i></i>Review findings resolved</div><div class="chk"><i></i>Every statement traced to a source</div>
+    <div class="chk"><i></i>Approver sign-off</div><p class="stamp"><span class="a">Clear to submit</span><span class="b">Blocked</span></p>`;
+  return `<div class="c-top"><span>Draft, version 3</span><b>${d.k}</b></div><p class="c-t">${d.t}</p>
+    <p class="c-p">${d.p}</p>${bars(9, i + 40)}<div class="c-foot"><span>Bid KMRC-14</span><span>Draft 3</span></div>`;
+}
+
+const host = document.getElementById('cards'), flyHost = document.getElementById('flying');
+const cardEl = [], wrapEl = [], scEl = [];
+for (let i = 0; i < N; i++){
+  const w = document.createElement('div'), sc = document.createElement('div'), el = document.createElement('div');
+  w.className = 'cw'; sc.className = 'sc'; el.className = 'card';
+  el.innerHTML = isPg(i) ? pageHTML(PAGES[i], i) : isEv(i) ? evHTML(EV[i - NP], i) : drHTML(DR[i - NP - NE], i);
+  sc.innerHTML = '<i class="glow ga"></i><i class="glow gr"></i>';
+  sc.appendChild(el); w.appendChild(sc); host.appendChild(w); cardEl.push(el); wrapEl.push(w); scEl.push(sc);
+}
+const gateEl = cardEl[D(4)];
+
+/* ============================ ARRANGEMENTS ============================
+   Each arrangement is a pure function of a card's id. Positions are in world
+   px with the origin at the centre of the world area and z pointing at the
+   viewer. The final on-screen scale is capped at 1, so a document is never
+   drawn larger than its natural size and its text never softens. */
+
+// sphere: golden-angle seed, then relaxed until evenly spread (episode 002's method)
+function sphere(n){
+  const g = Math.PI * (3 - Math.sqrt(5));
+  const p = Array.from({length:n}, (_, i) => {
+    const y = 1 - (i / (n - 1)) * 2, r = Math.sqrt(1 - y * y);
+    return [Math.cos(g * i) * r, y, Math.sin(g * i) * r];
+  });
+  for (let it = 0; it < 70; it++){
+    const f = p.map(() => [0, 0, 0]);
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++){
+      const dx = p[i][0] - p[j][0], dy = p[i][1] - p[j][1], dz = p[i][2] - p[j][2];
+      const d2 = dx * dx + dy * dy + dz * dz || 1e-6, d = Math.sqrt(d2), k = 1 / d2 / d;
+      f[i][0] += dx * k; f[i][1] += dy * k; f[i][2] += dz * k;
+      f[j][0] -= dx * k; f[j][1] -= dy * k; f[j][2] -= dz * k;
+    }
+    const step = (.35 / n) * (1 - it / 70);
+    for (let i = 0; i < n; i++){
+      for (let a = 0; a < 3; a++) p[i][a] += f[i][a] * step;
+      const L = Math.hypot(p[i][0], p[i][1], p[i][2]) || 1;
+      p[i][0] /= L; p[i][1] /= L; p[i][2] /= L;
+    }
+  }
+  return p;
+}
+const SP = sphere(NP + NE);
+const slot = Array.from({length:NP + NE}, (_, i) => i).sort((a, b) => hash(a * 3.1) - hash(b * 3.1));
+
+const R = 900, ZS = -1850;          // camera sits 3.28 radii from the sphere centre, as measured on the reference
+const RH = 820, ZH = F - 1.95 * RH; // helix: camera 1.95 radii from the axis, as measured on the reference
+const HN = NP, TURNS = 2;           // 24 pages close exactly two turns at 12 per turn: no seam
+const STEP = TAU * TURNS / HN, RISE = 1.266 * RH * TURNS / HN;
+const HP = -.26;                    // helix seen from slightly above
+
+const ctx = {T:0, yv:0, mx:0, my:0, portrait:false, y1:1, dyaw:0, dpitch:0, hoff:0};
+const HF = new Float32Array(NP);    // how squarely each page faces the reader in the helix
+
+function rot(u, yaw, pitch, o){
+  const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const x = u[0] * cy + u[2] * sy, z0 = -u[0] * sy + u[2] * cy;
+  o.x = x; o.y = u[1] * cp - z0 * sp; o.z = u[1] * sp + z0 * cp;
+}
+function hidden(o){ o.x = 0; o.y = 0; o.z = -4400; o.r = 0; o.o = 0; }
+function park(i, o){            // far, dim shell: the documents not in play right now
+  if (isDr(i)) return hidden(o);
+  rot(SP[slot[i]], ctx.T * .025 + 1.3, -.1, o);
+  o.x *= R * 1.75; o.y *= R * 1.3; o.z = o.z * R * .8 - 3700; o.r = (hash(i) - .5) * 10; o.o = .16;
+}
+const helixBase = () => RM ? 0 : -(ctx.yv - ctx.y1) * 5;
+
+const L = [
+  function pile(i, o){
+    if (isDr(i)) return hidden(o);
+    const yaw = (RM ? 0 : ctx.T * .07) + ctx.yv * .9 + ctx.mx * .22 + ctx.dyaw;
+    const pitch = clamp(-.19 + ctx.my * .08 + ctx.dpitch, -1.25, 1.25);
+    rot(SP[slot[i]], yaw, pitch, o);
+    o.x *= R; o.y *= R; o.z = o.z * R + ZS; o.r = (hash(i) - .5) * 14; o.o = 1;
+  },
+  function pack(i, o){
+    if (!isPg(i)) return park(i, o);
+    const v = i + helixBase() + ctx.hoff, k = ((v % HN) + HN) % HN - HN / 2;
+    const a = v * STEP - .35 + ctx.mx * .18;
+    const zr = Math.cos(a) * RH, yy = k * RISE, cp = Math.cos(HP), sp = Math.sin(HP);
+    o.x = Math.sin(a) * RH; o.y = yy * cp - zr * sp; o.z = yy * sp + zr * cp + ZH; o.r = 0;
+    const edge = Math.abs(k) / (HN / 2);          // fade the ends so the wrap is never seen
+    const front = Math.cos(a) * .5 + .5;
+    HF[i] = front * (1 - clamp((edge - .45) / .3, 0, 1));
+    // the six mandatory pages stay legible on the far side of the helix
+    o.o = (edge > .62 ? Math.max(0, 1 - (edge - .62) / .33) : 1) * (isM[i] ? Math.max(.82, .3 + .7 * front) : .3 + .7 * front);
+  },
+  function match(i, o){
+    const j = REQ.findIndex(r => r.pg === i), e = EVROW.indexOf(i);
+    if (j < 0 && e < 0) return park(i, o);
+    o.z = -1200; o.r = 0; o.o = 1;
+    if (ctx.portrait){
+      if (j >= 0){ o.x = (j % 3 - 1) * 400; o.y = -820 + (j / 3 | 0) * 500; }
+      else { o.x = (e % 4 - 1.5) * 360; o.y = 420 + (e / 4 | 0) * 490; }
+    } else {
+      if (j >= 0){ o.x = (j - 2.5) * 430; o.y = -520; }
+      else { o.x = (e - 3.5) * 350; o.y = 520; }
+    }
+  },
+  function proof(i, o){
+    if (!isEv(i)) return park(i, o);
+    const e = i - NP; o.r = (hash(i * 7) - .5) * 4; o.o = 1;
+    if (ctx.portrait){
+      o.x = (e % 4 - 1.5) * 380; o.y = ((e / 4 | 0) - 1) * 520; o.z = -1500 - (e % 2) * 160;
+    } else {
+      const row = e % 2, c = e >> 1;
+      o.x = (c - 2.5) * 400 + (row ? 110 : -60); o.y = row ? 300 : -300;
+      o.z = -1500 - Math.pow(o.x / 1100, 2) * 700 - row * 160;
+    }
+  },
+  function impact(i, o){
+    const j = nodeOf[i];
+    if (j < 0) return park(i, o);
+    const col = NODES[j][1], cnt = colCount[col], row = rowOf[j];
+    o.z = -1200; o.r = 0; o.o = 1;
+    if (ctx.portrait){ o.y = (col - 1.5) * 620; o.x = (row - (cnt - 1) / 2) * 390; }
+    else { o.x = (col - 1.5) * 1000; o.y = (row - (cnt - 1) / 2) * 590; }
+  },
+  function submission(i, o){
+    const k = stackOf[i];
+    if (k < 0) return park(i, o);
+    const top = k === STACK.length - 1;
+    o.x = (hash(i * 3) - .5) * 70 + (k - 8) * 5; o.y = (hash(i * 5) - .5) * 40 - k * 4;
+    o.z = -560 + k * 8; o.o = 1;
+    o.r = top ? -1.5 : (hash(i * 11) - .5) * 16 * (1 - k / STACK.length);
+  }
+];
+const NC = L.length;
+const DL = Array.from({length:N}, (_, i) => hash(i * 1.7 + .3) * .22);   // per-document stagger in every morph
+
+/* ============================== LAYOUT ============================== */
+const root = document.documentElement;
+const SECS = [...document.querySelectorAll('[data-ch]')];
+const W = {x:0, y:0, w:1, h:1, cx:0, cy:0}, W0 = {...W}, W1 = {...W};
+let vw = 1, vh = 1, holds = [], Gs = new Array(NC).fill(1), lastWx = -1;
+const tmp = {x:0, y:0, z:0, r:0, o:0};
+
+function measure(){
+  vw = innerWidth; vh = innerHeight;
+  ctx.portrait = vw <= 760;
+  const head = 60;
+  if (ctx.portrait){ Object.assign(W0, {x:0, y:head, w:vw, h:vh * .56 - head}); Object.assign(W1, W0); }
+  else {
+    const gx = clamp(vw * .042, 20, 64), colw = Math.min(470, vw * .36), ww = vw - (gx + colw + 28);
+    Object.assign(W0, {x:vw - ww, y:head, w:ww, h:vh - head});   // world right of the text
+    Object.assign(W1, {x:0, y:head, w:ww, h:vh - head});         // world left of the text
+  }
+  Object.assign(W, W0); W.cx = W.x + W.w / 2; W.cy = W.y + W.h / 2; lastWx = -1;
+
+  holds = SECS.map(sec => {
+    const r = sec.getBoundingClientRect(), top = r.top + scrollY, h = r.height;
+    const st = sec.querySelector('.stick');
+    if (st && getComputedStyle(st).position === 'sticky') return [top, top + h - vh];
+    const c = top + h / 2 - vh / 2, hw = vh * (+sec.dataset.hold || .12);
+    return [c - hw, c + hw];
+  });
+  holds[0] = [-Infinity, Math.max(holds[0][1], vh * .1)];
+  holds[NC - 1][1] = Infinity;
+  ctx.y1 = holds[1][0] / vh;
+
+  // framing from geometry and the live aspect: fit each arrangement's projected bounds
+  const save = {T:ctx.T, yv:ctx.yv, mx:ctx.mx, my:ctx.my, dyaw:ctx.dyaw, dpitch:ctx.dpitch, hoff:ctx.hoff};
+  Object.assign(ctx, {mx:0, my:0, T:0, dyaw:0, dpitch:0, hoff:0});
+  for (let k = 0; k < NC; k++){
+    ctx.yv = (isFinite(holds[k][0]) ? holds[k][0] : 0) / vh;
+    let bw = 1, bh = 1;
+    for (let i = 0; i < N; i++){
+      L[k](i, tmp); if (tmp.o < .5) continue;
+      const s = F / (F - Math.min(tmp.z, F * .55));
+      bw = Math.max(bw, Math.abs(tmp.x * s) + CW / 2 * s);
+      bh = Math.max(bh, Math.abs(tmp.y * s) + CH / 2 * s);
+    }
+    const lw = ctx.portrait ? .94 : k === 1 ? .72 : .86, lh = k === 1 ? 99 : .84;  // the helix may run off top and bottom
+    Gs[k] = Math.min(1, W.w * lw / (2 * bw), W.h * lh / (2 * bh));
+  }
+  Object.assign(ctx, save);
+  wires.setAttribute('viewBox', `0 0 ${vw} ${vh}`);
+  cardEl.forEach((el, i) => { const ct = el.querySelector('.ct'); CT[i] = ct ? ct.offsetTop + ct.offsetHeight / 2 - CH / 2 : 0; });
+}
+
+function pOf(y){
+  for (let i = 0; i < NC; i++){
+    const [s, e] = holds[i];
+    if (y <= e){
+      if (i === 0 || y >= s) return i;
+      const pe = holds[i - 1][1];
+      return i - 1 + clamp((y - pe) / (s - pe), 0, 1);
+    }
+  }
+  return NC - 1;
+}
+
+/* ============================ LABELS & WIRES ============================ */
+const labelHost = document.getElementById('labels');
+const wires = document.getElementById('wires');
+const LBL = [];
+function label(ch, id, html, side, cls = '', ww = 0){
+  const el = document.createElement('div');
+  el.className = 'lb ' + cls; el.innerHTML = html; labelHost.appendChild(el);
+  if (ww) el.classList.add('wrap');
+  LBL.push({el, ch, id, side, ww, vis:false});
+}
+MAND.forEach(i => label(1, i, `<b>p. ${PAGES[i][0]}</b>${PAGES[i][3]}`, 'out'));
+REQ.forEach(r => label(2, r.pg, `<b>p. ${PAGES[r.pg][0]}</b><span>${PAGES[r.pg][3]}</span><em>${ST[r.st]}</em>`, 't', r.st + ' ctr stack', 420));
+const SHORT = {[E(8)]:'EMD guarantee',[E(4)]:'CA turnover certificate',[E(5)]:'Nagpur completion',[E(6)]:'Kochi completion',
+  [E(0)]:'A. Mehta CV',[E(1)]:'R. Iyer CV',[E(2)]:'S. Khan CV',[E(3)]:'ISO 27001 certificate'};
+EVROW.forEach(id => label(2, id, SHORT[id], 'b', 'ctr', 350));
+NODES.forEach(n => label(4, n[0], n[2], 'b', 'ctr'));
+
+const svgNS = 'http://www.w3.org/2000/svg';
+const mk = (g, tag, cls) => { const e = document.createElementNS(svgNS, tag); e.setAttribute('class', cls); document.getElementById(g).appendChild(e); return e; };
+const MW = [];
+REQ.forEach(r => r.ev.forEach(id => MW.push({a:r.pg, b:id, el:mk('wg', 'path', r.st === 'part' ? 'w-part' : 'w-met')})));
+const gapWire = mk('wg', 'path', 'w-gap');
+const IW = EDGES.map(([a, b]) => ({a, b, p:0, el:mk('wg', 'path', 'w-edge'), hot:mk('wh', 'path', 'w-hot'), dot:mk('wd', 'circle', 'pulse')}));
+IW.forEach(e => { e.dot.setAttribute('r', 4); e.dot.style.opacity = 0; e.hot.style.opacity = 0; });
+const thread = document.getElementById('thread'), threadGlow = document.getElementById('threadGlow'), tend = document.getElementById('tend');
+function setD(el, d){ if (el._d !== d){ el.setAttribute('d', d); el._d = d; return true; } return false; }
+function setO(el, o){ const s2 = typeof o === 'number' ? o.toFixed(2) : o; if (el._o !== s2){ el.style.opacity = s2; el._o = s2; } }
+
+const SX = new Float32Array(N), SY = new Float32Array(N), SC = new Float32Array(N), OP = new Float32Array(N);
+const RR = new Float32Array(N), ZI = new Float32Array(N), CT = new Float32Array(N);
+const curve = (a, b, vert) => vert
+  ? `M${a.x} ${a.y}C${a.x} ${(a.y + b.y) / 2} ${b.x} ${(a.y + b.y) / 2} ${b.x} ${b.y}`
+  : `M${a.x} ${a.y}C${(a.x + b.x) / 2} ${a.y} ${(a.x + b.x) / 2} ${b.y} ${b.x} ${b.y}`;
+const bot = i => ({x:SX[i], y:SY[i] + CH * SC[i] / 2 + 3});
+const topP = i => ({x:SX[i], y:SY[i] - CH * SC[i] / 2 - 3});
+const rgt = i => ({x:SX[i] + CW * SC[i] / 2 + 3, y:SY[i]});
+const lft = i => ({x:SX[i] - CW * SC[i] / 2 - 3, y:SY[i]});
+
+/* ============================ INTERACTION ============================ */
+let curP = 0;
+
+// tender analysis: index rows and highlighted pages point at each other
+const idxBtn = MAND.map((i, j) => {
+  const li = document.createElement('li');
+  li.innerHTML = `<button type="button"><span>p. ${PAGES[i][0]}</span>${PAGES[i][4]}</button>`;
+  document.getElementById('idx').appendChild(li);
+  const b = li.firstChild;
+  b.addEventListener('mouseenter', () => idxHover = j); b.addEventListener('mouseleave', () => idxHover = -1);
+  b.addEventListener('focus', () => idxHover = j); b.addEventListener('blur', () => idxHover = -1);
+  b.addEventListener('click', () => bringToFront(i));
+  return b;
+});
+let idxHover = -1, hoverCard = -1, idxOn = -1, hotPrev = -1, hoffT = 0;
+function bringToFront(i){
+  // i + travel = 12 (mod 24) puts a page square to the reader, mid-height
+  let off = HN / 2 - i - helixBase();
+  off += Math.round((hoffT - off) / HN) * HN;
+  hoffT = off;
+}
+
+// evidence tracing
+const claimHost = document.getElementById('claims'), traceEl = document.getElementById('trace');
+const cstat = document.getElementById('cstat');
+const claimBtn = CLAIMS.map((c, i) => {
+  const li = document.createElement('li');
+  li.innerHTML = `<button type="button" class="cl" aria-pressed="false"><span class="bx" aria-hidden="true"></span><span class="tx">${c.t}</span></button>`;
+  claimHost.appendChild(li);
+  const b = li.firstChild; b.addEventListener('click', () => select(i));
+  return b;
+});
+let sel = -1, threadP = 0, selW = 0;
+const checked = new Set();
+const fw = new Float32Array(N);
+const reader = document.getElementById('reader');
+function fillReader(){
+  reader.innerHTML = '';
+  if (!ctx.portrait || sel < 0 || CLAIMS[sel].src == null){ reader.style.height = '0px'; return; }
+  const cl = cardEl[CLAIMS[sel].src].cloneNode(true), w = reader.clientWidth, rs = Math.min(1, w / CW);
+  const holder = document.createElement('div'); holder.dataset.s = 'lit';
+  cl.className = 'card'; cl.style.cssText = `transform:translate(${((w - CW * rs) / 2).toFixed(1)}px,0) scale(${rs.toFixed(4)})`;
+  holder.appendChild(cl); reader.appendChild(holder); reader.style.height = (CH * rs).toFixed(0) + 'px';
+}
+function select(i){
+  sel = i; checked.add(i); threadP = 0;
+  const c = CLAIMS[i];
+  claimBtn.forEach((b, j) => {
+    b.classList.toggle('on', j === i); b.setAttribute('aria-pressed', j === i);
+    if (j === i) b.classList.add(c.src != null ? 'ok' : c.kind);
+  });
+  fillReader();
+  const col = c.src != null ? 'var(--amber)' : c.kind === 'flag' ? 'var(--slate)' : 'var(--alarm)';
+  thread.style.stroke = col; threadGlow.style.stroke = col; tend.style.stroke = col; thread._d = null;
+  traceEl.innerHTML = c.src != null
+    ? `<p class="kick"><i></i>Supported. Traced to source in three steps.</p>
+       <p class="hop"><span>Knowledge item</span><b>${c.k}</b></p><p class="hop"><span>Document extract</span><b>${c.c}</b></p>
+       <p class="hop"><span>Source file</span><b>${c.d}</b></p>`
+    : c.kind === 'flag'
+      ? `<p class="kick flag"><i></i>Commitment. Flagged for approval.</p><p class="why">${c.why}</p>`
+      : `<p class="kick bad"><i></i>Unsupported. No evidence found.</p><p class="why">${c.why}</p>`;
+  cstat.textContent = checked.size < CLAIMS.length ? `${checked.size} of ${CLAIMS.length} statements reviewed`
+    : 'All five reviewed. One statement is unsupported and one is a commitment that needs approval. Both are flagged before submission.';
+}
+document.getElementById('reset').addEventListener('click', () => {
+  sel = -1; checked.clear(); traceEl.innerHTML = ''; fillReader();
+  cstat.textContent = `0 of ${CLAIMS.length} statements reviewed`;
+  claimBtn.forEach(b => { b.className = 'cl'; b.setAttribute('aria-pressed', 'false'); });
+});
+
+// change impact
+const fall = document.getElementById('fall');
+const causeBtn = [...document.querySelectorAll('#causes button')];
+let cause = -1, hop = NODES.map(() => 99), wave = 0;
+function seed(s){
+  cause = s; hop = NODES.map(() => 99); hop[s] = 0; wave = 0;
+  for (let k = 0; k < 6; k++) EDGES.forEach(([a, b]) => { if (hop[a] + 1 < hop[b]) hop[b] = hop[a] + 1; });
+  causeBtn.forEach((b, j) => b.setAttribute('aria-pressed', j === s));
+  const at = d => NODES.filter((n, j) => hop[j] === d).map(n => n[3]);
+  const r1 = at(1), r2 = at(2), gate = hop[11] < 99, n = hop.filter(h => h > 0 && h < 99).length;
+  // each line of the summary appears as the wave reaches that step
+  const d = k => RM ? '' : ` style="animation-delay:${[.05, 1 / WAVE, 2 / WAVE, 3 / WAVE, 3 / WAVE + .35][k].toFixed(2)}s"`;
+  const cap = s2 => s2.charAt(0).toUpperCase() + s2.slice(1);
+  fall.innerHTML =
+    `<p${d(0)}><span>Source</span><span><b>${NODES[s][3]}</b> ${CAUSE_V[s]}</span></p>` +
+    `<p${d(1)}><span>Step 1</span><span><b>${r1.length} requirement${r1.length > 1 ? 's' : ''}</b> lose${r1.length > 1 ? '' : 's'} supporting evidence: ${cap(r1.join(', '))}</span></p>` +
+    `<p${d(2)}><span>Step 2</span><span><b>${r2.length} proposal section${r2.length > 1 ? 's' : ''}</b> contain${r2.length > 1 ? '' : 's'} affected statements: ${r2.join(', ')}</span></p>` +
+    (gate ? `<p class="bad"${d(3)}><span>Step 3</span><span><b>Submission is blocked</b> at the readiness gate until these are resolved.</span></p>` : '') +
+    `<p class="tot"${d(4)}><em>${n}</em> dependent items affected</p>`;
+}
+causeBtn.forEach((b, j) => b.addEventListener('click', () => seed(j)));
+
+// theme
+const th = document.getElementById('th');
+th.addEventListener('click', () => {
+  const light = root.dataset.theme !== 'light';
+  root.dataset.theme = light ? 'light' : 'dark';
+  th.textContent = light ? 'Dark' : 'Light';
+});
+
+/* ------------- direct manipulation: turn the pile, pull pages out, throw the stack -------------
+   Drag on the overview turns the sphere. Hold on a page to lift it out and throw it;
+   a click flings it away and it files itself back. In the submission, the top page can be
+   dragged and thrown, or clicked to toss it aside; it slides back under the stack. */
+const ov = new Array(N).fill(null);
+const drag = {mode:null, id:-1, kind:'', hit:-1, sx:0, sy:0, lx:0, ly:0, lt:0, t0:0, vx:0, vy:0, gx:0, gy:0, timer:0};
+const rv = {y:0, p:0};
+let throwDir = 1, mxT = 0, myT = 0, bodyCls = '';
+
+const overUI = t => t && t.closest && t.closest('.col, header, footer, a, button');
+const inWorld = (x, y) => ctx.portrait ? (y > W.y && y < W.y + W.h) : (x > W.x && x < W.x + W.w && y > W.y);
+function pick(x, y, test){
+  let best = -1, bz = -Infinity;
+  for (let i = 0; i < N; i++){
+    if (OP[i] < .35 || ov[i] || (test && !test(i))) continue;
+    const a = -RR[i] * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), dx = x - SX[i], dy = y - SY[i];
+    if (Math.abs(dx * c - dy * s) <= CW * SC[i] / 2 && Math.abs(dx * s + dy * c) <= CH * SC[i] / 2 && ZI[i] > bz){ bz = ZI[i]; best = i; }
+  }
+  return best;
+}
+function setBody(c){ if (c === bodyCls) return; if (bodyCls) document.body.classList.remove(bodyCls); if (c) document.body.classList.add(c); bodyCls = c; }
+function grab(i, x, y, kind){
+  ov[i] = {mode:'drag', kind, x:SX[i], y:SY[i], s:SC[i], sT:Math.min(1, SC[i] * 1.3 + .05), r:RR[i], o:1,
+           vx:0, vy:0, vr:0, t:0, w:1, delay:kind === 'pile' ? 1.6 : .25};
+  flyHost.appendChild(wrapEl[i]); cardEl[i].classList.add('held');
+  Object.assign(drag, {mode:'card', id:i, gx:x - SX[i], gy:y - SY[i]});
+}
+function toBottom(i){
+  const k = STACK.indexOf(i); if (k < 0) return;
+  STACK.splice(k, 1); STACK.unshift(i); STACK.forEach((id, j) => stackOf[id] = j);
+}
+function launch(i, vx, vy){
+  const v = ov[i];
+  Object.assign(v, {mode:'fly', vx, vy, vr:vx * .22 + (hash(ctx.T * 9) - .5) * 160, t:0, away:v.kind === 'pile'});
+  cardEl[i].classList.remove('held');
+  if (v.kind === 'stack') toBottom(i);
+}
+function flick(i, kind){
+  if (i < 0 || ov[i]) return;
+  let vx, vy;
+  if (kind === 'pile'){
+    const dx = SX[i] - W.cx, dy = SY[i] - W.cy, d = Math.hypot(dx, dy) || 1, sp = 1300 + hash(ctx.T * 7) * 500;
+    vx = dx / d * sp; vy = dy / d * sp - 380;
+  } else { throwDir = -throwDir; vx = throwDir * (1500 + hash(ctx.T * 3) * 600); vy = -420 - hash(ctx.T * 5) * 260; }
+  ov[i] = {mode:'drag', kind, x:SX[i], y:SY[i], s:SC[i], sT:SC[i], r:RR[i], o:Math.max(.6, OP[i]), vx:0, vy:0, vr:0, t:0, w:1,
+           delay:kind === 'pile' ? 1.6 : .25};
+  flyHost.appendChild(wrapEl[i]);
+  launch(i, vx, vy);
+}
+function stepOv(v, i, dt, sx, sy, sc, r){
+  if (v.mode === 'drag'){
+    v.s += (v.sT - v.s) * (1 - Math.exp(-dt * 10));
+    v.r += (clamp(v.vx * .012, -16, 16) - v.r) * (1 - Math.exp(-dt * 8));
+  } else if (v.mode === 'fly'){
+    v.t += dt; v.x += v.vx * dt; v.y += v.vy * dt; v.vy += 560 * dt;
+    const k = Math.exp(-dt * .35); v.vx *= k; v.vy *= k;
+    v.r += v.vr * dt; v.vr *= Math.exp(-dt * .4);
+    if (v.away){ v.s *= Math.exp(-dt * .8); v.o = Math.min(v.o, clamp(1.7 - v.t, 0, 1)); }
+    const m = CW * v.s;
+    if (v.x < -m || v.x > vw + m || v.y > vh + m || v.y < -2 * m || v.t > 2.8 || v.o <= 0){ v.mode = 'gone'; v.t = 0; v.exitX = v.x; }
+  } else if (v.mode === 'gone'){
+    v.t += dt;
+    if (v.t > v.delay){
+      v.mode = 'return'; v.w = 1; host.appendChild(wrapEl[i]);
+      if (v.kind === 'pile') Object.assign(v, {x:sx, y:sy, s:sc * .15, o:0, r:r + (hash(i) - .5) * 60});
+      else { const side = v.exitX > W.cx ? 1 : -1; Object.assign(v, {x:side > 0 ? vw + CW * sc : -CW * sc, y:sy - 30, s:sc, o:1, r:side * 28}); }
+    }
+  } else if (v.mode === 'return'){
+    if (wrapEl[i].parentNode !== host){ host.appendChild(wrapEl[i]); cardEl[i].classList.remove('held'); }
+    v.w -= dt / (v.kind === 'pile' ? 1.1 : .8);
+    if (v.w <= 0) return true;
+  }
+  return false;
+}
+
+addEventListener('pointerdown', e => {
+  if (e.button !== 0 || overUI(e.target)) return;
+  const x = e.clientX, y = e.clientY, ch = Math.round(curP), touch = e.pointerType === 'touch';
+  if (!inWorld(x, y)) return;
+  const now = performance.now();
+  if (ch === 0){
+    const hit = pick(x, y);
+    Object.assign(drag, {mode:touch ? 'tap' : 'pending', kind:'pile', hit, sx:x, sy:y, lx:x, ly:y, lt:now, t0:now, vx:0, vy:0});
+    if (!touch){
+      e.preventDefault(); clearTimeout(drag.timer);
+      if (hit >= 0) drag.timer = setTimeout(() => { if (drag.mode === 'pending') grab(hit, drag.lx, drag.ly, 'pile'); }, 220);
+    }
+  } else if (ch === NC - 1){
+    if (pick(x, y, i => stackOf[i] >= 0) < 0) return;
+    const top = STACK[STACK.length - 1];
+    if (ov[top]) return;
+    Object.assign(drag, {mode:touch ? 'tap' : 'pending', kind:'stack', hit:top, sx:x, sy:y, lx:x, ly:y, lt:now, t0:now, vx:0, vy:0});
+    if (!touch){ e.preventDefault(); grab(top, x, y, 'stack'); }
+  } else if (ch === 1){
+    const hit = pick(x, y, i => isM[i]);
+    if (hit >= 0){ e.preventDefault(); bringToFront(hit); }
+  }
+  if (drag.mode && !touch) setBody('grabbing');
+});
+
+addEventListener('pointermove', e => {
+  const x = e.clientX, y = e.clientY, now = performance.now(), mouse = e.pointerType === 'mouse';
+  if (mouse && !RM){ mxT = x / vw * 2 - 1; myT = y / vh * 2 - 1; }
+  if (drag.mode){
+    const dtm = Math.max(4, now - drag.lt) / 1000;
+    drag.vx = lerp(drag.vx, (x - drag.lx) / dtm, .4); drag.vy = lerp(drag.vy, (y - drag.ly) / dtm, .4);
+    if (drag.mode === 'pending' && Math.hypot(x - drag.sx, y - drag.sy) > 6){ clearTimeout(drag.timer); drag.mode = 'rotate'; }
+    if (drag.mode === 'rotate'){
+      const dx = x - drag.lx, dy = y - drag.ly;
+      ctx.dyaw += dx * .0055; ctx.dpitch = clamp(ctx.dpitch + dy * .004, -1, 1);
+      rv.y = lerp(rv.y, dx * .0055 / dtm, .4); rv.p = lerp(rv.p, dy * .004 / dtm, .4);
+    } else if (drag.mode === 'card'){
+      const v = ov[drag.id]; if (v){ v.x = x - drag.gx; v.y = y - drag.gy; v.vx = drag.vx; }
+    } else if (drag.mode === 'tap'){
+      const ax = Math.abs(x - drag.sx), ay = Math.abs(y - drag.sy);
+      if (drag.kind === 'pile' && ax > 10 && ax > ay * 1.4) drag.mode = 'rotate';   // a sideways swipe turns the sphere
+      else if (ax + ay > 10) drag.mode = null;                                      // anything else is a scroll
+    }
+    drag.lx = x; drag.ly = y; drag.lt = now;
+    return;
+  }
+  if (!mouse) return;
+  const ch = Math.round(curP); let c = ''; hoverCard = -1;
+  if (!overUI(e.target) && inWorld(x, y)){
+    if (ch === 0) c = 'grab';
+    else if (ch === NC - 1 && pick(x, y, i => stackOf[i] >= 0) >= 0) c = 'grab';
+    else if (ch === 1){ hoverCard = pick(x, y, i => isM[i]); if (hoverCard >= 0) c = 'point'; }
+  }
+  setBody(c);
+}, {passive:true});
+
+function release(e){
+  if (!drag.mode) return;
+  clearTimeout(drag.timer);
+  const now = performance.now();
+  const quick = now - drag.t0 < 280 && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 8;
+  const still = now - drag.lt > 90;          // held still before letting go: no throw
+  if (drag.mode === 'rotate'){ if (still){ rv.y = 0; rv.p = 0; } }
+  else if (drag.mode === 'pending' || drag.mode === 'tap'){ if (quick) flick(drag.hit, drag.kind); }
+  else if (drag.mode === 'card'){
+    const v = ov[drag.id];
+    if (v){
+      const sp = still ? 0 : Math.hypot(drag.vx, drag.vy);
+      if (quick && drag.kind === 'stack'){ ov[drag.id] = null; host.appendChild(wrapEl[drag.id]); cardEl[drag.id].classList.remove('held'); flick(drag.id, 'stack'); }
+      else if (sp > 380) launch(drag.id, drag.vx, drag.vy);
+      else { v.mode = 'return'; v.w = 1; }
+    }
+  }
+  drag.mode = null; setBody('');
+}
+addEventListener('pointerup', release);
+addEventListener('pointercancel', release);
+
+/* ============================== FRAME ==============================
+   One loop. Advances by elapsed seconds, clamped at 0.05. */
+const A = {x:0,y:0,z:0,r:0,o:0}, B = {x:0,y:0,z:0,r:0,o:0};
+const state = new Array(N).fill(''), vis = new Uint8Array(N), bumpT = new Float32Array(N).fill(9);
+const scrimL = document.getElementById('scrimL'), scrimR = document.getElementById('scrimR');
+const atmoEl = document.getElementById('atmo');
+const cTf = new Array(N).fill(''), cOp = new Array(N).fill(''), cZ = new Array(N).fill(0), cQ = new Float32Array(N);
+let lastSw = -1;
+const QSTEP = 24;    // coarse scale steps per e-fold: about 4%, so the GPU never stretches a page more than 2%
+const whereN = document.querySelector('#where b'), whereT = document.querySelector('#where span');
+let last = performance.now(), ys = scrollY, FADE = .72, lastNear = -1;
+
+function desired(i, near){
+  if (near === 1) return isM[i] ? 'lit' : '';
+  if (near === 2){ const r = REQ.find(q => q.pg === i); return r ? (r.st === 'met' ? 'lit' : r.st) : ''; }
+  if (near === 3) return sel >= 0 && CLAIMS[sel].src === i ? 'lit' : '';
+  if (near === 4){ const j = nodeOf[i]; if (j < 0 || cause < 0 || hop[j] > wave) return '';
+    return j === cause ? 'src' : 'hit'; }
+  return '';
+}
+
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, .05); last = now;
+  if (document.hidden) return;
+  ctx.T += dt;
+  ys = RM ? scrollY : ys + (scrollY - ys) * (1 - Math.exp(-dt * 7));
+  if (!drag.mode){ const k3 = 1 - Math.exp(-dt * 3); ctx.mx += (mxT - ctx.mx) * k3; ctx.my += (myT - ctx.my) * k3; }
+  if (drag.mode !== 'rotate'){             // the sphere coasts after a drag, and its tilt settles back
+    ctx.dyaw += rv.y * dt; ctx.dpitch += rv.p * dt;
+    const k = Math.exp(-dt * 2.4); rv.y *= k; rv.p *= k;
+    ctx.dpitch *= Math.exp(-dt * .5);
+  }
+  ctx.dpitch = clamp(ctx.dpitch, -1, 1);
+  ctx.hoff += (hoffT - ctx.hoff) * (RM ? 1 : 1 - Math.exp(-dt * 3.5));
+  ctx.yv = ys / vh;
+  FADE = root.dataset.theme === 'light' ? .4 : .72;
+
+  const P = pOf(ys); curP = P;
+  const c = Math.min(Math.floor(P), NC - 2), f = P - c;
+  const t = RM ? (f < .5 ? 0 : 1) : ease(f);
+  const G = lerp(Gs[c], Gs[c + 1], t);
+  const cw = k => clamp(1 - Math.abs(P - k) * 2.5, 0, 1);
+  const near = Math.round(P);
+
+  // the world slides to the opposite side of the text as chapters alternate
+  const sw = ctx.portrait ? 0 : lerp(SIDE[c], SIDE[c + 1], t), dir = sw < .5 ? 1 : -1;
+  W.x = lerp(W0.x, W1.x, sw); W.y = W0.y; W.w = W0.w; W.h = W0.h; W.cx = W.x + W.w / 2; W.cy = W.y + W.h / 2;
+  if (Math.abs(W.cx - lastWx) > .5){
+    const tf = `translate3d(${W.cx.toFixed(1)}px,${W.cy.toFixed(1)}px,0) translate(-50%,-50%)`;
+    atmoEl.style.transform = tf; lastWx = W.cx;
+  }
+  if (Math.abs(sw - lastSw) > .002){ scrimL.style.opacity = (1 - sw).toFixed(3); scrimR.style.opacity = sw.toFixed(3); lastSw = sw; }
+
+  // read the one layout value this frame needs before anything is written
+  const rcSel = sel >= 0 && !ctx.portrait && cw(3) > .02 ? claimBtn[sel].getBoundingClientRect() : null;
+
+  if (near !== lastNear){ lastNear = near; whereN.textContent = near + 1; whereT.textContent = NAMES[near]; }
+
+  // evidence tracing: the chosen document comes to the reading plane at natural size
+  const inProof = cw(3), focusId = sel >= 0 ? CLAIMS[sel].src : null;
+  const kf = 1 - Math.exp(-dt * 5);
+  selW += ((sel >= 0 ? 1 : 0) - selW) * (RM ? 1 : kf);
+  const FS = Math.min(1, W.w * .56 / CW, W.h * .84 / CH);
+  const FX = W.cx + dir * W.w * .06, FY = W.cy;
+  if (sel >= 0) threadP = RM ? 1 : Math.min(1, threadP + dt * 1.5);
+  if (cause >= 0) wave = RM ? 9 : Math.min(wave + dt * WAVE, 4.5);
+  const hotPg = near === 1 ? (idxHover >= 0 ? MAND[idxHover] : hoverCard) : -1;
+
+  for (let i = 0; i < N; i++){
+    L[c](i, A); L[c + 1](i, B);
+    const ti = RM ? t : ease(clamp((f - DL[i]) / .78, 0, 1));
+    let z = Math.min(lerp(A.z, B.z, ti), F * .55), r = lerp(A.r, B.r, ti), o = lerp(A.o, B.o, ti);
+    const s = F / (F - z);
+    // the readability rule lives here: nothing is ever drawn above its natural size
+    let sc = Math.min(1, s * G), sx = W.cx + lerp(A.x, B.x, ti) * sc, sy = W.cy + lerp(A.y, B.y, ti) * sc;
+    o *= 1 - FADE * (1 - clamp((s - .2) / .38, 0, 1));    // depth reads as falling into the dark
+
+    fw[i] += (((i === focusId && !ctx.portrait) ? inProof : 0) - fw[i]) * (RM ? 1 : kf);
+    const w = ease(clamp(fw[i], 0, 1));
+    if (w > .001){ sx = lerp(sx, FX, w); sy = lerp(sy, FY, w); sc = lerp(sc, FS, w); r = lerp(r, 0, w); o = lerp(o, 1, w); }
+    else if (isEv(i) && near === 3) o *= 1 - .74 * selW * inProof;
+    let zi = w > .5 ? 9000 : 5000 + Math.round(z);
+
+    // documents being held, thrown or filing themselves back
+    const v = ov[i];
+    if (v){
+      if (stepOv(v, i, dt, sx, sy, sc, r)) ov[i] = null;
+      else if (v.mode === 'gone') o = 0;
+      else {
+        const k = v.mode === 'return' ? ease(clamp(v.w, 0, 1)) : 1;
+        sx = lerp(sx, v.x, k); sy = lerp(sy, v.y, k); sc = lerp(sc, v.s, k); r = lerp(r, v.r, k); o = lerp(o, v.o, k);
+      }
+    }
+
+    // change impact: a short swell as the wave reaches a document (applied after the step below)
+    let swell = 1;
+    if (bumpT[i] < .6){ bumpT[i] += dt; swell = 1 + .07 * Math.sin(Math.PI * clamp(bumpT[i] / .6, 0, 1)); }
+
+    SX[i] = sx; SY[i] = sy; SC[i] = sc; OP[i] = o; RR[i] = r; ZI[i] = zi;
+    const el = cardEl[i], wr = wrapEl[i];
+    if (o < .004){ if (vis[i]){ wr.style.visibility = 'hidden'; vis[i] = 0; } continue; }
+    if (!vis[i]){ wr.style.visibility = 'visible'; vis[i] = 1; }
+    // coarse step on the page (re-renders text), the remainder on the wrapper (GPU only)
+    const q = Math.exp(Math.round(Math.log(Math.max(sc, .01)) * QSTEP) / QSTEP);
+    if (q !== cQ[i]){ scEl[i].style.transform = `scale(${q.toFixed(5)})`; cQ[i] = q; }
+    const tf = `translate3d(${sx.toFixed(1)}px,${sy.toFixed(1)}px,0) rotate(${r.toFixed(2)}deg) scale(${(sc / q * swell).toFixed(4)})`;
+    if (tf !== cTf[i]){ wr.style.transform = tf; cTf[i] = tf; }
+    const os = o.toFixed(2);
+    if (os !== cOp[i]){ wr.style.opacity = os; cOp[i] = os; }
+    if (zi !== cZ[i]){ wr.style.zIndex = zi; cZ[i] = zi; }
+    const ds = desired(i, near);
+    if (state[i] !== ds){
+      if (near === 4 && (ds === 'hit' || ds === 'src') && !RM) bumpT[i] = 0;
+      state[i] = ds; wr.dataset.s = ds;
+    }
+  }
+  if (hotPrev !== hotPg){ if (hotPrev >= 0) wrapEl[hotPrev].classList.remove('hot'); if (hotPg >= 0) wrapEl[hotPg].classList.add('hot'); hotPrev = hotPg; }
+  gateEl.classList.toggle('blocked', near === 4 && cause >= 0 && wave >= hop[11]);
+
+  // tender analysis index: the hovered page, otherwise whichever page faces the reader
+  let row = hotPg >= 0 ? MAND.indexOf(hotPg) : -1;
+  if (row < 0 && near === 1){ let bf = .86; MAND.forEach((i, j) => { if (HF[i] > bf){ bf = HF[i]; row = j; } }); }
+  if (row !== idxOn){ if (idxOn >= 0) idxBtn[idxOn].classList.remove('on'); if (row >= 0) idxBtn[row].classList.add('on'); idxOn = row; }
+
+  // labels sit beside their documents and never scale
+  for (const lb of LBL){
+    // at phone scale the documents are too small to label; the text column carries it
+    const i = lb.id;
+    let a = ctx.portrait ? 0 : cw(lb.ch) * clamp((OP[i] - .25) / .45, 0, 1);
+    if (lb.ch === 4) lb.el.classList.toggle('hit', cause >= 0 && hop[nodeOf[i]] <= wave);
+    if (lb.ch === 1) lb.el.classList.toggle('on', i === hotPg);
+    if (a < .01){ if (lb.vis){ lb.el.style.visibility = 'hidden'; lb.vis = false; lb.tf = ''; } continue; }
+    if (!lb.vis){ lb.el.style.visibility = 'visible'; lb.vis = true; }
+    let x, y, tx = '-50%', ty = '0';
+    if (lb.side === 'b'){ x = SX[i]; y = SY[i] + CH * SC[i] / 2 + 7; }
+    else if (lb.side === 't'){ x = SX[i]; y = SY[i] - CH * SC[i] / 2 - 7; ty = '-100%'; }
+    else { const left = SX[i] < W.cx; x = SX[i] + (left ? -1 : 1) * (CW * SC[i] / 2 + 10); y = SY[i]; tx = left ? '-100%' : '0'; ty = '-50%'; }
+    if (lb.ww){ const wd = Math.max(60, Math.round(lb.ww * SC[i] - 6)); if (wd !== lb.wd){ lb.el.style.width = wd + 'px'; lb.wd = wd; } }
+    const tf = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(${tx},${ty})`;
+    if (tf !== lb.tf){ lb.el.style.transform = tf; lb.tf = tf; }
+    const as = a.toFixed(2);
+    if (as !== lb.as){ lb.el.style.opacity = as; lb.as = as; }
+  }
+
+  // eligibility wires
+  const am = cw(2);
+  const r1 = v => Math.round(v * 2) / 2;
+  const P2 = p => ({x:r1(p.x), y:r1(p.y)});
+  for (const m of MW){
+    if (am < .01){ setD(m.el, ''); continue; }
+    setD(m.el, curve(P2(bot(m.a)), P2(topP(m.b)), true)); setO(m.el, am);
+  }
+  if (am > .01){ const g = P2(bot(22)); setD(gapWire, `M${g.x} ${g.y}L${g.x} ${g.y + 46}`); setO(gapWire, am); }
+  else setD(gapWire, '');
+
+  // change impact: the alarm draws along each edge as the wave travels it, with a pulse at its head
+  const ai = cw(4);
+  for (const e of IW){
+    if (ai < .01){ setD(e.el, ''); setO(e.hot, 0); setO(e.dot, 0); continue; }
+    const a = NODES[e.a][0], b = NODES[e.b][0];
+    const d = ctx.portrait ? curve(P2(bot(a)), P2(topP(b)), true) : curve(P2(rgt(a)), P2(lft(b)), false);
+    const moved = setD(e.el, d); setO(e.el, ai);
+    const on = cause >= 0 && hop[e.a] < 99 && hop[e.b] === hop[e.a] + 1;
+    const target = on ? clamp(wave - hop[e.a], 0, 1) : 0;
+    e.p = target >= e.p ? target : e.p + (target - e.p) * (1 - Math.exp(-dt * 6));
+    if (e.p < .003){ setO(e.hot, 0); setO(e.dot, 0); continue; }
+    if (setD(e.hot, d) || moved || !e.len){ e.len = e.hot.getTotalLength() || 1; e.hot.style.strokeDasharray = e.len; }
+    const pe = ease(e.p), off = (e.len * (1 - pe)).toFixed(1);
+    if (off !== e.off){ e.hot.style.strokeDashoffset = off; e.off = off; }
+    setO(e.hot, ai);
+    if (on && pe < .995){ const pt = e.hot.getPointAtLength(e.len * pe); e.dot.setAttribute('cx', pt.x.toFixed(1)); e.dot.setAttribute('cy', pt.y.toFixed(1)); setO(e.dot, ai); }
+    else setO(e.dot, 0);
+  }
+
+  // the evidence thread runs from the live position of the sentence to the exact line it cites
+  const at = ctx.portrait ? 0 : inProof * selW;
+  if (sel < 0 || at < .02 || !rcSel){ setD(thread, ''); setD(threadGlow, ''); setO(tend, 0); }
+  else {
+    const cl = CLAIMS[sel], rc = rcSel, ok = cl.src != null;
+    const a = {x:dir > 0 ? rc.right + 8 : rc.left - 8, y:rc.top + rc.height / 2};
+    const b = ok ? {x:SX[cl.src] - dir * (CW * SC[cl.src] / 2 + 3), y:SY[cl.src] + CT[cl.src] * SC[cl.src]}
+                 : {x:a.x + dir * Math.min(150, W.w * .18), y:Math.min(a.y + 190, vh - 70)};
+    const f1 = v => v.toFixed(1);
+    const d = ok
+      ? `M${f1(a.x)} ${f1(a.y)}C${f1(a.x + (b.x - a.x) * .45)} ${f1(a.y - 60)} ${f1(a.x + (b.x - a.x) * .7)} ${f1(b.y)} ${f1(b.x)} ${f1(b.y)}`
+      : `M${f1(a.x)} ${f1(a.y)}C${f1(a.x + dir * 90)} ${f1(a.y - 24)} ${f1(b.x + dir * 24)} ${f1(b.y - 120)} ${f1(b.x)} ${f1(b.y)}`;
+    if (setD(thread, d) || !thread._len){ thread._len = thread.getTotalLength() || 1; setD(threadGlow, ok ? d : '');
+      thread.style.strokeDasharray = thread._len; threadGlow.style.strokeDasharray = thread._len; }
+    const off = (thread._len * (1 - threadP)).toFixed(1);
+    if (off !== thread._off){ thread.style.strokeDashoffset = off; threadGlow.style.strokeDashoffset = off; thread._off = off; }
+    setO(thread, at); setO(threadGlow, at);
+    tend.setAttribute('cx', f1(b.x)); tend.setAttribute('cy', f1(b.y)); setO(tend, !ok && threadP > .98 ? at : 0);
+  }
+}
+
+/* ============================== START ============================== */
+measure();
+addEventListener('resize', () => { measure(); fillReader(); });
+new ResizeObserver(measure).observe(document.body);
+if (document.fonts) document.fonts.ready.then(measure);
+requestAnimationFrame(t => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>

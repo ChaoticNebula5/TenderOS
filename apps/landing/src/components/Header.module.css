@@ -1,0 +1,61 @@
+.header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px clamp(18px, 4vw, 52px);
+  background: color-mix(in oklab, var(--bg) 80%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--rule-2);
+}
+
+.mark {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: 19px;
+}
+.mark span {
+  color: var(--amber);
+}
+
+.nav {
+  display: flex;
+  gap: 22px;
+  font-size: 13px;
+  align-items: center;
+}
+
+.navLink {
+  color: var(--ink-2);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.navLink:hover,
+.navLink.on {
+  color: var(--amber);
+}
+
+.themeToggle {
+  background: none;
+  border: 1px solid var(--rule);
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  transition: 0.15s;
+}
+.themeToggle:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+@media (max-width: 900px) {
+  .navLink {
+    display: none;
+  }
+}

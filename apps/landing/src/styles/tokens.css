@@ -1,0 +1,130 @@
+/*
+ * Design tokens and base resets, ported from reference-landing.html's
+ * :root / [data-theme="light"] blocks (lines 16-37).
+ *
+ * The one file in this app that isn't namespaced (rule 11) - and
+ * deliberately so, not an oversight: everything below is either a CSS
+ * custom property (scoped by name, not by class, so it can't collide the
+ * way `.bar` and `.g2` did) or a bare element selector (*, html, body,
+ * button, ::selection). There are no class selectors here to collide with
+ * anything - component-level classes belong in each component's own
+ * *.module.css instead.
+ */
+
+:root {
+  --bg: #15110d;
+  --bg-2: #100d09;
+  --raise: #221b14;
+  --ink: #f3ece1;
+  --ink-2: #bcb0a0;
+  --ink-3: #8b8073;
+  --amber: #c98a47;
+  --slate: #7fa5aa;
+  --alarm: #cf5f45;
+  --sand: #4a4036;
+  --paper: #f6f0e4;
+  --paper-ink: #1d1812;
+  --paper-ink-2: #5b5046;
+  --paper-rule: rgba(29, 24, 18, 0.14);
+  --rule: rgba(243, 236, 225, 0.15);
+  --rule-2: rgba(243, 236, 225, 0.07);
+  --display: "Newsreader", Georgia, serif;
+  --ui: "Archivo", system-ui, sans-serif;
+  --col: min(470px, 40vw);
+  --col-wide: min(620px, 46vw);
+}
+
+[data-theme="light"] {
+  --bg: #efeae1;
+  --bg-2: #e5dfd3;
+  --raise: #fbf8f2;
+  --ink: #241f1a;
+  --ink-2: #4a423a;
+  --ink-3: #7a7066;
+  --amber: #8a5a2b;
+  --slate: #3e6167;
+  --alarm: #9e3b2b;
+  --sand: #b9a98f;
+  --rule: rgba(36, 31, 26, 0.17);
+  --rule-2: rgba(36, 31, 26, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: auto;
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--ui);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+  transition:
+    background 0.45s,
+    color 0.45s;
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+button {
+  font-family: var(--ui);
+}
+
+button:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+/* Headings are styled as bare element selectors, same as the reference
+   (reference-landing.html:79-81) - every chapter's <h1>/<h2> should look
+   like a heading without each chapter component re-declaring it, and
+   unlike `.bar`/`.g2`, "h1 means an h1 looks like this" cannot collide. */
+h1,
+h2 {
+  font-family: var(--display);
+  font-weight: 200;
+}
+h1 {
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-size: clamp(40px, 5.2vw, 78px);
+}
+h2 {
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-size: clamp(30px, 3.3vw, 48px);
+}
+h1 i,
+h2 i {
+  font-weight: 200;
+  font-style: italic;
+  color: var(--amber);
+}
+
+@media (max-width: 900px) {
+  :root {
+    --col: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.001ms !important;
+    animation: none !important;
+  }
+}

@@ -1,0 +1,37 @@
+/* Ported from reference-landing.html:99-105 (.clauses and its children). */
+
+.clauses {
+  list-style: none;
+  margin-top: 24px;
+  border-top: 1px solid var(--rule-2);
+}
+.clauses li {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule-2);
+  cursor: default;
+  transition: background 0.2s;
+}
+.clauses li:hover,
+.clauses li.hot {
+  background: color-mix(in oklab, var(--amber) 8%, transparent);
+}
+.clauseText {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: 15.5px;
+  line-height: 1.38;
+}
+.clauseText b {
+  font-weight: 400;
+  color: var(--amber);
+  font-style: italic;
+}
+.clauseProvenance {
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.clauseProvenance span {
+  color: var(--ink-2);
+}

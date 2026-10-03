@@ -1,0 +1,174 @@
+/*
+ * Ported from reference-landing.html:107-119 (#read/.stagebox), 156-180
+ * (.lenscard and its children, .hud, .hg/.rc), plus the mobile rule at 401+
+ * that hides #page/.tag - not relevant here since P2 doesn't build the
+ * readable page yet.
+ *
+ * Every class here that world/readingDom.ts references from inside an
+ * `innerHTML` template string (lk, ln, lf, lx, lr, rq, st, ok/exp/old, sw)
+ * is read there as `readingStyles.<name>`, not hard-coded - see that file's
+ * own note on why a CSS Module needs help resolving class names injected
+ * as a template string instead of JSX.
+ */
+
+.read {
+  min-height: 100vh;
+  padding: 0;
+}
+.stagebox {
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  padding: 90px clamp(18px, 4vw, 52px) 40px;
+}
+.readCol {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.lenscard {
+  margin-top: 22px;
+  padding: 15px 17px 14px;
+  background: var(--raise);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  min-height: 164px;
+}
+.lk {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.ln {
+  color: var(--amber);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.lf {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-top: 6px;
+  word-break: break-all;
+}
+.lx {
+  font-family: var(--display);
+  font-weight: 300;
+  font-size: 17px;
+  line-height: 1.36;
+  margin-top: 8px;
+}
+.lx span {
+  display: inline-block;
+}
+.lenscard.sw .lx span {
+  animation: wordIn 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(0.5s + var(--i) * 22ms);
+}
+@keyframes wordIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+.lr {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 11px;
+  font-size: 11px;
+}
+.rq {
+  border: 1px solid var(--rule);
+  padding: 2px 7px;
+  border-radius: 2px;
+  color: var(--ink-2);
+}
+.st {
+  padding: 2px 7px;
+  border-radius: 2px;
+  font-weight: 600;
+  font-size: 11px;
+}
+.st.ok {
+  color: var(--slate);
+  background: rgba(127, 165, 170, 0.13);
+}
+.st.exp {
+  color: var(--amber);
+  background: rgba(201, 138, 71, 0.15);
+}
+.st.old {
+  color: var(--alarm);
+  background: rgba(207, 95, 69, 0.14);
+}
+
+.hud {
+  margin-top: 18px;
+}
+.hrow {
+  display: flex;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.hrow b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+.hg {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 3px;
+  margin-top: 9px;
+}
+.rc {
+  height: 21px;
+  display: grid;
+  place-items: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  border: 1px solid var(--rule-2);
+  border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+  transition:
+    background 0.3s,
+    color 0.3s,
+    border-color 0.3s;
+}
+.rc.cov {
+  background: rgba(201, 138, 71, 0.16);
+  border-color: rgba(201, 138, 71, 0.42);
+  color: var(--ink);
+}
+.rc.hit {
+  animation: rcHit 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+@keyframes rcHit {
+  0% {
+    background: rgba(227, 161, 90, 0.9);
+    color: #15110d;
+    transform: scale(1.2);
+  }
+  100% {
+    transform: none;
+  }
+}
+.rc.gap {
+  background: rgba(207, 95, 69, 0.16);
+  border-color: rgba(207, 95, 69, 0.7);
+  color: var(--alarm);
+}
