@@ -7,3 +7,6 @@ export const NAMES: readonly string[] = [
   "Change impact",
   "Submission",
 ];
+
+/** Which side the world sits on per chapter: 0 right of the text, 1 left of it. */
+export const SIDE: readonly number[] = [0, 1, 0, 1, 0, 1];

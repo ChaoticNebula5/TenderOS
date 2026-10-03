@@ -2,9 +2,9 @@
 // in world px (origin at the centre of the world area, z toward the viewer),
 // rotation in degrees and opacity. Projection to the screen happens in the frame.
 
-import { N, NE, NP, isDr } from "../data/tender";
-import { F, RM, clamp, hash } from "./math";
-import { ctx } from "./store";
+import { EVROW, N, NE, NP, REQ, isDr, isM, isPg } from "../data/tender";
+import { F, RM, TAU, clamp, hash } from "./math";
+import { HF, ctx } from "./store";
 
 export type Pose = { x: number; y: number; z: number; r: number; o: number };
 export type Arrangement = (i: number, o: Pose) => void;
@@ -98,12 +98,71 @@ const pile: Arrangement = (i, o) => {
   o.o = 1;
 };
 
+const RH = 820; // helix radius
+const ZH = F - 1.95 * RH; // camera 1.95 radii from the helix axis, as measured on the reference
+export const HN = NP; // 24 pages close exactly two turns at 12 per turn: no seam
+const TURNS = 2;
+const STEP = (TAU * TURNS) / HN;
+const RISE = (1.266 * RH * TURNS) / HN;
+const HP = -0.26; // helix seen from slightly above
+
+/** The helix travels with scroll, measured from the start of its own hold. Still under reduced motion. */
+export const helixBase = () => (RM ? 0 : -(ctx.yv - ctx.y1) * 5);
+
+/** Tender analysis: the 24 tender pages on a two-turn helix; everything else parked. */
+const pack: Arrangement = (i, o) => {
+  if (!isPg(i)) return park(i, o);
+  const v = i + helixBase() + ctx.hoff,
+    k = (((v % HN) + HN) % HN) - HN / 2;
+  const a = v * STEP - 0.35 + ctx.mx * 0.18;
+  const zr = Math.cos(a) * RH,
+    yy = k * RISE,
+    cp = Math.cos(HP),
+    sp = Math.sin(HP);
+  o.x = Math.sin(a) * RH;
+  o.y = yy * cp - zr * sp;
+  o.z = yy * sp + zr * cp + ZH;
+  o.r = 0;
+  const edge = Math.abs(k) / (HN / 2); // fade the ends so the wrap is never seen
+  const front = Math.cos(a) * 0.5 + 0.5;
+  HF[i] = front * (1 - clamp((edge - 0.45) / 0.3, 0, 1));
+  // the six mandatory pages stay legible on the far side of the helix
+  o.o =
+    (edge > 0.62 ? Math.max(0, 1 - (edge - 0.62) / 0.33) : 1) *
+    (isM[i] ? Math.max(0.82, 0.3 + 0.7 * front) : 0.3 + 0.7 * front);
+};
+
+/** Eligibility check: requirement pages in a row above, the evidence that settled them below. */
+const match: Arrangement = (i, o) => {
+  const j = REQ.findIndex((r) => r.pg === i),
+    e = EVROW.indexOf(i);
+  if (j < 0 && e < 0) return park(i, o);
+  o.z = -1200;
+  o.r = 0;
+  o.o = 1;
+  if (ctx.portrait) {
+    if (j >= 0) {
+      o.x = ((j % 3) - 1) * 400;
+      o.y = -820 + ((j / 3) | 0) * 500;
+    } else {
+      o.x = ((e % 4) - 1.5) * 360;
+      o.y = 420 + ((e / 4) | 0) * 490;
+    }
+  } else if (j >= 0) {
+    o.x = (j - 2.5) * 430;
+    o.y = -520;
+  } else {
+    o.x = (e - 3.5) * 350;
+    o.y = 520;
+  }
+};
+
 /**
  * One arrangement per chapter, indexed by data-ch. Chapters whose arrangement is
- * not built yet hold their documents in the park shell: helix (V2), match (V2),
- * proof (V3), impact (V4), submission (V5) replace these entries.
+ * not built yet hold their documents in the park shell: proof (V3), impact (V4)
+ * and submission (V5) replace these entries.
  */
-export const L: readonly Arrangement[] = [pile, park, park, park, park, park];
+export const L: readonly Arrangement[] = [pile, pack, match, park, park, park];
 export const NC = L.length;
 
 /** Per-document delay in every morph, so documents move as a loose crowd. */

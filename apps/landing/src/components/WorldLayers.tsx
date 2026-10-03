@@ -1,6 +1,8 @@
 import { N } from "../data/tender";
 import { Doc } from "../documents/Doc";
 import { els } from "../world/store";
+import { Labels } from "./Labels";
+import { Wires } from "./Wires";
 
 const IDS = Array.from({ length: N }, (_, i) => i);
 
@@ -25,17 +27,24 @@ export function WorldLayers() {
           ))}
         </div>
       </div>
-      <div className="scrim" id="scrimL" aria-hidden="true" />
-      <div className="scrim" id="scrimR" aria-hidden="true" />
-      <div id="labels" aria-hidden="true" />
-      <svg id="wires" aria-hidden="true">
-        <g id="wg" />
-        <g id="wh" />
-        <g id="wd" />
-        <path id="threadGlow" />
-        <path id="thread" />
-        <circle id="tend" r="5" />
-      </svg>
+      <div
+        className="scrim"
+        id="scrimL"
+        aria-hidden="true"
+        ref={(el) => {
+          els.scrimL = el;
+        }}
+      />
+      <div
+        className="scrim"
+        id="scrimR"
+        aria-hidden="true"
+        ref={(el) => {
+          els.scrimR = el;
+        }}
+      />
+      <Labels />
+      <Wires />
       <div id="flying" aria-hidden="true" />
     </>
   );

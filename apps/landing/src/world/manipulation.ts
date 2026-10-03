@@ -1,9 +1,12 @@
-// Direct manipulation of the world. V1: drag (or swipe sideways on touch) to turn
-// the overview sphere, with inertia after release, and the matching cursors.
+// Direct manipulation of the world: drag (or swipe sideways on touch) to turn the
+// overview sphere, with inertia after release; hover and click mandatory pages in the
+// tender analysis helix; and the matching cursors.
 
-import { RM, clamp, lerp } from "./math";
+import { N, isM } from "../data/tender";
+import { bringToFront } from "./actions";
+import { CH, CW, RM, clamp, lerp } from "./math";
 import { W, view } from "./layout";
-import { ctx, drag, input, rv } from "./store";
+import { ctx, drag, input, rv, scr } from "./store";
 
 /** Pointer targets that belong to the page, not the world: they never start a drag. */
 const overUI = (t: EventTarget | null) =>
@@ -20,13 +23,51 @@ function setBody(c: string) {
   bodyCls = c;
 }
 
+/**
+ * The front-most visible document under (x, y), or -1. Tests the rotated card rectangle
+ * from this frame's screen position; `test` narrows which documents qualify.
+ */
+export function pick(x: number, y: number, test?: (i: number) => boolean) {
+  let best = -1,
+    bz = -Infinity;
+  for (let i = 0; i < N; i++) {
+    if (scr.o[i] < 0.35 || (test && !test(i))) continue;
+    const a = (-scr.r[i] * Math.PI) / 180,
+      c = Math.cos(a),
+      s = Math.sin(a),
+      dx = x - scr.x[i],
+      dy = y - scr.y[i];
+    if (
+      Math.abs(dx * c - dy * s) <= (CW * scr.s[i]) / 2 &&
+      Math.abs(dx * s + dy * c) <= (CH * scr.s[i]) / 2 &&
+      scr.z[i] > bz
+    ) {
+      bz = scr.z[i];
+      best = i;
+    }
+  }
+  return best;
+}
+
+const isMand = (i: number) => isM[i];
+
 function onDown(e: PointerEvent) {
   if (e.button !== 0 || overUI(e.target)) return;
   const x = e.clientX,
     y = e.clientY,
     touch = e.pointerType === "touch";
   if (!inWorld(x, y)) return;
-  if (Math.round(input.curP) !== 0) return;
+  const ch = Math.round(input.curP);
+  if (ch === 1) {
+    // tender analysis: a mandatory page spins to the front
+    const hit = pick(x, y, isMand);
+    if (hit >= 0) {
+      e.preventDefault();
+      bringToFront(hit);
+    }
+    return;
+  }
+  if (ch !== 0) return;
   // touch starts as a tap, because a vertical move must still scroll the page
   Object.assign(drag, { mode: touch ? "tap" : "pending", sx: x, sy: y, lx: x, ly: y, lt: performance.now() });
   if (!touch) {
@@ -66,7 +107,17 @@ function onMove(e: PointerEvent) {
     return;
   }
   if (!mouse) return;
-  setBody(!overUI(e.target) && inWorld(x, y) && Math.round(input.curP) === 0 ? "grab" : "");
+  const ch = Math.round(input.curP);
+  let c = "";
+  input.hoverCard = -1;
+  if (!overUI(e.target) && inWorld(x, y)) {
+    if (ch === 0) c = "grab";
+    else if (ch === 1) {
+      input.hoverCard = pick(x, y, isMand);
+      if (input.hoverCard >= 0) c = "point";
+    }
+  }
+  setBody(c);
 }
 
 function onUp() {

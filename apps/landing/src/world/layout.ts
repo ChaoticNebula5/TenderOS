@@ -4,7 +4,7 @@
 import { N } from "../data/tender";
 import { CH, CW, F, clamp } from "./math";
 import { L, NC, ZMAX, type Pose } from "./arrangements";
-import { ctx } from "./store";
+import { ctx, els } from "./store";
 
 export type Rect = { x: number; y: number; w: number; h: number; cx: number; cy: number };
 const rect = (): Rect => ({ x: 0, y: 0, w: 1, h: 1, cx: 0, cy: 0 });
@@ -63,10 +63,11 @@ export function measure() {
   if (view.holds.length !== NC) return; // chapters not mounted: nothing to map scroll onto
   view.holds[0] = [-Infinity, Math.max(view.holds[0][1], vh * 0.1)];
   view.holds[NC - 1][1] = Infinity;
+  ctx.y1 = view.holds[1][0] / vh;
 
   // framing from geometry and the live aspect: fit each arrangement's projected bounds
   const save = { ...ctx };
-  Object.assign(ctx, { mx: 0, my: 0, T: 0, dyaw: 0, dpitch: 0 });
+  Object.assign(ctx, { mx: 0, my: 0, T: 0, dyaw: 0, dpitch: 0, hoff: 0 });
   for (let k = 0; k < NC; k++) {
     ctx.yv = (isFinite(view.holds[k][0]) ? view.holds[k][0] : 0) / vh;
     let bw = 1,
@@ -84,6 +85,7 @@ export function measure() {
     view.Gs[k] = Math.min(1, (W.w * lw) / (2 * bw), (W.h * lh) / (2 * bh));
   }
   Object.assign(ctx, save);
+  els.wires?.setAttribute("viewBox", `0 0 ${vw} ${vh}`);
 }
 
 /** Scroll position to chapter progress: k inside chapter k's hold, k + f between holds k and k + 1. */

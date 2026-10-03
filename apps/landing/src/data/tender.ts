@@ -89,3 +89,28 @@ export const isDr = (i: number) => i >= NP + NE;
 export const E = (j: number) => NP + j;
 export const D = (j: number) => NP + NE + j;
 export const isM: readonly boolean[] = Array.from({ length: N }, (_, i) => MAND.includes(i));
+
+// Eligibility: each mandatory page, its decision, and the evidence that settled it.
+export type Status = "met" | "part" | "gap";
+export const REQ: readonly { pg: number; st: Status; ev: number[] }[] = [
+  { pg: 2, st: "met", ev: [E(8)] },
+  { pg: 5, st: "met", ev: [E(4)] },
+  { pg: 8, st: "part", ev: [E(5), E(6)] },
+  { pg: 14, st: "met", ev: [E(0), E(1), E(2)] },
+  { pg: 19, st: "met", ev: [E(3)] },
+  { pg: 22, st: "gap", ev: [] },
+];
+/** The evidence row under the requirements, left to right. */
+export const EVROW: readonly number[] = [E(8), E(4), E(5), E(6), E(0), E(1), E(2), E(3)];
+export const ST: Record<Status, string> = { met: "Met", part: "Partially met", gap: "Not met" };
+/** Short names for the evidence row's labels. */
+export const SHORT: Record<number, string> = {
+  [E(8)]: "EMD guarantee",
+  [E(4)]: "CA turnover certificate",
+  [E(5)]: "Nagpur completion",
+  [E(6)]: "Kochi completion",
+  [E(0)]: "A. Mehta CV",
+  [E(1)]: "R. Iyer CV",
+  [E(2)]: "S. Khan CV",
+  [E(3)]: "ISO 27001 certificate",
+};
