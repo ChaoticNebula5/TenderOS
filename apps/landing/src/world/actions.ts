@@ -1,6 +1,7 @@
 // Actions the page triggers on the world. Each writes a target into the store;
 // the frame loop eases toward it.
 
+import { CAUSES, EDGES, NODES, UNREACHED } from "../data/impact";
 import { HN, helixBase } from "./arrangements";
 import { input } from "./store";
 
@@ -20,6 +21,33 @@ export function bringToFront(i: number) {
 export function selectClaim(i: number) {
   input.sel = i;
   input.threadP = 0;
+}
+
+/**
+ * Change impact: start the wave from cause k. Hops are found breadth first over the
+ * real dependency edges, once, here; the frame loop then advances the wave and reads
+ * the hops from the store. Returns the hops so the page can write its summary.
+ */
+export function seedImpact(k: number): number[] {
+  const s = CAUSES[k].node;
+  const next: number[][] = NODES.map(() => []);
+  for (const [a, b] of EDGES) next[a].push(b);
+  const hop = NODES.map(() => UNREACHED);
+  hop[s] = 0;
+  const queue = [s];
+  for (let q = 0; q < queue.length; q++) {
+    const a = queue[q];
+    for (const b of next[a])
+      if (hop[b] === UNREACHED) {
+        hop[b] = hop[a] + 1;
+        queue.push(b);
+      }
+  }
+  input.cause = k;
+  input.causeNode = s;
+  input.hop = hop;
+  input.wave = 0;
+  return hop;
 }
 
 /** Evidence tracing: clear the selection. The cited document returns to the wall. */

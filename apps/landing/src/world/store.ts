@@ -58,6 +58,10 @@ export const input = {
   hoffT: 0, // helix offset target set by bringToFront()
   sel: -1, // selected statement in evidence tracing, by CLAIMS index; mirrors the chapter's React state
   threadP: 0, // how much of the evidence thread is drawn, 0..1; restarts on every selection
+  cause: -1, // selected change in change impact, by CAUSES index; mirrors the chapter's React state
+  causeNode: -1, // NODES index of that cause's source document
+  hop: [] as number[], // hops from the cause to each NODES entry, from seedImpact(); UNREACHED if never
+  wave: 0, // how far the impact wave has travelled, in hops
 };
 
 export type DragMode = null | "pending" | "rotate" | "tap";
@@ -78,7 +82,10 @@ export const rv = { y: 0, p: 0 };
 /** Back to the state of a fresh page load. Called when the world starts. */
 export function resetStore() {
   Object.assign(ctx, { T: 0, yv: 0, mx: 0, my: 0, portrait: false, dyaw: 0, dpitch: 0, y1: 1, hoff: 0 });
-  Object.assign(input, { curP: 0, mxT: 0, myT: 0, idxHover: -1, hoverCard: -1, hoffT: 0, sel: -1, threadP: 0 });
+  Object.assign(input, {
+    curP: 0, mxT: 0, myT: 0, idxHover: -1, hoverCard: -1, hoffT: 0,
+    sel: -1, threadP: 0, cause: -1, causeNode: -1, hop: [], wave: 0,
+  });
   Object.assign(drag, { mode: null, sx: 0, sy: 0, lx: 0, ly: 0, lt: 0 });
   Object.assign(rv, { y: 0, p: 0 });
   for (const a of Object.values(scr)) a.fill(0);

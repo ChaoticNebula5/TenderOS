@@ -2,6 +2,7 @@
 // in world px (origin at the centre of the world area, z toward the viewer),
 // rotation in degrees and opacity. Projection to the screen happens in the frame.
 
+import { NODES, colCount, nodeOf, rowOf } from "../data/impact";
 import { EVROW, N, NE, NP, REQ, isDr, isEv, isM, isPg } from "../data/tender";
 import { F, RM, TAU, clamp, hash } from "./math";
 import { HF, ctx } from "./store";
@@ -176,12 +177,30 @@ const proof: Arrangement = (i, o) => {
   }
 };
 
+/** Change impact: the dependency graph in four columns (rows in portrait); everything else parked. */
+const impact: Arrangement = (i, o) => {
+  const j = nodeOf[i];
+  if (j < 0) return park(i, o);
+  const col = NODES[j].col,
+    cnt = colCount[col],
+    row = rowOf[j];
+  o.z = -1200;
+  o.r = 0;
+  o.o = 1;
+  if (ctx.portrait) {
+    o.y = (col - 1.5) * 620;
+    o.x = (row - (cnt - 1) / 2) * 390;
+  } else {
+    o.x = (col - 1.5) * 1000;
+    o.y = (row - (cnt - 1) / 2) * 590;
+  }
+};
+
 /**
- * One arrangement per chapter, indexed by data-ch. Chapters whose arrangement is
- * not built yet hold their documents in the park shell: impact (V4) and
- * submission (V5) replace these entries.
+ * One arrangement per chapter, indexed by data-ch. The submission chapter holds its
+ * documents in the park shell until V5 replaces that entry with the stack.
  */
-export const L: readonly Arrangement[] = [pile, pack, match, proof, park, park];
+export const L: readonly Arrangement[] = [pile, pack, match, proof, impact, park];
 export const NC = L.length;
 
 /** Per-document delay in every morph, so documents move as a loose crowd. */

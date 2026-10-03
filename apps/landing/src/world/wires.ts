@@ -1,9 +1,10 @@
 // SVG wires between documents. Defined here as data; Wires.tsx renders the paths
 // once; placeWires() writes their geometry each frame, only when it changes.
 
+import { EDGES, NODES, UNREACHED } from "../data/impact";
 import { REQ, type Status } from "../data/tender";
-import { CH, CW } from "./math";
-import { scr } from "./store";
+import { CH, CW, clamp, ease } from "./math";
+import { ctx, input, scr } from "./store";
 
 export type Pt = { x: number; y: number };
 
@@ -23,11 +24,17 @@ export function setO(el: SVGElement, o: number, cache: { o: string }) {
   cache.o = s;
 }
 
-/** Cubic between two points, leaving and arriving vertically or horizontally. */
-export const curve = (a: Pt, b: Pt, vert: boolean) =>
+/** Control points of a cubic between two points, leaving and arriving vertically or horizontally. */
+export const curveCtl = (a: Pt, b: Pt, vert: boolean): [Pt, Pt, Pt, Pt] =>
   vert
-    ? `M${a.x} ${a.y}C${a.x} ${(a.y + b.y) / 2} ${b.x} ${(a.y + b.y) / 2} ${b.x} ${b.y}`
-    : `M${a.x} ${a.y}C${(a.x + b.x) / 2} ${a.y} ${(a.x + b.x) / 2} ${b.y} ${b.x} ${b.y}`;
+    ? [a, { x: a.x, y: (a.y + b.y) / 2 }, { x: b.x, y: (a.y + b.y) / 2 }, b]
+    : [a, { x: (a.x + b.x) / 2, y: a.y }, { x: (a.x + b.x) / 2, y: b.y }, b];
+
+/** Path string for a cubic's control points. */
+export const cubicD = ([a, c1, c2, b]: readonly Pt[]) => `M${a.x} ${a.y}C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${b.x} ${b.y}`;
+
+/** Cubic between two points as a path string. */
+export const curve = (a: Pt, b: Pt, vert: boolean) => cubicD(curveCtl(a, b, vert));
 
 /** Point at parameter t on the cubic a, c1, c2, b. */
 export function cubicAt(a: Pt, c1: Pt, c2: Pt, b: Pt, t: number): Pt {
@@ -58,6 +65,29 @@ export function cubicLen(a: Pt, c1: Pt, c2: Pt, b: Pt): number {
   return len;
 }
 
+/**
+ * The point a fraction `frac` of the way along the cubic by arc length, which is where a
+ * dash drawn to that fraction ends. (cubicAt's t is the curve parameter, which runs
+ * faster on the straighter parts, so it would put the pulse ahead of or behind the head.)
+ * Walks the same 32-segment polyline as cubicLen().
+ */
+export function cubicAtLen(a: Pt, c1: Pt, c2: Pt, b: Pt, frac: number, len: number): Pt {
+  const target = clamp(frac, 0, 1) * len;
+  let acc = 0,
+    prev = a;
+  for (let k = 1; k <= 32; k++) {
+    const p = cubicAt(a, c1, c2, b, k / 32),
+      seg = Math.hypot(p.x - prev.x, p.y - prev.y);
+    if (acc + seg >= target) {
+      const u = seg > 0 ? (target - acc) / seg : 0;
+      return { x: prev.x + (p.x - prev.x) * u, y: prev.y + (p.y - prev.y) * u };
+    }
+    acc += seg;
+    prev = p;
+  }
+  return b;
+}
+
 /** Anchor points just outside a document's edges, from this frame's screen position. */
 export const bot = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] + (CH * scr.s[i]) / 2 + 3 });
 export const topP = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] - (CH * scr.s[i]) / 2 - 3 });
@@ -85,6 +115,107 @@ export function resetWires() {
     w.d = "";
     w.o = "";
     w.el?.removeAttribute("d");
+  }
+}
+
+/**
+ * Change impact edges. Each has a base wire, a hot wire that draws along it as the wave
+ * travels, and a pulse dot at the hot wire's head. `p` is how much of the hot wire is drawn.
+ */
+type ImpactEdge = {
+  el: SVGPathElement | null;
+  hot: SVGPathElement | null;
+  dot: SVGCircleElement | null;
+  p: number; // how much of the hot wire is drawn, 0..1
+  base: { d: string; o: string }; // base wire caches
+  hotC: { d: string; o: string; dash: string; off: string; len: number }; // hot wire caches
+  dotC: { o: string; xy: string }; // pulse caches
+};
+const freshEdge = (): Omit<ImpactEdge, "el" | "hot" | "dot"> => ({
+  p: 0,
+  base: { d: "", o: "" },
+  hotC: { d: "", o: "", dash: "", off: "", len: 0 },
+  dotC: { o: "", xy: "" },
+});
+export const impactEdge: ImpactEdge[] = EDGES.map(() => ({ el: null, hot: null, dot: null, ...freshEdge() }));
+
+function hotOff(e: ImpactEdge) {
+  if (e.hot) setO(e.hot, 0, e.hotC);
+  if (e.dot) setO(e.dot, 0, e.dotC);
+}
+
+/**
+ * Change impact edges, faded by the chapter's weight `ai`. An edge is on the wave when
+ * its upstream node is reached and its downstream node is exactly one hop further; its
+ * hot wire then draws as the wave crosses that hop, and eases back (exp(-6 dt)) when the
+ * cause changes. Lengths and pulse positions are computed from the control points.
+ */
+export function placeImpactEdges(ai: number, dt: number) {
+  const { cause, hop, wave } = input;
+  for (let k = 0; k < EDGES.length; k++) {
+    const e = impactEdge[k];
+    if (!e.el || !e.hot || !e.dot) continue;
+    if (ai < 0.01) {
+      setD(e.el, "", e.base);
+      hotOff(e);
+      continue;
+    }
+    const [na, nb] = EDGES[k];
+    const a = NODES[na].id,
+      b = NODES[nb].id;
+    const ctl = ctx.portrait ? curveCtl(P2(bot(a)), P2(topP(b)), true) : curveCtl(P2(rgt(a)), P2(lft(b)), false);
+    const d = cubicD(ctl);
+    setD(e.el, d, e.base);
+    setO(e.el, ai, e.base);
+
+    const on = cause >= 0 && hop[na] < UNREACHED && hop[nb] === hop[na] + 1;
+    const target = on ? clamp(wave - hop[na], 0, 1) : 0;
+    e.p = target >= e.p ? target : e.p + (target - e.p) * (1 - Math.exp(-dt * 6));
+    if (e.p < 0.003) {
+      hotOff(e);
+      continue;
+    }
+    const h = e.hotC;
+    // the hot wire follows the base wire; its dash is one (computed) length long
+    if (setD(e.hot, d, h)) {
+      h.len = cubicLen(ctl[0], ctl[1], ctl[2], ctl[3]) * 1.002 + 1;
+      const dash = h.len.toFixed(1);
+      if (dash !== h.dash) {
+        e.hot.style.strokeDasharray = `${dash} ${dash}`;
+        h.dash = dash;
+      }
+    }
+    const pe = ease(e.p),
+      off = (h.len * (1 - pe)).toFixed(1);
+    if (off !== h.off) {
+      e.hot.style.strokeDashoffset = off;
+      h.off = off;
+    }
+    setO(e.hot, ai, h);
+    // the pulse rides the head of the hot wire while it is still travelling
+    if (on && pe < 0.995) {
+      const pt = cubicAtLen(ctl[0], ctl[1], ctl[2], ctl[3], pe, h.len),
+        x = pt.x.toFixed(1),
+        y = pt.y.toFixed(1);
+      if (`${x} ${y}` !== e.dotC.xy) {
+        e.dot.setAttribute("cx", x);
+        e.dot.setAttribute("cy", y);
+        e.dotC.xy = `${x} ${y}`;
+      }
+      setO(e.dot, ai, e.dotC);
+    } else setO(e.dot, 0, e.dotC);
+  }
+}
+
+export function resetImpactEdges() {
+  for (const e of impactEdge) {
+    Object.assign(e, freshEdge());
+    e.el?.removeAttribute("d");
+    e.hot?.removeAttribute("d");
+    if (e.hot) e.hot.style.opacity = "0";
+    if (e.dot) e.dot.style.opacity = "0";
+    e.hotC.o = "0.00";
+    e.dotC.o = "0.00";
   }
 }
 

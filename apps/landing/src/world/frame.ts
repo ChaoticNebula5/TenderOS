@@ -10,7 +10,8 @@ import { attachPointer } from "./manipulation";
 import { CH, CW, F, RM, clamp, ease, lerp } from "./math";
 import { HF, ctx, drag, els, input, resetStore, rv, scr } from "./store";
 import { placeThread, resetThread } from "./thread";
-import { placeWires, resetWires } from "./wires";
+import { placeImpactEdges, placeWires, resetImpactEdges, resetWires } from "./wires";
+import { GATE, NODES, WAVE, nodeOf } from "../data/impact";
 
 /** Coarse scale steps per e-fold: about 4%, so the GPU never stretches a page more than 2%. */
 const QSTEP = 24;
@@ -34,6 +35,9 @@ let idxOn = -1;
 let selW = 0;
 /** Eased 0..1 per document: how far it has moved to the reading plane. */
 const fw = new Float32Array(N);
+/** Seconds since each document's impact swell started; 0.6 or more means no swell. */
+const bumpT = new Float32Array(N).fill(9);
+let gateBlocked = false;
 
 let last = 0;
 let ys = 0;
@@ -52,6 +56,9 @@ function resetCaches() {
   idxOn = -1;
   selW = 0;
   fw.fill(0);
+  bumpT.fill(9);
+  gateBlocked = false;
+  els.card[NODES[GATE].id]?.classList.remove("blocked");
   for (const w of els.wrap) {
     if (!w) continue;
     delete w.dataset.s;
@@ -71,7 +78,19 @@ function desired(i: number, near: number): string {
     const cl = input.sel >= 0 ? CLAIMS[input.sel] : null;
     return cl && "src" in cl && cl.src === i ? "lit" : "";
   }
+  if (near === 4) {
+    // the cause is the source; everything downstream is hit once the wave reaches it
+    const j = nodeOf[i];
+    if (j < 0 || !reached(i)) return "";
+    return j === input.causeNode ? "src" : "hit";
+  }
   return "";
+}
+
+/** Whether the impact wave has reached document i. */
+function reached(i: number) {
+  const j = nodeOf[i];
+  return j >= 0 && input.cause >= 0 && input.hop[j] <= input.wave;
 }
 
 function frame(now: number) {
@@ -158,6 +177,8 @@ function frame(now: number) {
   const FX = W.cx + dir * W.w * 0.06,
     FY = W.cy;
   if (sel >= 0) input.threadP = RM ? 1 : Math.min(1, input.threadP + dt * 1.5);
+  // change impact: the wave travels hop by hop; under reduced motion it completes at once
+  if (input.cause >= 0) input.wave = RM ? 9 : Math.min(input.wave + dt * WAVE, 4.5);
 
   for (let i = 0; i < N; i++) {
     const wr = els.wrap[i];
@@ -211,7 +232,14 @@ function frame(now: number) {
       els.sc[i].style.transform = `scale(${q.toFixed(5)})`;
       cQ[i] = q;
     }
-    const tf = `translate3d(${sx.toFixed(1)}px,${sy.toFixed(1)}px,0) rotate(${r.toFixed(2)}deg) scale(${(sc / q).toFixed(4)})`;
+    // change impact: a short swell as the wave reaches a document, on the wrapper only,
+    // so the coarse step (and the text) never changes because of it
+    let swell = 1;
+    if (bumpT[i] < 0.6) {
+      bumpT[i] += dt;
+      swell = 1 + 0.07 * Math.sin(Math.PI * clamp(bumpT[i] / 0.6, 0, 1));
+    }
+    const tf = `translate3d(${sx.toFixed(1)}px,${sy.toFixed(1)}px,0) rotate(${r.toFixed(2)}deg) scale(${((sc / q) * swell).toFixed(4)})`;
     if (tf !== cTf[i]) {
       wr.style.transform = tf;
       cTf[i] = tf;
@@ -228,9 +256,17 @@ function frame(now: number) {
     // state rings switch instantly; only the glow layers fade (rule 6)
     const ds = desired(i, near);
     if (ds !== state[i]) {
+      // the swell starts only on the change into src or hit, never on its own
+      if (near === 4 && (ds === "hit" || ds === "src") && !RM) bumpT[i] = 0;
       state[i] = ds;
       wr.dataset.s = ds;
     }
+  }
+  // the readiness gate's stamp flips to Blocked when the wave reaches it, instantly
+  const blocked = near === 4 && reached(NODES[GATE].id);
+  if (blocked !== gateBlocked) {
+    els.card[NODES[GATE].id]?.classList.toggle("blocked", blocked);
+    gateBlocked = blocked;
   }
   if (hotPg !== hotPrev) {
     if (hotPrev >= 0) els.wrap[hotPrev]?.classList.remove("hot");
@@ -255,8 +291,9 @@ function frame(now: number) {
     idxOn = row;
   }
 
-  placeLabels(cw, hotPg);
+  placeLabels(cw, hotPg, reached);
   placeWires(cw(2));
+  placeImpactEdges(cw(4), dt);
   // the evidence thread, from the statement's rect read at the top of the frame
   placeThread(sel, rcSel, ctx.portrait ? 0 : inProof * selW, input.threadP, dir);
 }
@@ -280,6 +317,7 @@ export function startWorld(): () => void {
   resetLabels();
   resetWires();
   resetThread();
+  resetImpactEdges();
   measure();
   ys = scrollY;
 

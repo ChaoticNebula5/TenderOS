@@ -1,6 +1,7 @@
 // Labels drawn beside documents, outside their transforms so they never scale.
 // Defined here as data; Labels.tsx renders them once; placeLabels() moves them each frame.
 
+import { NODES } from "../data/impact";
 import { EVROW, MAND, PAGES, REQ, SHORT, ST } from "../data/tender";
 import { CH, CW, clamp } from "./math";
 import { W } from "./layout";
@@ -28,6 +29,7 @@ export const LABELS: readonly LabelDef[] = [
     b: `p. ${PAGES[r.pg][0]}`, span: PAGES[r.pg][3], em: ST[r.st],
   })),
   ...EVROW.map((id): LabelDef => ({ ch: 2, id, side: "b", cls: "ctr", ww: 350, text: SHORT[id] })),
+  ...NODES.map((n): LabelDef => ({ ch: 4, id: n.id, side: "b", cls: "ctr", ww: 0, b: n.b, text: n.label })),
 ];
 
 /** Label elements, by LABELS index. Filled by Labels.tsx. */
@@ -49,25 +51,27 @@ export function resetLabels() {
   for (const el of labelEl) {
     if (!el) continue;
     el.style.visibility = "hidden";
-    el.classList.remove("on");
+    el.classList.remove("on", "hit");
   }
 }
 
 /**
  * Place every label from this frame's document positions. `weight(ch)` is how present
  * chapter ch is (1 inside its hold, falling to 0 a little way out); `hot` is the
- * highlighted helix page. At phone width documents are too small to label.
+ * highlighted helix page; `reached(id)` says whether the impact wave has reached a
+ * document. At phone width documents are too small to label.
  */
-export function placeLabels(weight: (ch: number) => number, hot: number) {
+export function placeLabels(weight: (ch: number) => number, hot: number, reached: (id: number) => boolean) {
   for (let k = 0; k < LABELS.length; k++) {
     const lb = LABELS[k],
       el = labelEl[k];
     if (!el) continue;
     const i = lb.id;
-    if (lb.ch === 1) {
-      const h = i === hot ? 1 : 0;
+    // a class flag per label: `on` for the highlighted helix page, `hit` once the impact wave arrives
+    if (lb.ch === 1 || lb.ch === 4) {
+      const h = (lb.ch === 1 ? i === hot : reached(i)) ? 1 : 0;
       if (h !== on[k]) {
-        el.classList.toggle("on", h === 1);
+        el.classList.toggle(lb.ch === 1 ? "on" : "hit", h === 1);
         on[k] = h;
       }
     }
