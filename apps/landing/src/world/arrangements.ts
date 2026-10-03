@@ -5,7 +5,7 @@
 import { NODES, colCount, nodeOf, rowOf } from "../data/impact";
 import { EVROW, N, NE, NP, REQ, isDr, isEv, isM, isPg } from "../data/tender";
 import { F, RM, TAU, clamp, hash } from "./math";
-import { HF, ctx } from "./store";
+import { HF, ctx, stack } from "./store";
 
 export type Pose = { x: number; y: number; z: number; r: number; o: number };
 export type Arrangement = (i: number, o: Pose) => void;
@@ -196,11 +196,21 @@ const impact: Arrangement = (i, o) => {
   }
 };
 
-/**
- * One arrangement per chapter, indexed by data-ch. The submission chapter holds its
- * documents in the park shell until V5 replaces that entry with the stack.
- */
-export const L: readonly Arrangement[] = [pile, pack, match, proof, impact, park];
+/** Submission: evidence and drafts in one loose stack, executive summary on top. */
+const submission: Arrangement = (i, o) => {
+  const k = stack.of[i];
+  if (k < 0) return park(i, o);
+  const n = stack.order.length,
+    top = k === n - 1;
+  o.x = (hash(i * 3) - 0.5) * 70 + (k - 8) * 5;
+  o.y = (hash(i * 5) - 0.5) * 40 - k * 4;
+  o.z = -560 + k * 8;
+  o.o = 1;
+  o.r = top ? -1.5 : (hash(i * 11) - 0.5) * 16 * (1 - k / n);
+};
+
+/** One arrangement per chapter, indexed by data-ch. */
+export const L: readonly Arrangement[] = [pile, pack, match, proof, impact, submission];
 export const NC = L.length;
 
 /** Per-document delay in every morph, so documents move as a loose crowd. */

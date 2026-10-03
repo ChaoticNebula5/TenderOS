@@ -90,6 +90,12 @@ export const E = (j: number) => NP + j;
 export const D = (j: number) => NP + NE + j;
 export const isM: readonly boolean[] = Array.from({ length: N }, (_, i) => MAND.includes(i));
 
+/**
+ * Submission: the evidence and drafts as one stack, bottom to top, executive summary on
+ * top. The starting order; thrown pages move to the bottom as the page is used.
+ */
+export const STACK: readonly number[] = [E(10), E(11), E(7), E(9), E(5), E(6), E(8), E(4), E(1), E(2), E(0), E(3), D(4), D(2), D(1), D(0), D(3)];
+
 // Eligibility: each mandatory page, its decision, and the evidence that settled it.
 export type Status = "met" | "part" | "gap";
 export const REQ: readonly { pg: number; st: Status; ev: number[] }[] = [

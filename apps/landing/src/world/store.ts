@@ -2,7 +2,7 @@
 // None of this is React state: the loop reads and writes it every frame, and
 // React never re-renders because of it (architecture rule 3).
 
-import { N, NP } from "../data/tender";
+import { N, NP, STACK } from "../data/tender";
 
 /** DOM nodes the loop writes to. Filled by ref callbacks during React's commit. */
 export const els = {
@@ -15,6 +15,8 @@ export const els = {
   wires: null as SVGSVGElement | null,
   whereN: null as HTMLElement | null,
   whereT: null as HTMLElement | null,
+  cards: null as HTMLDivElement | null, // #cards: where documents rest
+  flying: null as HTMLDivElement | null, // #flying: above all content, for held and thrown pages
   idxBtn: [] as HTMLButtonElement[], // tender analysis index rows, by MAND position
   claimBtn: [] as HTMLButtonElement[], // evidence tracing statements, by CLAIMS index
 };
@@ -64,17 +66,59 @@ export const input = {
   wave: 0, // how far the impact wave has travelled, in hops
 };
 
-export type DragMode = null | "pending" | "rotate" | "tap";
+/**
+ * pending: mouse down on the overview, not yet a rotate or a hold. rotate: turning the
+ * sphere. tap: touch down, not yet a swipe or a scroll. card: holding a page.
+ */
+export type DragMode = null | "pending" | "rotate" | "tap" | "card";
+export type DragKind = "pile" | "stack";
 
 /** The active pointer gesture on the world. */
 export const drag = {
   mode: null as DragMode,
-  sx: 0, // start position
+  kind: "pile" as DragKind,
+  id: -1, // page being held (mode card)
+  hit: -1, // page under the pointer at pointer down, for a click or tap
+  sx: 0, // start position and time
   sy: 0,
+  t0: 0,
   lx: 0, // last position and time
   ly: 0,
   lt: 0,
+  vx: 0, // smoothed pointer velocity, px/s
+  vy: 0,
+  gx: 0, // grab offset from the page centre
+  gy: 0,
+  timer: 0, // hold timer on the overview
 };
+
+/**
+ * A page taken out of its arrangement: held (drag), thrown (fly), off screen waiting
+ * to come back (gone), or easing back into its place (return).
+ */
+export type Overlay = {
+  mode: "drag" | "fly" | "gone" | "return";
+  kind: DragKind;
+  x: number; // screen position, scale, rotation, opacity of the overlay
+  y: number;
+  s: number;
+  sT: number; // target scale while held
+  r: number;
+  o: number;
+  vx: number; // velocity, px/s and deg/s
+  vy: number;
+  vr: number;
+  t: number; // seconds in the current mode
+  w: number; // return weight, 1 to 0
+  delay: number; // seconds off screen before returning
+  away: boolean; // thrown away from the overview: shrinks and fades
+  exitX: number; // where it left the screen
+};
+/** Overlays by card id; null while a page rests in its arrangement. */
+export const ov: (Overlay | null)[] = new Array(N).fill(null);
+
+/** Submission stack, bottom to top, and each card's place in it (-1 if not in the stack). */
+export const stack = { order: [] as number[], of: new Int16Array(N).fill(-1) };
 
 /** Rotation velocity of the overview sphere, for inertia after a drag. */
 export const rv = { y: 0, p: 0 };
@@ -86,7 +130,14 @@ export function resetStore() {
     curP: 0, mxT: 0, myT: 0, idxHover: -1, hoverCard: -1, hoffT: 0,
     sel: -1, threadP: 0, cause: -1, causeNode: -1, hop: [], wave: 0,
   });
-  Object.assign(drag, { mode: null, sx: 0, sy: 0, lx: 0, ly: 0, lt: 0 });
+  clearTimeout(drag.timer);
+  Object.assign(drag, {
+    mode: null, kind: "pile", id: -1, hit: -1, sx: 0, sy: 0, t0: 0, lx: 0, ly: 0, lt: 0, vx: 0, vy: 0, gx: 0, gy: 0, timer: 0,
+  });
+  ov.fill(null);
+  stack.order = [...STACK];
+  stack.of.fill(-1);
+  stack.order.forEach((id, k) => (stack.of[id] = k));
   Object.assign(rv, { y: 0, p: 0 });
   for (const a of Object.values(scr)) a.fill(0);
   HF.fill(0);

@@ -21,7 +21,12 @@ export function WorldLayers() {
             els.atmo = el;
           }}
         />
-        <div id="cards">
+        <div
+          id="cards"
+          ref={(el) => {
+            els.cards = el;
+          }}
+        >
           {IDS.map((i) => (
             <Doc key={i} id={i} />
           ))}
@@ -45,7 +50,13 @@ export function WorldLayers() {
       />
       <Labels />
       <Wires />
-      <div id="flying" aria-hidden="true" />
+      <div
+        id="flying"
+        aria-hidden="true"
+        ref={(el) => {
+          els.flying = el;
+        }}
+      />
     </>
   );
 }

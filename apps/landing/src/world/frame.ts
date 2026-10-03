@@ -6,9 +6,9 @@ import { NAMES, SIDE } from "../data/chapters";
 import { DL, L, NC, ZMAX, type Pose } from "./arrangements";
 import { placeLabels, resetLabels } from "./labels";
 import { W, W0, W1, measure, pOf, view } from "./layout";
-import { attachPointer } from "./manipulation";
+import { attachPointer, landAll, stepOv } from "./manipulation";
 import { CH, CW, F, RM, clamp, ease, lerp } from "./math";
-import { HF, ctx, drag, els, input, resetStore, rv, scr } from "./store";
+import { HF, ctx, drag, els, input, ov, resetStore, rv, scr } from "./store";
 import { placeThread, resetThread } from "./thread";
 import { placeImpactEdges, placeWires, resetImpactEdges, resetWires } from "./wires";
 import { GATE, NODES, WAVE, nodeOf } from "../data/impact";
@@ -208,6 +208,22 @@ function frame(now: number) {
     } else if (isEv(i) && near === 3) o *= 1 - 0.74 * selW * inProof; // the rest of the wall dims
     const zi = w > 0.5 ? 9000 : 5000 + Math.round(z);
 
+    // pages being held, thrown or filing themselves back: the overlay takes over, and
+    // a returning page eases from wherever it is to where its arrangement wants it
+    const v = ov[i];
+    if (v) {
+      if (stepOv(v, i, dt, sx, sy, sc, r)) ov[i] = null;
+      else if (v.mode === "gone") o = 0;
+      else {
+        const k = v.mode === "return" ? ease(clamp(v.w, 0, 1)) : 1;
+        sx = lerp(sx, v.x, k);
+        sy = lerp(sy, v.y, k);
+        sc = lerp(sc, v.s, k);
+        r = lerp(r, v.r, k);
+        o = lerp(o, v.o, k);
+      }
+    }
+
     scr.x[i] = sx;
     scr.y[i] = sy;
     scr.s[i] = sc;
@@ -343,6 +359,8 @@ export function startWorld(): () => void {
     cancelAnimationFrame(raf);
     ac.abort();
     ro.disconnect();
+    // React owns #cards' children: never leave one in #flying when the world stops
+    landAll();
     if (stopCurrent === stop) stopCurrent = null;
   };
   stopCurrent = stop;
