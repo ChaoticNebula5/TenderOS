@@ -1,0 +1,20 @@
+/* Chrome: header and footer. Ported from reference/tenderos-v3.html. */
+header{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:20px;
+  padding:calc(env(safe-area-inset-top,0px) + 15px) var(--gx) 15px;
+  /* opaque instead of the reference's translucent blur: architecture rule 10 forbids
+     backdrop-filter over the world, and without the blur scrolled text would show through */
+  background:var(--bg);
+  border-bottom:1px solid var(--rule-2)}
+.mark{font-family:var(--display);font-weight:300;font-size:20px;text-decoration:none;letter-spacing:-.01em}
+.mark span{color:var(--amber)}
+#where{font-size:12.5px;color:var(--ink-3);display:flex;gap:8px;align-items:baseline}
+#where b{color:var(--amber);font-weight:600}
+header nav{display:flex;gap:22px;align-items:center;font-size:13px}
+header nav a{color:var(--ink-2);text-decoration:none}
+header nav a:hover{color:var(--amber)}
+#th{background:none;border:1px solid var(--rule);color:var(--ink-2);cursor:pointer;border-radius:4px;padding:6px 12px;font-size:12px}
+#th:hover{border-color:var(--amber);color:var(--amber)}
+
+footer{position:relative;z-index:4;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  padding:26px var(--gx) calc(26px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--rule-2);
+  font-size:12.5px;color:var(--ink-3);background:var(--bg)}

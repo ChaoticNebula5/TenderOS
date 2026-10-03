@@ -1,0 +1,2 @@
+# Phase screenshots live on disk only (docs/screens/<phase>/), never in git.
+docs/screens/

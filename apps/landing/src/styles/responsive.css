@@ -1,0 +1,35 @@
+/* Media queries: touch, short desktop, phone width, reduced motion. Imported last. Ported from reference/tenderos-v3.html. */
+@media (hover:none){.h-m{display:none}.h-t{display:inline}#top{touch-action:pan-y}}
+@media (max-height:780px) and (min-width:761px){
+  .stick{padding-top:70px}
+  h2{font-size:clamp(28px,2.5vw,38px)}
+  .txt{font-size:14px;margin-top:12px}
+  .cl{padding:6px 6px}.tx{font-size:14px}
+  .sheet{margin-top:14px}
+  .trace{min-height:96px}
+  .idx button{padding:6px 0}
+}
+/* small screens: the world sits in the top of the viewport, chapters read below it */
+@media (max-width:760px){
+  :root{--colw:100%}
+  .scrim{display:none}
+  #where{display:none}
+  header nav a{display:none}
+  .ch{align-items:flex-end;padding:56vh 0 0}
+  .pin{padding:0}
+  .stick{align-items:flex-end;padding:56vh 0 0}
+  .mfree{height:auto}
+  .mfree .stick{position:relative;height:auto;min-height:100vh}
+  .col{position:relative;background:var(--bg);padding:22px var(--gx) 40px}
+  .col::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:56px;background:linear-gradient(to bottom,transparent,var(--bg))}
+  h1{font-size:40px}
+  .lead{font-size:15.5px}
+  .fall{min-height:0}
+  .reader{display:block;position:relative;margin-top:16px}
+  .reader .card{left:0;top:0;transform-origin:0 0}
+  .trace{min-height:0}
+}
+@media (prefers-reduced-motion:reduce){
+  .fall p{animation:none}
+  *{transition-duration:.001ms!important}
+}

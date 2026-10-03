@@ -1,0 +1,82 @@
+/* Documents: real HTML, so every word on them is sharp. Ported from reference/tenderos-v3.html. */
+/* ---------- documents: real HTML, so every word on them is sharp and readable ----------
+   Each document is a wrapper and a page. The wrapper carries position, rotation and a
+   fine scale of at most a few percent, all applied by the GPU without re-rendering. The
+   page carries a coarse scale that changes in steps; only a step re-renders its text. */
+.cw{position:absolute;left:0;top:0;width:0;height:0;visibility:hidden;will-change:transform}
+.sc{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+.card{position:absolute;left:-160px;top:-218px;width:320px;height:436px;padding:22px 24px 20px;border-radius:3px;
+  overflow:hidden;
+  background:linear-gradient(168deg,#F8F2E6 0%,#EEE5D3 100%);color:#221B12;
+  font-family:var(--ui);font-size:11.5px;line-height:1.5;box-shadow:var(--cshadow)}
+/* state rings switch instantly; glows sit on their own layers and fade by opacity alone,
+   because animating a shadow re-renders the whole page on every frame of the fade */
+.card::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none}
+[data-s="lit"] .card::after{box-shadow:inset 0 0 0 6px #C98A47}
+.hot .card::after{box-shadow:inset 0 0 0 10px #C98A47}
+[data-s="part"] .card::after{box-shadow:inset 0 0 0 6px #6E979C}
+[data-s="gap"] .card::after,[data-s="hit"] .card::after{box-shadow:inset 0 0 0 6px #CF5F45}
+[data-s="src"] .card::after{box-shadow:inset 0 0 0 10px #CF5F45}
+/* an inactive glow is not painted at all, so its blur never enlarges the document's layer */
+.glow{position:absolute;left:-160px;top:-218px;width:320px;height:436px;border-radius:3px;pointer-events:none;
+  opacity:0;visibility:hidden;transition:opacity .45s,visibility 0s .45s}
+.ga{box-shadow:0 0 80px -4px rgba(201,138,71,.62)}
+.gr{box-shadow:0 0 80px -4px rgba(207,95,69,.62)}
+[data-s="lit"] .ga,.hot .ga,[data-s="gap"] .gr,[data-s="hit"] .gr,[data-s="src"] .gr{opacity:1;visibility:visible;transition:opacity .45s,visibility 0s}
+.card.held{box-shadow:0 60px 90px -36px rgba(0,0,0,.8),0 0 0 1px rgba(0,0,0,.2)}
+.c-top{display:flex;justify-content:space-between;gap:10px;font-size:9.5px;color:#7A6B58;
+  padding-bottom:9px;border-bottom:1px solid rgba(34,27,18,.16)}
+.c-top b{color:#8A5A2B;font-weight:600;white-space:nowrap}
+.c-ref{font-size:9.5px;color:#9A8B78;margin-top:6px}
+.c-t{font-family:var(--display);font-weight:300;font-size:23px;line-height:1.14;letter-spacing:-.01em;margin:14px 0 9px;color:#1C160F}
+.c-sub{font-size:11px;color:#8A5A2B;font-weight:600;margin:-4px 0 4px}
+.c-k{font-size:9.5px;font-weight:600;color:#8A5A2B;margin:14px 0 5px}
+.c-p{font-family:var(--display);font-size:13.5px;line-height:1.5;color:#2A2218}
+.c-row{padding:3px 0;color:#2A2218}
+.clause{border-left:3px solid rgba(138,90,43,.3);padding-left:10px}
+[data-s="lit"] .clause,.hot .clause{border-color:#C98A47}
+[data-s="gap"] .clause{border-color:#CF5F45}
+[data-s="part"] .clause{border-color:#6E979C}
+.rb{display:block;height:5px;border-radius:1px;background:rgba(34,27,18,.14);margin:10px 0}
+.c-foot{position:absolute;left:24px;right:24px;bottom:15px;font-size:9.5px;color:#9A8B78;display:flex;justify-content:space-between}
+.row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid rgba(34,27,18,.12)}
+.row span{color:#7A6B58}.row b{font-weight:600;text-align:right;color:#221B12}
+.ct{border-radius:2px}
+[data-s="lit"] .ct{background:rgba(201,138,71,.32);box-shadow:-7px 0 0 #C98A47,7px 0 0 rgba(201,138,71,.32)}
+.frame{position:absolute;inset:11px;border:3px double rgba(138,90,43,.45);pointer-events:none}
+.ctr{text-align:center}
+.c-small{font-size:10.5px;color:#5E5141;margin-top:8px;line-height:1.45}
+.c-big{font-size:27px;margin:8px 0 4px}
+.seal{width:82px;height:82px;border-radius:50%;margin:14px auto 10px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;color:#8A5A2B;border:1.5px solid rgba(138,90,43,.6);
+  box-shadow:inset 0 0 0 7px #F3ECDD,inset 0 0 0 8.5px rgba(138,90,43,.4)}
+.sig{display:flex;gap:26px;margin-top:20px}.sig i{flex:1;height:1px;background:rgba(34,27,18,.35)}
+.chk{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(34,27,18,.1);font-size:12px}
+.chk i{flex:0 0 auto;width:14px;height:14px;border:1.5px solid #8A5A2B;border-radius:2px;position:relative}
+.chk i::after{content:"";position:absolute;left:3.5px;top:0;width:4px;height:8px;border:solid #8A5A2B;border-width:0 2px 2px 0;transform:rotate(42deg)}
+.stamp{position:absolute;right:24px;bottom:52px;transform:rotate(-8deg);border:2.5px solid currentColor;border-radius:3px;
+  padding:5px 12px;font-weight:700;font-size:16px;color:#3E6167}
+.stamp .b{display:none}
+.card.blocked .stamp{color:#B4452F}.card.blocked .stamp .a{display:none}.card.blocked .stamp .b{display:inline}
+.card.blocked .chk:nth-child(n+4) i{border-color:#B4452F}.card.blocked .chk:nth-child(n+4) i::after{display:none}
+
+/* labels drawn beside documents, outside the transform so they never scale */
+.lb{position:absolute;left:0;top:0;font-size:11.5px;line-height:1.35;color:var(--ink-2);white-space:nowrap;visibility:hidden;
+  padding:2px 7px;border-radius:3px;background:color-mix(in oklab,var(--bg) 80%,transparent);transition:color .4s,box-shadow .3s}
+.lb b{color:var(--ink);font-weight:600;margin-right:5px;transition:color .4s}
+.lb em{display:block;font-style:normal;font-weight:600;font-size:11px}
+.lb.wrap{white-space:normal}
+.lb.stack b,.lb.stack span{display:block;margin:0}
+.lb.met em{color:var(--amber)}.lb.part em{color:var(--slate)}.lb.gap em{color:var(--alarm)}
+.lb.ctr{text-align:center}
+.lb.hit,.lb.hit b{color:var(--alarm)}
+.lb.on{color:var(--ink);box-shadow:0 0 0 1px var(--amber)}.lb.on b{color:var(--amber)}
+.w-met{stroke:var(--amber);stroke-width:1.4}
+.w-part{stroke:var(--slate);stroke-width:1.4;stroke-dasharray:5 5}
+.w-gap{stroke:var(--alarm);stroke-width:1.6;stroke-dasharray:3 5}
+.w-edge{stroke:var(--edge);stroke-width:1.2}
+.w-hot{stroke:var(--alarm);stroke-width:2.4}
+.pulse{fill:var(--alarm);stroke:var(--alarm);stroke-opacity:.28;stroke-width:9}
+#thread{stroke-width:2.4}
+#threadGlow{stroke-width:9;stroke-opacity:.16}
+#tend{fill:none;stroke-width:2}

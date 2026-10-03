@@ -1,0 +1,85 @@
+/* Chapters: ordinary scrolling content over the fixed world. Ported from reference/tenderos-v3.html. */
+main{position:relative;z-index:4}
+.ch{position:relative;min-height:100vh;display:flex;align-items:center;padding:110px var(--gx) 80px}
+.pin{height:170vh;display:block;padding:0}
+.stick{position:sticky;top:0;height:100vh;display:flex;align-items:center;padding:80px var(--gx) 32px}
+.ch.r,.ch.r .stick{justify-content:flex-end}
+.col{width:var(--colw)}
+.lbl{font-size:12.5px;font-weight:600;color:var(--ink-3);margin-bottom:16px;display:flex;gap:10px;align-items:baseline}
+.lbl span{color:var(--amber)}
+h1{font-family:var(--display);font-weight:200;font-size:clamp(40px,4.5vw,72px);line-height:1.02;letter-spacing:-.032em}
+h2{font-family:var(--display);font-weight:200;font-size:clamp(30px,2.9vw,45px);line-height:1.07;letter-spacing:-.022em}
+h1 i,h2 i{font-style:italic;font-weight:200;color:var(--amber)}
+.lead{font-size:16.5px;line-height:1.62;color:var(--ink-2);margin-top:22px;max-width:44ch}
+.txt{font-size:15px;line-height:1.62;color:var(--ink-2);margin-top:16px;max-width:46ch}
+.note{font-size:13px;line-height:1.55;color:var(--ink-3);margin-top:18px;max-width:44ch}
+.row-b{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+.btn{display:inline-block;padding:12px 22px;border-radius:4px;font-size:14px;font-weight:600;text-decoration:none;
+  border:1px solid transparent;cursor:pointer;transition:background-color .16s,color .16s,border-color .16s}
+.btn.p{background:var(--ink);color:var(--bg)}.btn.p:hover{background:var(--amber)}
+.btn.s{border-color:var(--rule);color:var(--ink-2);background:none}.btn.s:hover{border-color:var(--amber);color:var(--amber)}
+
+/* tender analysis index: two-way link with the highlighted pages */
+.idx{list-style:none;margin-top:22px;border-top:1px solid var(--rule-2)}
+.idx button{display:flex;gap:14px;width:100%;padding:8px 0;border:0;border-bottom:1px solid var(--rule-2);background:none;
+  font-size:13.5px;color:var(--ink-3);text-align:left;cursor:pointer;transition:color .25s}
+.idx button span{min-width:52px;font-variant-numeric:tabular-nums;transition:color .25s}
+.idx button.on,.idx button:hover{color:var(--ink)}
+.idx button.on span,.idx button:hover span{color:var(--amber)}
+
+/* eligibility tally */
+.tally{margin-top:26px;border-top:1px solid var(--rule-2)}
+.tally p{display:flex;gap:14px;padding:11px 0;border-bottom:1px solid var(--rule-2);font-size:14px;line-height:1.5;color:var(--ink-2)}
+.tally b{font-family:var(--display);font-weight:300;font-size:26px;line-height:1;min-width:22px}
+.tally .m b{color:var(--amber)}.tally .pt b{color:var(--slate)}.tally .g b{color:var(--alarm)}
+
+/* the draft: a real sheet of paper in the DOM */
+.sheet{margin-top:20px;background:#F6EFE2;color:#1A150E;border-radius:3px;padding:14px 16px 8px;
+  box-shadow:0 26px 54px -30px rgba(0,0,0,.85),0 0 0 1px rgba(0,0,0,.08);position:relative}
+.sheet::before{content:"";position:absolute;left:44px;top:0;bottom:0;width:1px;background:rgba(158,59,43,.22)}
+.sh{font-size:11px;font-weight:600;color:#8A5A2B;padding-bottom:9px;border-bottom:1px solid rgba(26,21,14,.15)}
+.cls{list-style:none}
+.cl{display:flex;gap:12px;align-items:flex-start;width:calc(100% + 12px);margin:0 -6px;padding:8px 6px;background:none;border:0;
+  text-align:left;cursor:pointer;border-radius:2px;color:#1A150E;transition:background-color .18s}
+.cl:hover{background:rgba(26,21,14,.05)}
+.cl.on{background:rgba(138,90,43,.13)}
+.bx{flex:0 0 auto;width:16px;height:16px;margin-top:3px;border:2px solid rgba(26,21,14,.3);border-radius:2px;position:relative}
+.tx{font-family:var(--display);font-weight:300;font-size:15px;line-height:1.38}
+.cl.ok .bx{border-color:#8A5A2B}
+.cl.ok .bx::after{content:"";position:absolute;left:3.5px;top:-.5px;width:5px;height:9px;border:solid #8A5A2B;border-width:0 2.5px 2.5px 0;transform:rotate(42deg)}
+.cl.no .bx{border-color:#9E3B2B}
+.cl.no .bx::before,.cl.no .bx::after{content:"";position:absolute;left:5px;top:0;width:2.5px;height:11px;background:#9E3B2B}
+.cl.no .bx::before{transform:rotate(45deg)}.cl.no .bx::after{transform:rotate(-45deg)}
+.cl.no .tx{color:#7A5647;text-decoration:line-through;text-decoration-color:#9E3B2B}
+.cl.flag .bx{border-color:#3E6167}
+.cl.flag .bx::after{content:"";position:absolute;left:2px;top:5px;width:8px;height:2.5px;background:#3E6167}
+.cl.flag .tx{color:#3E5257}
+.trace{margin-top:16px;min-height:124px}
+.kick{font-size:12px;font-weight:600;color:var(--amber);display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.kick.bad{color:var(--alarm)}.kick.flag{color:var(--slate)}
+.kick i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.hop{display:flex;gap:12px;padding:6px 0;border-top:1px solid var(--rule-2);font-size:12.5px;line-height:1.4}
+.hop span{color:var(--ink-3);min-width:116px}.hop b{font-weight:500;color:var(--ink)}
+.why{font-size:13px;line-height:1.55;color:var(--ink-2)}
+.ctl{display:flex;gap:16px;align-items:center;margin-top:12px;font-size:12.5px;color:var(--ink-3)}
+.ghost{background:none;border:1px solid var(--rule);color:var(--ink-3);border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer}
+.ghost:hover{border-color:var(--amber);color:var(--amber)}
+
+/* change impact */
+.causes{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
+.causes button{background:none;border:1px solid var(--rule);color:var(--ink-2);border-radius:99px;padding:8px 15px;font-size:13px;cursor:pointer;
+  transition:background-color .25s,border-color .25s,color .25s}
+.causes button:hover{border-color:var(--alarm);color:var(--alarm)}
+.causes button[aria-pressed="true"]{background:var(--alarm);border-color:var(--alarm);color:var(--bg);font-weight:600}
+.fall{margin-top:22px;border-top:1px solid var(--rule-2);min-height:262px}
+.fall p{display:flex;gap:14px;padding:9px 0;border-bottom:1px solid var(--rule-2);font-size:13.5px;line-height:1.5;color:var(--ink-2);animation:fin .6s cubic-bezier(.2,.7,.2,1) both}
+.fall p span{min-width:58px;color:var(--ink-3);font-size:12px;padding-top:2px}
+.fall p b{color:var(--ink);font-weight:600}
+.fall p.bad b{color:var(--alarm)}
+.fall .tot{display:block;border:0;font-family:var(--display);font-weight:200;font-size:30px;letter-spacing:-.02em;color:var(--ink);padding-top:14px}
+.fall .tot em{font-style:normal;color:var(--alarm)}
+.fall .idle{display:block;border:0;color:var(--ink-3);animation:none}
+@keyframes fin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.reader{display:none}
+.h-t{display:none}
