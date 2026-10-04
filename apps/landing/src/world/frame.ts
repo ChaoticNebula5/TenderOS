@@ -7,8 +7,8 @@ import { DL, L, NC, ZMAX, type Pose } from "./arrangements";
 import { placeLabels, resetLabels } from "./labels";
 import { W, W0, W1, measure, pOf, view } from "./layout";
 import { attachPointer, landAll, stepOv } from "./manipulation";
-import { CH, CW, F, RM, clamp, ease, lerp } from "./math";
-import { HF, ctx, drag, els, input, ov, resetStore, rv, scr } from "./store";
+import { CH, CW, F, clamp, ease, lerp, motion, watchMotion } from "./math";
+import { HF, ctx, drag, els, input, ov, resetStore, rv, scr, theme } from "./store";
 import { placeThread, resetThread } from "./thread";
 import { placeImpactEdges, placeWires, resetImpactEdges, resetWires } from "./wires";
 import { GATE, NODES, WAVE, nodeOf } from "../data/impact";
@@ -100,7 +100,7 @@ function frame(now: number) {
   ctx.T += dt;
 
   // scroll is smoothed, so a wheel notch glides instead of jumping
-  ys = RM ? scrollY : ys + (scrollY - ys) * (1 - Math.exp(-dt * 7));
+  ys = motion.reduced ? scrollY : ys + (scrollY - ys) * (1 - Math.exp(-dt * 7));
   if (!drag.mode) {
     const k3 = 1 - Math.exp(-dt * 3);
     ctx.mx += (input.mxT - ctx.mx) * k3;
@@ -116,15 +116,15 @@ function frame(now: number) {
     ctx.dpitch *= Math.exp(-dt * 0.5);
   }
   ctx.dpitch = clamp(ctx.dpitch, -1, 1);
-  ctx.hoff += (input.hoffT - ctx.hoff) * (RM ? 1 : 1 - Math.exp(-dt * 3.5));
+  ctx.hoff += (input.hoffT - ctx.hoff) * (motion.reduced ? 1 : 1 - Math.exp(-dt * 3.5));
   ctx.yv = ys / view.vh;
-  const FADE = document.documentElement.dataset.theme === "light" ? 0.4 : 0.72;
+  const FADE = theme.light ? 0.4 : 0.72; // depth fade: darker world in the dark theme
 
   const P = pOf(ys);
   input.curP = P;
   const c = Math.min(Math.floor(P), NC - 2),
     f = P - c;
-  const t = RM ? (f < 0.5 ? 0 : 1) : ease(f);
+  const t = motion.reduced ? (f < 0.5 ? 0 : 1) : ease(f);
   const G = lerp(view.Gs[c], view.Gs[c + 1], t);
   /** How present chapter k is: 1 inside its hold, 0 from 0.4 of a transition away. */
   const cw = (k: number) => clamp(1 - Math.abs(P - k) * 2.5, 0, 1);
@@ -171,21 +171,21 @@ function frame(now: number) {
   const cl = sel >= 0 ? CLAIMS[sel] : null;
   const focusId = cl && "src" in cl ? cl.src : -1;
   const kf = 1 - Math.exp(-dt * 5);
-  selW += ((sel >= 0 ? 1 : 0) - selW) * (RM ? 1 : kf);
+  selW += ((sel >= 0 ? 1 : 0) - selW) * (motion.reduced ? 1 : kf);
   // reading scale, floored onto a coarse step so the page lands with no fine scale left
   const FS = Math.exp(Math.floor(Math.log(Math.min(1, (W.w * 0.56) / CW, (W.h * 0.84) / CH)) * QSTEP + 1e-6) / QSTEP);
   const FX = W.cx + dir * W.w * 0.06,
     FY = W.cy;
-  if (sel >= 0) input.threadP = RM ? 1 : Math.min(1, input.threadP + dt * 1.5);
+  if (sel >= 0) input.threadP = motion.reduced ? 1 : Math.min(1, input.threadP + dt * 1.5);
   // change impact: the wave travels hop by hop; under reduced motion it completes at once
-  if (input.cause >= 0) input.wave = RM ? 9 : Math.min(input.wave + dt * WAVE, 4.5);
+  if (input.cause >= 0) input.wave = motion.reduced ? 9 : Math.min(input.wave + dt * WAVE, 4.5);
 
   for (let i = 0; i < N; i++) {
     const wr = els.wrap[i];
     if (!wr) continue;
     L[c](i, A);
     L[c + 1](i, B);
-    const ti = RM ? t : ease(clamp((f - DL[i]) / 0.78, 0, 1));
+    const ti = motion.reduced ? t : ease(clamp((f - DL[i]) / 0.78, 0, 1));
     const z = Math.min(lerp(A.z, B.z, ti), ZMAX);
     let r = lerp(A.r, B.r, ti),
       o = lerp(A.o, B.o, ti);
@@ -197,7 +197,7 @@ function frame(now: number) {
     o *= 1 - FADE * (1 - clamp((s - 0.2) / 0.38, 0, 1)); // depth reads as falling into the dark
 
     // the cited document glides to the reading plane: upright, opaque, on top
-    fw[i] += ((i === focusId && !ctx.portrait ? inProof : 0) - fw[i]) * (RM ? 1 : kf);
+    fw[i] += ((i === focusId && !ctx.portrait ? inProof : 0) - fw[i]) * (motion.reduced ? 1 : kf);
     const w = ease(clamp(fw[i], 0, 1));
     if (w > 0.001) {
       sx = lerp(sx, FX, w);
@@ -273,7 +273,7 @@ function frame(now: number) {
     const ds = desired(i, near);
     if (ds !== state[i]) {
       // the swell starts only on the change into src or hit, never on its own
-      if (near === 4 && (ds === "hit" || ds === "src") && !RM) bumpT[i] = 0;
+      if (near === 4 && (ds === "hit" || ds === "src") && !motion.reduced) bumpT[i] = 0;
       state[i] = ds;
       wr.dataset.s = ds;
     }
@@ -344,6 +344,11 @@ export function startWorld(): () => void {
     if (!signal.aborted) measure();
   });
   attachPointer(signal);
+  // reduced motion is followed live; switching it on drops the parallax target, as a page
+  // loaded with it on never sets one
+  watchMotion(signal, (reduced) => {
+    if (reduced) input.mxT = input.myT = 0;
+  });
 
   const loop = (now: number) => {
     raf = requestAnimationFrame(loop);

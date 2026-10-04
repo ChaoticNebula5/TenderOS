@@ -1,4 +1,4 @@
-/** Chapter 3. The world shows requirements wired to their evidence from V2. */
+/** Chapter 3. The world shows each requirement wired to the evidence that settled it. */
 export function Eligibility() {
   return (
     <section className="ch" id="match" data-ch="2" data-hold=".18">

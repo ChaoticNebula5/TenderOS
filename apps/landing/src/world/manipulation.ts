@@ -7,7 +7,7 @@
 import { N, isM } from "../data/tender";
 import { bringToFront } from "./actions";
 import { NC } from "./arrangements";
-import { CH, CW, RM, clamp, hash, lerp } from "./math";
+import { CH, CW, clamp, hash, lerp, motion } from "./math";
 import { W, view } from "./layout";
 import { ctx, drag, els, input, ov, rv, scr, stack, type DragKind, type Overlay } from "./store";
 
@@ -38,7 +38,7 @@ const inStack = (i: number) => stack.of[i] >= 0;
  * from this frame's screen position; `test` narrows which documents qualify. Pages out
  * of their arrangement (held, thrown, returning) are never picked.
  */
-export function pick(x: number, y: number, test?: (i: number) => boolean) {
+function pick(x: number, y: number, test?: (i: number) => boolean) {
   let best = -1,
     bz = -Infinity;
   for (let i = 0; i < N; i++) {
@@ -270,7 +270,7 @@ function onMove(e: PointerEvent) {
     y = e.clientY,
     now = performance.now(),
     mouse = e.pointerType === "mouse";
-  if (mouse && !RM) {
+  if (mouse && !motion.reduced) {
     input.mxT = (x / view.vw) * 2 - 1;
     input.myT = (y / view.vh) * 2 - 1;
   }

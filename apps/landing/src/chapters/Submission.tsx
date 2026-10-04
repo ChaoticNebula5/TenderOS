@@ -1,4 +1,6 @@
-/** Chapter 6. The world beside it is the submission stack from V5. */
+import { LINKS } from "../data/links";
+
+/** Chapter 6. The world beside it is the submission stack, which can be thrown. */
 export function Submission() {
   return (
     <section className="ch r" id="bid" data-ch="5">
@@ -14,10 +16,10 @@ export function Submission() {
           gate. The submitted bid keeps a complete audit trail from each statement to its source.
         </p>
         <div className="row-b">
-          <a className="btn p" href="#top">
+          <a className="btn p" href={LINKS.closingStart}>
             Start a tender
           </a>
-          <a className="btn s" href="#top">
+          <a className="btn s" href={LINKS.closingArchitecture}>
             Read the architecture
           </a>
         </div>

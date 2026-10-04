@@ -1,8 +1,23 @@
 // Shared constants and pure helpers. Nothing here touches the DOM.
 
-/** Reduced motion is read once, as in the reference: the page snaps instead of animating. */
-export const RM =
-  typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+const reducedQuery =
+  typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+/** Reduced motion, read live: while it is on, the page snaps instead of animating. */
+export const motion = { reduced: reducedQuery?.matches ?? false };
+
+/** Follow the reduced-motion preference as it changes, until `signal` aborts. */
+export function watchMotion(signal: AbortSignal, onChange: (reduced: boolean) => void) {
+  motion.reduced = reducedQuery?.matches ?? false;
+  reducedQuery?.addEventListener(
+    "change",
+    (e) => {
+      motion.reduced = e.matches;
+      onChange(e.matches);
+    },
+    { signal },
+  );
+}
 
 /** Natural card size: the size a document is read at. On-screen scale never exceeds 1. */
 export const CW = 320;

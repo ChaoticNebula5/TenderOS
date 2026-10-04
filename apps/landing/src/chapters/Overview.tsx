@@ -1,3 +1,5 @@
+import { LINKS } from "../data/links";
+
 /** Chapter 1. The world beside it is the overview sphere, which can be dragged. */
 export function Overview() {
   return (
@@ -12,10 +14,10 @@ export function Overview() {
           supports it.
         </p>
         <div className="row-b">
-          <a className="btn p" href="#bid">
+          <a className="btn p" href={LINKS.heroStart}>
             Start a tender
           </a>
-          <a className="btn s" href="#pack">
+          <a className="btn s" href={LINKS.heroHowItWorks}>
             See how it works
           </a>
         </div>

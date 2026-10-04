@@ -1,11 +1,11 @@
 import { Fragment, useState } from "react";
 import { CAUSES, GATE, NODES, UNREACHED, WAVE } from "../data/impact";
 import { seedImpact } from "../world/actions";
-import { RM } from "../world/math";
+import { motion } from "../world/math";
 
 /** Each summary line appears as the wave reaches that step: source, step 1, 2, 3, total. */
 const DELAYS = [0.05, 1 / WAVE, 2 / WAVE, 3 / WAVE, 3 / WAVE + 0.35];
-const at = (k: number) => (RM ? undefined : { animationDelay: `${DELAYS[k].toFixed(2)}s` });
+const at = (k: number) => (motion.reduced ? undefined : { animationDelay: `${DELAYS[k].toFixed(2)}s` });
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The impact summary for one cause, built from the same hops the wave uses. */

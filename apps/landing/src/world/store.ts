@@ -21,6 +21,16 @@ export const els = {
   claimBtn: [] as HTMLButtonElement[], // evidence tracing statements, by CLAIMS index
 };
 
+/** The colour theme; the depth fade depends on it. Set by toggleTheme(). */
+export const theme = { light: false };
+
+/** Switch between the dark (default) and light themes: one attribute on the root, one label. */
+export function toggleTheme(button: HTMLElement) {
+  theme.light = !theme.light;
+  document.documentElement.dataset.theme = theme.light ? "light" : "dark";
+  button.textContent = theme.light ? "Dark" : "Light";
+}
+
 /** Inputs to the arrangement functions. */
 export const ctx = {
   T: 0, // seconds since start
@@ -70,7 +80,7 @@ export const input = {
  * pending: mouse down on the overview, not yet a rotate or a hold. rotate: turning the
  * sphere. tap: touch down, not yet a swipe or a scroll. card: holding a page.
  */
-export type DragMode = null | "pending" | "rotate" | "tap" | "card";
+type DragMode = null | "pending" | "rotate" | "tap" | "card";
 export type DragKind = "pile" | "stack";
 
 /** The active pointer gesture on the world. */

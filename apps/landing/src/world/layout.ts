@@ -6,7 +6,7 @@ import { CH, CW, F, clamp } from "./math";
 import { L, NC, ZMAX, type Pose } from "./arrangements";
 import { CT, ctx, els } from "./store";
 
-export type Rect = { x: number; y: number; w: number; h: number; cx: number; cy: number };
+type Rect = { x: number; y: number; w: number; h: number; cx: number; cy: number };
 const rect = (): Rect => ({ x: 0, y: 0, w: 1, h: 1, cx: 0, cy: 0 });
 
 /** Live world rect (W), and its two resting places: right of the text (W0), left of it (W1). */

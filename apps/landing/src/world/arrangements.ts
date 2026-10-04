@@ -4,11 +4,11 @@
 
 import { NODES, colCount, nodeOf, rowOf } from "../data/impact";
 import { EVROW, N, NE, NP, REQ, isDr, isEv, isM, isPg } from "../data/tender";
-import { F, RM, TAU, clamp, hash } from "./math";
+import { F, TAU, clamp, hash, motion } from "./math";
 import { HF, ctx, stack } from "./store";
 
 export type Pose = { x: number; y: number; z: number; r: number; o: number };
-export type Arrangement = (i: number, o: Pose) => void;
+type Arrangement = (i: number, o: Pose) => void;
 
 /** Points spread evenly on a unit sphere: golden-angle seed, then relaxed by mutual repulsion. */
 function sphere(n: number): [number, number, number][] {
@@ -89,7 +89,7 @@ const park: Arrangement = (i, o) => {
 /** Overview: every tender page and evidence file on a slowly turning sphere. */
 const pile: Arrangement = (i, o) => {
   if (isDr(i)) return hidden(o);
-  const yaw = (RM ? 0 : ctx.T * 0.07) + ctx.yv * 0.9 + ctx.mx * 0.22 + ctx.dyaw;
+  const yaw = (motion.reduced ? 0 : ctx.T * 0.07) + ctx.yv * 0.9 + ctx.mx * 0.22 + ctx.dyaw;
   const pitch = clamp(-0.19 + ctx.my * 0.08 + ctx.dpitch, -1.25, 1.25);
   rot(SP[slot[i]], yaw, pitch, o);
   o.x *= R;
@@ -108,7 +108,7 @@ const RISE = (1.266 * RH * TURNS) / HN;
 const HP = -0.26; // helix seen from slightly above
 
 /** The helix travels with scroll, measured from the start of its own hold. Still under reduced motion. */
-export const helixBase = () => (RM ? 0 : -(ctx.yv - ctx.y1) * 5);
+export const helixBase = () => (motion.reduced ? 0 : -(ctx.yv - ctx.y1) * 5);
 
 /** Tender analysis: the 24 tender pages on a two-turn helix; everything else parked. */
 const pack: Arrangement = (i, o) => {

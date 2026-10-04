@@ -10,7 +10,7 @@ import { ctx, scr } from "./store";
 /** 'out': beside the page, on the side away from the world centre. 't': above. 'b': below. */
 type Side = "out" | "t" | "b";
 
-export type LabelDef = {
+type LabelDef = {
   ch: number; // chapter the label belongs to
   id: number; // card id it follows
   side: Side;

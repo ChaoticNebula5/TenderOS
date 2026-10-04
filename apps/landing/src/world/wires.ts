@@ -9,7 +9,7 @@ import { ctx, input, scr } from "./store";
 export type Pt = { x: number; y: number };
 
 /** Write a path's d attribute only when it changed. Returns whether it did. */
-export function setD(el: SVGPathElement, d: string, cache: { d: string }) {
+function setD(el: SVGPathElement, d: string, cache: { d: string }) {
   if (cache.d === d) return false;
   el.setAttribute("d", d);
   cache.d = d;
@@ -17,7 +17,7 @@ export function setD(el: SVGPathElement, d: string, cache: { d: string }) {
 }
 
 /** Write an element's opacity only when its two-decimal string changed. */
-export function setO(el: SVGElement, o: number, cache: { o: string }) {
+function setO(el: SVGElement, o: number, cache: { o: string }) {
   const s = o.toFixed(2);
   if (cache.o === s) return;
   el.style.opacity = s;
@@ -25,19 +25,19 @@ export function setO(el: SVGElement, o: number, cache: { o: string }) {
 }
 
 /** Control points of a cubic between two points, leaving and arriving vertically or horizontally. */
-export const curveCtl = (a: Pt, b: Pt, vert: boolean): [Pt, Pt, Pt, Pt] =>
+const curveCtl = (a: Pt, b: Pt, vert: boolean): [Pt, Pt, Pt, Pt] =>
   vert
     ? [a, { x: a.x, y: (a.y + b.y) / 2 }, { x: b.x, y: (a.y + b.y) / 2 }, b]
     : [a, { x: (a.x + b.x) / 2, y: a.y }, { x: (a.x + b.x) / 2, y: b.y }, b];
 
 /** Path string for a cubic's control points. */
-export const cubicD = ([a, c1, c2, b]: readonly Pt[]) => `M${a.x} ${a.y}C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${b.x} ${b.y}`;
+const cubicD = ([a, c1, c2, b]: readonly Pt[]) => `M${a.x} ${a.y}C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${b.x} ${b.y}`;
 
 /** Cubic between two points as a path string. */
-export const curve = (a: Pt, b: Pt, vert: boolean) => cubicD(curveCtl(a, b, vert));
+const curve = (a: Pt, b: Pt, vert: boolean) => cubicD(curveCtl(a, b, vert));
 
 /** Point at parameter t on the cubic a, c1, c2, b. */
-export function cubicAt(a: Pt, c1: Pt, c2: Pt, b: Pt, t: number): Pt {
+function cubicAt(a: Pt, c1: Pt, c2: Pt, b: Pt, t: number): Pt {
   const u = 1 - t,
     k0 = u * u * u,
     k1 = 3 * u * u * t,
@@ -71,7 +71,7 @@ export function cubicLen(a: Pt, c1: Pt, c2: Pt, b: Pt): number {
  * faster on the straighter parts, so it would put the pulse ahead of or behind the head.)
  * Walks the same 32-segment polyline as cubicLen().
  */
-export function cubicAtLen(a: Pt, c1: Pt, c2: Pt, b: Pt, frac: number, len: number): Pt {
+function cubicAtLen(a: Pt, c1: Pt, c2: Pt, b: Pt, frac: number, len: number): Pt {
   const target = clamp(frac, 0, 1) * len;
   let acc = 0,
     prev = a;
@@ -89,10 +89,10 @@ export function cubicAtLen(a: Pt, c1: Pt, c2: Pt, b: Pt, frac: number, len: numb
 }
 
 /** Anchor points just outside a document's edges, from this frame's screen position. */
-export const bot = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] + (CH * scr.s[i]) / 2 + 3 });
-export const topP = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] - (CH * scr.s[i]) / 2 - 3 });
-export const rgt = (i: number): Pt => ({ x: scr.x[i] + (CW * scr.s[i]) / 2 + 3, y: scr.y[i] });
-export const lft = (i: number): Pt => ({ x: scr.x[i] - (CW * scr.s[i]) / 2 - 3, y: scr.y[i] });
+const bot = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] + (CH * scr.s[i]) / 2 + 3 });
+const topP = (i: number): Pt => ({ x: scr.x[i], y: scr.y[i] - (CH * scr.s[i]) / 2 - 3 });
+const rgt = (i: number): Pt => ({ x: scr.x[i] + (CW * scr.s[i]) / 2 + 3, y: scr.y[i] });
+const lft = (i: number): Pt => ({ x: scr.x[i] - (CW * scr.s[i]) / 2 - 3, y: scr.y[i] });
 
 /** Snap to half pixels, so sub-pixel drift does not rewrite a path every frame. */
 const P2 = (p: Pt): Pt => ({ x: Math.round(p.x * 2) / 2, y: Math.round(p.y * 2) / 2 });
@@ -102,7 +102,7 @@ export const MATCH_WIRES: readonly { a: number; b: number; st: Status }[] = REQ.
   r.ev.map((b) => ({ a: r.pg, b, st: r.st })),
 );
 /** The requirement with no evidence gets a short dead-end stub. */
-export const GAP_PAGE = REQ.find((r) => r.st === "gap")!.pg;
+const GAP_PAGE = REQ.find((r) => r.st === "gap")!.pg;
 
 type Wire = { el: SVGPathElement | null; d: string; o: string };
 const wire = (): Wire => ({ el: null, d: "", o: "" });

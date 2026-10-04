@@ -3,7 +3,7 @@
 
 import { D, E, N } from "./tender";
 
-export type ImpactNode = {
+type ImpactNode = {
   id: number; // card id
   col: number; // 0 sources, 1 requirements, 2 sections, 3 gate
   b?: string; // label lead (page number)
