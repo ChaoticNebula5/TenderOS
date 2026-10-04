@@ -24,7 +24,7 @@
 .gr{box-shadow:0 0 80px -4px rgba(207,95,69,.62)}
 [data-s="lit"] .ga,.hot .ga,[data-s="gap"] .gr,[data-s="hit"] .gr,[data-s="src"] .gr{opacity:1;visibility:visible;transition:opacity .45s,visibility 0s}
 .card.held{box-shadow:0 60px 90px -36px rgba(0,0,0,.8),0 0 0 1px rgba(0,0,0,.2)}
-.c-top{display:flex;justify-content:space-between;gap:10px;font-size:9.5px;color:#7A6B58;
+.c-top{display:flex;justify-content:space-between;gap:10px;font-size:9.5px;color:#736553;
   padding-bottom:9px;border-bottom:1px solid rgba(34,27,18,.16)}
 .c-top b{color:#8A5A2B;font-weight:600;white-space:nowrap}
 .c-ref{font-size:9.5px;color:#9A8B78;margin-top:6px}
@@ -40,7 +40,7 @@
 .rb{display:block;height:5px;border-radius:1px;background:rgba(34,27,18,.14);margin:10px 0}
 .c-foot{position:absolute;left:24px;right:24px;bottom:15px;font-size:9.5px;color:#9A8B78;display:flex;justify-content:space-between}
 .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid rgba(34,27,18,.12)}
-.row span{color:#7A6B58}.row b{font-weight:600;text-align:right;color:#221B12}
+.row span{color:#736553}.row b{font-weight:600;text-align:right;color:#221B12}
 .ct{border-radius:2px}
 [data-s="lit"] .ct{background:rgba(201,138,71,.32);box-shadow:-7px 0 0 #C98A47,7px 0 0 rgba(201,138,71,.32)}
 .frame{position:absolute;inset:11px;border:3px double rgba(138,90,43,.45);pointer-events:none}
@@ -57,12 +57,12 @@
 .stamp{position:absolute;right:24px;bottom:52px;transform:rotate(-8deg);border:2.5px solid currentColor;border-radius:3px;
   padding:5px 12px;font-weight:700;font-size:16px;color:#3E6167}
 .stamp .b{display:none}
-.card.blocked .stamp{color:#B4452F}.card.blocked .stamp .a{display:none}.card.blocked .stamp .b{display:inline}
-.card.blocked .chk:nth-child(n+4) i{border-color:#B4452F}.card.blocked .chk:nth-child(n+4) i::after{display:none}
+.card.blocked .stamp{color:#B0442E}.card.blocked .stamp .a{display:none}.card.blocked .stamp .b{display:inline}
+.card.blocked .chk:nth-child(n+4) i{border-color:#B0442E}.card.blocked .chk:nth-child(n+4) i::after{display:none}
 
 /* labels drawn beside documents, outside the transform so they never scale */
 .lb{position:absolute;left:0;top:0;font-size:11.5px;line-height:1.35;color:var(--ink-2);white-space:nowrap;visibility:hidden;
-  padding:2px 7px;border-radius:3px;background:color-mix(in oklab,var(--bg) 80%,transparent);transition:color .4s,box-shadow .3s}
+  padding:2px 7px;border-radius:3px;background:var(--bg);transition:color .4s,box-shadow .3s}
 .lb b{color:var(--ink);font-weight:600;margin-right:5px;transition:color .4s}
 .lb em{display:block;font-style:normal;font-weight:600;font-size:11px}
 .lb.wrap{white-space:normal}

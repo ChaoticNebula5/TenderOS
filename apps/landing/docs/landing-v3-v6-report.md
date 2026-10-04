@@ -4,18 +4,19 @@ Phase: V6, hardening (checklist items 69 to 76 in `landing-v3-v0-report.md`) plu
 Branch `landing-v3`. Measurements on the production build (`vite build`, `vite preview`) unless
 stated otherwise. Chromium 154 driven by Playwright over CDP.
 
-## 0. Decisions needed
+## 0. Decisions (resolved in V6.1)
 
-Three requirements cannot be met without changing what the page shows, so per the instruction they
-were not changed. Each is measured below with a proposal.
+Three requirements could not be met in V6 without changing what the page shows, so they were left
+for a decision. All three were decided and are resolved in the V6.1 section at the end of this report.
 
 1. **Theme change costs more than one style recalculation** (item 69). The toggle itself costs one,
    but the reference's `body { transition: background-color .45s, color .45s }` then restyles the
-   whole tree on every frame of the fade. Section 1.
+   whole tree on every frame of the fade. Section 1. Decided: keep the fade, recorded as a known
+   limitation with frame-time measurements (V6.1).
 2. **Nav links to pinned chapters land 64 px before rest** (item 73), from the reference's
-   `scroll-padding-top`. Section 4.
+   `scroll-padding-top`. Section 4. Fixed on desktop in V6.1.
 3. **8 of 68 text/background pairs are under WCAG AA** (item 74), all from reference colours.
-   Section 5.
+   Section 5. Fixed in V6.1 except `c-ref` and `c-foot`, kept deliberately.
 
 ## 1. Light theme (item 69)
 
@@ -334,6 +335,78 @@ the reference:
 | Raster during that scroll | (compare) | 94.3 ms | 97.8 ms |
 | React commits across the whole run | zero | 0 | |
 
+## V6.1
+
+A short fix pass on the three decisions from section 0, plus the safe-area top edge.
+
+### Changes
+
+| Item | Change | File |
+|---|---|---|
+| Theme fade | Unchanged by decision; measured and recorded as a known limitation | none |
+| Nav landing | `@media (min-width:761px){.pin{scroll-margin-top:calc(0px - env(safe-area-inset-top,0px) - 64px)}}` | `responsive.css` |
+| Contrast | Light `--ink-3` #6E6456; issuer and row labels #736553; Blocked stamp and blocked checkbox borders #B0442E; label chips opaque `var(--bg)` | `tokens.css`, `documents.css` |
+| Safe areas | World top edge `max(60, header bottom)`, read once per `measure()` | `world/layout.ts` |
+
+The header's real bottom edge without insets is 57.2 px (at every size measured), so using it
+directly would move the world up 2.8 px everywhere; `max(60, ...)` keeps the reference's framing
+without insets and follows the header when an inset makes it taller.
+
+### Verification
+
+**Nav landing, 1440x900** (scroll position against the chapter's hold; landing on the hold's first
+pixel means chapter weight 1):
+
+| Link | scrollY | Hold | `#where` | Heading top (header ends at 57.2) |
+|---|---|---|---|---|
+| Nav Analysis | 900 | 900..1530 | 2 Tender analysis | 261 |
+| Nav Evidence | 3330 | 3330..3960 | 4 Evidence tracing | 145 |
+| Nav Impact | 4860 | 4860..5490 | 5 Change impact | 198 |
+| See how it works | 900 | 900..1530 | 2 Tender analysis | 261 |
+
+At 390x844 the rule does not apply (computed `scroll-margin-top` 0px, against -64px at 1440), so "See
+how it works" lands where it did in V6 (scrollY 783, inside the hold 665..1205).
+
+**Safe areas**, 390x844 mobile, world top read back from the atmosphere layer's transform:
+
+| | Header bottom | World top |
+|---|---|---|
+| No insets | 57.2 px | 60 px (unchanged) |
+| Insets 47 / 34 px | 104.2 px | 104.2 px (the header's bottom edge) |
+
+**Contrast**: the table re-run with the V6.1 colours (chips over paper now sit on `--bg`): 66 of 68
+pairs pass; the two that do not are `c-ref` and `c-foot`, kept deliberately. Changed pairs: light
+`--ink-3` 4.50; dark chips over paper 4.81 to 7.04; light chips 4.55 to 5.24; row labels 4.52 (darker
+paper) and 5.07; Blocked stamp 4.52 and 5.07.
+
+**axe-core 4.10.2**: 0 violations in dark and light at 1440 and 390.
+
+**Frame-clock regression sweep against the reference** (all 8 states, both themes, 1440 and 390;
+hero under reduced motion as in V6). For each pair, every differing pixel was tested against a mask
+of the changed elements, taken from the V6.1 page at the frozen frame (3 px padding): visible label
+chips, light-theme `--ink-3` text, `.c-top` and `.row span` in documents, `.stamp`, and the blocked
+`.chk i` boxes.
+
+| Pair | Differing pixels | Outside the changed elements |
+|---|---|---|
+| 1440 dark pack, row hovered | 4,459 | 0 |
+| 1440 dark match | 5,070 | 0 |
+| 1440 dark cause 1 settled | 4,439 | 36, box [331,575,465,637] |
+| 1440 light pack, row hovered | 690 | 0 |
+| 1440 light match | 4,943 | 0 |
+| 1440 light cause 1 settled | 4,192 | 0 |
+| All other 26 pairs (all 16 at 390) | 0 | 0 |
+
+The 36 px are the pre-existing V6 residual (same count and box as in V6: the slowly turning park
+shell seen through the scrim's fading edge, carrying the loop start offset). To confirm V6.1 did not
+cause them, the committed V6 build (`0505ba9`) was built into a scratch folder and the same sweep run
+**V6.1 against V6**: that pair is 4,403 differing, **0 outside** the changed elements, and so is every
+other pair. The dark hero differed by 197,494 on the first, cold load of that run only and was 0 on
+two re-runs (loop start offset on a cold load). Conclusion: V6.1 changes nothing outside the listed
+elements.
+
+**Theme fade frame time**: see Known limitations.
+
 ## Final state
 
 ### The twelve architecture rules
@@ -374,6 +447,12 @@ the reference:
 | V6 | Reduced motion read live; parallax target zeroed when it switches on | No when the setting is unchanged |
 | V6 | Theme flag in the store instead of reading `data-theme` each frame | No |
 | V6 | Outbound links in `src/data/links.ts`; internal-only exports made private; `prettier` removed | No |
+| V6.1 | Desktop only: pinned chapters cancel the 64 px scroll padding, so nav links land at the pin start | Yes, after a nav click on desktop: the chapter is fully at rest |
+| V6.1 | Light `--ink-3` #716759 to #6E6456 | Yes, slightly darker grey text in the light theme |
+| V6.1 | Document issuer and row labels #7A6B58 to #736553 | Yes, slightly darker labels inside documents |
+| V6.1 | Blocked stamp and blocked checkbox borders #B4452F to #B0442E (one colour for the blocked state) | Yes, slightly darker red on a blocked gate |
+| V6.1 | Label chips opaque `var(--bg)` instead of 80% | Yes, where a label sits over a document |
+| V6.1 | World top edge `max(60, measured header bottom)` | Only with a top safe-area inset: the world starts below the taller header |
 
 ### Perf summary across phases
 
@@ -388,17 +467,30 @@ Paint during scroll against the reference in the same harness:
 | V5 | chapters 4 to 6 | 738.9 / 756.7 ms (-2.4%) | ten tosses 53.7 / 53.5 ms | 0 | 0 |
 | V6 | chapters 1 to 6 | 806.7 / 833.0 ms (-3.2%) | full scroll 94.3 / 97.8 ms | 0 | 0 |
 
-No main-thread task over 16 ms in any phase's measured scroll or interaction.
+No main-thread task over 16 ms in any phase's measured scroll or interaction, with one exception: the
+0.45 s theme fade (V6.1 measurements, known limitation below), which also exceeds 16 ms on the reference.
 
 ### Known limitations
 
 - Outbound buttons point at in-page anchors (placeholders, section 8).
-- Theme switch restyles the whole tree per frame during the 0.45 s fade (section 1, decision needed).
-- Nav links to pinned chapters land 64 px before rest (section 4, decision needed).
-- 8 text/background pairs under WCAG AA, all reference colours (section 5, decision needed).
+- **Theme fade frame time** (kept as the reference's 0.45 s fade, by decision). Each frame of the fade
+  restyles the whole tree (about 1,251 elements) because `body` transitions the inherited `color`.
+  Measured at `deviceScaleFactor: 2`, 1440x900, 10 fades each, alternating directions:
+
+  | | Longest task per fade, min / median / max | Fades with a task over 16 ms | Frames over 16.7 ms (of 120 per fade, total) | Worst frame |
+  |---|---|---|---|---|
+  | Reference | 11.69 / 15.30 / 18.15 ms | 1 of 10 | 17 | 16.8 ms |
+  | V6.1 | 13.39 / 16.53 / 19.37 ms | 6 of 10 | 29 | 22.3 ms |
+
+  The limitation exists in the reference too: its fade also crosses 16 ms, and the worst frame is the
+  same work in both (one full-tree restyle plus about 1.5 ms of paint, with the same element count).
+  If it ever stutters on a real device, the documented fix is option (b): fade only `body`'s
+  `background-color` and let text colour switch at once, which removes the full-tree restyle per frame.
+- `c-ref` and `c-foot` (#9A8B78, 2.65 to 2.97:1 on paper) are kept deliberately: faint print as
+  incidental detail on illustrative documents.
 - On a phone, unpinned chapters let the text column scroll over the bottom of the world (accepted in V2;
   to check on a real phone).
-- The world's top edge ignores a top safe-area inset; left and right insets are not handled.
+- Left and right safe-area insets are not handled (landscape notches); the top inset is handled since V6.1.
 - Touch, safe areas and phone layout verified by emulation only, not on a device.
 - The first claim selection on a page costs two React commits (V3; not chased, as agreed).
 - No automated test suite in the app; verification is the phase harness described in the reports.

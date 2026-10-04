@@ -69,13 +69,13 @@ React markup, `src/styles` the reference CSS split by section. Outbound link des
 
 - The four outbound buttons point at in-page anchors from the reference (`src/data/links.ts`);
   real destinations are not chosen yet.
-- Nav links to pinned chapters land 64 px before the chapter's resting position (the reference's
-  `scroll-padding-top`), so the arrangement is about 99.8% settled rather than fully at rest.
-- In the light theme, `--ink-3` on `--bg` is 4.3:1, under WCAG AA for small text; several small
-  labels inside documents are also under 4.5:1. See the V6 report for the full list and proposed fixes.
-- A theme switch restyles the whole page on every frame of the 0.45 s colour fade (the reference's
-  `body` transition), not once.
+- The 0.45 s theme fade (kept from the reference) restyles the whole page on every frame because
+  `body` transitions the inherited text colour. At device pixel ratio 2 the longest task per fade
+  measured 13.4 to 19.4 ms (median 16.5), against 11.7 to 18.2 ms (median 15.3) on the reference, so
+  both cross 16 ms at times. If it stutters on a real device, the documented fix is to fade only
+  `body`'s background colour and let text colour switch at once. Details in the V6 report.
+- `c-ref` and `c-foot` inside documents (#9A8B78) are under WCAG AA on paper, kept deliberately as
+  incidental print on illustrative documents. Every other text colour passes.
 - On a phone, unpinned chapters let the text column scroll over the bottom edge of the world.
-- The world's top edge uses a fixed 60 px header height, so on notched phones it starts under the
-  taller header; left and right safe-area insets are not handled.
+- Left and right safe-area insets are not handled (landscape notches); the top inset is.
 - Safe areas and touch were verified by emulation only, not on a real device.

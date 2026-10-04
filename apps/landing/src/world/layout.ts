@@ -23,6 +23,7 @@ export const view = {
   Gs: new Array<number>(NC).fill(1),
 };
 
+/** The reference's world top edge. The header itself ends at about 57 px without insets. */
 const HEAD = 60;
 const tmp: Pose = { x: 0, y: 0, z: 0, r: 0, o: 0 };
 
@@ -32,17 +33,20 @@ export function measure() {
   view.vw = vw;
   view.vh = vh;
   ctx.portrait = vw <= 760;
+  // the world starts below the header: the reference's 60 px, or the header's measured bottom
+  // edge when it is taller (a top safe-area inset on a notched phone pads the header down)
+  const head = Math.max(HEAD, document.querySelector("header")?.getBoundingClientRect().bottom ?? 0);
 
   // the world rect: beside the text column on desktop, the top of the screen on a phone
   if (ctx.portrait) {
-    Object.assign(W0, { x: 0, y: HEAD, w: vw, h: vh * 0.56 - HEAD });
+    Object.assign(W0, { x: 0, y: head, w: vw, h: vh * 0.56 - head });
     Object.assign(W1, W0);
   } else {
     const gx = clamp(vw * 0.042, 20, 64),
       colw = Math.min(470, vw * 0.36),
       ww = vw - (gx + colw + 28);
-    Object.assign(W0, { x: vw - ww, y: HEAD, w: ww, h: vh - HEAD });
-    Object.assign(W1, { x: 0, y: HEAD, w: ww, h: vh - HEAD });
+    Object.assign(W0, { x: vw - ww, y: head, w: ww, h: vh - head });
+    Object.assign(W1, { x: 0, y: head, w: ww, h: vh - head });
   }
   Object.assign(W, W0);
   W.cx = W.x + W.w / 2;

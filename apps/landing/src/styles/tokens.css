@@ -16,7 +16,7 @@
 }
 :root[data-theme="light"]{
   --bg:#E9E2D4; --bg-2:#E1D9C9; --raise:#F5F0E6;
-  --ink:#231E19; --ink-2:#4A423A; --ink-3:#716759;
+  --ink:#231E19; --ink-2:#4A423A; --ink-3:#6E6456;
   --amber:#8A5A2B; --slate:#3E6167; --alarm:#9E3B2B;
   --rule:rgba(35,30,25,.17); --rule-2:rgba(35,30,25,.08);
   --pool:rgba(138,90,43,.10); --vig:rgba(120,96,64,.16);

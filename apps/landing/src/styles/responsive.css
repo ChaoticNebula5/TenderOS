@@ -33,3 +33,6 @@
   .fall p{animation:none}
   *{transition-duration:.001ms!important}
 }
+/* nav links to pinned chapters land at the pin start (chapter at rest), not 64 px before it;
+   desktop only, where those chapters pin */
+@media (min-width:761px){.pin{scroll-margin-top:calc(0px - env(safe-area-inset-top,0px) - 64px)}}
