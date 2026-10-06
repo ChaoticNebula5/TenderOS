@@ -28,6 +28,17 @@ dist/
 build/
 .vite/
 
+# Frontend design-tooling skills (B17) - third-party reference material for
+# Claude Code, ~7MB, reproducible from the install commands in
+# docs/frontend-tooling.md. Not committed: it's tooling, not project source,
+# and the decision of which skills and why is what's worth keeping in
+# history, not 7MB of someone else's markdown/scripts. .claude/skills/ only,
+# not the whole .claude/ directory - settings.local.json and
+# scheduled_tasks.lock live there too and are unrelated to this.
+.agents/
+.claude/skills/
+skills-lock.json
+
 # Editors / OS
 .vscode/
 .idea/
