@@ -22,10 +22,20 @@ RUN uv sync --frozen --package tenderos-worker
 # network access, a real failure mode for a fresh/offline deployment's
 # first ingestion job. Baked in at build time instead, in its own layer
 # before COPY of app code so it stays cached across ordinary code changes.
-# Model name matches ingestion/embed.py's own _MODEL_NAME exactly - keep
-# these in sync if that ever changes.
+# Model names match ingestion/embed.py's and agents/knowledge/rerank.py's
+# own _MODEL_NAME exactly - keep these in sync if either ever changes, and
+# with apps/api/Dockerfile's identical step. B17 Phase 0 added the reranker:
+# before that it was baked into no image at all, so this worker also
+# fetched it from Hugging Face on first use.
 RUN uv run --frozen --package tenderos-worker python -c \
-    "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+    "from sentence_transformers import CrossEncoder, SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+
+# Runtime only, set after the download above so it cannot block it - see
+# apps/api/Dockerfile's identical ENV for the reasoning.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 COPY apps/worker apps/worker
 COPY packages/tenderos_backend packages/tenderos_backend

@@ -465,6 +465,41 @@ async def test_proposal_claim_appears_in_impact_set():
     assert "ProposalClaim" in labels_seen
 
 
+async def test_employee_with_no_evidence_affects_nothing_even_beside_one_that_does():
+    """B17 Phase 0 regression test for D5's directed traversal (Build Guide
+    :1955, `-[*1..$maxHops]->`). Before the fix, preview_impact walked the
+    path undirected, so an employee with no downstream edges still "reached"
+    everything a sibling employee in the same tender backs: empty -USED_IN-
+    Tender -USED_IN- sibling -PROVIDES- Evidence -CITED_IN- ProposalClaim is
+    exactly 4 hops. Measured on real-run data before the fix: one such
+    employee showed 16 affected nodes undirected, 0 directed
+    (KNOWN_LIMITATIONS.md, D5 directionality entry). The sibling is what
+    makes this test fail on the old query - without it, both directions
+    return nothing and the test would prove nothing.
+    """
+    org_id, tender_id = await _org_and_tender("DirectedImpact")
+    chunk_id = await _chunk(tender_id, "req")
+    await _requirement(tender_id, chunk_id)
+    backed = await _employee(org_id, "Backed Employee")
+    unbacked = await _employee(org_id, "Unbacked Employee")
+    await _select(tender_id, backed)
+    await _select(tender_id, unbacked)
+    evidence_id = await _evidence_link(tender_id, backed)
+    await _proposal_claim(tender_id, "Relevant Experience", evidence_id=evidence_id)
+
+    await graph_service.project_tender(tender_id)
+
+    backed_labels = {
+        label
+        for row in await graph_service.preview_impact(tender_id, backed)
+        for label in row["labels"]
+    }
+    assert "ProposalClaim" in backed_labels, "control: the backed employee does reach its claim"
+    assert await graph_service.preview_impact(tender_id, unbacked) == [], (
+        "an employee nothing depends on must show zero affected nodes"
+    )
+
+
 # ----------------------------------------------------------------------
 # 10. Stale projection query returns GRAPH_STALE.
 # ----------------------------------------------------------------------

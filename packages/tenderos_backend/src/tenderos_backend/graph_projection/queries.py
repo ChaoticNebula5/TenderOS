@@ -100,10 +100,17 @@ async def preview_impact(
     a real, meaningful third state ("never selected for this tender"),
     not a defect.
     """
+    # B17 Phase 0: the path is DIRECTED (`->`), as D5 (:1955) specifies.
+    # Every D2 edge points downstream from the fact, so a directed walk is
+    # exactly "what depends on this fact". It was undirected from B10 until
+    # B17 Phase 0, which let a fact with no dependents walk back through the
+    # shared Tender node into its siblings' evidence (16 vs 0 affected nodes
+    # for one employee on real-run data) - see KNOWN_LIMITATIONS.md and
+    # test_employee_with_no_evidence_affects_nothing_even_beside_one_that_does.
     result = await session.run(
         "MATCH (fact {knowledge_item_id: $knowledgeItemId}) "
         "OPTIONAL MATCH (fact)-[u:USED_IN]->(:Tender {id: $tenderId}) "
-        f"MATCH path = (fact)-[*1..{int(max_hops)}]-(affected) "
+        f"MATCH path = (fact)-[*1..{int(max_hops)}]->(affected) "
         "WHERE affected.tender_id = $tenderId AND ("
         "  affected:Role OR affected:Compliance OR affected:Requirement "
         "  OR affected:ProposalClaim OR affected:ProposalSection"

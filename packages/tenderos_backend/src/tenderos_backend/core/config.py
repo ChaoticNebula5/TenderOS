@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -106,7 +107,15 @@ class Settings(BaseSettings):
     # field at all) - an unbounded or caller-controlled traversal depth on a
     # variable-length Cypher path is a denial-of-service shape, closed by
     # construction now rather than deferred to B15.
-    graph_max_hops: int = 4
+    #
+    # B17 Phase 0: D4's "permits configuration up to 6" (Build Guide :1940)
+    # existed only as the comment above until now - GRAPH_MAX_HOPS=50 would
+    # have been accepted and interpolated straight into the variable-length
+    # Cypher bound in graph_projection/queries.py::preview_impact. le=6 is
+    # D4's own ceiling. ge=1 is not in D4: it is added because a bound of 0
+    # renders `[*1..0]`, a path pattern that silently matches nothing.
+    # Either violation now fails at Settings() construction.
+    graph_max_hops: int = Field(default=4, ge=1, le=6)
 
     # I5 (Build Guide :2755-2763): "Every workflow tracks estimated model
     # cost. When projected cost exceeds MAX_TENDER_COST_USD: pause, show

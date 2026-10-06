@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
+from tenderos_backend.db.models.knowledge import KnowledgeItem
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import document_service, knowledge_service
@@ -694,3 +695,55 @@ async def test_deselecting_also_bumps_state_version():
     async with UnitOfWork() as uow:
         after_version = (await uow.tenders.get(tender_id)).state_version
     assert after_version == before_version + 1
+
+
+async def test_one_knowledge_item_is_reused_across_two_tenders_and_deselection_stays_per_tender():
+    """B17 Phase 0, Part N (Build Guide :3920-3921): "knowledge facts are
+    reusable across tenders" and "deselection in one tender does not affect
+    another". The only prior evidence was graph-layer
+    (test_graph_projection.py::test_deselecting_fact_in_one_tender_does_not_
+    affect_another), which creates each tender under a NEW organization and
+    writes selections through a helper, not this service. This test is the
+    service-level observation: ONE organization, TWO of its tenders, ONE
+    knowledge_items row, every selection change made through
+    set_knowledge_selection exactly as the route makes it.
+    """
+    org_id, tender_a, knowledge_item_id, actor_id = await _org_tender_and_employee()
+    tender_b = (
+        await create_tender(organization_id=org_id, name="Second Tender", created_by=actor_id)
+    ).id
+
+    # Reuse: the same item selected into both tenders of the same org.
+    await knowledge_service.set_knowledge_selection(tender_a, knowledge_item_id, True, actor_id)
+    await knowledge_service.set_knowledge_selection(tender_b, knowledge_item_id, True, actor_id)
+
+    async with UnitOfWork() as uow:
+        selected_a = await uow.knowledge.list_selections_for_tender(tender_a, selected_only=True)
+        selected_b = await uow.knowledge.list_selections_for_tender(tender_b, selected_only=True)
+        org_items = (
+            await uow.session.execute(
+                select(KnowledgeItem.id).where(KnowledgeItem.organization_id == org_id)
+            )
+        ).scalars().all()
+        version_b_before = (await uow.tenders.get(tender_b)).state_version
+    assert [s.knowledge_item_id for s in selected_a] == [knowledge_item_id]
+    assert [s.knowledge_item_id for s in selected_b] == [knowledge_item_id]
+    assert org_items == [knowledge_item_id], (
+        "reuse means one knowledge_items row shared by both tenders, not a per-tender copy"
+    )
+
+    # Isolation: deselect in tender A only.
+    await knowledge_service.set_knowledge_selection(tender_a, knowledge_item_id, False, actor_id)
+
+    async with UnitOfWork() as uow:
+        all_a = await uow.knowledge.list_selections_for_tender(tender_a)
+        all_b = await uow.knowledge.list_selections_for_tender(tender_b)
+        item = await uow.session.get(KnowledgeItem, knowledge_item_id)
+        version_b_after = (await uow.tenders.get(tender_b)).state_version
+    assert [(s.knowledge_item_id, s.selected) for s in all_a] == [(knowledge_item_id, False)]
+    assert [(s.knowledge_item_id, s.selected) for s in all_b] == [(knowledge_item_id, True)]
+    assert all_b[0].deselected_at is None
+    assert version_b_after == version_b_before, (
+        "a deselection in tender A must not bump tender B's state_version"
+    )
+    assert item is not None, "deselecting in one tender must not delete the shared item"

@@ -11,6 +11,27 @@ COPY packages/tenderos_backend/pyproject.toml packages/tenderos_backend/pyprojec
 
 RUN uv sync --frozen --package tenderos-api
 
+# B17 Phase 0: this process embeds and reranks inside request handling
+# (commercial_service._ground_pricing_finding, agents/knowledge/retrieval.py's
+# query embedding, document_service), so a fresh container used to fetch
+# both models from Hugging Face on its first such request - observed at
+# about 63 s inside one resolve request (KNOWN_LIMITATIONS.md). Baked in at
+# build time, in their own layer before the app-code COPY so ordinary code
+# changes keep it cached. Model names match ingestion/embed.py's and
+# agents/knowledge/rerank.py's own _MODEL_NAME exactly - keep these in
+# sync, and with apps/worker/Dockerfile's identical step.
+RUN uv run --frozen --package tenderos-api python -c \
+    "from sentence_transformers import CrossEncoder, SentenceTransformer; \
+SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+
+# Runtime only, set after the download above so it cannot block it: with
+# both models baked in, nothing should ever reach huggingface.co at run
+# time. Offline mode turns a missing model into an immediate, loud error
+# instead of a silent network fetch inside a request.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 COPY apps/api apps/api
 COPY packages/tenderos_backend packages/tenderos_backend
 COPY alembic.ini alembic.ini
