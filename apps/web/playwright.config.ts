@@ -33,6 +33,12 @@ export default defineConfig({
     baseURL: "http://localhost:5173",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // B17 Phase 0: every E2E run reports prefers-reduced-motion: reduce, wired
+    // before any animated component ships in this app (Phase 1 restyle,
+    // Cytoscape graph). Steps then never wait on, or race, a transition, and
+    // the reduced-motion path every animated component must honour is the one
+    // the golden path actually exercises.
+    reducedMotion: "reduce",
     // B16: matches docker-compose.e2e.yml's own E2E_RATE_LIMIT_BYPASS_ENABLED
     // and main.py's _E2E_BYPASS_HEADER/_E2E_BYPASS_VALUE exactly. Only this
     // file (Playwright's own test config) ever sends this header - the real

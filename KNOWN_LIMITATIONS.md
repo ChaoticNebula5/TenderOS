@@ -1171,7 +1171,35 @@ Each entry:
       triggered by container removal) were never actually exercised by
       this run, because this run was never a fake run - they remain open
       questions for the first genuinely clean fake run that stalls the
-      same way, not closed by this incident either way.
+      same way, not closed by this incident either way. (B17 Phase 0
+      closed the model-cache candidate: both models are now baked into
+      the api and worker images, offline at runtime - see the resolved
+      "api image never pre-downloaded the embedding model" entry.)
+  14. **Playwright launched from the repo root ran a different Playwright
+      against the wrong tests, and failed before any test executed - an
+      invocation fault presenting as a red E2E (B17 Phase 0, 2026-10-06).**
+      A backgrounded `cd apps/web && npx playwright test` ran with the repo
+      root as its working directory. `npx` found no local binary there
+      (the project's Playwright lives in `apps/web/node_modules`), printed
+      `npm warn exec The following package was not found and will be
+      installed: playwright@1.63.0`, and ran that 1.63.0 CLI against the
+      project's own `@playwright/test` 1.62.1 - "Playwright Test did not
+      expect test() to be called here ... two different versions of
+      @playwright/test". With no `playwright.config.ts` in the repo root it
+      used the default test directory and collected `src/**/*.test.tsx`
+      (Vitest unit tests), which import `src/api/client.ts` and crash on
+      `import.meta.env` outside Vite. It also left a stray root
+      `test-results/` (removed). Nothing in the product or the spec ran.
+      **The clue:** error paths printed relative to the repo root
+      (`apps\web\e2e\full-flow.spec.ts`), where a run from `apps/web`
+      prints `e2e\full-flow.spec.ts`. **Resolution:** one re-launch with no
+      code change, from an explicit working directory using the
+      project-local binary (`apps/web/node_modules/.bin/playwright.cmd`,
+      `--version` 1.62.1) - green. **Detection, standing step:** print the
+      Playwright version and the resolved config path before every run;
+      a version other than the lockfile's, or no config path, means stop
+      before running. (A `scripts/e2e.ps1` launcher doing exactly that is
+      the planned Phase 0b follow-up.)
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -6216,6 +6244,70 @@ edits, not code bugs.
   the next time a fake-provider run comes back red, "is the harness wrong
   again" is a first-class hypothesis to check early, not the last thing
   reached for after the product code has already been re-read twice.
+- **(5) Fifth harness error, B17 Phase 0 (2026-10-05):** the static
+  `compliance_proposal` fallback returned `evidence_refs=[]` for every
+  call, so no compliance decision ever cited an employee, no employee had
+  any downstream edge in Neo4j (only `USED_IN`), and E2E step 14's
+  assertion - an employee whose impact preview names a Requirement
+  (`full-flow.spec.ts:1175-1178`) - was structurally unreachable under the
+  fake provider. Found by reading the run's data, not the spec: the
+  compliance call's own `agent_traces.input_refs` showed it HAD been
+  offered valid employee candidates (`evidence_1`.., `[employee,
+  validity=valid]`) and the fallback cited none; the tender held 1
+  requirement and 9 `document_excerpt` evidence links, none employee-
+  backed. Fixed in the harness only, no spec edit:
+  `_compliance_proposal_fallback` now cites the first `[employee,
+  validity=valid]` label its own prompt offered (exactly one, so the
+  step-14 deselection leaves no alternate evidence), and
+  `_proposal_drafting_fallback` adds a `compliance` claim citing the first
+  offered evidence and requirement facts (its original uncited claim is
+  kept first, for step 10). Tests render prompts through the production
+  formatters (`tests/unit/test_fake_fallbacks.py`), so a prompt-format
+  change fails there. **New guard against a sixth:**
+  `scripts/check_fake_run_invariants.py` checks a fake run's data directly
+  - a requirement, an affirmed decision with evidence, a grounded claim, a
+  directed Employee-to-Requirement path in Neo4j - so a missing data shape
+  surfaces as a named failed invariant instead of a late Playwright
+  timeout. Five for five is now the prior.
+- **(6) Sixth harness error, B17 Phase 0, found by a Phase 0 count guard
+  the same day:** the static `requirement_extraction` fallback returned a
+  single `technical` requirement, and role extraction runs only over
+  `category == "staffing"` requirements
+  (`talent_service.extract_and_persist_roles`, `:157`) - so every fake run
+  had 0 roles (checked: all three fake E2E tenders of 2026-10-04/05, 0
+  `role_requirements` rows each, and no `role_extraction` trace at all,
+  since the model call is skipped). E2E step 7's candidate-selection loop
+  therefore ran zero times in every earlier fake run and passed
+  vacuously; the new `expect.poll(roleRows.count() > 0)` guard
+  (`full-flow.spec.ts`, step 7) turned that into a named failure on its
+  first run. The guard was kept as written. Harness fix: the extraction
+  fallback also returns one `staffing` requirement, and the
+  `role_extraction` fallback cites `req_1` (always present when the call
+  is made - `talent_service` labels staffing requirements from 1 and skips
+  the call when there are none), so the role gets a real SATISFIES edge.
+  `scripts/check_fake_run_invariants.py` gained a `roles` invariant. Six
+  for six.
+- **(7) Seventh harness error, B17 Phase 0, exposed by the sixth fix:**
+  E2E step 14 chose its deselection target as the FIRST employee whose
+  impact preview listed a `Requirement` (`full-flow.spec.ts`, then
+  `:1248`). Once roles existed, a role-filler qualified too, through
+  `FILLS -> Role -> SATISFIES -> Requirement`, so which employee was chosen
+  depended on table order. Run 4 happened to pick the evidence provider and
+  passed; run 5 (2026-10-05, **fake**) picked the role-filler - checked in
+  Neo4j: `9a2c8808` ("Fake Candidate 0e4d6fd7") had only `USED_IN` and
+  `FILLS -> Role`, no `PROVIDES`, while the evidence came from a different
+  employee - and the step's poll for `deselected_fact_in_use` timed out.
+  **Observation, fake, not a defect:** D6's `removed_employee_committed`
+  fired correctly for that role-filler (critical, unresolved, 05:10:39) -
+  exactly D6's rule for an employee who is deselected but still `FILLS` a
+  role. Fix (spec, approved as a diff): the target must list both
+  `Requirement` AND `Compliance` (an evidence-bearing employee), with
+  `expect(targetTitle).toBeDefined()` so the old `?? ""` fallback can no
+  longer silently pick the first row. `check_fake_run_invariants.py` gained
+  invariant 6, `evidence_bearing_employee` (via the same
+  `graph_service.preview_impact` call the screen makes). Seven for seven;
+  the full-spec audit for the same two shapes (order-dependent targets,
+  passes at zero) is in the B17 Phase 0 report.
 
 ## [B13] No screen manages submission-item status - final readiness is unreachable through the UI by construction, independent of every other blocker
 
@@ -9219,3 +9311,365 @@ of a third and fourth hand-rolled copy.
 - **Test:** none - a dependency/config audit (`package.json`, `package-
   lock.json`, 8 forms and their backend schemas each read directly) and a
   proposal, not a code path.
+
+---
+
+## [found during B17 Phase 0, RESOLVED in Phase 0 (approved)] The api image never pre-downloaded the embedding model, so the first embedding-backed API request on a fresh container fetched it from HuggingFace inside the request (observed: about 63 s)
+
+- **Discovered:** B17 Phase 0's first fake-provider E2E run (2026-10-04,
+  label **fake**), against a stack just rebuilt with `--build`. Step 12
+  (`full-flow.spec.ts:973-978`, resolve every pricing finding) clicked
+  Resolve and waited 10 s for the button count to drop from 8 to 7; it
+  stayed at 8 and the test failed.
+- **Instrument checked first, per the standing harness rule:** the click
+  fired (the CORS preflight `OPTIONS /pricing-findings/dc44dd63-.../resolve`
+  is in the api access log at 16:10:19.443 UTC); the row IS resolved in
+  Postgres (`pricing_findings.resolved = t` for `dc44dd63-...`); and no
+  `"Resolve failed"` alert rendered. The access log has no line for the
+  POST itself because uvicorn writes it when the response goes out, and
+  the browser closed at the test timeout before that happened. An aside
+  on the instrument: the UI's 8 buttons are correct; a first count of 7
+  joined through `pricing_documents`, which drops the one finding whose
+  `pricing_document_id` is NULL. Counting by `pricing_findings.tender_id`
+  gives 8.
+- **Root cause, from the api log's own timestamps:** at 16:10:19.519 the
+  api process logs `sentence_transformers ... No device provided, using
+  cpu`, followed by a run of HuggingFace Hub HEAD/GET requests for
+  `sentence-transformers/all-MiniLM-L6-v2`. The weights finish loading at
+  16:11:17 and the embedding batch runs at 16:11:22: about 63 s inside one
+  request. The path is `commercial_service.resolve_pricing_finding_in_uow`
+  -> `_ground_pricing_finding` -> `ingestion/embed.py::embed_texts` ->
+  `_get_model()`, which is `lru_cache`d per process and downloads on first
+  use. `apps/worker/Dockerfile:27-28` bakes this model into the worker
+  image at build time; `apps/api/Dockerfile` does not. Earlier E2E runs
+  passed against a long-lived api container that had already downloaded
+  it once; a fresh container pays the download on its first such request.
+- **Scope, by grep, not assumed:** every `embed_texts` caller that the api
+  process can reach has the same cold path:
+  `agents/knowledge/retrieval.py:80` (query embedding) and
+  `domain/services/document_service.py:47`, besides the pricing grounding
+  above. Separately, `agents/knowledge/rerank.py:11`
+  (`cross-encoder/ms-marco-MiniLM-L-6-v2`) is baked into **no** image, so
+  the worker pays the same first-use download for the reranker.
+- **Risk:** latency on the first request after any api restart or
+  rebuild, long enough to fail a 10 s UI wait. It is also a runtime
+  outbound dependency on huggingface.co from inside request handling: a
+  host with restricted egress would fail that request outright, not just
+  slowly.
+- **Effect on the first Phase 0 baseline:** the second E2E run went
+  against the same, by then warm, api container, so it said nothing about
+  a fresh one.
+- **Fix (approved, B17 Phase 0):** both `apps/api/Dockerfile` and
+  `apps/worker/Dockerfile` (the latter also builds `outbox_dispatcher`)
+  now download `sentence-transformers/all-MiniLM-L6-v2` AND
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` at build time, in a layer before
+  the app-code COPY, then set `ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`
+  for runtime. Offline mode turns any model missing from the image into an
+  immediate error instead of a silent network fetch inside a request.
+- **Observed, not assumed (2026-10-05):** each freshly built image run with
+  `docker run --network none` (no network at all, so any fetch attempt
+  would fail) loaded both models from the baked cache: first embed 0.27 s,
+  first rerank 0.16 s, in both the api and worker images, with both
+  offline variables reported set. The request-level check (a fresh stack's
+  first pricing-finding resolve, E2E step 12) is in the Phase 0 report.
+- **Cost:** image size by `docker image inspect .Size`: api 431,507,363 ->
+  626,316,023 bytes (+185.8 MiB, both models); worker 578,223,800 ->
+  662,385,029 bytes (+80.3 MiB, reranker only - the embedder was already
+  baked in).
+- **Test:** none in the suite - verified by the observation above.
+
+---
+
+## [found during B17 Phase 0, owner: NOT Phase 0] `make test` points pytest at the live stack's Neo4j and Redis DB 0; the `_test` guard protects Postgres only, and six fixtures run `MATCH (n) DETACH DELETE n`
+
+- **Discovered:** B17 Phase 0 item 9 (the D4/D5 directed-vs-undirected
+  comparison). The live Neo4j held **0 nodes** while the live Postgres
+  `tenderos` database held 31 tenders and 22 workflow runs.
+- **Mechanism, read directly:** the Makefile's `test` target sets
+  `NEO4J_URI=bolt://localhost:7687` and `REDIS_URL=redis://localhost:6379/0`,
+  the same Neo4j and the same Redis database the running stack uses.
+  `tests/integration/conftest.py::_guard_test_database` refuses any
+  `POSTGRES_DSN` not ending in `_test`, but nothing equivalent exists for
+  Neo4j or Redis. Six fixtures wipe the whole graph:
+  `tests/integration/test_graph_projection.py:37` and `:279`,
+  `test_readiness_service.py:39`, `test_reanalysis_job.py:53`,
+  `test_redteam_service.py:36`, `tests/route/conftest.py:164`. Neo4j 5.26
+  Community has a single user database, so there is no `_test` graph to
+  point at. Redis held 81 keys immediately after the 2026-10-04 pytest
+  runs; whether any of them were test-written RQ jobs that a live worker
+  could then pick up is not established.
+- **Risk:** every `make test` run destroys the live graph projection, and
+  shares an RQ namespace with any running worker. Recoverable per tender
+  through `graph_service.project_tender(tender_id)` (Part D's "derived and
+  rebuildable"; `test_rebuild_from_postgres_after_deleting_neo4j` covers
+  it), but **not** through `scripts/rebuild_graph.py`: that script is a
+  4-line stub that raises "rebuild_graph is not implemented yet (arrives
+  with B10)", checked directly. There is no whole-graph rebuild command. That is also why pytest must never run at the same
+  time as a live E2E run.
+- **Redis half resolved (B17 Phase 0, approved config change):** the
+  Makefile's `test` target now sets `REDIS_URL=redis://localhost:6379/1`;
+  the stack keeps `/0`. Every test reads `settings.redis_url` (grepped - no
+  test hardcodes a database index; `test_outbox_dispatcher.py`'s
+  `localhost:1/0` is a deliberately unreachable port), so this fully moves
+  the test RQ namespace. Only `make test` carries it - a hand-typed
+  `uv run pytest` with `/0` still shares, so use the target's exact env.
+  CI is unaffected either way (its own throwaway Redis service container).
+- **Neo4j half still open.** Candidate fixes, for a later decision: a guard
+  that refuses to run unless the stack's api/worker containers are
+  stopped; a dedicated Neo4j container for tests, since Community edition
+  has no second database. Working rule meanwhile: stop the app containers
+  before `make test`, and re-project any tender whose graph is needed
+  afterwards (`graph_service.project_tender`).
+- **Standing rule (B17 Phase 0):** no pytest between a real-provider run
+  and its captures - a test run would wipe that run's graph projection.
+- **Test:** none - a harness-isolation finding.
+
+---
+
+## [found during B17 Phase 0, RESOLVED in Phase 0 (approved experiment, all tests passed)] `preview_impact` traversed undirected; D5 specifies a directed traversal, and the difference was large on real data
+
+- **Spec, quoted:** Build Guide D5 (:1955):
+  `MATCH path = (fact)-[*1..$maxHops]->(affected)` - a directed
+  variable-length path. Every relationship in D2 (:1884-1896) points
+  downstream (knowledge item -PROVIDES-> Evidence -SUPPORTS-> Compliance
+  -DECIDES-> Requirement; Evidence -CITED_IN-> ProposalClaim -PART_OF->
+  ProposalSection; Employee -FILLS-> Role -SATISFIES-> Requirement), so a
+  directed path from the fact follows exactly "what depends on this fact".
+- **Code:** `graph_projection/queries.py:106`,
+  `f"MATCH path = (fact)-[*1..{int(max_hops)}]-(affected) "` - no arrow,
+  so undirected. Present since B10's first implementation (`06b5d44`,
+  2026-08-16) and never recorded as a deviation before this entry.
+- **Measured, B17 Phase 0, zero cost:** tender `14cd7584-...` (the
+  synthetic package, data produced by a **real**-provider run on
+  2026-09-01 - Gemini), projected today with `graph_service.project_tender`
+  (deterministic, no LLM). The production query text ran twice for each
+  of the tender's 4 evidence- or selection-linked knowledge items, with
+  only the arrow changed, `GRAPH_MAX_HOPS=4`:
+
+  | item | undirected (as coded) | directed (D5) |
+  |---|---|---|
+  | `26ddfff0` | 24 | 17 |
+  | `2e42f140` | 17 | 4 |
+  | `c39196e1` | 19 | 2 |
+  | `d9cda746` | 16 | 0 |
+  | total | 76 | 23 |
+
+  Directed was a strict subset every time (0 nodes returned only by the
+  directed query).
+- **Why the gap, observed directly:** `d9cda746` is an Employee whose
+  only edge is `USED_IN -> Tender` - no evidence, no role, nothing depends
+  on it, so D5's directed query correctly returns 0. The undirected query
+  walks backwards into the shared Tender node, out along every other
+  item's `USED_IN` edge, and forward through those items' evidence,
+  reporting 16 "affected" nodes for a fact that affects nothing. Every
+  item selected into a tender reaches the others this way, within the
+  hop budget.
+- **Risk:** the impact preview over-reports. A user deselecting a fact
+  is shown dependents that belong to other facts, which weakens the
+  screen's signal ("potentially affected" in D4 means affected through
+  this fact, not through its neighbours in the same tender). Nothing is
+  silently missed - the undirected set contains the directed set - so
+  this is a precision problem, not a recall one.
+- **Decision and fix (B17 Phase 0, approved as an experiment with a
+  revert-on-any-failure condition):** `queries.py:106` (now with a comment
+  above it) uses `-[*1..{max_hops}]->`, matching D5. This brings the code
+  INTO line with the spec rather than changing the contract.
+- **Every graph-related test, run against the directed query
+  (2026-10-05): 159 passed, 0 failed**, across 20 files - every test file
+  that touches `preview_impact`, `graph_service`, the projector, Neo4j or
+  the graph routes, including all 14 tests that exercise impact preview or
+  deselection (`test_preview_graph_impact_returns_the_selected_employee`,
+  `test_proposal_claim_appears_in_impact_set`,
+  `test_preview_impact_surfaces_a_never_selected_item_that_backs_real_evidence`,
+  `test_alternate_evidence_remains_compliance_not_broken`, and the rest).
+  No existing test depended on the undirected walk.
+- **Test:** `test_graph_projection.py::test_employee_with_no_evidence_
+  affects_nothing_even_beside_one_that_does` - an evidence-backed employee
+  and an unbacked one in the same tender; asserts the backed one reaches
+  its claim (control) and the unbacked one shows `[]`. Proven falsifiable,
+  not assumed: with the arrow temporarily reverted to undirected it fails
+  on exactly that assertion (the unbacked employee leaks the sibling's
+  claim through the shared Tender node), and passes once restored.
+- **Residual:** the landing page's impact chapter still says TenderOS
+  "identifies every affected section" - a Phase 5 copy fix, already planned.
+
+---
+
+## [B17 Phase 0, resolved] D4's 6-hop ceiling existed only as a comment
+
+- **Spec, quoted:** Build Guide D4 (:1940): "The code permits
+  configuration up to 6 for experiments, but the public application
+  defaults to 4."
+- **Before:** `core/config.py` declared `graph_max_hops: int = 4` with a
+  comment saying "The code may configure up to 6"; nothing enforced it.
+  `GRAPH_MAX_HOPS=50` would have been accepted and interpolated into the
+  variable-length Cypher bound in `graph_projection/queries.py:106`. The
+  per-request side was already closed (the impact request schema has no
+  hop field); the config side was not.
+- **Fix:** `graph_max_hops: int = Field(default=4, ge=1, le=6)`. `le=6` is
+  D4's ceiling. `ge=1` is not in D4 - added because a bound of 0 renders
+  `[*1..0]`, which silently matches nothing and would read as "no impact".
+  Both fail at `Settings()` construction, before any process starts work.
+- **Test:** `tests/unit/test_graph_max_hops_cap.py` (8 cases, through the
+  real `GRAPH_MAX_HOPS` env var): default 4; 1, 4, 6 accepted; 7, 50, 0,
+  -1 rejected.
+
+---
+
+## [B17 Phase 0, design limitation, documented] B14 scenario lines 3562-3563 ("compliance task reopens", "claim becomes needs_review") are not demonstrable by design
+
+- **Spec, quoted:** Build Guide B14 scenario test (:3555-3564):
+  "Project A supports Requirement R1 and Claim C1 → user requests
+  deselection → impact preview lists R1 and C1 → user confirms →
+  selection=false → projection refresh → evidence coverage = 0 →
+  **compliance task reopens** → **claim becomes needs_review** → readiness
+  blocker appears".
+- **Why neither step can happen on a deselection, from the code:**
+  - Compliance cannot reopen: re-evaluation (`reanalysis.py:152`,
+    `evaluate_compliance_for_requirement`) retrieves evidence with
+    `selected_only` deliberately unused (`compliance_service.py:404-413`),
+    so it re-finds the identical evidence; `persist_compliance_decision`
+    correctly leaves an unchanged decision alone. Observed live in B16
+    (this file, the `[B14] preview_impact ... USED_IN` entry's B16
+    addendum: "re-ran evaluate_compliance_for_requirement and re-found the
+    identical evidence"). B16 ruled out both ways of changing that (gating
+    retrieval by selection; auto-reselecting on evidence materialization)
+    for documented reasons in the same entry.
+  - A claim cannot become needs_review: the only computed needs_review is
+    `proposal_service.py:458`, inside `enforce_claim_grounding`, reached
+    only when a cited requirement's compliance is non-affirmative. Its two
+    callers are draft-time persistence (`:551`) and `reground_claim`
+    (`:922`, called by `reanalysis.py:184`). `reground_claim` re-filters
+    evidence by `verified and validity_status == "valid"` only
+    (`_prepare_evidence_facts`, `:154`) - selection is not an input - and
+    compliance stays affirmative per the point above. The model default
+    (`models/proposal.py:79`, `default="needs_review"`) is an initial
+    value, not a transition.
+  - The one remaining route is incidental: under a real provider the
+    re-evaluation's LLM call could answer differently by nondeterminism.
+    That is not caused by the deselection and is not a designed behaviour.
+- **The designed signal instead (D6):** reanalysis step 5 runs
+  `check_graph_contradictions`, which raises a `deselected_fact_in_use`
+  finding. `graph_service.py:387-411` grades it **critical** exactly when
+  coverage, ignoring the flagged evidence, says
+  `compliance_re_evaluation_required` (no alternate valid path) - the
+  spec's "evidence coverage = 0" (:3561) - and **major** otherwise. A
+  critical open finding is a readiness blocker
+  (`readiness_service.py:237-245`: "Unresolved critical red-team finding:
+  deselected_fact_in_use."), which is the spec's last line (:3564).
+- **E2E consequence (B17 Phase 0):** `full-flow.spec.ts` step 14's final
+  assertion ("at least one additional claim to become needs_review") was
+  removed and replaced by a comment. It was unreachable twice over: the
+  above, and a screen mismatch - its after-count polled `/compliance`,
+  where `ComplianceMatrix.tsx` has rendered no `<li>` in any version since
+  B14 (`85e1124`), against a before-count taken on `/proposal`. It also
+  produced run 4's only route "bounce" (page on `/redteam`, expected
+  `/compliance`). The D6 finding assertion before it stays.
+- **Gap, proposed not added:** step 13 asserts readiness is not "Ready"
+  with at least one blocker of any kind; it does not assert that the D6
+  finding is that blocker, so the spec's :3564 link is not yet observed
+  end to end. The proposed step-13 addition is in the Phase 0 report as a
+  diff, for decision.
+- **Test:** the D6 half is covered at service level by
+  `test_reanalysis_job.py::test_reanalyze_knowledge_selection_change_
+  surfaces_deselected_fact_still_used_finding` (asserts no reopen AND an
+  unresolved finding); the E2E covers the finding on screen.
+
+---
+
+## [found during B17 Phase 0, open, diff pending] E2E step 0b's import-batch poll can pass with 1 of 4 items, so the import-items loop can examine a partial list
+
+- **Observed (2026-10-06, final Phase 0 fake run, via the spec's own
+  `loop-and-poll-iterations` instrument):** `loop:import-items` ran **1**
+  time, while the batch holds **4** items (all `approved`, checked in
+  Postgres). The run was green; the partial read did no harm here because
+  every item landed `approved` (a fresh org takes the NEW branch, so no
+  Approve button is expected), and the later employee-links poll waits for
+  all `resumeFiles.length` employees.
+- **Mechanism, from the code:** the poll's condition is
+  `b.completed + Number(b.failed) >= b.total && b.total > 0`, but
+  `knowledge_service.py:1214` computes `total = len(items)`, and items are
+  created one per résumé job - so `total` can be 1 while three items do
+  not exist yet, and the condition passes. Its own message says "all 4
+  items"; the condition never checks 4.
+- **Risk:** the same pass-at-partial shape as the Phase 0 count guards: an
+  item that lands `needs_review` after the loop has run would never be
+  approved, and the loop would not notice.
+- **Proposed (diff in the Phase 0 report, not applied - a green run was
+  not patched and rerun):** require `b.total === resumeFiles.length` in the
+  poll, and assert `itemCount === resumeFiles.length` before the loop.
+- **Test:** the E2E itself, once the diff is decided.
+
+---
+
+## [found during B17 Phase 0, open, deliberately not fixed] Graph-contradiction red-team findings carry the wrong `target_type` for the id they store
+
+- **What, read from the code:** `redteam_checks.check_graph_contradictions`
+  builds `target_id` from the contradiction row's own node -
+  `row.get("compliance") or row.get("claim") or row.get("target") or
+  row.get("fact")` (`redteam_checks.py:212-213`) - but takes
+  `target_type` from a fixed per-category map, `_GRAPH_TARGET_TYPE`
+  (`:182-187`). For `deselected_fact_in_use` the map says `"evidence"`
+  (`:184`), while the D6 query returns `fact, evidence, via, target`, so
+  `target_id` is the `target`: a Compliance or ProposalClaim node.
+  `removed_employee_committed` maps to `"proposal_claim"` (`:185`), and has
+  the same risk when its target is a Role reached through `FILLS`.
+- **Observed (fake, 2026-10-06, the three Phase 0 green runs):** each run's
+  one deselection produced three `deselected_fact_in_use` findings, all
+  labelled `target_type = evidence`, with three distinct `target_id`s and
+  three distinct fingerprints - not duplicates. Resolved in Postgres, the
+  final run's three ids are the compliance entry for the staffing
+  requirement, the compliance entry for the technical requirement, and a
+  grounded `compliance` proposal claim. None of the three ids exists in
+  `evidence_links`, `compliance_evidence` or `proposal_claim_evidence`.
+- **Every consumer of a red-team finding's `target_type`, searched
+  read-only (backend `packages/`, `apps/api`, `apps/worker`, and
+  `apps/web/src`):**
+  - `redteam_service.finding_fingerprint` (`redteam_service.py:24-37`,
+    called at `:55` and `:192`): hashes `[tender_id, target_type,
+    target_id, finding_category, violated_condition]` - the finding's
+    identity.
+  - `redteam_service.persist_finding_draft` (`:78`) and
+    `RedteamRepository.create` (`db/repositories/redteam.py:16-28`):
+    store it.
+  - `schemas/redteam.py:11`: exposes it in the API response.
+  - `apps/web/src/api/client.ts` declares the field; **no screen reads
+    it** (no `target_type` in `apps/web/src/routes` or `components`); the
+    red-team screen renders category, severity, text, resolved - no link
+    built from target_type/target_id.
+  - Readiness (`readiness_service.py:238-246`) builds its blocker from the
+    constant `"redteam_finding"` and `finding.id`, never the finding's own
+    `target_type`.
+  - Targeted replanning (`orchestration/nodes/redteam.py:101`) routes by
+    `map_finding_to_corrective_task(finding.finding_category)`
+    (`redteam_service.py:275`), not by `target_type`.
+  - `domain/policies/rbac.py:187` mentions the column in a comment only.
+  - The other `target_type` hits in the codebase are different columns
+    (`audit_events.target_type`, readiness blockers' own, gate targets) -
+    not consumers of this one.
+  **Conclusion: no consumer misroutes today because of the wrong label.**
+  The value is only stored, hashed into identity, and exposed in the API;
+  nothing dereferences `target_type` + `target_id` together. The risk is
+  latent: the first consumer that does (a "go to target" link on the
+  red-team screen, an audit join) would look in the wrong table and find
+  nothing.
+- **Why this is not a one-line fix:**
+  - **Identity.** The fingerprint includes `target_type` (Build Guide
+    `:2726`: "Red-team finding: target_type + target_id + finding_category
+    + violated_condition"; code `redteam_service.py:24-37`). Correcting the
+    label changes every affected finding's fingerprint, so the next
+    detection would create a NEW row while the old one stays - a
+    duplicate, and a human resolution on the old row would no longer
+    protect against redetection. A real fix needs a data migration that
+    re-labels and re-fingerprints existing rows together.
+  - **Nothing catches it in the database.** `redteam_findings.target_type`
+    is `TEXT NOT NULL` with no CHECK constraint (Build Guide `:1562`;
+    `db/models/redteam.py:37`), so any string is accepted.
+  - **The spec's vocabulary.** Build Guide examples use
+    `"target_type": "proposal_claim"` for red-team findings (`:2298`, E8)
+    and `"compliance_entry"` for gate targets (`:871`, R5) - so a correct
+    label would be per-row (`compliance_entry` or `proposal_claim`, or a
+    Role type), derived from the node actually stored, not per-category.
+- **Status:** open, not fixed, by decision (B17 Phase 0). Any fix is a
+  contract change (labels plus a fingerprint migration), not a cleanup.
+- **Test:** none yet.

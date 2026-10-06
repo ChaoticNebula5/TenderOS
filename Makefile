@@ -30,13 +30,20 @@ typecheck:
 # signal about the code under test (see tenderos_api/config.py's own
 # comment on this field, and tests/route/test_rate_limit_middleware.py for
 # the dedicated tests that re-enable it deliberately).
+#
+# REDIS_URL uses database 1, not 0 (B17 Phase 0): the running stack's
+# api/worker/outbox_dispatcher use database 0 for their RQ queues, so tests
+# on /0 shared a namespace with any live worker (KNOWN_LIMITATIONS.md,
+# "make test points pytest at the live stack's Neo4j and Redis DB 0").
+# Neo4j has no such split - Community edition has one user database - so
+# still stop the api/worker containers before running this target.
+#
+# The variables themselves live in scripts/test-backend.env (B17 Phase 0),
+# the single definition shared with scripts/test-backend.ps1 - make is not
+# installed on every machine this project runs on, and the env used to be
+# retyped by hand there. `set -a` exports every KEY=VALUE the file sets.
 test:
-	POSTGRES_DSN=postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test \
-	REDIS_URL=redis://localhost:6379/0 \
-	NEO4J_URI=bolt://localhost:7687 \
-	S3_ENDPOINT_URL=http://localhost:9000 \
-	RATE_LIMIT_ENABLED=false \
-	uv run pytest
+	set -a && . scripts/test-backend.env && set +a && uv run pytest
 
 migrate:
 	uv run alembic upgrade head

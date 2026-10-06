@@ -1,0 +1,20 @@
+# B17 Phase 0. Every image in docker-compose.yml builds with `context: .`
+# (the repo root), so without this file the whole working tree is sent to
+# the Docker daemon on every build. The Dockerfiles' COPY lines are
+# targeted, so none of the paths below ever reached an image layer, but
+# they did leave this machine's working tree as build context. Part L3
+# (Build Guide): private tender data "is never included in Docker images".
+# Excluding it from the build context makes that hold by construction, not
+# only because of which COPY lines happen to exist today.
+
+# Private tender data (Part L3) and its local-only evaluation config.
+data_private/
+
+# Real secrets. The containers receive env through compose, never the image.
+.env
+
+# Postgres dumps from earlier live runs.
+backups/
+
+# Gitignored third-party Claude Code skills (docs/frontend-tooling.md).
+.agents/

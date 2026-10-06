@@ -20,13 +20,23 @@
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
 #        -f docker-compose.e2e-fake.yml up -d --build api web worker outbox_dispatcher
+#
+# B17 Phase 0: every Gemini key is also blanked here, not only the provider
+# switched. `environment:` beats the base file's `env_file: .env`, so a stray
+# call that bypassed build_llm_client() and built a GeminiClient directly
+# would fail on an empty key instead of spending real budget. The fake run
+# then cannot spend money even if the provider switch alone were bypassed.
+x-fake-provider: &fake-provider
+  LLM_PROVIDER: "fake"
+  GEMINI_API_KEY: ""
+  COMPLIANCE_GEMINI_API_KEY: ""
+  TALENT_GEMINI_API_KEY: ""
+  COMMERCIAL_GEMINI_API_KEY: ""
+
 services:
   api:
-    environment:
-      LLM_PROVIDER: "fake"
+    environment: *fake-provider
   worker:
-    environment:
-      LLM_PROVIDER: "fake"
+    environment: *fake-provider
   outbox_dispatcher:
-    environment:
-      LLM_PROVIDER: "fake"
+    environment: *fake-provider

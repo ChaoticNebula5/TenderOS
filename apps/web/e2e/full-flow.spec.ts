@@ -153,21 +153,45 @@ const RATE_LIMIT_RECOVERY_WAIT_MS = 65_000;
 // transient auth failure can no longer strand the browser.
 // B17 Phase 1's own instrumentation, not a permanent addition: counts every
 // real bounce-recovery this wrapper performs across the WHOLE run, attached
-// as an artifact at the end (see "route-bounce-recovery-count" below) - the
+// as an artifact at the end (see "route-bounce-recoveries" below) - the
 // concrete answer to "did Login.tsx's destination-loss fix actually work,"
 // not just "did this run happen to pass." Deliberately does not change the
 // wrapper's own behavior or remove it: per B17's own plan, this run is
 // meant to CONFIRM the fix, and removing the scaffolding in the same pass
 // that's supposed to verify it would leave no fallback if the fix turned
 // out incomplete.
-let routeBounceRecoveryCount = 0;
+//
+// B17 Phase 0: the bare count above conflated two different things - a
+// real /login landing (the destination-loss symptom this instrument exists
+// to measure) and any other route mismatch (e.g. a poll that reloads while
+// the page is on a different screen than the one it names - run 4's only
+// "bounce" was exactly that: on /redteam, expected /compliance). Each
+// recovery now records the URL the page actually landed on, and the
+// attachment reports /login landings separately. Only loginLandings is
+// evidence on the destination-preservation fix.
+type RouteBounceRecovery = { expectedPath: string; landedUrl: string; loginLanding: boolean };
+const routeBounceRecoveries: RouteBounceRecovery[] = [];
+
+// B17 Phase 0 instrument: how many times every loop body and poll callback
+// in this spec actually ran in this run, plus the actions each loop took,
+// attached as "loop-and-poll-iterations". Increment-only - no selector or
+// flow change - so "not vacuous" is evidence from the run, not a claim.
+const iterations: Record<string, number> = {};
+function tick(name: string): void {
+  iterations[name] = (iterations[name] ?? 0) + 1;
+}
 
 async function reloadAndSettleOnRoute(page: Page, expectedPath: string): Promise<void> {
   await reloadAndSettle(page);
   let bounces = 0;
   while (!page.url().endsWith(expectedPath) && bounces < MAX_ROUTE_BOUNCE_RECOVERIES) {
     bounces += 1;
-    routeBounceRecoveryCount += 1;
+    const landedUrl = page.url();
+    routeBounceRecoveries.push({
+      expectedPath,
+      landedUrl,
+      loginLanding: new URL(landedUrl).pathname === "/login",
+    });
     await page.waitForTimeout(RATE_LIMIT_RECOVERY_WAIT_MS);
     await page.goto(expectedPath);
     await reloadAndSettle(page);
@@ -207,6 +231,7 @@ async function waitForGateToOpen(page: Page, url: string, headingText: string, t
   await expect
     .poll(
       async () => {
+        tick(`poll:gate-open:${headingText}`);
         await reloadAndSettleOnRoute(page, url);
         return await gatePanel(page, headingText).getByRole("button", { name: "Approve" }).count();
       },
@@ -312,6 +337,13 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // doesn't distinguish "still processing" from "done."
   async function readSoleBatchRow() {
     await reloadAndSettleOnRoute(page, "/talent/import");
+    // B17 Phase 0 guard: this reads .first() on the assumption there is
+    // exactly one batch (step 0b's single résumé upload, in a fresh org).
+    // A second batch would make .first() silently read the wrong one.
+    expect(
+      await page.locator("table").first().locator("tbody tr").count(),
+      "expected exactly one import batch in this run's fresh organization",
+    ).toBe(1);
     const row = page.locator("table").first().locator("tbody tr").first();
     const cells = await row.locator("td").allTextContents();
     return {
@@ -330,6 +362,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
+        tick("poll:import-batch-finished");
         const b = await readSoleBatchRow();
         return b.completed + Number(b.failed) >= b.total && b.total > 0;
       },
@@ -356,13 +389,14 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // below instead of failing. Same class of race already fixed for the
   // resume upload above; this call site was simply never touched.
   await expect
-    .poll(async () => await itemRows.count(), {
+    .poll(async () => (tick("poll:import-items-loaded"), await itemRows.count()), {
       timeout: 30_000,
       message: "waiting for the import items table to load",
     })
     .toBeGreaterThan(0);
   const itemCount = await itemRows.count();
   for (let i = 0; i < itemCount; i++) {
+    tick("loop:import-items");
     const row = itemRows.nth(i);
     const approveButton = row.getByRole("button", { name: "Approve" });
     // A brand-new org has no existing employees to collide with, so
@@ -372,6 +406,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     // needs_review as a real possibility though - handled, not assumed
     // away, in case an LLM-extraction ambiguity puts one there anyway).
     if ((await approveButton.count()) > 0) {
+      tick("action:import-item-approved");
       await approveButton.click();
       // handleApprove awaits approveImportItem then re-fetches items,
       // which is what removes the Approve/Reject buttons for a row no
@@ -433,6 +468,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
+        tick("poll:talent-employee-links");
         await reloadAndSettleOnRoute(page, "/talent");
         return await page.locator('a[href^="/talent/employees/"]').count();
       },
@@ -509,6 +545,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
+        tick("poll:documents-parsed");
         await reloadAndSettleOnRoute(page, `/tenders/${tenderId}`);
         const statuses = await page
           .locator("table")
@@ -548,11 +585,13 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect(page.getByRole("button", { name: "Start processing" })).toBeHidden({
     timeout: 30_000,
   });
-  await page.goto(`/tenders/${tenderId}/requirements`);
   // No route returns "extraction is done" as a boolean - the observable
-  // signal this scenario uses is the requirement_review gate opening
-  // (screen 8's own fallback text disappears once orchestration reaches
-  // it). Real LLM-driven extraction across 5 documents, not a fixed
+  // signal this scenario uses is the requirement_review gate opening.
+  // B17 Phase 0: waits for the gate panel's Approve button to be PRESENT
+  // (waitForGateToOpen, like every other gate in this file), not for the
+  // "No open requirement review gate" text to be ABSENT - absence also holds
+  // for a page that has not rendered at all, which would pass at zero.
+  // Real LLM-driven extraction across 5 documents, not a fixed
   // guess at duration - generous timeout, polled via reload since this
   // screen fetches once on mount with no auto-refresh.
   //
@@ -565,19 +604,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // loses the whole run before any of the expensive per-requirement work
   // even starts. Moderate bump, not compliance's 2x, matching the smaller
   // (but still real and unmeasured) exposure.
-  await expect
-    .poll(
-      async () => {
-        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/requirements`);
-        return await page.getByText("No open requirement review gate for this tender yet.").count();
-      },
-      {
-        timeout: 450_000,
-        intervals: [2_000],
-        message: "waiting for extraction to finish and the requirement_review gate to open",
-      },
-    )
-    .toBe(0);
+  await waitForGateToOpen(
+    page,
+    `/tenders/${tenderId}/requirements`,
+    "Requirement review gate",
+    450_000,
+  );
 
   // ------------------------------------------------------------------
   // 5. Approve requirements - every row shown, not one (consistent with
@@ -587,11 +619,22 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // ------------------------------------------------------------------
   await reloadAndSettle(page);
   const reqRows = page.locator("table").first().locator("tbody tr");
+  // B17 Phase 0 guard: RequirementRegister initialises its list to [], so
+  // a count taken before the fetch lands is 0 and the confirm loop below
+  // would be skipped, passing vacuously. Wait on the data condition first.
+  await expect
+    .poll(async () => (tick("poll:guard-requirement-rows"), await reqRows.count()), {
+      timeout: 30_000,
+      message: "expected the requirement register to list at least one requirement",
+    })
+    .toBeGreaterThan(0);
   const reqCount = await reqRows.count();
   for (let i = 0; i < reqCount; i++) {
+    tick("loop:requirements");
     const row = reqRows.nth(i);
     const confirmButton = row.getByRole("button", { name: "Confirm" });
     if ((await confirmButton.count()) > 0) {
+      tick("action:requirement-confirmed");
       await confirmButton.click();
       // click() only waits for the DOM event, not handleConfirm's own
       // async PATCH - waiting for the "Reviewed" cell (index 5) to flip
@@ -643,10 +686,20 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     600_000,
   );
   const complianceRows = page.locator("table").first().locator("tbody tr");
+  // B17 Phase 0 guard: the gate opening (waitForGateToOpen) does not mean
+  // ComplianceMatrix's separately fetched entry list has landed - it starts
+  // as [], and a count of 0 would skip the approve/override loop below.
+  await expect
+    .poll(async () => (tick("poll:guard-compliance-rows"), await complianceRows.count()), {
+      timeout: 30_000,
+      message: "expected the compliance matrix to list at least one entry",
+    })
+    .toBeGreaterThan(0);
   const complianceCount = await complianceRows.count();
   const overriddenEntries: string[] = [];
   const alreadyAffirmativeEntries: string[] = [];
   for (let i = 0; i < complianceCount; i++) {
+    tick("loop:compliance-entries");
     const row = complianceRows.nth(i);
     const requirementId = (await row.locator("td").first().textContent()) ?? `row-${i}`;
     const select = row.locator("select");
@@ -662,11 +715,13 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     if (AFFIRMATIVE_COMPLIANCE_STATUSES.has(currentStatus)) {
       alreadyAffirmativeEntries.push(`${requirementId} (already ${currentStatus})`);
       if ((await approveButton.count()) > 0) {
+        tick("action:compliance-approved");
         await approveButton.click();
         await expect(approveButton).toBeHidden({ timeout: 15_000 });
       }
     } else {
       overriddenEntries.push(`${requirementId} (was ${currentStatus})`);
+      tick("action:compliance-overridden");
       // handleOverride always sets human_approved=true server-side
       // (compliance_service.override_compliance_entry's own documented
       // behaviour) - no separate Approve click needed for these rows.
@@ -715,9 +770,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // unmeasured, same caveat as extraction above.
   await waitForGateToOpen(page, `/tenders/${tenderId}/team`, "Resource selection gate", 300_000);
   const roleRows = page.locator("table").first().locator("tbody tr");
+  // B17 Phase 0 guard: same shape as the compliance one above - the gate
+  // being open does not mean TeamWorkspace's role list (initialised to [])
+  // has loaded, and a count of 0 would skip candidate selection entirely.
+  await expect
+    .poll(async () => (tick("poll:guard-role-rows"), await roleRows.count()), {
+      timeout: 30_000,
+      message: "expected the team workspace to list at least one role",
+    })
+    .toBeGreaterThan(0);
   const roleCount = await roleRows.count();
   const rolesWithNoCandidate: string[] = [];
   for (let i = 0; i < roleCount; i++) {
+    tick("loop:roles");
     const roleRow = page.locator("table").first().locator("tbody tr").nth(i);
     const roleName = (await roleRow.locator("td").first().textContent()) ?? `role-${i}`;
     // handleSelectRole's own listMatches(roleId) call is async, and
@@ -745,7 +810,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     // response can't land in the gap between click() and the wait
     // starting, closes it directly instead of hoping a proxy signal lines
     // up.
-    await Promise.all([
+    const [matchesResponse] = await Promise.all([
       page.waitForResponse(
         (resp) => resp.request().method() === "GET" && /\/roles\/[^/]+\/matches$/.test(resp.url()),
       ),
@@ -758,25 +823,31 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     // that handleSelectRole's own setMatches(result) has committed a React
     // re-render yet - a real, separate gap one layer up from the network
     // one just closed. "No candidates found for this role yet." is TRUE in
-    // the DOM from the moment of the click (matches starts as []), so a
-    // bare read the instant the response lands can still catch the
-    // pre-render default rather than the real answer. Not expect.poll()
-    // (which throws on timeout, wrong here - genuinely zero candidates for
-    // a role is a valid outcome, not a failure) - a bounded, non-throwing
-    // wait for real rows to appear, falling back to "no candidates" only
-    // once that window genuinely elapses.
-    let candidateRowCount = 0;
-    const rowPollDeadline = Date.now() + 3_000;
-    while (Date.now() < rowPollDeadline) {
-      candidateRowCount = await candidateSection.locator("tbody tr").count();
-      if (candidateRowCount > 0) break;
-      await page.waitForTimeout(100);
-    }
-    const noCandidates = candidateRowCount === 0;
-    if (noCandidates) {
+    // the DOM from the moment of the click (matches starts as []).
+    //
+    // B17 Phase 0: "how many candidates does this role have" is now read
+    // from the response this click triggered, not inferred from a timing
+    // window. It used to wait a fixed 3 s for rows and, if none rendered in
+    // time, record the role as having no candidates - a false-empty decided
+    // by timing (same bug shape as the networkidle finding above). Now: an
+    // empty body is the only way a role counts as having no candidates;
+    // otherwise wait for exactly that many rows AND for the first row to
+    // show this response's first employee id (TeamWorkspace does not clear
+    // the previous role's matches, so a count alone could match a stale
+    // render of an earlier role with the same number of candidates).
+    expect(matchesResponse.status(), "GET /roles/{id}/matches should return 200").toBe(200);
+    const matchesBody = (await matchesResponse.json()) as { employee_knowledge_item_id: string }[];
+    if (matchesBody.length === 0) {
       rolesWithNoCandidate.push(roleName);
       continue;
     }
+    await expect(candidateSection.locator("tbody tr")).toHaveCount(matchesBody.length, {
+      timeout: 15_000,
+    });
+    await expect(candidateSection.locator("tbody tr").first().locator("td").first()).toHaveText(
+      matchesBody[0].employee_knowledge_item_id,
+      { timeout: 15_000 },
+    );
     // Scoped to the first candidate ROW, not a global "first Select
     // button" locator - every candidate for this role starts as
     // "Select" (talent_analysis_node scores the whole pool per role, so
@@ -799,6 +870,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       name: "Select",
       exact: true,
     });
+    tick("action:candidate-selected");
     await firstSelectButton.click();
     // handleSelectCandidate's PATCH flips this row's own button to
     // "Deselect" on success - waiting for that (rather than just the
@@ -810,6 +882,14 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     body: JSON.stringify(rolesWithNoCandidate, null, 2),
     contentType: "application/json",
   });
+  // B17 Phase 0 guard: a role with no candidate is a legitimate outcome, but
+  // EVERY role ending up there means step 7 selected nothing and passed at
+  // zero (e.g. each role's candidate list missing its 3 s wait above).
+  expect(
+    rolesWithNoCandidate.length,
+    `expected at least one of ${roleCount} role(s) to get a candidate selected; ` +
+      `none did: ${JSON.stringify(rolesWithNoCandidate)}`,
+  ).toBeLessThan(roleCount);
   {
     const resourceGate = gatePanel(page, "Resource selection gate");
     await approveGate(resourceGate);
@@ -969,8 +1049,19 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   {
     const findingsTable = page.locator("table").nth(1);
     let resolveButtons = findingsTable.getByRole("button", { name: "Resolve" });
+    // B17 Phase 0 guard: step 8 already asserted unresolved pricing findings
+    // exist, and nothing resolves them before here, so 0 Resolve buttons
+    // means the list (initialised to []) has not loaded - not "nothing to
+    // do". Without this the loop below is skipped and step 12 passes vacuously.
+    await expect
+      .poll(async () => (tick("poll:guard-resolve-buttons"), await resolveButtons.count()), {
+        timeout: 30_000,
+        message: "expected unresolved pricing findings (step 8 saw them) to be listed",
+      })
+      .toBeGreaterThan(0);
     let remaining = await resolveButtons.count();
     while (remaining > 0) {
+      tick("loop+action:finding-resolved");
       await resolveButtons.first().click();
       await expect(resolveButtons).toHaveCount(remaining - 1, { timeout: 10_000 });
       resolveButtons = findingsTable.getByRole("button", { name: "Resolve" });
@@ -982,8 +1073,20 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await reloadAndSettle(page);
   {
     let resolveButtons = page.getByRole("button", { name: "Resolve" });
+    // B17 Phase 0 guard: RedteamFindings initialises its list to [] and
+    // shows "No findings." until the fetch lands. Step 11's run produces
+    // deterministic pricing_mismatch findings on this fixture (8 of them,
+    // plus 1 unsupported_claim, in the 2026-10-04 fake run), so 0 here
+    // means not loaded yet; without this the loop would be skipped.
+    await expect
+      .poll(async () => (tick("poll:guard-resolve-buttons"), await resolveButtons.count()), {
+        timeout: 30_000,
+        message: "expected open red-team findings from step 11's run to be listed",
+      })
+      .toBeGreaterThan(0);
     let remaining = await resolveButtons.count();
     while (remaining > 0) {
+      tick("loop+action:finding-resolved");
       await resolveButtons.first().click();
       await expect(resolveButtons).toHaveCount(remaining - 1, { timeout: 10_000 });
       resolveButtons = page.getByRole("button", { name: "Resolve" });
@@ -1066,6 +1169,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
+        tick("poll:selection-rows");
         await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/knowledge-selections`);
         return await page.locator("table").first().locator("tbody tr").count();
       },
@@ -1091,9 +1195,15 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   const selectionRows = page.locator("table").first().locator("tbody tr");
   const selectionRowCount = await selectionRows.count();
   const candidateFindings: { title: string; labels: string[] }[] = [];
-  let affectedRequirementId: string | null = null;
+  // B17 Phase 0, renamed from affectedRequirementId: this is the id of the
+  // first Requirement seen in ANY employee's post-select preview, used only
+  // by the existence assertion after this loop. It is not the requirement
+  // the deselection target affects - the target is chosen separately below
+  // (Requirement AND Compliance) and may be a different employee.
+  let firstPreviewRequirementId: string | null = null;
 
   for (let i = 0; i < selectionRowCount; i++) {
+    tick("loop:knowledge-selection-rows");
     const row = selectionRows.nth(i);
     const title = (await row.locator("td").first().textContent())?.trim() ?? `row-${i}`;
 
@@ -1132,7 +1242,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     await expect
       .poll(
         async () =>
-          (await page.locator("li").count()) +
+          (tick("poll:impact-preview-rendered"), await page.locator("li").count()) +
           (await page.getByText("No downstream facts would be affected.").count()),
         { timeout: 60_000 },
       )
@@ -1147,11 +1257,11 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     });
     candidateFindings.push({ title, labels: [...new Set(labels)] });
 
-    if (affectedRequirementId === null) {
+    if (firstPreviewRequirementId === null) {
       const requirementRowText = impactTexts.find((t) => t.includes('"Requirement"'));
       if (requirementRowText) {
         const parsed = JSON.parse(requirementRowText) as { affected?: { id?: string } };
-        affectedRequirementId = parsed.affected?.id ?? null;
+        firstPreviewRequirementId = parsed.affected?.id ?? null;
       }
     }
 
@@ -1172,26 +1282,29 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     contentType: "application/json",
   });
   expect(
-    affectedRequirementId,
+    firstPreviewRequirementId,
     "expected at least one of the 4 imported employees to show a real Requirement in its " +
       `impact preview after being selected - none did. Findings: ${JSON.stringify(candidateFindings, null, 2)}`,
   ).not.toBeNull();
-
-  const preDeselectNeedsReviewCount = await (async () => {
-    const proposalTab = await page.context().newPage();
-    await proposalTab.goto(`/tenders/${tenderId}/proposal`);
-    await proposalTab.waitForLoadState("networkidle");
-    const count = await proposalTab.locator("li", { hasText: "/ needs_review]" }).count();
-    await proposalTab.close();
-    return count;
-  })();
 
   // The real tested action: deselect the chosen candidate (already
   // selected above). Every other candidate is left selected - deselecting
   // them back would cost another real reanalysis pass each for no
   // assertion this step makes, and nothing downstream depends on their
   // selection state.
-  const targetTitle = candidateFindings.find((f) => f.labels.includes("Requirement"))?.title;
+  // Deselect an employee whose impact runs through EVIDENCE (Compliance), so
+  // the D6 category asserted below is the one this deselection produces. A
+  // role-filler with no evidence (FILLS -> Role -> SATISFIES -> Requirement)
+  // correctly yields removed_employee_committed instead (B17 Phase 0, run 5:
+  // the old Requirement-only choice depended on table order once roles
+  // existed - KNOWN_LIMITATIONS.md, fake-client entry, harness error 7).
+  const targetTitle = candidateFindings.find(
+    (f) => f.labels.includes("Requirement") && f.labels.includes("Compliance"),
+  )?.title;
+  expect(
+    targetTitle,
+    "expected an employee whose impact preview includes Compliance",
+  ).toBeDefined();
   const chosenRow = page
     .locator("table")
     .first()
@@ -1249,10 +1362,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect
     .poll(
       async () => {
+        tick("poll:d6-finding");
         await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/redteam`);
         const rows = page.locator("table").first().locator("tbody tr");
         const count = await rows.count();
         for (let i = 0; i < count; i++) {
+          tick("loop:d6-poll-rows-scanned");
           const row = rows.nth(i);
           const category = (await row.locator("td").first().textContent())?.trim();
           if (category === "deselected_fact_in_use") {
@@ -1272,38 +1387,43 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     )
     .toBe("no");
 
-  // Claim becomes needs_review: count-based, not id-based - the proposal
-  // screen's own rendering (step 10, above) has no claim id in the DOM to
-  // correlate against GraphImpactRow's own affected.id, and ProposalClaim
-  // nodes carry no claim_text property either (graph_projection/
-  // projector.py) to match by content instead. A real, falsifiable
-  // assertion still holds without claim-level identity: the count of
-  // needs_review claims must increase from the pre-deselection snapshot
-  // above, not merely be non-zero (which could already have been true
-  // before this step ran).
-  await expect
-    .poll(
-      async () => {
-        // Same page as the compliance-reopens poll immediately above -
-        // nothing navigates in between, so the recovery target matches.
-        await reloadAndSettleOnRoute(page, `/tenders/${tenderId}/compliance`);
-        return await page.locator("li", { hasText: "/ needs_review]" }).count();
-      },
-      {
-        // B16: bumped 60_000 -> 180_000 during the recovery-wait audit.
-        // Real work rides on the same reanalysis job the compliance-
-        // reopens poll above already waited out (by the time this poll
-        // starts, the real LLM work is done) - but this poll's own
-        // reloadAndSettleOnRoute calls are independently exposed to the
-        // same bounce risk, and MAX_ROUTE_BOUNCE_RECOVERIES *
-        // RATE_LIMIT_RECOVERY_WAIT_MS (130s) alone exceeded the old 60s
-        // budget, same shape as the knowledge-selections poll above.
-        timeout: 180_000,
-        intervals: [2_000],
-        message: "waiting for at least one additional claim to become needs_review",
-      },
-    )
-    .toBeGreaterThan(preDeselectNeedsReviewCount);
+  // B17 Phase 0: capture every open deselected_fact_in_use finding's
+  // severity (RedteamFindings.tsx renders it in column 2), for step 13's
+  // severity-aware readiness assertion. graph_service.py:387-411 grades it
+  // critical only when, ignoring the flagged evidence, no valid path remains
+  // (D7 compliance_re_evaluation_required); otherwise major. readiness_
+  // service.py:237-245 blocks only on open CRITICAL red-team findings. The
+  // page is still on /redteam from the poll above.
+  const d6Rows = page
+    .locator("table")
+    .first()
+    .locator("tbody tr")
+    .filter({ has: page.locator("td", { hasText: /^deselected_fact_in_use$/ }) });
+  const d6Severities = (await d6Rows.locator("td:nth-child(2)").allTextContents()).map((s) =>
+    s.trim(),
+  );
+  expect(d6Severities.length, "expected the open D6 finding rows just polled for").toBeGreaterThan(
+    0,
+  );
+  const d6AnyCritical = d6Severities.includes("critical");
+  await test.info().attach("step-14-d6-severities", {
+    body: JSON.stringify({ d6Severities, d6AnyCritical }, null, 2),
+    contentType: "text/plain",
+  });
+
+  // B17 Phase 0: the needs_review assertion that stood here (B14) was
+  // unreachable in every run, real or fake, for two independent reasons,
+  // both checked directly (KNOWN_LIMITATIONS.md, "B14 scenario lines
+  // 3562-3563 are not demonstrable by design"):
+  //  - its after-count read /compliance, which has rendered no claim <li>
+  //    in any version (claims render only in ProposalWorkspace.tsx), so the
+  //    count was always 0 against a /proposal before-count;
+  //  - B16 made a deselection deliberately never reopen compliance
+  //    (reanalysis.py's docstring, scenario 15), and a claim only turns
+  //    needs_review when a cited requirement's compliance turns non-
+  //    affirmative (proposal_service.enforce_claim_grounding).
+  // D6's deselected_fact_in_use finding, asserted just above, is the
+  // designed signal for a deselection, and stays.
 
   // ------------------------------------------------------------------
   // 13. Inspect readiness - flipped for B14, deliberately, not a
@@ -1340,6 +1460,29 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     blockers.length,
     "expected at least one real blocker attached to the non-ready result",
   ).toBeGreaterThan(0);
+
+  // B17 Phase 0: B14 scenario :3564 ("readiness blocker appears"), checked
+  // against what D6/D7 actually decided for step 14's deselection, not
+  // assumed. Blocker text is readiness_service.py:245's own f-string.
+  // Critical (no valid path left): the finding must block readiness.
+  // Not critical (valid_path_count > 0 - D7 review_optional): it must NOT
+  // appear as a blocker; readiness blocks only on open critical findings.
+  const d6Blocker = blockers.some((b) =>
+    b.includes("Unresolved critical red-team finding: deselected_fact_in_use"),
+  );
+  if (d6AnyCritical) {
+    expect(
+      d6Blocker,
+      `step 14's D6 finding was critical (${JSON.stringify(d6Severities)}), so it must appear ` +
+        `as a readiness blocker. Blockers: ${JSON.stringify(blockers, null, 2)}`,
+    ).toBe(true);
+  } else {
+    expect(
+      d6Blocker,
+      `step 14's D6 finding was not critical (${JSON.stringify(d6Severities)}), so it must ` +
+        `not appear as a readiness blocker. Blockers: ${JSON.stringify(blockers, null, 2)}`,
+    ).toBe(false);
+  }
 });
 
 // B17 Phase 1 verification artifact - see reloadAndSettleOnRoute's own
@@ -1355,8 +1498,25 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
 // "this hook uses no fixtures."
 // eslint-disable-next-line no-empty-pattern
 test.afterEach(async ({}, testInfo) => {
-  await testInfo.attach("route-bounce-recovery-count", {
-    body: String(routeBounceRecoveryCount),
+  await testInfo.attach("loop-and-poll-iterations", {
+    body: JSON.stringify(iterations, null, 2),
+    contentType: "text/plain",
+  });
+  const loginLandings = routeBounceRecoveries.filter((r) => r.loginLanding);
+  await testInfo.attach("route-bounce-recoveries", {
+    body: JSON.stringify(
+      {
+        total: routeBounceRecoveries.length,
+        loginLandings: loginLandings.length,
+        otherMismatches: routeBounceRecoveries.length - loginLandings.length,
+        recoveries: routeBounceRecoveries,
+      },
+      null,
+      2,
+    ),
+    // text/plain, not application/json: the list reporter prints only
+    // text/plain attachments inline, so this lands in every run's console
+    // output (and so in the report), not only inside the HTML report.
     contentType: "text/plain",
   });
 });
