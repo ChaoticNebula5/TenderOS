@@ -1198,8 +1198,20 @@ Each entry:
       `--version` 1.62.1) - green. **Detection, standing step:** print the
       Playwright version and the resolved config path before every run;
       a version other than the lockfile's, or no config path, means stop
-      before running. (A `scripts/e2e.ps1` launcher doing exactly that is
-      the planned Phase 0b follow-up.)
+      before running. (`scripts/e2e.ps1`, added in B17 Phase 0b, does
+      exactly that and refuses to run without the local binary and config.)
+  15. **Port-squatting native Postgres, a third time - caught by the
+      written practice again (B17 Phase 0b, 2026-10-06).** After a machine
+      restart, Docker Desktop was not running and the native
+      `postgresql-x64-18` service (StartType Automatic, still installed)
+      held `0.0.0.0:5432`. The first host-side script call failed with
+      `role "tenderos" does not exist` - incident 2's exact signature. Per
+      practice (2), nothing was trusted until a `SELECT version()` through
+      the same asyncpg driver answered "PostgreSQL 16.13 (Debian)" three
+      times in a row after Docker came back up and published the port.
+      The native service was not stopped - it is not this project's to
+      stop - so this will recur after every restart that starts it before
+      Docker; the identity check is the standing defence.
 - **Why this belongs next to the measurement-tooling standing pattern
   above, not folded into it:** same "confidently wrong, not obviously
   broken" shape, but a different root-cause category - that pattern is
@@ -9672,4 +9684,95 @@ of a third and fourth hand-rolled copy.
     Role type), derived from the node actually stored, not per-category.
 - **Status:** open, not fixed, by decision (B17 Phase 0). Any fix is a
   contract change (labels plus a fingerprint migration), not a cleanup.
+- **Test:** none yet.
+
+---
+
+## [B17 Phase 0b, RESOLVED] The never-run CI workflow would have failed in every backend job on its first run
+
+`.github/workflows/ci.yml` has never executed (no git remote). Run locally,
+step by step, on a `git worktree` checkout with no `.env` - what a runner
+actually has - three independent failures were reproduced, not inferred:
+
+- **Settings.** The test job set 5 variables; 6 required `Settings`
+  fields with no default (`jwt_signing_key`, `s3_access_key`,
+  `s3_secret_key`, `s3_bucket`, `neo4j_user`, `neo4j_password`) only ever
+  came from the untracked `.env`. Observed: "Run tests" failed collection
+  with 15 errors ("6 validation errors for Settings"), and the migration
+  check failed ("9 validation errors for Settings"). Fixed with a
+  job-level `env:` of throwaway CI-only values, plus both steps sourcing
+  `scripts/test-backend.env` (the same file local runs use).
+- **Fixtures.** `data/synthetic/` is gitignored except `.gitkeep`
+  (generated, never committed - `make_synthetic_fixtures.py`'s own
+  docstring). On a fresh checkout 19 tests failed on missing fixtures.
+  Fixed with a "Generate synthetic fixtures" step running the repo's own
+  deterministic generators (`make_synthetic_fixtures.py`,
+  `synthetic_tender_a.py`, fixed seed 20260810) - synthetic only, Part N /
+  L3.
+- **Secret scan.** `.secrets.baseline` (generated 2026-08-29, B15) lacked
+  16 findings, 12 of them from B15/B16 commits - including B15's own test
+  files, the commit that introduced the scan. Every one was classified
+  without printing its value (length, placeholder marker, real-key shape):
+  all are placeholders (`changeme` DSNs and keys, test spy values, a
+  throwaway passphrase for an account a measurement script registers in
+  a fresh `@tenderos.local` org). None has a real-key shape. Recorded via
+  `detect-secrets scan --baseline` (34 -> 49 entries). An initial theory
+  that the baseline's Windows backslash paths would also fail on Linux was
+  tested in a Linux container and **disproved** (detect-secrets normalises
+  separators; the committed baseline failed on Linux with exactly the same
+  16 findings) - retracted, not acted on.
+- **Also:** tests used to inherit `LLM_PROVIDER` and the real Gemini keys
+  from `.env` (a test reaching the real client would have spent money);
+  `scripts/test-backend.env` now sets `LLM_PROVIDER=fake` and blank keys,
+  and CI does the same. On Windows PowerShell an env var set to "" is
+  deleted (observed), which would have let `.env`'s key back in, so
+  `test-backend.ps1` substitutes the non-empty sentinel
+  `disabled-in-tests` (observed: `Settings` then reads the sentinel, not
+  the real key).
+- **Observed after the fixes, all locally (the workflow has still never
+  run on GitHub):** actionlint 0 errors; lint (ruff) pass; typecheck
+  (mypy) pass; migration check pass on a fresh database; tests 642 passed
+  on the `.env`-free checkout; web tsc/eslint/vitest 37 pass; landing
+  tsc/eslint/build pass; detect-secrets pass in a Linux container on a
+  clean committed snapshot. The `security` job's `pip-audit` and
+  `npm audit` steps still fail - see the next entry.
+
+---
+
+## [found during B17 Phase 0b, open, decision pending] Dependency audit: 37 known Python vulnerabilities in 5 packages, 5 high npm advisories
+
+- **Observed 2026-10-06** (`uv run pip-audit`, `npm audit --audit-level=high`
+  - the CI security job's own commands; results depend on the date, since
+  the advisory databases change without any code change):
+  - `pyjwt` 2.13.0: 14 advisories (fixes in 2.14.0 / 2.15.0) - **this is
+    the library that signs and verifies the app's auth tokens.**
+  - `pypdf` 6.15.0: 11 (fixes 6.16.0 / 6.16.1) - **parses uploaded,
+    untrusted tender PDFs.**
+  - `virtualenv` 21.7.0: 8 (dev tooling); `urllib3` 2.7.0: 3;
+    `langgraph-sdk` 0.4.2: 1 (fix 0.4.4).
+  - npm: `apps/web` 4 high (transitive: brace-expansion, js-yaml,
+    source-map-js, undici - all with fixes available); `apps/landing` 1
+    high.
+- **Not fixed in Phase 0b:** upgrading is a dependency and lockfile change
+  (including the auth library), which needs its own decision and a full
+  test pass, not a CI-honesty edit. Until then the CI `security` job fails
+  on its first run, by design of the check - which is the honest state.
+- **Test:** the CI `security` job.
+
+## [found during B17 pre-push audit, open, deployment prerequisite] Phase 4's inspection plan refers to a data/synthetic manifest that does not exist
+
+- **Observed 2026-10-07** (read-only pre-push audit): `data/synthetic/`
+  holds only generated, gitignored files plus a tracked `.gitkeep`. No
+  manifest file exists there or anywhere in the repo. Phase 4's inspection
+  plan refers to "the data/synthetic manifest" as if it did.
+- **What stands in for it today:** `scripts/synthetic_tender_a.py`, whose
+  record list is the single source for the synthetic documents and both
+  `data/ground_truth/*.jsonl` files. The audit regenerated the ground truth
+  on a fresh checkout and `git diff --stat -- data/ground_truth` was empty:
+  the tracked copies are exactly the generator's output. That is a check
+  someone has to rerun, not an artifact anyone can inspect.
+- **Prerequisite before deployment (not built):** a manifest of the
+  synthetic files with their hashes, generated by
+  `scripts/synthetic_tender_a.py` itself, so that "this deployment serves
+  only synthetic data" can be verified against a file rather than asserted.
 - **Test:** none yet.

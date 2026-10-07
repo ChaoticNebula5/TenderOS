@@ -65,7 +65,17 @@ if (-not $AllowRunningStack) {
     }
 }
 
-foreach ($k in $vars.Keys) { Set-Item -Path "Env:$k" -Value $vars[$k] }
+# Windows deletes an environment variable that is set to an empty string, so
+# an empty value here (the blanked Gemini keys) would vanish and pydantic would
+# fall back to the real key in the untracked .env. A non-empty, clearly invalid
+# sentinel keeps the .env value out: any accidental real call is rejected as
+# an invalid key, at no cost. (The bash path, used by the Makefile and CI,
+# keeps genuinely empty values and needs no sentinel.)
+foreach ($k in $vars.Keys) {
+    $v = $vars[$k]
+    if ($v -eq "") { $v = "disabled-in-tests" }
+    Set-Item -Path "Env:$k" -Value $v
+}
 Write-Host "test env from $envFile (POSTGRES_DSN=...$($vars['POSTGRES_DSN'].Split('/')[-1]), REDIS_URL=$($vars['REDIS_URL']))"
 
 Push-Location $repo

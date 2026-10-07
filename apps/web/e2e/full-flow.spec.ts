@@ -364,7 +364,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
       async () => {
         tick("poll:import-batch-finished");
         const b = await readSoleBatchRow();
-        return b.completed + Number(b.failed) >= b.total && b.total > 0;
+        // B17 Phase 0b: b.total is len(items) (knowledge_service.py:1214),
+        // and items are created one per résumé job - so "completed >=
+        // total" alone passed with 1 of 4 items existing (observed: the
+        // import-items loop ran once against a 4-item batch). Require the
+        // batch to hold one item per uploaded résumé first.
+        return b.total === resumeFiles.length && b.completed + Number(b.failed) >= b.total;
       },
       {
         timeout: 300_000,
@@ -395,6 +400,9 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     })
     .toBeGreaterThan(0);
   const itemCount = await itemRows.count();
+  // B17 Phase 0b guard: one import item per uploaded résumé, so the loop
+  // below examines the whole batch, not the first item to land.
+  expect(itemCount, "expected one import item per uploaded résumé").toBe(resumeFiles.length);
   for (let i = 0; i < itemCount; i++) {
     tick("loop:import-items");
     const row = itemRows.nth(i);
