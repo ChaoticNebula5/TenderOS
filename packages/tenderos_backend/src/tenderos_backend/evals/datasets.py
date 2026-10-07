@@ -34,7 +34,10 @@ def load_evidence_key_names(path: Path) -> dict[str, str]:
             if not line:
                 continue
             data = json.loads(line)
-            if data.get("record_type") in ("certification", "project", "capability") and "name" in data:
+            if (
+                data.get("record_type") in ("certification", "project", "capability")
+                and "name" in data
+            ):
                 names[data["key"]] = data["name"]
     return names
 

@@ -1378,7 +1378,10 @@ async def set_knowledge_selection(
         if tender is None:
             raise TenderNotFoundError()
         membership = await uow.memberships.get(tender.organization_id, actor_user_id)
-        if membership is None or Role(membership.role) not in ACTION_ROLES["manage_organization_knowledge"]:
+        if (
+            membership is None
+            or Role(membership.role) not in ACTION_ROLES["manage_organization_knowledge"]
+        ):
             logger.warning(
                 "unauthorized knowledge selection attempt: actor=%s tender=%s (org=%s)",
                 actor_user_id, tender_id, tender.organization_id,

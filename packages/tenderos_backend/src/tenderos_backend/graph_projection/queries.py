@@ -9,7 +9,7 @@ interpretation note).
 
 from typing import Any
 
-from neo4j import AsyncSession
+from neo4j import AsyncResult, AsyncSession
 
 _TENDER_SCOPED_LABELS = (
     "Tender",
@@ -20,6 +20,21 @@ _TENDER_SCOPED_LABELS = (
     "ProposalClaim",
     "ProposalSection",
 )
+
+
+class UnexpectedEmptyResultError(Exception):
+    """A Cypher aggregation that must return exactly one row returned none.
+    `RETURN count(...)` with no grouping keys always yields one row, so this
+    only fires on a driver/server anomaly - and then names the query instead
+    of failing later as an anonymous "'NoneType' object is not subscriptable".
+    """
+
+
+async def _single_count(result: AsyncResult, what: str) -> int:
+    record = await result.single()
+    if record is None:
+        raise UnexpectedEmptyResultError(f"{what}: count query returned no row")
+    return int(record["c"])
 
 
 async def count_tender_subgraph(session: AsyncSession, tender_id: str) -> tuple[int, int]:
@@ -37,7 +52,7 @@ async def count_tender_subgraph(session: AsyncSession, tender_id: str) -> tuple[
         ") RETURN count(n) AS c",
         tenderId=tender_id,
     )
-    node_count = (await node_result.single())["c"]
+    node_count = await _single_count(node_result, f"node count for tender {tender_id}")
 
     rel_result = await session.run(
         "MATCH (n)-[r]-(m) WHERE n.tender_id = $tenderId AND ("
@@ -46,7 +61,9 @@ async def count_tender_subgraph(session: AsyncSession, tender_id: str) -> tuple[
         ") RETURN count(DISTINCT r) AS c",
         tenderId=tender_id,
     )
-    relationship_count = (await rel_result.single())["c"]
+    relationship_count = await _single_count(
+        rel_result, f"relationship count for tender {tender_id}"
+    )
     return node_count, relationship_count
 
 

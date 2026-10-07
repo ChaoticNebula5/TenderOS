@@ -98,7 +98,9 @@ async def create_document(
         if existing is not None:
             return existing, False
 
-        scope_prefix = f"tenders/{tender_id}" if tender_id is not None else f"organizations/{organization_id}"
+        scope_prefix = (
+            f"tenders/{tender_id}" if tender_id is not None else f"organizations/{organization_id}"
+        )
         storage_key = f"{scope_prefix}/{sha256}/{filename}"
         await storage.put(storage_key, content, content_type=mime_type)
 

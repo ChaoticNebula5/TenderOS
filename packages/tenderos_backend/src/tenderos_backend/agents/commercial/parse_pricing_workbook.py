@@ -1,7 +1,9 @@
 import io
 from dataclasses import dataclass
+from functools import partial
 
 from openpyxl import load_workbook
+from openpyxl.worksheet.worksheet import Worksheet
 
 # The documented template (Build Guide B8B, synthetic_tender_a.py's
 # _render_pricing_xlsx): Item, Unit Cost, Quantity, Line Total, Currency.
@@ -52,6 +54,50 @@ def _is_formula(value: object) -> bool:
     return isinstance(value, str) and value.startswith("=")
 
 
+def _read_cell(
+    values_sheet: Worksheet,
+    formulas_sheet: Worksheet,
+    sheet_name: str,
+    row_idx: int,
+    description: str,
+    col_idx: int,
+    role: str,
+    cell_currency: str | None,
+) -> ParsedPricingCell:
+    """One cell of one priced row, read from both workbook views. Every input
+    is an explicit parameter (B17 Phase 0b): this was a closure defined
+    inside the row loop that read sheet_name/values_sheet/formulas_sheet/
+    row_idx/description from the enclosing loop (ruff B023). It was only ever
+    called within the same iteration, so no late-binding bug existed, but
+    the binding was implicit; parse_pricing_workbook now binds the per-row
+    values with functools.partial, which captures them when it is created.
+    """
+    col_letter = values_sheet.cell(row=row_idx, column=col_idx).column_letter
+    cell_ref = f"{col_letter}{row_idx}"
+    # data_only=True's own cached_value is never itself a
+    # formula string (openpyxl either resolved a real cached
+    # result there or returns None) - only the formulas_sheet
+    # view (data_only=False) ever shows the raw "=..." text.
+    cached_value = values_sheet.cell(row=row_idx, column=col_idx).value
+    raw_cell = formulas_sheet.cell(row=row_idx, column=col_idx).value
+    formula = raw_cell if _is_formula(raw_cell) else None
+    numeric_value = _try_float(cached_value)
+    raw_value = None if cached_value is None else str(cached_value)
+    if raw_value is None and formula is not None:
+        raw_value = formula
+    return ParsedPricingCell(
+        sheet_name=sheet_name,
+        cell_ref=cell_ref,
+        row_number=row_idx,
+        role=role,
+        description=description,
+        raw_value=raw_value,
+        numeric_value=numeric_value,
+        formula=formula,
+        currency=cell_currency,
+    )
+
+
 def parse_pricing_workbook(content: bytes) -> list[ParsedPricingCell]:
     """Pure parsing, no DB access - mirrors agents/knowledge/employee_master.py's
     shape (bytes in, structured records out). Reads BOTH the formula view
@@ -96,31 +142,9 @@ def parse_pricing_workbook(content: bytes) -> list[ParsedPricingCell]:
             description = str(item_value).strip()
             is_grand_total = description.lower() == "total"
 
-            def _cell_record(col_idx: int, role: str, cell_currency: str | None) -> ParsedPricingCell:
-                col_letter = values_sheet.cell(row=row_idx, column=col_idx).column_letter
-                cell_ref = f"{col_letter}{row_idx}"
-                # data_only=True's own cached_value is never itself a
-                # formula string (openpyxl either resolved a real cached
-                # result there or returns None) - only the formulas_sheet
-                # view (data_only=False) ever shows the raw "=..." text.
-                cached_value = values_sheet.cell(row=row_idx, column=col_idx).value
-                raw_cell = formulas_sheet.cell(row=row_idx, column=col_idx).value
-                formula = raw_cell if _is_formula(raw_cell) else None
-                numeric_value = _try_float(cached_value)
-                raw_value = None if cached_value is None else str(cached_value)
-                if raw_value is None and formula is not None:
-                    raw_value = formula
-                return ParsedPricingCell(
-                    sheet_name=sheet_name,
-                    cell_ref=cell_ref,
-                    row_number=row_idx,
-                    role=role,
-                    description=description,
-                    raw_value=raw_value,
-                    numeric_value=numeric_value,
-                    formula=formula,
-                    currency=cell_currency,
-                )
+            _cell_record = partial(
+                _read_cell, values_sheet, formulas_sheet, sheet_name, row_idx, description
+            )
 
             row_currency = None
             if currency_col is not None:

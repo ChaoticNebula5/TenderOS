@@ -18,7 +18,6 @@ from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -110,7 +109,9 @@ async def persist_extracted_roles(
 
     async with UnitOfWork() as uow:
         for role in extraction.roles:
-            resolved_refs = [by_label[label] for label in role.source_requirement_refs if label in by_label]
+            resolved_refs = [
+                by_label[label] for label in role.source_requirement_refs if label in by_label
+            ]
             if not resolved_refs:
                 continue
 
@@ -138,7 +139,9 @@ async def persist_extracted_roles(
                 source_chunk_id=resolved_refs[0].source_chunk_id,
             )
             for ref in resolved_refs:
-                await uow.talent.link_role_requirement_source(role_requirement.id, ref.requirement_id)
+                await uow.talent.link_role_requirement_source(
+                    role_requirement.id, ref.requirement_id
+                )
             persisted.append(role_requirement)
 
         await uow.commit()
@@ -196,7 +199,9 @@ class CandidateTalentSignals:
 async def _compute_candidate_talent_signals(
     uow: UnitOfWork, employee: Employee, required_certs: list[str], today: date
 ) -> CandidateTalentSignals:
-    certifications = await uow.knowledge.list_certifications_for_employee(employee.knowledge_item_id)
+    certifications = await uow.knowledge.list_certifications_for_employee(
+        employee.knowledge_item_id
+    )
     cert_items = []
     for cert in certifications:
         item = await uow.knowledge.get_knowledge_item(cert.knowledge_item_id)
@@ -246,6 +251,7 @@ async def _gather_candidate_evidence(
     "search query" here - the candidate pool is already a fixed, small,
     already-identified set of employees, not something to retrieve).
     """
+    years = employee.years_experience if employee.years_experience is not None else "unknown"
     refs: list[TalentEvidenceCandidateRef] = [
         TalentEvidenceCandidateRef(
             label="evidence_1",
@@ -253,12 +259,14 @@ async def _gather_candidate_evidence(
             source_kind="employee",
             excerpt=(
                 f"{employee.current_title or 'Role unspecified'}, "
-                f"{employee.years_experience if employee.years_experience is not None else 'unknown'} "
+                f"{years} "
                 "years of experience."
             ),
         )
     ]
-    certifications = await uow.knowledge.list_certifications_for_employee(employee.knowledge_item_id)
+    certifications = await uow.knowledge.list_certifications_for_employee(
+        employee.knowledge_item_id
+    )
     for i, cert in enumerate(certifications, start=2):
         item = await uow.knowledge.get_knowledge_item(cert.knowledge_item_id)
         if item is None:
@@ -545,7 +553,9 @@ async def evaluate_role_match(
             fingerprint = _fingerprint(
                 str(role.tender_id), str(candidate.knowledge_item_id), candidate.source_kind
             )
-            link = await uow.compliance.get_evidence_link_by_fingerprint(role.tender_id, fingerprint)
+            link = await uow.compliance.get_evidence_link_by_fingerprint(
+                role.tender_id, fingerprint
+            )
             if link is None:
                 validity_status = await _evidence_validity_status(
                     uow, candidate.knowledge_item_id, today

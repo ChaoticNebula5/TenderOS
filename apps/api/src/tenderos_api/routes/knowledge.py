@@ -2,6 +2,7 @@ import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from tenderos_backend.db.models.knowledge import KnowledgeImportItem
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import document_service, knowledge_service, tender_service
 
@@ -257,7 +258,7 @@ async def list_import_items(
     return [ImportItemDetailResponse.model_validate(i, from_attributes=True) for i in items]
 
 
-async def _import_item_organization_id(item_id: UUID) -> tuple[UUID, UUID]:
+async def _import_item_organization_id(item_id: UUID) -> tuple[KnowledgeImportItem, UUID]:
     """Resolves (item, organization_id) for an import item - organization_id
     lives on the batch, not the item itself, so approve/reject need this
     extra hop before they can write an audit event."""

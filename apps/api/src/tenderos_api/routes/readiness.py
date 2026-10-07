@@ -53,5 +53,7 @@ async def generate_readiness(
     try:
         result = await readiness_service.evaluate_readiness(tender_id)
     except readiness_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
     return _result_to_response(result)

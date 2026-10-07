@@ -42,7 +42,11 @@ async def commercial_analysis_node(state: SpecialistTaskState) -> dict:
     try:
         client = _build_llm_client()
         findings = await evaluate_commercial_for_tender(
-            client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id, task_id=task_id
+            client,
+            settings.reasoning_model,
+            tender_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
         )
 
         async with UnitOfWork() as uow:

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, TIMESTAMP, UniqueConstraint, func
+from sqlalchemy import TIMESTAMP, BigInteger, Boolean, ForeignKey, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 

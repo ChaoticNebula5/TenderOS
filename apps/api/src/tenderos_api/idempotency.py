@@ -73,7 +73,7 @@ def get_idempotency_context(
         # have two materially different requests share one record just
         # because their path and body happened to match.
         request_identity = (
-            f"{request.method}\n{request.url.path}\n{request.url.query}\n".encode("utf-8")
+            f"{request.method}\n{request.url.path}\n{request.url.query}\n".encode()
         )
         request_hash = hashlib.sha256(request_identity + body_bytes).hexdigest()
 

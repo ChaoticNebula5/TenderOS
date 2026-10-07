@@ -21,6 +21,7 @@ from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
+from tenderos_backend.db.repositories.tenders import TenderRepository
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service, redteam_service
@@ -534,7 +535,7 @@ async def test_human_resolved_finding_does_not_reopen_when_redetected():
     resolution must still not be silently reopened by the system.
     """
     org_id, tender_id = await _org_and_tender("HumanResolutionSurvives")
-    pricing_finding_id = await _pricing_finding(tender_id)
+    await _pricing_finding(tender_id)
     await graph_service.project_tender(tender_id)
 
     await _run(tender_id)
@@ -576,3 +577,38 @@ async def test_resolved_finding_survives_an_unchanged_redetection():
     assert refetched is not None
     assert refetched.resolved is True
     assert refetched.resolution_note == "accepted, known pricing discrepancy"
+
+
+async def test_resolving_a_finding_whose_tender_is_missing_fails_before_any_write(monkeypatch):
+    """B17 Phase 0b runtime behaviour change (mypy narrowing in
+    redteam_service.resolve_finding): the tender used to be read inline,
+    after the resolve update, as `(await uow.tenders.get(...)).organization_id`
+    - a missing tender surfaced as an anonymous AttributeError. It is now
+    looked up first and raises FindingTenderMissingError before any write.
+    A real missing tender is impossible to construct (cascading FK), so the
+    lookup is made to return None for this one tender.
+    """
+    _org_id, tender_id = await _org_and_tender("TenderMissingOnResolve")
+    await _pricing_finding(tender_id)
+    await graph_service.project_tender(tender_id)
+    await _run(tender_id)
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+    target = next(f for f in findings if f.finding_category == "pricing_mismatch")
+
+    original_get = TenderRepository.get
+
+    async def get_missing_for_this_tender(self, requested_id):
+        if requested_id == tender_id:
+            return None
+        return await original_get(self, requested_id)
+
+    monkeypatch.setattr(TenderRepository, "get", get_missing_for_this_tender)
+    with pytest.raises(redteam_service.FindingTenderMissingError, match=str(tender_id)):
+        await redteam_service.resolve_finding(target.id, uuid.uuid4(), "should not apply")
+    monkeypatch.undo()
+
+    async with UnitOfWork() as uow:
+        refetched = await uow.redteam.get(target.id)
+    assert refetched is not None
+    assert refetched.resolved is False, "nothing may be written when the tender is missing"

@@ -46,7 +46,9 @@ class CommercialRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_pricing_documents_for_tender(self, tender_id: uuid.UUID) -> list[PricingDocument]:
+    async def list_pricing_documents_for_tender(
+        self, tender_id: uuid.UUID
+    ) -> list[PricingDocument]:
         result = await self._session.execute(
             select(PricingDocument).where(PricingDocument.tender_id == tender_id)
         )
@@ -96,7 +98,9 @@ class CommercialRepository:
         self, pricing_document_id: uuid.UUID
     ) -> list[PricingLineItem]:
         result = await self._session.execute(
-            select(PricingLineItem).where(PricingLineItem.pricing_document_id == pricing_document_id)
+            select(PricingLineItem).where(
+                PricingLineItem.pricing_document_id == pricing_document_id
+            )
         )
         return list(result.scalars().all())
 

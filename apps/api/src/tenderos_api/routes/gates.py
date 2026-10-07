@@ -146,8 +146,13 @@ async def decide_gate(
         # generation_node last ran. Comparing versions here means a STALE
         # ready=True can never silently bypass the waiver requirement -
         # only a report generated against the tender's CURRENT state does.
-        is_current = readiness is not None and readiness.tender_state_version == tender.state_version
-        not_ready = not is_current or not readiness.ready
+        is_current = (
+            readiness is not None and readiness.tender_state_version == tender.state_version
+        )
+        # `readiness is None or` first: the same truth value as before (is_current
+        # is already False when readiness is None), but stated where mypy can
+        # see it, so readiness is narrowed for the .ready read.
+        not_ready = readiness is None or not is_current or not readiness.ready
         if not_ready and not body.waive:
             raise ReadinessNotWaivedError()
         if not_ready and body.waive:

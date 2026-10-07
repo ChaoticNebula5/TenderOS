@@ -59,9 +59,10 @@ def _render_role(
 def _render_candidate(
     profile: CandidateProfileSummary, evidence: list[TalentEvidenceCandidateRef]
 ) -> str:
+    years = profile.years_experience if profile.years_experience is not None else "unknown"
     lines = [
         f"Current title: {profile.current_title or 'unknown'}",
-        f"Years of experience: {profile.years_experience if profile.years_experience is not None else 'unknown'}",
+        f"Years of experience: {years}",
         f"Professional location: {profile.professional_location or 'unknown'}",
         f"Availability: {profile.availability_status}",
         f"Profile review status: {profile.profile_review_status}",
@@ -136,8 +137,9 @@ async def score_candidate(
     thin, swappable-provider layer.
     """
     system_prompt = load_prompt(_AGENT_NAME)
+    role_text = _render_role(role_name, min_experience_years, required_skills, required_certs)
     user_prompt = (
-        f"ROLE:\n{_render_role(role_name, min_experience_years, required_skills, required_certs)}\n\n"
+        f"ROLE:\n{role_text}\n\n"
         f"CANDIDATE:\n{_render_candidate(profile, evidence)}"
     )
     try:

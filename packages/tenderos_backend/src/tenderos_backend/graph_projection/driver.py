@@ -1,7 +1,8 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession as Neo4jSession
+from neo4j import AsyncDriver, AsyncGraphDatabase
+from neo4j import AsyncSession as Neo4jSession
 
 from tenderos_backend.core.config import settings
 

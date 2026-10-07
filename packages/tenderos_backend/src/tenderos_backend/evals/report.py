@@ -101,7 +101,10 @@ def format_retrieval_report(report: RetrievalEvalReport) -> str:
         lines.append("")
         lines.append(f"Misses ({len(report.misses)}):")
         for miss in report.misses:
-            lines.append(f"  {miss.requirement_key} -> {miss.evidence_key} ({miss.evidence_name}): {miss.reason}")
+            lines.append(
+                f"  {miss.requirement_key} -> {miss.evidence_key} "
+                f"({miss.evidence_name}): {miss.reason}"
+            )
 
     return "\n".join(lines)
 
@@ -136,6 +139,8 @@ def format_compliance_report(report: ComplianceEvalReport) -> str:
         lines.append("")
         lines.append(f"Mismatches ({len(report.mismatches)}):")
         for m in report.mismatches:
-            lines.append(f"  {m.requirement_key}: expected {m.expected_status}, got {m.actual_status}")
+            lines.append(
+                f"  {m.requirement_key}: expected {m.expected_status}, got {m.actual_status}"
+            )
 
     return "\n".join(lines)

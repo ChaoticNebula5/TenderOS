@@ -19,6 +19,7 @@ from datetime import date
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
@@ -26,6 +27,7 @@ from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import compliance_service, graph_service
 from tenderos_backend.graph_projection import queries
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
+from tenderos_backend.graph_projection.projector import ProjectionIntegrityError
 
 pytestmark = pytest.mark.asyncio
 
@@ -452,7 +454,7 @@ async def test_no_alternate_evidence_requires_reevaluation():
 async def test_proposal_claim_appears_in_impact_set():
     org_id, tender_id = await _org_and_tender("ImpactClaim")
     chunk_id = await _chunk(tender_id, "req")
-    requirement_id = await _requirement(tender_id, chunk_id)
+    await _requirement(tender_id, chunk_id)
     employee_id = await _employee(org_id, "Cited Employee")
     await _select(tender_id, employee_id)
     evidence_id = await _evidence_link(tender_id, employee_id)
@@ -752,3 +754,29 @@ async def test_preview_impact_still_rejects_cross_org_data_with_the_optional_mat
         "id, even with the USED_IN match now optional - a real observation, "
         "not just an inference from the destination-filter reasoning"
     )
+
+
+async def test_an_unresolvable_knowledge_item_fails_the_projection_loudly_with_its_id():
+    """B17 Phase 0b runtime behaviour change (mypy narrowing in projector.py):
+    a selected knowledge item whose typed child row is missing used to be
+    skipped silently - the projection completed without that node and was
+    served as fresh. Now projector.ProjectionIntegrityError names the id, the
+    run is marked failed (graph_service.project_tender), and every read path
+    refuses the graph as stale instead of answering from an incomplete one.
+    """
+    org_id, tender_id = await _org_and_tender("IntegrityFailure")
+    employee_id = await _employee(org_id, "Half-deleted Employee")
+    await _select(tender_id, employee_id)
+    async with UnitOfWork() as uow:
+        # Remove only the typed child row; the knowledge_items row stays.
+        await uow.session.execute(
+            text("delete from employees where knowledge_item_id = :k"), {"k": employee_id}
+        )
+        await uow.commit()
+
+    with pytest.raises(ProjectionIntegrityError, match=str(employee_id)) as excinfo:
+        await graph_service.project_tender(tender_id)
+    assert excinfo.value.knowledge_item_id == employee_id
+
+    with pytest.raises(graph_service.GraphStaleError):
+        await graph_service.preview_impact(tender_id, employee_id)

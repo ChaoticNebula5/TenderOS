@@ -185,44 +185,44 @@ async def extract_capability_statement(
     chunk_by_label = dict(zip(labels, document_chunks, strict=True))
 
     past_projects: list[ResolvedPastProject] = []
-    for item in llm_result.parsed.past_projects:
-        chunk = chunk_by_label.get(item.source_chunk_ref)
+    for project in llm_result.parsed.past_projects:
+        chunk = chunk_by_label.get(project.source_chunk_ref)
         if chunk is None:
             logger.warning(
                 "capability_statement extraction: unresolvable source_chunk_ref %r for "
                 "project %r, dropping item",
-                item.source_chunk_ref,
-                item.name,
+                project.source_chunk_ref,
+                project.name,
             )
             continue
         past_projects.append(
             ResolvedPastProject(
-                name=item.name,
-                client=item.client,
-                year=item.year,
-                description=item.description,
-                source_ref=item.source_ref,
+                name=project.name,
+                client=project.client,
+                year=project.year,
+                description=project.description,
+                source_ref=project.source_ref,
                 chunk_id=chunk.id,
                 document_id=chunk.document_id,
             )
         )
 
     capabilities: list[ResolvedCapability] = []
-    for item in llm_result.parsed.capabilities:
-        chunk = chunk_by_label.get(item.source_chunk_ref)
+    for capability in llm_result.parsed.capabilities:
+        chunk = chunk_by_label.get(capability.source_chunk_ref)
         if chunk is None:
             logger.warning(
                 "capability_statement extraction: unresolvable source_chunk_ref %r for "
                 "capability %r, dropping item",
-                item.source_chunk_ref,
-                item.name,
+                capability.source_chunk_ref,
+                capability.name,
             )
             continue
         capabilities.append(
             ResolvedCapability(
-                name=item.name,
-                description=item.description,
-                source_ref=item.source_ref,
+                name=capability.name,
+                description=capability.description,
+                source_ref=capability.source_ref,
                 chunk_id=chunk.id,
                 document_id=chunk.document_id,
             )

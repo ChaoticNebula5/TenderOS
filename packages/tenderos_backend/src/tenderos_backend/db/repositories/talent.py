@@ -57,7 +57,9 @@ class TalentRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_role_requirements_for_tender(self, tender_id: uuid.UUID) -> list[RoleRequirement]:
+    async def list_role_requirements_for_tender(
+        self, tender_id: uuid.UUID
+    ) -> list[RoleRequirement]:
         result = await self._session.execute(
             select(RoleRequirement).where(RoleRequirement.tender_id == tender_id)
         )
@@ -170,7 +172,9 @@ class TalentRepository:
         await self._session.execute(stmt)
         await self._session.flush()
 
-    async def list_evidence_for_role_match(self, role_match_id: uuid.UUID) -> list[RoleMatchEvidence]:
+    async def list_evidence_for_role_match(
+        self, role_match_id: uuid.UUID
+    ) -> list[RoleMatchEvidence]:
         result = await self._session.execute(
             select(RoleMatchEvidence).where(RoleMatchEvidence.role_match_id == role_match_id)
         )

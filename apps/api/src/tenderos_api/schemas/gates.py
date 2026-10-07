@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -178,14 +178,14 @@ class CostBudgetGateResponse(_GateResponseBase):
 
 
 GateResponse = Annotated[
-    Union[
-        RequirementReviewGateResponse,
-        ComplianceReviewGateResponse,
-        ResourceSelectionGateResponse,
-        CommercialApprovalGateResponse,
-        FindingResolutionGateResponse,
-        FinalReadinessGateResponse,
-        CostBudgetGateResponse,
-    ],
+    (
+        RequirementReviewGateResponse
+        | ComplianceReviewGateResponse
+        | ResourceSelectionGateResponse
+        | CommercialApprovalGateResponse
+        | FindingResolutionGateResponse
+        | FinalReadinessGateResponse
+        | CostBudgetGateResponse
+    ),
     Field(discriminator="gate_type"),
 ]

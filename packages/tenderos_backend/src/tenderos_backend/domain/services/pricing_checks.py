@@ -475,45 +475,49 @@ def check_cross_doc_mismatch(
     "these are probably the same line item, accidentally repeated" question
     a within-document duplicate raises.
     """
-    seen: dict[str, tuple[str, LogicalRow]] = {}
+    # B17 Phase 0b: `seen` stores the already-narrowed unit-cost cell and its
+    # value, not the whole LogicalRow. A row only ever enters `seen` after the
+    # guard below (unit_cost present, numeric_value present), but storing the
+    # row lost that narrowing for mypy at the comparison site. Same values,
+    # same order of checks - no behaviour change.
+    seen: dict[str, tuple[str, ParsedPricingCell, float]] = {}
     findings = []
     for doc_id, rows in documents:
         for row in rows:
-            if row.unit_cost is None or row.unit_cost.numeric_value is None:
+            cost = row.unit_cost
+            if cost is None or cost.numeric_value is None:
                 continue
+            value = cost.numeric_value
             key = row.description.strip().casefold()
             if key in seen:
-                other_doc_id, other_row = seen[key]
-                if (
-                    other_doc_id != doc_id
-                    and other_row.unit_cost.numeric_value != row.unit_cost.numeric_value
-                ):
+                other_doc_id, other_cost, other_value = seen[key]
+                if other_doc_id != doc_id and other_value != value:
                     findings.append(
                         PricingFindingDraft(
                             finding_type="cross_doc_mismatch",
-                            cell_refs=[other_row.unit_cost.cell_ref, row.unit_cost.cell_ref],
-                            expected_value=other_row.unit_cost.numeric_value,
-                            actual_value=row.unit_cost.numeric_value,
-                            delta=row.unit_cost.numeric_value - other_row.unit_cost.numeric_value,
+                            cell_refs=[other_cost.cell_ref, cost.cell_ref],
+                            expected_value=other_value,
+                            actual_value=value,
+                            delta=value - other_value,
                             note=(
                                 f"{row.description!r} is priced at "
-                                f"{row.unit_cost.numeric_value} in pricing document {doc_id}, "
-                                f"but {other_row.unit_cost.numeric_value} in "
+                                f"{value} in pricing document {doc_id}, "
+                                f"but {other_value} in "
                                 f"pricing document {other_doc_id}."
                             ),
                             default_severity="critical",
                             item_a_ref={
                                 "pricing_document_id": other_doc_id,
-                                "cell_ref": other_row.unit_cost.cell_ref,
+                                "cell_ref": other_cost.cell_ref,
                             },
                             item_b_ref={
                                 "pricing_document_id": doc_id,
-                                "cell_ref": row.unit_cost.cell_ref,
+                                "cell_ref": cost.cell_ref,
                             },
                         )
                     )
                     continue
-            seen[key] = (doc_id, row)
+            seen[key] = (doc_id, cost, value)
     return findings
 
 

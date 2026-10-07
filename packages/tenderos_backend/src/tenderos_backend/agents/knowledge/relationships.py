@@ -340,8 +340,9 @@ def resolve_worked_on_verification(
             matched_mention = mention
             break
 
-    corroborated = matched_mention is not None
-    if corroborated and candidate.llm_confidence >= _VERIFIED_CONFIDENCE:
+    # The None test is inline (it was a `corroborated` bool) so the narrowing
+    # reaches matched_mention.name below - same condition, same branch.
+    if matched_mention is not None and candidate.llm_confidence >= _VERIFIED_CONFIDENCE:
         return RelationshipResolution(
             verdict=RelationshipVerdict.VERIFIED,
             reason=(

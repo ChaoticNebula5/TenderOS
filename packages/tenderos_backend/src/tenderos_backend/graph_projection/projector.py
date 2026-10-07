@@ -27,9 +27,36 @@ import uuid
 
 from neo4j import AsyncSession as Neo4jSession
 
+from tenderos_backend.db.models.knowledge import (
+    Capability,
+    Certification,
+    Employee,
+    KnowledgeItem,
+    PastProject,
+)
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.graph_projection import queries
 from tenderos_backend.graph_projection.cypher import cleanup, nodes, relationships
+
+# D1 (Build Guide :1848-1863) defines graph nodes for only four of the seven
+# knowledge item types. These three have no node label, so they are not
+# projected - by spec, not by omission. Any type outside both sets is a
+# schema change this file has not been taught about and fails loudly.
+_UNPROJECTED_ITEM_TYPES = frozenset({"company_document", "client_reference", "partner"})
+
+
+class ProjectionIntegrityError(Exception):
+    """A row this tender references could not be resolved to a complete
+    knowledge item. Raised instead of skipping it: an incomplete projection
+    is worse than a failed one, because check_freshness would otherwise
+    serve a graph that silently lacks a node (and every impact preview and
+    contradiction check built on it). graph_service.project_tender marks the
+    run failed and re-raises, so a failure here is never read as fresh.
+    """
+
+    def __init__(self, knowledge_item_id: uuid.UUID, problem: str) -> None:
+        self.knowledge_item_id = knowledge_item_id
+        super().__init__(f"knowledge_item {knowledge_item_id}: {problem}")
 
 
 async def project_tender(
@@ -91,86 +118,118 @@ async def project_tender(
 
     # Resolve each reachable id to its knowledge_item + typed child row, and
     # pull in certification holders as a second pass (needed for HOLDS).
-    resolved: dict[uuid.UUID, tuple[str, object, object]] = {}
-    holder_ids: set[uuid.UUID] = set()
+    # B17 Phase 0b: one typed map per projected type (was a single
+    # dict[uuid, tuple[str, object, object]]), and every unresolvable
+    # reference raises ProjectionIntegrityError with its id instead of being
+    # skipped. All of this runs before the first Neo4j write below, so a
+    # failure here leaves the graph untouched.
+    employees: dict[uuid.UUID, tuple[KnowledgeItem, Employee]] = {}
+    certifications: dict[uuid.UUID, tuple[KnowledgeItem, Certification]] = {}
+    projects: dict[uuid.UUID, tuple[KnowledgeItem, PastProject]] = {}
+    capabilities: dict[uuid.UUID, tuple[KnowledgeItem, Capability]] = {}
     for kid in reachable_ids:
         item = await uow.knowledge.get_knowledge_item(kid)
         if item is None:
-            continue
+            raise ProjectionIntegrityError(kid, f"referenced by tender {tid} but does not exist")
         if item.item_type == "employee":
-            child = await uow.knowledge.get_employee(kid)
+            employee = await uow.knowledge.get_employee(kid)
+            if employee is None:
+                raise ProjectionIntegrityError(kid, "item_type 'employee' but no employees row")
+            employees[kid] = (item, employee)
         elif item.item_type == "certification":
-            child = await uow.knowledge.get_certification(kid)
-            if child is not None and child.holder_employee_item_id is not None:
-                holder_ids.add(child.holder_employee_item_id)
+            certification = await uow.knowledge.get_certification(kid)
+            if certification is None:
+                raise ProjectionIntegrityError(
+                    kid, "item_type 'certification' but no certifications row"
+                )
+            certifications[kid] = (item, certification)
         elif item.item_type == "past_project":
-            child = await uow.knowledge.get_past_project(kid)
+            project = await uow.knowledge.get_past_project(kid)
+            if project is None:
+                raise ProjectionIntegrityError(
+                    kid, "item_type 'past_project' but no past_projects row"
+                )
+            projects[kid] = (item, project)
         elif item.item_type == "capability":
-            child = await uow.knowledge.get_capability(kid)
-        else:
-            continue
-        if child is not None:
-            resolved[kid] = (item.item_type, item, child)
+            capability = await uow.knowledge.get_capability(kid)
+            if capability is None:
+                raise ProjectionIntegrityError(
+                    kid, "item_type 'capability' but no capabilities row"
+                )
+            capabilities[kid] = (item, capability)
+        elif item.item_type not in _UNPROJECTED_ITEM_TYPES:
+            raise ProjectionIntegrityError(kid, f"unknown item_type {item.item_type!r}")
 
-    for hid in holder_ids - resolved.keys():
-        item = await uow.knowledge.get_knowledge_item(hid)
-        if item is not None and item.item_type == "employee":
-            employee = await uow.knowledge.get_employee(hid)
-            if employee is not None:
-                resolved[hid] = ("employee", item, employee)
+    holder_ids = {
+        cert.holder_employee_item_id
+        for _item, cert in certifications.values()
+        if cert.holder_employee_item_id is not None
+    }
+    for hid in holder_ids - employees.keys():
+        holder_item = await uow.knowledge.get_knowledge_item(hid)
+        if holder_item is None:
+            raise ProjectionIntegrityError(hid, "certification holder does not exist")
+        if holder_item.item_type != "employee":
+            raise ProjectionIntegrityError(
+                hid, f"certification holder has item_type {holder_item.item_type!r}"
+            )
+        holder = await uow.knowledge.get_employee(hid)
+        if holder is None:
+            raise ProjectionIntegrityError(hid, "certification holder has no employees row")
+        employees[hid] = (holder_item, holder)
+
+    projected_ids = (
+        employees.keys() | certifications.keys() | projects.keys() | capabilities.keys()
+    )
 
     # ------------------------------------------------------------------
     # Step 3-4: MERGE shared nodes + organization-scoped relationships.
     # ------------------------------------------------------------------
-    employee_rows, certification_rows, project_rows, capability_rows = [], [], [], []
-    for kid, (item_type, item, child) in resolved.items():
-        # status/valid_from/valid_until live on the parent KnowledgeItem row
-        # for all 4 shared types (Part C), not just certifications - D7's
-        # evidence-coverage check ("knowledge item active", "validity
-        # dates") needs these uniformly on whichever fact type backs a given
-        # evidence link, not only when that fact happens to be a
-        # certification.
-        base = {
+    # status/valid_from/valid_until live on the parent KnowledgeItem row
+    # for all 4 shared types (Part C), not just certifications - D7's
+    # evidence-coverage check ("knowledge item active", "validity
+    # dates") needs these uniformly on whichever fact type backs a given
+    # evidence link, not only when that fact happens to be a
+    # certification.
+    def base(kid: uuid.UUID, item: KnowledgeItem) -> dict[str, object]:
+        return {
             "knowledge_item_id": str(kid),
             "organization_id": str(item.organization_id),
             "status": item.status,
             "valid_from": item.valid_from,
             "valid_until": item.valid_until,
         }
-        if item_type == "employee":
-            employee_rows.append(
-                base
-                | {
-                    "name": child.name,
-                    "current_title": child.current_title,
-                    "eligible_for_bid": child.eligible_for_bid,
-                    "profile_review_status": child.profile_review_status,
-                    "availability_status": child.availability_status,
-                }
-            )
-        elif item_type == "certification":
-            certification_rows.append(
-                base
-                | {
-                    "title": item.title,
-                    "issuer": child.issuer,
-                    "credential_id": child.credential_id,
-                }
-            )
-        elif item_type == "past_project":
-            project_rows.append(
-                base
-                | {
-                    "title": item.title,
-                    "client_name": child.client_name,
-                    "start_date": child.start_date,
-                    "end_date": child.end_date,
-                }
-            )
-        elif item_type == "capability":
-            capability_rows.append(
-                base | {"title": item.title, "category": child.category}
-            )
+
+    employee_rows = [
+        base(kid, item)
+        | {
+            "name": employee.name,
+            "current_title": employee.current_title,
+            "eligible_for_bid": employee.eligible_for_bid,
+            "profile_review_status": employee.profile_review_status,
+            "availability_status": employee.availability_status,
+        }
+        for kid, (item, employee) in employees.items()
+    ]
+    certification_rows = [
+        base(kid, item)
+        | {"title": item.title, "issuer": cert.issuer, "credential_id": cert.credential_id}
+        for kid, (item, cert) in certifications.items()
+    ]
+    project_rows = [
+        base(kid, item)
+        | {
+            "title": item.title,
+            "client_name": project.client_name,
+            "start_date": project.start_date,
+            "end_date": project.end_date,
+        }
+        for kid, (item, project) in projects.items()
+    ]
+    capability_rows = [
+        base(kid, item) | {"title": item.title, "category": capability.category}
+        for kid, (item, capability) in capabilities.items()
+    ]
 
     await nodes.merge_employee_nodes(neo4j_session, employee_rows)
     await nodes.merge_certification_nodes(neo4j_session, certification_rows)
@@ -178,21 +237,29 @@ async def project_tender(
     await nodes.merge_capability_nodes(neo4j_session, capability_rows)
 
     holds_rows = [
-        {"employee_id": str(child.holder_employee_item_id), "certification_id": str(kid), "props": {}}
-        for kid, (item_type, _item, child) in resolved.items()
-        if item_type == "certification" and child.holder_employee_item_id in resolved
+        {
+            "employee_id": str(cert.holder_employee_item_id),
+            "certification_id": str(kid),
+            "props": {},
+        }
+        for kid, (_item, cert) in certifications.items()
+        if cert.holder_employee_item_id is not None
     ]
     await relationships.merge_holds(neo4j_session, holds_rows)
 
     org_relationships = await uow.knowledge.list_relationships_for_org(
         tender.organization_id, verified_only=True
     )
-    worked_on_rows, demonstrates_rows = [], []
+    worked_on_rows: list[dict[str, object]] = []
+    demonstrates_rows: list[dict[str, object]] = []
     for rel in org_relationships:
-        if rel.source_knowledge_item_id not in resolved or rel.target_knowledge_item_id not in resolved:
+        if (
+            rel.source_knowledge_item_id not in projected_ids
+            or rel.target_knowledge_item_id not in projected_ids
+        ):
             continue
         props = {"confidence": rel.confidence, "verified": rel.verified}
-        row = {
+        row: dict[str, object] = {
             "employee_id" if rel.relationship_type == "WORKED_ON" else "project_id": str(
                 rel.source_knowledge_item_id
             ),
@@ -409,7 +476,7 @@ async def project_tender(
             },
         }
         for sel in selections
-        if sel.knowledge_item_id in resolved
+        if sel.knowledge_item_id in projected_ids
     ]
     await relationships.merge_used_in(neo4j_session, used_in_rows)
 

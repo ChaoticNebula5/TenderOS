@@ -10,7 +10,10 @@ from tenderos_backend.domain.services.compliance_service import (
     approve_compliance_entry,
     approve_compliance_entry_in_uow,
 )
-from tenderos_backend.domain.services.talent_service import select_candidate, select_candidate_in_uow
+from tenderos_backend.domain.services.talent_service import (
+    select_candidate,
+    select_candidate_in_uow,
+)
 
 logger = logging.getLogger(__name__)
 

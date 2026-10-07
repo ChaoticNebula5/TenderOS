@@ -123,7 +123,9 @@ class ComplianceRepository:
         )
         return {entry.requirement_id: entry for entry in result.scalars().all()}
 
-    async def list_compliance_entries_for_tender(self, tender_id: uuid.UUID) -> list[ComplianceEntry]:
+    async def list_compliance_entries_for_tender(
+        self, tender_id: uuid.UUID
+    ) -> list[ComplianceEntry]:
         # compliance_entries has no tender_id column of its own (Part C) -
         # every entry is reached through its one-to-one requirement, so
         # listing "for a tender" means joining through Requirement rather

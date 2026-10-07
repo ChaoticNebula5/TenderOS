@@ -171,7 +171,9 @@ async def patch_submission_item(
     # would have silently resolved organization from the wrong table.
     item = await requirement_service.get_submission_item(submission_item_id)
     if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Submission item not found"
+        )
     tender = await tender_service.get_tender(item.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")

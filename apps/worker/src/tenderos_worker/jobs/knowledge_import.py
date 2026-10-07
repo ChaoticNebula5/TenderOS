@@ -31,6 +31,8 @@ from tenderos_backend.db.models.knowledge import PastProject
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.knowledge_service import (
+    ResolvedCapability,
+    ResolvedPastProject,
     import_capability,
     import_certification_row,
     import_demonstrates_relationship,
@@ -94,7 +96,7 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
     if batch.import_type in ("employee_master_csv", "employee_master_xlsx"):
         content = await storage.get(document.storage_key)
         try:
-            rows = (
+            employee_rows = (
                 parse_employee_master_csv(content)
                 if batch.import_type == "employee_master_csv"
                 else parse_employee_master(content)
@@ -107,22 +109,30 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
             await record_batch_parse_failure(batch_uuid, str(exc))
             logger.exception("employee-master parse failed for batch %s", batch_uuid)
             return
-        for row in rows:
-            await import_employee_master_row(org_id, batch_uuid, row)
-        logger.info("employee-master import complete for batch %s (%d rows)", batch_uuid, len(rows))
+        for employee_row in employee_rows:
+            await import_employee_master_row(org_id, batch_uuid, employee_row)
+        logger.info(
+            "employee-master import complete for batch %s (%d rows)", batch_uuid, len(employee_rows)
+        )
         return
 
     if batch.import_type == "certification_documents":
         content = await storage.get(document.storage_key)
         try:
-            rows = parse_certifications(content)
+            certification_rows = parse_certifications(content)
         except CertificationValidationError as exc:
             await record_batch_parse_failure(batch_uuid, str(exc))
             logger.exception("certification parse failed for batch %s", batch_uuid)
             return
-        for row in rows:
-            await import_certification_row(org_id, batch_uuid, doc_id, row, today=date.today())
-        logger.info("certification import complete for batch %s (%d rows)", batch_uuid, len(rows))
+        for certification_row in certification_rows:
+            await import_certification_row(
+                org_id, batch_uuid, doc_id, certification_row, today=date.today()
+            )
+        logger.info(
+            "certification import complete for batch %s (%d rows)",
+            batch_uuid,
+            len(certification_rows),
+        )
         return
 
     if batch.import_type == "manual":
@@ -158,13 +168,13 @@ async def _process_capability_statement(
         client, settings.extractor_model, chunks, org_id
     )
 
-    project_items: list[tuple[uuid.UUID, object]] = []
+    project_items: list[tuple[uuid.UUID, ResolvedPastProject]] = []
     for i, project in enumerate(extraction.past_projects):
         item = await import_past_project(org_id, batch_id, f"project_{i}", project)
         if item.target_knowledge_item_id is not None:
             project_items.append((item.target_knowledge_item_id, project))
 
-    capability_items: list[tuple[uuid.UUID, object]] = []
+    capability_items: list[tuple[uuid.UUID, ResolvedCapability]] = []
     for i, capability in enumerate(extraction.capabilities):
         item = await import_capability(org_id, batch_id, f"capability_{i}", capability)
         if item.target_knowledge_item_id is not None:

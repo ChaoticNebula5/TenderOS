@@ -30,7 +30,9 @@ async def get_compliance(
 ) -> ComplianceResponse:
     entry = await compliance_service.get_compliance_entry(compliance_id)
     if entry is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Compliance entry not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Compliance entry not found"
+        )
     return ComplianceResponse.model_validate(entry, from_attributes=True)
 
 

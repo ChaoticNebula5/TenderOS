@@ -23,6 +23,18 @@ class FindingNotFoundError(Exception):
     pass
 
 
+class FindingTenderMissingError(Exception):
+    """A red-team finding whose tender row does not exist. redteam_findings.
+    tender_id is a cascading foreign key, so this cannot happen without a
+    database integrity failure - raised (not mapped to an HTTP status, so it
+    surfaces as a 500) instead of an anonymous AttributeError, and BEFORE any
+    write, so nothing is half-applied.
+    """
+
+    def __init__(self, finding_id: uuid.UUID, tender_id: uuid.UUID) -> None:
+        super().__init__(f"redteam finding {finding_id} references missing tender {tender_id}")
+
+
 def finding_fingerprint(
     tender_id: uuid.UUID, target_type: str, target_id: uuid.UUID | None,
     finding_category: str, violated_condition: str,
@@ -220,10 +232,15 @@ async def resolve_finding(
         finding = await uow.redteam.get(finding_id)
         if finding is None:
             raise FindingNotFoundError()
+        # Looked up before any write (it used to be read inline, after the
+        # resolve update): the audit row needs the tender's organization.
+        tender = await uow.tenders.get(finding.tender_id)
+        if tender is None:
+            raise FindingTenderMissingError(finding_id, finding.tender_id)
         before = {"resolved": finding.resolved, "resolution_note": finding.resolution_note}
         updated = await uow.redteam.resolve_finding(finding_id, resolution_note)
         await uow.audit.create(
-            organization_id=(await uow.tenders.get(finding.tender_id)).organization_id,
+            organization_id=tender.organization_id,
             actor_type="user",
             actor_id=str(actor_user_id),
             action="redteam_finding_resolve",

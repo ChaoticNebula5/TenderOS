@@ -3,7 +3,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from tenderos_backend.agents.compliance.propose import EvidenceCandidateRef, propose_compliance
-from tenderos_backend.agents.knowledge.retrieval import KnowledgeSearchResult, search_company_knowledge
+from tenderos_backend.agents.knowledge.retrieval import (
+    KnowledgeSearchResult,
+    search_company_knowledge,
+)
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
 from tenderos_backend.core.hashing import sha256_hex
@@ -189,8 +192,12 @@ def enforce_evidence_sufficiency(
     proposal: ComplianceProposal, materialized_evidence: list[EvidenceLink]
 ) -> SufficiencyResult:
     if proposal.status not in {"fully_compliant", "partially_compliant"}:
-        return SufficiencyResult(status=proposal.status, downgraded=False, reason="evidence sufficiency does not apply to this compliance status")
-    
+        return SufficiencyResult(
+            status=proposal.status,
+            downgraded=False,
+            reason="evidence sufficiency does not apply to this compliance status",
+        )
+
     sufficient_evidence = [
         evidence for evidence in materialized_evidence
         if evidence.verified and evidence.validity_status=="valid"

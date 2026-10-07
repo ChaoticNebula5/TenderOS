@@ -2,7 +2,10 @@ import uuid
 from dataclasses import dataclass, replace
 
 from tenderos_backend.agents.commercial.explain_findings import explain_finding
-from tenderos_backend.agents.commercial.parse_pricing_workbook import parse_pricing_workbook
+from tenderos_backend.agents.commercial.parse_pricing_workbook import (
+    ParsedPricingCell,
+    parse_pricing_workbook,
+)
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.commercial import PricingDocument, PricingFinding
@@ -77,7 +80,10 @@ async def _persist_pricing_cells(
 
             for cell in sheet_cells:
                 item_fingerprint = _fingerprint(
-                    str(pricing_document.id), cell.cell_ref, cell.raw_value or "", cell.formula or ""
+                    str(pricing_document.id),
+                    cell.cell_ref,
+                    cell.raw_value or "",
+                    cell.formula or "",
                 )
                 existing_item = await uow.commercial.get_pricing_line_item_by_fingerprint(
                     pricing_document.id, item_fingerprint
@@ -126,7 +132,7 @@ async def ingest_pricing_workbook(
 class _DocumentRows:
     pricing_document_id: uuid.UUID
     rows: list[LogicalRow]
-    grand_total: object
+    grand_total: ParsedPricingCell | None  # group_rows' own second return value
 
 
 async def _draft_findings_for_tender(
@@ -206,7 +212,9 @@ async def evaluate_commercial_for_tender(
         )
         fingerprint = finding_fingerprint(str(tender_id), draft)
         async with UnitOfWork() as uow:
-            existing = await uow.commercial.get_pricing_finding_by_fingerprint(tender_id, fingerprint)
+            existing = await uow.commercial.get_pricing_finding_by_fingerprint(
+                tender_id, fingerprint
+            )
             if existing is None:
                 finding = await uow.commercial.create_pricing_finding(
                     tender_id=tender_id,
@@ -347,7 +355,9 @@ async def resolve_pricing_finding_in_uow(
     return updated
 
 
-async def resolve_pricing_finding(pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID) -> PricingFinding:
+async def resolve_pricing_finding(
+    pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID
+) -> PricingFinding:
     async with UnitOfWork() as uow:
         updated = await resolve_pricing_finding_in_uow(uow, pricing_finding_id, actor_user_id)
         await uow.commit()

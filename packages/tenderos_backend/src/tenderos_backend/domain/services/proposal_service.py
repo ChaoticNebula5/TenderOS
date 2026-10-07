@@ -463,7 +463,10 @@ def enforce_claim_grounding(
                 )
     return GroundingResult(
         status="grounded",
-        reason=f"{len(resolved_evidence_link_ids)} number of evidence items support the audit record.",
+        reason=(
+            f"{len(resolved_evidence_link_ids)} number of evidence items "
+            "support the audit record."
+        ),
     )
 
 # ----------------------------------------------------------------------

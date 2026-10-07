@@ -3,6 +3,12 @@ from functools import lru_cache
 
 from sentence_transformers import CrossEncoder
 
+# CrossEncoder.predict's own element type (sentence-transformers 5.x imports it
+# from this module itself). Annotating with it, rather than letting the list be
+# inferred as list[tuple[str, str]], is what satisfies predict's invariant
+# list[PairInput] parameter without a cast.
+from sentence_transformers.base.modality_types import PairInput
+
 # Flagged in the B6 plan, not locked by the Build Guide the way embeddings
 # are (A2's stack table names "a reranking adapter" with no specific
 # package) - verified live before committing to it in code (Part P):
@@ -30,7 +36,7 @@ async def rerank(query: str, candidates: list[str]) -> list[float]:
         return []
 
     def _score() -> list[float]:
-        pairs = [(query, candidate) for candidate in candidates]
+        pairs: list[PairInput] = [(query, candidate) for candidate in candidates]
         scores = _get_model().predict(pairs)
         return scores.tolist()
 

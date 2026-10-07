@@ -50,7 +50,9 @@ async def trigger_graph_projection(
     try:
         run = await graph_service.project_tender(tender_id)
     except graph_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
 
     response = GraphProjectResponse.model_validate(run, from_attributes=True)
     await idempotency.finalize(200, response.model_dump(mode="json"))
@@ -64,7 +66,9 @@ async def get_graph_status(
     try:
         status_dict = await graph_service.get_graph_status(tender_id)
     except graph_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
     return GraphStatusResponse.model_validate(status_dict)
 
 
@@ -77,7 +81,9 @@ async def preview_graph_impact(
     try:
         return await graph_service.preview_impact(tender_id, body.knowledge_item_id)
     except graph_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
     except graph_service.GraphStaleError as exc:
         _reraise_as_stale(exc)
         raise  # unreachable - _reraise_as_stale always raises; satisfies type checkers
@@ -92,7 +98,9 @@ async def get_graph_contradictions(
     try:
         return await graph_service.find_contradictions(tender_id)
     except graph_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
     except graph_service.GraphStaleError as exc:
         _reraise_as_stale(exc)
         raise
@@ -108,7 +116,9 @@ async def get_graph_trace(
     try:
         return await graph_service.get_graph_trace(tender_id, node_label, node_id)
     except graph_service.TenderNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
+        ) from exc
     except graph_service.GraphStaleError as exc:
         _reraise_as_stale(exc)
         raise

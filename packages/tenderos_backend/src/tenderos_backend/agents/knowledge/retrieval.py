@@ -4,6 +4,8 @@ from datetime import date
 
 from tenderos_backend.agents.knowledge.rerank import rerank
 from tenderos_backend.core.config import settings
+from tenderos_backend.db.models.document import DocumentChunk
+from tenderos_backend.db.models.knowledge import KnowledgeItem
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.ingestion.embed import embed_texts
 
@@ -107,7 +109,7 @@ async def search_company_knowledge(
             )
             selected_item_ids = {selection.knowledge_item_id for selection in selections}
 
-        candidates: list[tuple[object, object, float]] = []
+        candidates: list[tuple[DocumentChunk, KnowledgeItem, float]] = []
         for chunk_id in ranked_chunk_ids:
             chunk = chunks_by_id[chunk_id]
             # One chunk can be the source for more than one knowledge_item

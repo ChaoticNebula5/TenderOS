@@ -59,7 +59,11 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
     try:
         client = _build_llm_client()
         roles = await extract_and_persist_roles(
-            client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id, task_id=task_id
+            client,
+            settings.reasoning_model,
+            tender_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
         )
         candidates = await find_candidate_pool(organization_id)
 
@@ -141,7 +145,9 @@ async def resource_selection_gate_node(state: TenderState) -> dict:
                 gate_id,
                 "resource_selection",
                 workflow_run_id,
-                targets=[{"target_type": "role_requirement", "target_id": str(r.id)} for r in roles],
+                targets=[
+                    {"target_type": "role_requirement", "target_id": str(r.id)} for r in roles
+                ],
                 summary={
                     "role_count": len(roles),
                     "candidate_count": len(all_matches),

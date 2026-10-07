@@ -90,7 +90,6 @@ async def targeted_replan_node(state: TenderState) -> dict:
     revision_dispatch_target="none" sends the run to finding_gate instead.
     """
     workflow_run_id = uuid.UUID(state["workflow_run_id"])
-    tender_id = uuid.UUID(state["tender_id"])
 
     corrective_task_types: set[str] = set()
     async with UnitOfWork() as uow:
