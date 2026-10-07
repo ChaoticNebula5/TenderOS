@@ -11,7 +11,6 @@ AGENTS.md
 
 # Private tender data — never enters version control or CI
 data_private/*
-!data_private/.gitkeep
 
 # Python
 __pycache__/
