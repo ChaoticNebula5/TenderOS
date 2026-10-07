@@ -9589,7 +9589,7 @@ of a third and fourth hand-rolled copy.
 
 ---
 
-## [found during B17 Phase 0, open, diff pending] E2E step 0b's import-batch poll can pass with 1 of 4 items, so the import-items loop can examine a partial list
+## [found during B17 Phase 0, RESOLVED in Phase 0b (83262e1)] E2E step 0b's import-batch poll can pass with 1 of 4 items, so the import-items loop can examine a partial list
 
 - **Observed (2026-10-06, final Phase 0 fake run, via the spec's own
   `loop-and-poll-iterations` instrument):** `loop:import-items` ran **1**
@@ -9611,6 +9611,10 @@ of a third and fourth hand-rolled copy.
   not patched and rerun):** require `b.total === resumeFiles.length` in the
   poll, and assert `itemCount === resumeFiles.length` before the loop.
 - **Test:** the E2E itself, once the diff is decided.
+- **Resolved in 83262e1:** the proposed diff was applied as written (the
+  batch poll requires one item per uploaded resume, and the item count is
+  asserted before the loop). Observed (fake): `loop:import-items` ran 4
+  times, was 1.
 
 ---
 
@@ -9776,3 +9780,13 @@ actually has - three independent failures were reproduced, not inferred:
   `scripts/synthetic_tender_a.py` itself, so that "this deployment serves
   only synthetic data" can be verified against a file rather than asserted.
 - **Test:** none yet.
+
+## [B17 pre-push, documented layout change] data_private/.gitkeep is no longer tracked
+
+- Untracked in 21ad8a3, with its `.gitignore` exception removed. A fresh
+  clone therefore has no `data_private/` folder. Nothing in the code,
+  scripts, compose files or CI reads it (only `.gitignore`,
+  `.dockerignore` and a CI comment name it).
+- This departs from the repository layout in the project's spec, which
+  lists `data_private/.gitkeep`. The folder is created locally when
+  needed, and stays ignored.
