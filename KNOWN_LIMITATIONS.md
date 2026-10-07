@@ -9790,3 +9790,14 @@ actually has - three independent failures were reproduced, not inferred:
 - This departs from the repository layout in the project's spec, which
   lists `data_private/.gitkeep`. The folder is created locally when
   needed, and stays ignored.
+
+## [B17 pre-push, history rewritten 2026-10-07] Commit hashes cited above refer to pre-rewrite history
+
+- Before the first push, the PRD, the Build Guide and CLAUDE.md were
+  removed from all history with `git filter-repo` (they had been
+  committed once and untracked two days later). Every commit hash
+  changed; the final tree did not.
+- Hashes cited in this file before that point are pre-rewrite hashes and
+  no longer resolve. Find a commit by its subject instead, e.g.
+  `git log --all --oneline --grep="import-batch poll"`. An old-to-new
+  hash map is kept outside the repository.
