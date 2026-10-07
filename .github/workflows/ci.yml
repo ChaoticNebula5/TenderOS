@@ -10,15 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
       - run: uv sync
       - run: uv run ruff check .
-      - run: npm ci
-        working-directory: apps/web
-      - run: npm run lint
-        working-directory: apps/web
 
   typecheck:
     runs-on: ubuntu-latest
@@ -36,8 +29,30 @@ jobs:
   # this project's history was therefore vacuous, not confirmed - the
   # first real run of this job is the first time it's ever been observed
   # at all, not a return to a previously-passing state.
+  # B17 Phase 0b: the step env below used to set only 5 variables; the 6
+  # required Settings fields with no default (jwt_signing_key, s3_access_key,
+  # s3_secret_key, s3_bucket, neo4j_user, neo4j_password) came locally from
+  # the untracked .env, which does not exist on a runner. Reproduced on a
+  # .env-free checkout: "Run tests" failed collection (15 errors, "6
+  # validation errors for Settings") and the migration check failed ("9
+  # validation errors"). Throwaway CI-only values are set here; everything
+  # else comes from scripts/test-backend.env, the same file local runs use.
+  # LLM_PROVIDER is fake and every Gemini key is blank - this workflow holds
+  # no secrets and makes no real-provider call.
   test:
     runs-on: ubuntu-latest
+    env:
+      JWT_SIGNING_KEY: ci-only-throwaway-jwt-signing-key-not-a-secret
+      S3_ACCESS_KEY: changeme
+      S3_SECRET_KEY: changeme
+      S3_BUCKET: tenderos-ci
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: changeme
+      LLM_PROVIDER: fake
+      GEMINI_API_KEY: ""
+      COMPLIANCE_GEMINI_API_KEY: ""
+      TALENT_GEMINI_API_KEY: ""
+      COMMERCIAL_GEMINI_API_KEY: ""
     services:
       # Images match docker-compose.yml exactly, so CI exercises the same
       # versions local dev and the real deployment do. Credentials below
@@ -87,18 +102,59 @@ jobs:
             minio/minio server /data --console-address ":9001"
           timeout 30 bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
       - run: uv sync
+      # B17 Phase 0b: data/synthetic/ is gitignored except .gitkeep - the
+      # fixtures are generated, never committed (make_synthetic_fixtures.py's
+      # own docstring: keeps the repo diffable and nothing mistaken for real
+      # tender content). On a fresh checkout they do not exist, and 19 tests
+      # failed on a .env-free, fixture-free checkout until this step ran.
+      # Both generators are deterministic and synthetic-only (Part N / L3: no
+      # private tender data in CI); data_private/ is never read.
+      - name: Generate synthetic fixtures
+        run: |
+          uv run python scripts/make_synthetic_fixtures.py
+          uv run python scripts/synthetic_tender_a.py
       - name: Verify migrations apply cleanly (upgrade -> downgrade -> upgrade)
-        env:
-          POSTGRES_DSN: postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test
-        run: uv run python scripts/verify_migrations.py
+        run: |
+          set -a && . scripts/test-backend.env && set +a
+          uv run python scripts/verify_migrations.py
       - name: Run tests
-        env:
-          POSTGRES_DSN: postgresql+asyncpg://tenderos:changeme@localhost:5432/tenderos_test
-          REDIS_URL: redis://localhost:6379/0
-          NEO4J_URI: bolt://localhost:7687
-          S3_ENDPOINT_URL: http://localhost:9000
-          RATE_LIMIT_ENABLED: "false"
-        run: uv run pytest
+        run: |
+          set -a && . scripts/test-backend.env && set +a
+          uv run pytest
+
+  # B17 Phase 0b: A2's CI row (Build Guide :176) names lint, typecheck and
+  # tests; the frontend had only eslint here. tsc and vitest for apps/web,
+  # and tsc + eslint + build for apps/landing, were run locally only.
+  # No secrets, no services, no backend - pure static checks and unit tests.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npx tsc -b
+      - run: npm run lint
+      - run: npm test
+
+  landing:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/landing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
 
   # B15: secret scanning + dependency scanning. detect-secrets-hook (the
   # same command pre-commit runs locally, not `detect-secrets scan` -

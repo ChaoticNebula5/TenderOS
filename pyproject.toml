@@ -19,6 +19,15 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+# B17 Phase 0b - a deliberate config WEAKENING, not a fix: E501 is not
+# enforced in tests/ (112 long lines at the time) or scripts/ (20), which
+# are dominated by long assertion messages, docstrings and fixture strings.
+# Application source (apps/, packages/) stays at line-length 100 with E501
+# enforced; its 37 long lines were wrapped instead.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+"scripts/**" = ["E501"]
+
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
     "fastapi.Depends",
@@ -28,6 +37,7 @@ extend-immutable-calls = [
     "fastapi.File",
     "fastapi.Form",
     "tenderos_api.dependencies.require_permission",
+    "tenderos_api.dependencies.require_permission_for_sse",
     "tenderos_api.idempotency.get_idempotency_context",
 ]
 

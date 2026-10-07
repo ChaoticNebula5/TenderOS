@@ -649,7 +649,6 @@ async def test_state_version_bump_during_computation_triggers_a_retry(monkeypatc
 
 async def test_batched_compliance_and_evidence_queries_scale_with_requests_not_requirements():
     from sqlalchemy import event
-
     from tenderos_backend.db.session import engine
 
     org_id, tender_id = await _org_and_tender("BatchedQueries")

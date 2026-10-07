@@ -7,8 +7,8 @@ for pricing_checks.finding_fingerprint (B8B) - no DB needed.
 import uuid
 
 from tenderos_backend.domain.services.redteam_service import (
-    map_finding_to_corrective_task,
     finding_fingerprint,
+    map_finding_to_corrective_task,
 )
 
 _TENDER = uuid.uuid4()

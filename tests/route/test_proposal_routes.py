@@ -22,10 +22,9 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from tenderos_api.routes import proposal
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
-
-from tenderos_api.routes import proposal
 
 pytestmark = pytest.mark.asyncio
 

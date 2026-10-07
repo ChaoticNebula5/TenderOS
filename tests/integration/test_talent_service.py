@@ -8,10 +8,10 @@ from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
+from tenderos_backend.core.enums import Role
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
-from tenderos_backend.core.enums import Role
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.auth_service import register

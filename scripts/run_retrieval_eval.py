@@ -22,7 +22,6 @@ from pathlib import Path
 
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy import select
-
 from tenderos_backend.agents.knowledge.certifications_xlsx import parse_certifications
 from tenderos_backend.agents.knowledge.employee_master import parse_employee_master
 from tenderos_backend.agents.knowledge.extract import (

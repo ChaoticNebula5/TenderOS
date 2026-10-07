@@ -21,12 +21,11 @@ import json
 import uuid
 
 import pytest
+from tenderos_api.routes.workflow import _workflow_progress_stream
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-
-from tenderos_api.routes.workflow import _workflow_progress_stream
 
 pytestmark = pytest.mark.asyncio
 
