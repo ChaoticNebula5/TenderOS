@@ -76,3 +76,56 @@ describe("pickCompactUnit", () => {
     expect(pickCompactUnit(rupees)).toEqual(expected);
   });
 });
+
+// Sweeps across the lakh-to-crore boundary (fake values). They guard the
+// promotion rule as a property, not just at the hand-picked points above.
+describe("formatInr compact sweeps across the crore boundary", () => {
+  // Number shown before the unit, sign and grouping removed.
+  function shownNumber(output: string): number {
+    return Number(
+      output
+        .replace(/^-?₹/, "")
+        .replace(/ (L|Cr)$/, "")
+        .replace(/,/g, ""),
+    );
+  }
+
+  // Every value must show a unit, never "100.0 L", lakhs below 100.0 and
+  // crores at least 1.00. Returns the values that break any of those.
+  function sweepFailures(values: number[]): string[] {
+    const failures: string[] = [];
+    for (const value of values) {
+      const output = formatInr(value, "compact");
+      if (output.includes("100.0 L")) failures.push(`${value} -> ${output} (100.0 L)`);
+      if (output.endsWith(" L") && !(shownNumber(output) < 100)) {
+        failures.push(`${value} -> ${output} (L not below 100.0)`);
+      }
+      if (output.endsWith(" Cr") && !(shownNumber(output) >= 1)) {
+        failures.push(`${value} -> ${output} (Cr below 1.00)`);
+      }
+      if (!output.endsWith(" L") && !output.endsWith(" Cr")) {
+        failures.push(`${value} -> ${output} (no unit)`);
+      }
+    }
+    return failures;
+  }
+
+  // Every 50 rupees from 99,90,000 to 1,00,10,000, plus negatives near it.
+  const wholeRupees: number[] = [];
+  for (let rupees = 9_990_000; rupees <= 10_010_000; rupees += 50) wholeRupees.push(rupees);
+  wholeRupees.push(-9_994_999, -9_995_000, -9_999_950, -9_999_999, -10_000_000, -10_000_050);
+
+  it(`whole rupees: checks ${wholeRupees.length} values`, () => {
+    expect(sweepFailures(wholeRupees)).toEqual([]);
+  });
+
+  // Every 0.25 rupee from 99,99,000 to 1,00,00,100. Built from an integer
+  // index so each value is exact (0.25 is exact in binary), not an
+  // accumulated float sum.
+  const quarterRupees: number[] = [];
+  for (let i = 0; i <= (10_000_100 - 9_999_000) * 4; i++) quarterRupees.push(9_999_000 + i * 0.25);
+
+  it(`paise: checks ${quarterRupees.length} values`, () => {
+    expect(sweepFailures(quarterRupees)).toEqual([]);
+  });
+});

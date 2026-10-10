@@ -1,10 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  describeFinding,
-  describeReadiness,
-  describeStatus,
-} from "../../status/statusMap";
+import { describeFinding, describeReadiness, describeStatus } from "../../status/statusMap";
 import type { StatusDescriptor } from "../../status/statusMap";
 import { StatusBadge } from "./StatusBadge";
 

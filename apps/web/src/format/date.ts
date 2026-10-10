@@ -11,10 +11,7 @@
 
 const PLACEHOLDER = "-";
 
-export function formatDate(
-  value: string | Date | null | undefined,
-  timeZone?: string,
-): string {
+export function formatDate(value: string | Date | null | undefined, timeZone?: string): string {
   if (value === null || value === undefined || value === "") return PLACEHOLDER;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return PLACEHOLDER;

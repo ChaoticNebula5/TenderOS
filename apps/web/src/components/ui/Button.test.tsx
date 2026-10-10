@@ -14,10 +14,7 @@ describe("Button", () => {
     "renders the %s variant class",
     (variant) => {
       render(<Button variant={variant}>Approve</Button>);
-      expect(screen.getByRole("button", { name: "Approve" })).toHaveClass(
-        "btn",
-        `btn--${variant}`,
-      );
+      expect(screen.getByRole("button", { name: "Approve" })).toHaveClass("btn", `btn--${variant}`);
     },
   );
 

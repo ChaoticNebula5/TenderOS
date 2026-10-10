@@ -21,14 +21,7 @@ export interface StatusDescriptor {
 }
 
 export type StatusFamily =
-  | "gate"
-  | "run"
-  | "task"
-  | "parse"
-  | "severity"
-  | "grounding"
-  | "compliance"
-  | "importItem";
+  "gate" | "run" | "task" | "parse" | "severity" | "grounding" | "compliance" | "importItem";
 
 type FamilyMap = Readonly<Record<string, StatusDescriptor>>;
 
@@ -164,8 +157,13 @@ export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
 // not know yet. Neutral tone, and the raw value as its label - honest and
 // greppable, rather than a made-up word; the No Raw Enum Rule is broken
 // visibly, so the gap gets noticed and mapped instead of hidden.
+//
+// Object.hasOwn, not a bare STATUS_MAP[family][value] lookup: the family
+// maps are plain objects, so "constructor" or "toString" would otherwise
+// return an inherited Object.prototype function instead of falling back.
 export function describeStatus(family: StatusFamily, value: string): StatusDescriptor {
-  return STATUS_MAP[family][value] ?? { tone: "neutral", label: value };
+  const familyMap = STATUS_MAP[family];
+  return Object.hasOwn(familyMap, value) ? familyMap[value] : { tone: "neutral", label: value };
 }
 
 // Readiness verdict - the only place the word "Ready" appears.

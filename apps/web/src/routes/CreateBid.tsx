@@ -4,6 +4,9 @@ import { useNavigate } from "react-router-dom";
 import { createTender } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
+import { Button } from "../components/ui/Button";
+import { Field } from "../components/ui/Field";
+import { Notice } from "../components/ui/Notice";
 
 // Screen 6 (Part J). Navigates to the dashboard on success - screen 7
 // (Upload and processing status, §7 step 4) will give a created tender its
@@ -37,36 +40,37 @@ export function CreateBid() {
     }
   }
 
+  // Form column capped at --width-form (640px, DESIGN.md Layout "Content
+  // width"; plan item 13), replacing the hardcoded 480. Labels keep their
+  // exact text: full-flow.spec.ts:510 fills getByLabel("Name", exact) and
+  // :511 clicks the page's only button named "Create bid".
   return (
-    <main style={{ maxWidth: 480 }}>
+    <main className="form-column">
       <h1>Create bid</h1>
       <form onSubmit={handleSubmit}>
-        <label>
-          Name
+        <Field label="Name">
           <input type="text" required value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label>
-          Client name
+        </Field>
+        <Field label="Client name">
           <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} />
-        </label>
-        <label>
-          Submission date
+        </Field>
+        <Field label="Submission date">
           <input
             type="date"
             value={submissionDate}
             onChange={(e) => setSubmissionDate(e.target.value)}
           />
-        </label>
+        </Field>
 
         {error && (
-          <p role="alert" style={{ color: "var(--color-danger)" }}>
+          <Notice variant="failed" alert>
             {error}
-          </p>
+          </Notice>
         )}
 
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Creating..." : "Create bid"}
-        </button>
+        <Button type="submit" variant="primary" busy={submitting} busyLabel="Creating...">
+          Create bid
+        </Button>
       </form>
     </main>
   );

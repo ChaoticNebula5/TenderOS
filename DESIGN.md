@@ -111,14 +111,19 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: batch 1 (foundation) is built; everything else is a proposal.**
-> Batch 1's tokens, `@font-face` rules and base element styles exist
-> (`apps/web/src/styles/tokens.css`, `apps/web/src/index.css`); the woff2
-> files they point at are added in a separate commit. The rest describes
-> what the apps/web restyle *will* do. Every statement about the UI as it is
-> today cites a file and line; everything else is future tense. When a batch
-> lands, its section moves from "will" to "does", in the same commit as the
-> code - never ahead of it (see Copy rules).
+> **Status: batches 1 (foundation) and 2 (shell and shared components) are
+> built; everything else is a proposal.** Batch 1's tokens, `@font-face`
+> rules and base element styles exist (`apps/web/src/styles/tokens.css`,
+> `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
+> Batch 2's app shell, workflow nav, shared components, status label map and
+> formatters exist (`apps/web/src/shell/`, `apps/web/src/components/ui/`,
+> `apps/web/src/status/`, `apps/web/src/format/`) and are applied to Login,
+> Bid dashboard and Create bid; see "Batch 2: as built" under Restyle
+> batches. The rest describes what the apps/web restyle *will* do. Every
+> statement about the UI as it is today cites a file and line; everything
+> else is future tense. When a batch lands, its section moves from "will"
+> to "does", in the same commit as the code - never ahead of it (see Copy
+> rules).
 >
 > Numbers are labelled **measured** (computed or counted this session, method
 > stated) or **fake-provider** (screens rendered from `LLM_PROVIDER=fake`
@@ -405,15 +410,22 @@ should not be.
 
 ## Layout
 
-**App shell.** A 48px top bar (wordmark "TenderOS" in Archivo 600 at 16px;
-org name; account menu) over a content column. The landing sets its wordmark
-in Newsreader (`apps/landing/src/styles/chrome.css:8`); the app does not,
-because decision 4 limits Newsreader to page titles and empty-state
-headings. Inside a tender, a **tender header** (name, client, and - on some
-screens only - a run status badge) and a **workflow nav** replace today's
-dot-separated link row (`UploadAndProcessingStatus.tsx:180-190`) and give
-every tender screen a way back - today only the processing screen links
-onward, and no screen links back to the dashboard.
+**App shell (built, batch 2).** A 48px top bar (wordmark "TenderOS" in
+Archivo 600 at 16px, linking to the dashboard; "Bids" and "Talent" links;
+the signed-in email) over a content column (`apps/web/src/shell/AppShell.tsx`).
+The landing sets its wordmark in Newsreader
+(`apps/landing/src/styles/chrome.css:8`); the app does not, because
+decision 4 limits Newsreader to page titles and empty-state headings. The
+top bar shows the **email, not an org name**: `/auth/me` carries no
+organisation name (`MeMembership` is `organization_id` + `role`,
+`apps/web/src/api/client.ts:180-183`). There is **no account menu and no
+Log out** yet: `logout()` exists in the auth context with no UI and no
+tested path (deferred, see below). Inside a tender, the **workflow nav**
+(built) gives every tender screen a way back to the dashboard (the
+wordmark and "Bids") and to every other step. The processing screen's old
+dot-separated link row (`UploadAndProcessingStatus.tsx:180-190`) still
+renders until batch 3 restyles that screen. The **tender header** (name,
+client, run status badge) is **not built**: see the next paragraph.
 
 **The shell sits outside `<main>`.** Top bar, tender header and workflow nav
 are siblings of `<main>`, never inside it, and contain no `<strong>`, no
@@ -433,16 +445,37 @@ team, commercial, readiness (measured: the files that call
 knowledge selections, proposal, red team and graph. No restyle batch adds a
 run fetch to get it. See Decisions, item 9.
 
-**Workflow nav - DECIDED (was TODO(human) 2, option a):** a horizontal tab
-strip under the tender header, in pipeline order: Documents, Requirements,
-Compliance, Team, Commercial, Knowledge, Proposal, Red team, Readiness, plus
-Graph as a utility at the end. It scrolls horizontally at 390px. Plain links
-with `aria-current="page"`; the E2E reaches tender screens with
-`page.goto`, so the strip does not change how the spec navigates.
+**Deferred from batch 2 (decided at batch 2 plan review):**
+- **Run status badge -> batch 3.** Neither the badge slot nor a
+  `useTenderRunStatus()` hook is built in batch 2: a slot with no caller is
+  an "exists, nothing uses it" contract designed without a real user. Both
+  are built in batch 3 with the requirements screen as the first caller.
+  Note for batch 3: five of the six screens keep only `runs[0].id`, not the
+  run's status (e.g. `RequirementRegister.tsx:48-53`), so each needs that
+  value kept in state; no new fetch.
+- **Tender name and client.** Showing them needs `getTender`
+  (`apps/web/src/api/client.ts:233`), which no screen calls today, so it
+  would be a new fetch inside a restyle. Not built; needs an explicit
+  decision before any batch adds it.
+- **Log out.** `logout()` (`apps/web/src/auth/authContextValue.ts:13`) has
+  no UI and no tested path. It needs wiring plus a real test before any
+  demo; not part of a restyle batch.
+
+**Workflow nav - DECIDED (was TODO(human) 2, option a); built in batch 2**
+(`apps/web/src/shell/TenderLayout.tsx`): a horizontal tab strip under the
+top bar, in pipeline order: Documents, Requirements, Compliance, Team,
+Commercial, Knowledge, Proposal, Red team, Readiness, plus Graph as a
+utility after a divider. It scrolls horizontally on its own at 390px (the
+page does not). Plain links directly inside `<nav>` - no `<ul>`/`<li>`, see
+the selector list under Restyle batches - with `aria-current="page"` set by
+React Router's `NavLink`; the E2E reaches tender screens with `page.goto`,
+so the strip does not change how the spec navigates.
 
 **Content width.** Tables run full width (max 1440px); forms and prose cap
-at 640px / 72ch. Today `CreateBid.tsx:41` and `Login.tsx:66` hardcode
-480 and 360; those become tokens.
+at 640px / 72ch. Batch 2 replaced Create bid's hardcoded 480 with
+`--width-form` (640px, via `.form-column`) and Login's 360 with
+`--width-auth` (360px). The page gutter (16px, 24px from 600px up) is the
+shell's `.page` column (`apps/web/src/styles/layout.css`).
 
 **Density.** 32px control height, 36px table rows, 8px cell padding
 vertical / 12px horizontal. Spacing uses the existing 4px-based scale
@@ -493,8 +526,31 @@ measured by grep). Each component will exist once and be reused.
   `danger` (failed-hue text and border, never fill). Height 32px.
 - **States:** default, hover (`--rule-2` overlay or 8% lighter amber),
   focus-visible (amber ring), active, disabled (ink-3 text, no fill change
-  beyond 50% opacity), busy (label changes to the present participle that
-  exists today - "Starting...", "Generating..." - plus `aria-busy`).
+  beyond 50% opacity; **except primary**, see below), busy (label changes to
+  the present participle that exists today - "Starting...", "Generating..."
+  - plus `aria-busy`).
+  **Deviation (batch 2), disabled primary:** ink-3 text on the 50% amber
+  fill measured 1.10:1, an unreadable label. `--on-accent` text at 50%
+  measured 2.49:1, at 60% 3.06:1 (measured; WCAG 2.x formula, the whole
+  control composited over `surface`). So a disabled primary uses
+  `--on-accent` text, its amber fill, and 0.6 opacity. Disabled secondary,
+  quiet and danger follow the rule above unchanged.
+
+- **Built (batch 2):** `apps/web/src/components/ui/Button.tsx` - variants
+  primary, secondary, quiet, danger; one size (32px; this file specifies no
+  other); `busy` sets `aria-busy`, swaps in the existing participle and
+  disables the button (the E2E waits on `toBeEnabled()` after long actions).
+  Busy keeps its variant's colours at full opacity: dimmed like disabled, a
+  busy primary measured 1.10:1. Disabled primary uses `--on-accent` text at
+  0.6 opacity (label 3.06:1, measured), not ink-3 at 0.5 (1.10:1) - the
+  deviation recorded under States. Labels never wrap (`white-space: nowrap`
+  on `.btn` and on the base `button` rule, so bare "Re-verify" no longer
+  breaks at the hyphen). `buttonClassName()` gives a `<Link>` the
+  same look. Login's mode switch is now two toggle buttons with
+  `aria-pressed`, not `disabled`. Migrated: Login and Create bid (4 bare
+  buttons); 27 bare `<button>`s in 14 files remain for their own batches
+  (measured after batch 2). Adjacent actions use the shared `.action-row`
+  gap.
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -505,6 +561,16 @@ measured by grep). Each component will exist once and be reused.
   2px radius, 12px label type. Booleans that are states (verified,
   approved, resolved, selected) become badges; booleans that are facts
   (mandatory) become a plain word.
+
+- **Built (batch 2):** `apps/web/src/components/ui/StatusBadge.tsx`
+  (tone + label; a `<span>`, never `<strong>`), icons in
+  `apps/web/src/components/ui/icons.tsx` (authored SVG, `aria-hidden`,
+  `focusable="false"`; neutral is a hollow circle), and the shared label
+  map `apps/web/src/status/statusMap.ts`, which quotes this file's line for
+  every row it implements and marks the rows it chose ("chosen, not in
+  DESIGN": parse and import-item labels, the unknown-value fallback). Not
+  yet placed on any screen: the dashboard ships without a Status column
+  (decision 9); the first badges arrive in batch 3.
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -536,6 +602,12 @@ measured by grep). Each component will exist once and be reused.
   right-aligned and tabular, rejected rows dimmed (today an inline
   `opacity: 0.5`, `RequirementRegister.tsx:120`).
 
+- **Built (batch 2):** `TableScroll` (`apps/web/src/components/ui/`), a
+  named, focusable horizontal scroll region with a sticky first column,
+  used on the Bid dashboard. Other tables get it in their own batch; the
+  requirements table still overflows at 390px (579px wide, measured after
+  batch 2) until batch 3 wraps it.
+
 ### Forms and inputs
 - **Today:** labels wrap inputs (good for accessibility, keep it), no
   layout, no help text, `<br />` for spacing (`TalentImportReview.tsx:148`,
@@ -543,6 +615,12 @@ measured by grep). Each component will exist once and be reused.
 - **Will be:** label above control, `surface-sunk` field with
   `--control-border`, amber focus, error text in failed hue with icon below
   the field. File inputs get a styled button and the chosen filename.
+
+- **Built (batch 2):** `apps/web/src/components/ui/Field.tsx` - label text
+  above the control inside the same wrapping `<label>`, so accessible names
+  (and the E2E's `getByLabel`) are unchanged; hint text sits outside the
+  label. Used on Login and Create bid. Error-below-field and the styled file
+  input are not built yet.
 
 ### Notices (error, warning, info)
 - **Today:** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
@@ -552,6 +630,10 @@ measured by grep). Each component will exist once and be reused.
 - **Will be:** one notice component: icon + message on a tint, variants
   failed / warning / info. Keeps `role="alert"` only for errors that
   appear after an action.
+
+- **Built (batch 2):** `apps/web/src/components/ui/Notice.tsx`, used for the
+  errors on Login, Bid dashboard and Create bid (3 of the
+  `--color-danger` inline readers removed; 18 remain, measured).
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -566,12 +648,23 @@ measured by grep). Each component will exist once and be reused.
   fill this and the action that does it; error = notice with the failed
   request named and a retry where one exists.
 
+- **Built (batch 2):** `SkeletonRows` and `EmptyState`
+  (`apps/web/src/components/ui/`) on the Bid dashboard. The `EmptyState`
+  heading is a styled `<p>`, not a heading element, so no extra heading
+  enters a screen's `<main>` for the E2E's heading locators to hit.
+  `RequireAuth.tsx`'s app-level "Loading..." is unchanged.
+
 ### Navigation
 - **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
   joined with " · " (`BidDashboard.tsx:44`); no route back to the dashboard
   from any screen.
 - **Will be:** the app shell and workflow nav above; current item marked
   with amber text and a 2px amber underline plus `aria-current="page"`.
+
+- **Built (batch 2):** `<header>` top bar and `<nav aria-label="Primary">`
+  (`AppShell.tsx`), `<nav aria-label="Tender workflow">`
+  (`TenderLayout.tsx`), a skip link to `#content`, current item amber with
+  `aria-current="page"` (and the 2px underline in the workflow nav).
 
 ### Traceability drawer (signature component)
 - **Today:** a bordered `<aside>` appended at the bottom of the proposal
@@ -817,7 +910,23 @@ not affect it:
   does.
 - `full-flow.spec.ts:1451-1452`: `page.locator("strong").first()` is
   page-wide, so **no `<strong>` anywhere in the shell** (it would precede
-  the readiness verdict in DOM order).
+  the readiness verdict in DOM order). **Stricter than `.first()` suggests:**
+  `:1451` is `expect(page.locator("strong")).toBeVisible()`, a strict-mode
+  assertion, so a *second* `<strong>` anywhere on the readiness page fails
+  it, wherever it sits. StatusBadge is a `<span>` for the same reason.
+- `full-flow.spec.ts:1253` and `:1258` (added at batch 2): the impact-preview
+  poll counts `page.locator("li")` page-wide and then parses every
+  `page.locator("ul li")` text as JSON. A `<ul>`/`<li>` in the shell would
+  make the poll pass before the preview renders and add nav labels to the
+  parsed list - a silent change, not a clear failure. **The shell uses no
+  `<ul>` or `<li>`**; links sit directly in `<nav>`.
+- Also page-wide, and kept out of the shell for that reason (batch 2
+  audit): `locator("table")` (15 sites, e.g. `:344`), `locator("aside")`
+  (`:980`), `locator("section", { has: heading })` (`:389`, `:827`),
+  `input[type="file"]` (`:531`), and page-wide `getByRole("button")` names
+  (`:511` "Create bid", `:1083` "Resolve", and others). The shell contains
+  no `table`, `aside`, `section`, heading, `button` or `input`;
+  `apps/web/src/shell/AppShell.test.tsx` asserts this.
 - `full-flow.spec.ts:513`: `getByRole("link", { name: tenderName })` on the
   dashboard, substring match - the dashboard must not show the tender name
   as a second link (no breadcrumb or "recent tenders" in the top bar).
@@ -839,11 +948,12 @@ Library setup, **no new dependency**.
    headings, links, tables, forms, buttons, focus ring, selection,
    scrollbars); reduced-motion guard. Screens change only through inherited
    element styles.
-2. **Shell and shared components.** App shell, tender header and workflow
-   nav; button variants, status badge with icon set and label map, notice,
-   empty state, skeleton, INR and date formatters, with the render tests
-   above. Applied to Login, Bid dashboard (shipped **without** its Status
-   column, decision 9) and Create bid.
+2. **Shell and shared components (built).** App shell and workflow nav
+   (tender header deferred, see Layout); button variants, status badge with
+   icon set and label map, notice, empty state, skeleton, form field, table
+   scroll region, INR and date formatters, with the render tests above.
+   Applied to Login, Bid dashboard (shipped **without** its Status column,
+   decision 9) and Create bid. Details under "Batch 2: as built".
 3. **Intake and requirements.** Upload and processing status (task list,
    live-updates notice), requirement register, and the gate panel (first
    used here, then reused unchanged).
@@ -853,6 +963,42 @@ Library setup, **no new dependency**.
 5. **Proposal, evidence and readiness.** Proposal workspace, traceability
    drawer, red-team findings, graph explorer, readiness.
 6. **Talent.** Talent library, import and review queue, employee profile.
+
+### Batch 2: as built
+
+- **Routes.** `apps/web/src/App.tsx` keeps the same 16 paths (15 protected
+  plus `/login`) and screens. One `RequireAuth` now wraps the shell as a
+  layout route instead of one per route; tender routes nest under
+  `/tenders/:tenderId` (`TenderLayout`). `apps/web/src/AppRoutes.test.tsx`
+  renders the real route tree and pins that an unauthenticated deep link
+  goes to `/login` and returns to the same link after sign-in.
+- **Checks at batch 2 (measured):** fake E2E (`scripts/e2e.ps1`) 1 passed -
+  the spec is a single test, so "6/6" above does not describe it; vitest
+  114 (37 at baseline). Contrast: 50 new foreground/background pairs, all
+  at or above target (closest: failed badge on `surface-raise`, 4.58:1).
+  Under simulated protanopia the failed badge's text on its tint measures
+  4.29:1 (Machado 2009, the method in Colors); its icon and label still
+  carry the state.
+- **Every new export and the batch that is its first caller:**
+
+| Export | File (under `apps/web/src/`) | First caller |
+|---|---|---|
+| `Button` | `components/ui/Button.tsx` | batch 2 (Login, Create bid) |
+| `buttonClassName`, `ButtonVariant` | `components/ui/buttonClassName.ts` | batch 2 (Button, Bid dashboard) |
+| `Notice` | `components/ui/Notice.tsx` | batch 2 (Login, Bid dashboard, Create bid) |
+| `Field` | `components/ui/Field.tsx` | batch 2 (Login, Create bid) |
+| `EmptyState` | `components/ui/EmptyState.tsx` | batch 2 (Bid dashboard) |
+| `SkeletonRows` | `components/ui/SkeletonRows.tsx` | batch 2 (Bid dashboard) |
+| `TableScroll` | `components/ui/TableScroll.tsx` | batch 2 (Bid dashboard) |
+| `StatusIcon`, `InfoIcon` | `components/ui/icons.tsx` | batch 2 (StatusBadge, Notice) |
+| `StatusBadge` | `components/ui/StatusBadge.tsx` | batch 3 (tender run badge, gate panel) |
+| `describeStatus`, `describeReadiness`, `describeFinding`, `STATUS_MAP` | `status/statusMap.ts` | batch 3 (processing tasks, gate panel); readiness and findings in batch 5 |
+| `StatusTone`, `StatusDescriptor`, `StatusFamily` (types) | `status/statusMap.ts` | batch 2 (StatusBadge, icons) |
+| `formatDate` | `format/date.ts` | batch 3 (gate panel decided-at date, today a raw ISO string at `GateDecisionPanel.tsx:91`) |
+| `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | batch 4 (commercial findings, if amounts are surfaced) |
+| `AppShell`, `PageContent` | `shell/AppShell.tsx` | batch 2 (App.tsx) |
+| `TenderLayout` | `shell/TenderLayout.tsx` | batch 2 (App.tsx) |
+| `AppRoutes` | `App.tsx` | batch 2 (App, AppRoutes.test.tsx) |
 
 ## Deferred
 

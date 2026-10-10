@@ -152,8 +152,15 @@
   --cell-pad-y: 8px;
   --cell-pad-x: 12px;
   --width-form: 640px;
+  --width-auth: 360px;
   --width-table: 1440px;
   --measure-prose: 72ch;
+
+  /* App shell (DESIGN.md Layout): 48px top bar; page gutter 16px at phone
+     width (DESIGN.md "Responsive (390px)"), 24px from 600px up. */
+  --topbar-height: 48px;
+  --gutter: 16px;
+  --gutter-wide: 24px;
 
   /* Focus ring: 2px amber, 2px offset (DESIGN.md Accessibility). */
   --focus-ring-width: 2px;
@@ -165,10 +172,11 @@
   --dur-panel: 240ms;
 
   /* Transitional aliases. Screens still read these three names from inline
-     styles (22x --color-danger, 4x --color-warning, 1x --color-border);
-     the old light-theme values measure 3.51:1 and 3.86:1 on --surface,
-     below 4.5:1. Delete each alias in the batch that removes its last
-     reader. */
+     styles. Code readers after restyle batch 2 (measured by grep, comment
+     mentions excluded): 18x --color-danger, 3x --color-warning,
+     1x --color-border. The old light-theme values measure 3.51:1 and
+     3.86:1 on --surface, below 4.5:1. Delete each alias in the batch that
+     removes its last reader. */
   --color-danger: var(--status-failed);
   --color-warning: var(--status-warning);
   --color-border: var(--rule);

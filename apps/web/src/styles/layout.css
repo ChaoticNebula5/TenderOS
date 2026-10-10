@@ -1,0 +1,73 @@
+/* Shared layout classes - restyle batch 2. Used by more than one component
+   or screen, so they live here rather than next to any one of them.
+   main.tsx imports this after index.css (element styles) so a class always
+   wins over the element default it adjusts. */
+
+/* The page gutter batch 1 deliberately left out (index.css zeroes body
+   margin). The shell's #content wrapper and Login both use it, so content
+   never sits flush against the viewport edge. */
+.page {
+  max-width: var(--width-table);
+  margin: 0 auto;
+  padding: 0 var(--gutter) var(--space-7);
+}
+
+@media (min-width: 600px) {
+  .page {
+    padding-inline: var(--gutter-wide);
+  }
+}
+
+/* The skip-link target is focused programmatically; it needs no ring. */
+.page:focus {
+  outline: none;
+}
+
+/* Adjacent actions (carry-over 4): one gap rule for every row of buttons,
+   instead of per-screen margins. Wraps at phone width. */
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Skip link (DESIGN.md Accessibility, "Keyboard order"): first Tab stop,
+   off-screen until focused. */
+.skip-link {
+  position: absolute;
+  left: var(--space-2);
+  top: var(--space-2);
+  z-index: 10;
+  padding: var(--button-pad-y) var(--button-pad-x);
+  border-radius: var(--radius-md);
+  background: var(--surface-raise);
+  color: var(--ink);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus-visible {
+  transform: none;
+}
+
+/* The "TenderOS" wordmark: Archivo 600, never Newsreader (DESIGN.md
+   decision 4 and Layout, "App shell"). 16px in the top bar; Login's h1
+   adds .wordmark--title for page-title size (plan item 7). */
+.wordmark {
+  font-family: var(--font-ui);
+  font-size: var(--text-subsection);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.wordmark--title {
+  font-size: var(--text-page-title);
+  line-height: var(--leading-page-title);
+}
+
+/* Form screens cap at --width-form (DESIGN.md Layout, "Content width":
+   forms and prose 640px). */
+.form-column {
+  max-width: var(--width-form);
+}

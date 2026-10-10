@@ -1,0 +1,62 @@
+/* App shell top bar - DESIGN.md Layout "App shell": 48px, wordmark, primary
+   nav, account. A rule below it separates it from content (Tone-Not-Shadow
+   Rule: no shadow). */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: var(--topbar-height);
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-sunk);
+}
+
+@media (min-width: 600px) {
+  .topbar {
+    padding-inline: var(--gutter-wide);
+  }
+}
+
+.topbar__wordmark {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.topbar__nav {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.topbar__link {
+  color: var(--ink-2);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.topbar__link:hover {
+  color: var(--ink);
+}
+
+/* Current section: amber text AND a 2px amber underline (DESIGN.md
+   Navigation), as in the workflow nav. Colour alone failed the greyscale
+   pass: amber reads darker than ink-2 without hue, so "current" looked
+   like "dimmed". */
+.topbar__link[aria-current="page"] {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
+}
+
+/* Email pushed right; shrinks with an ellipsis at phone width instead of
+   pushing the bar wider than the viewport. */
+.topbar__account {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: var(--text-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

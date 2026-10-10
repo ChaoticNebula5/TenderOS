@@ -23,10 +23,7 @@ describe("formatDate", () => {
     expect(formatDate("2026-10-10T00:05:00Z", "UTC")).toBe("10 Oct 2026, 00:05");
   });
 
-  it.each([null, undefined, "", "not a date", "2026-13-45T99:99:00Z"])(
-    "%s -> -",
-    (value) => {
-      expect(formatDate(value, "UTC")).toBe("-");
-    },
-  );
+  it.each([null, undefined, "", "not a date", "2026-13-45T99:99:00Z"])("%s -> -", (value) => {
+    expect(formatDate(value, "UTC")).toBe("-");
+  });
 });

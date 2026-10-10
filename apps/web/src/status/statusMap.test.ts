@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  STATUS_MAP,
-  describeFinding,
-  describeReadiness,
-  describeStatus,
-} from "./statusMap";
+import { STATUS_MAP, describeFinding, describeReadiness, describeStatus } from "./statusMap";
 
 describe("statusMap", () => {
   it("maps gates as DESIGN.md decided: rejected is Failed, changes_requested is Blocked", () => {
@@ -56,4 +51,11 @@ describe("statusMap", () => {
       label: "some_new_status",
     });
   });
+
+  it.each(["constructor", "toString", "__proto__"])(
+    "treats the Object.prototype key %s as unknown, not as a map entry",
+    (key) => {
+      expect(describeStatus("gate", key)).toEqual({ tone: "neutral", label: key });
+    },
+  );
 });

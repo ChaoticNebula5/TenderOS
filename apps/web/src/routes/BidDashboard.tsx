@@ -3,10 +3,19 @@ import { Link } from "react-router-dom";
 import { ApiError, listTenders } from "../api/client";
 import type { TenderResponse } from "../api/client";
 import { useAuth } from "../auth/useAuth";
+import { buttonClassName } from "../components/ui/buttonClassName";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Notice } from "../components/ui/Notice";
+import { SkeletonRows } from "../components/ui/SkeletonRows";
+import { TableScroll } from "../components/ui/TableScroll";
+import "./BidDashboard.css";
 
-// Screen 5 (Part J). GET /organizations/{org_id}/tenders returns the coarse
-// 6-value tenders.status column directly (core/enums.py::coarse_status_for)
-// - enough for a dashboard rollup without a second call per row.
+// Screen 5 (Part J). GET /organizations/{org_id}/tenders lists the org's
+// bids. The response also carries tenders.status, but this screen does NOT
+// show it (DESIGN.md decision 9): nothing in the workflow writes that
+// column, so it reads "created" for every tender - a Status column would
+// claim more than the code does. It returns when a backend block makes the
+// list carry a real run status (KNOWN_LIMITATIONS.md).
 export function BidDashboard() {
   const { organizationId } = useAuth();
   const [tenders, setTenders] = useState<TenderResponse[] | null>(null);
@@ -37,41 +46,55 @@ export function BidDashboard() {
     };
   }, [organizationId]);
 
+  // "Create bid" is navigation, so it stays a <Link> (role="link") styled
+  // as the primary action. The tender name stays the only link per row:
+  // full-flow.spec.ts:513 finds it with a substring getByRole("link").
+  // "Talent library" moved to the top bar (AppShell, "Talent"). One
+  // "Create bid" only - the empty state points at it rather than repeating it.
   return (
     <main>
-      <h1>Bids</h1>
-      <p>
-        <Link to="/tenders/new">Create bid</Link> · <Link to="/talent">Talent library</Link>
-      </p>
+      <div className="dashboard__header">
+        <h1>Bids</h1>
+        <Link to="/tenders/new" className={buttonClassName("primary")}>
+          Create bid
+        </Link>
+      </div>
 
       {error && (
-        <p role="alert" style={{ color: "var(--color-danger)" }}>
+        <Notice variant="failed" alert>
           {error}
-        </p>
+        </Notice>
       )}
-      {tenders === null && !error && <p>Loading...</p>}
-      {tenders !== null && tenders.length === 0 && <p>No bids yet.</p>}
-      {tenders !== null && tenders.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Client</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tenders.map((tender) => (
-              <tr key={tender.id}>
-                <td>
-                  <Link to={`/tenders/${tender.id}`}>{tender.name}</Link>
-                </td>
-                <td>{tender.client_name ?? "-"}</td>
-                <td>{tender.status}</td>
+      {tenders !== null && tenders.length === 0 && (
+        <EmptyState title="No bids yet">
+          Bids you create appear here. Use Create bid to start one.
+        </EmptyState>
+      )}
+      {!error && (tenders === null || tenders.length > 0) && (
+        <TableScroll label="Bids">
+          <table aria-busy={tenders === null}>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Client</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {tenders === null ? (
+                <SkeletonRows columns={2} />
+              ) : (
+                tenders.map((tender) => (
+                  <tr key={tender.id}>
+                    <td>
+                      <Link to={`/tenders/${tender.id}`}>{tender.name}</Link>
+                    </td>
+                    <td>{tender.client_name ?? "-"}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </main>
   );

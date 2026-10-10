@@ -73,15 +73,48 @@
   background-image: none;
 }
 
-/* Disabled (and busy, which disables): ink-3 text, fill unchanged, the
-   whole control at 50% (DESIGN.md Buttons, States). index.css sets this
-   for bare buttons; restated so the variants' colour does not override it. */
+/* Disabled: ink-3 text, fill unchanged, the whole control at 50%
+   (DESIGN.md Buttons, States). index.css sets this for bare buttons;
+   restated so the variants' colour does not override it. */
 .btn:disabled {
   color: var(--ink-3);
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.btn[aria-busy="true"] {
+/* Disabled PRIMARY only: deviates from DESIGN.md's literal "ink-3 text"
+   (Buttons, States). ink-3 on a 50% amber fill measured 1.10:1, an
+   unreadable label; on-accent at 50% measured 2.49:1, at 60% 3.06:1. So
+   on-accent text and 0.6 opacity. Secondary, quiet and danger keep the
+   rule above. :not([aria-busy]) leaves the busy state's own rule alone. */
+.btn--primary:disabled:not([aria-busy="true"]) {
+  color: var(--on-accent);
+  opacity: 0.6;
+}
+
+/* Busy is its own state in DESIGN.md, not "disabled": the button is
+   disabled for behaviour (Button.tsx explains why), but its label is the
+   one thing the operator reads while waiting ("Creating..."). Dimmed like
+   disabled, a busy primary measured 1.10:1; so busy keeps its variant's
+   colours at full opacity. These selectors (0,3,0) outrank both
+   .btn:disabled and index.css's button:disabled (0,1,1). */
+.btn[aria-busy="true"]:disabled {
+  opacity: 1;
   cursor: progress;
+}
+
+.btn--primary[aria-busy="true"]:disabled {
+  color: var(--on-accent);
+}
+
+.btn--secondary[aria-busy="true"]:disabled {
+  color: var(--ink);
+}
+
+.btn--quiet[aria-busy="true"]:disabled {
+  color: var(--ink-2);
+}
+
+.btn--danger[aria-busy="true"]:disabled {
+  color: var(--status-failed);
 }

@@ -1,0 +1,18 @@
+/* Bid dashboard - title and its one primary action on one line, the action
+   wrapping under the title at phone width. */
+
+.dashboard__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  /* The row takes over the h1's vertical margins (index.css h1), so the
+     title and the button centre on each other instead of the button
+     centring on the title's margin box. */
+  margin: var(--space-5) 0 var(--space-4);
+}
+
+.dashboard__header > h1 {
+  margin: 0;
+}

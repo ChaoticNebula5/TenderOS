@@ -1,7 +1,12 @@
 /* Base element styles - restyle batch 1 (DESIGN.md "Restyle batches" 1).
    Plain element selectors only: screens change through inherited styles,
-   no markup or class names are involved. Every value is a token from
-   styles/tokens.css, which main.tsx imports before this file.
+   no markup or class names are involved. Colours, spacing, sizes and type
+   are tokens from styles/tokens.css, which main.tsx imports before this
+   file. Written inline on purpose: 1px hairline borders, the 2px link
+   underline offset/thickness, and unitless ratios (line-height 1.25,
+   opacity 0.5).
+   Component classes live next to their components, shared layout classes
+   in styles/layout.css.
 
    Deliberately no global margin reset: today's screens are unstyled and
    rely on the browser's default spacing between paragraphs and lists. */
@@ -92,12 +97,15 @@ textarea {
 button,
 ::file-selector-button {
   min-height: var(--control-height);
-  padding: 6px 14px;
+  padding: var(--button-pad-y) var(--button-pad-x);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background-color: var(--surface-raise);
   color: var(--ink);
   line-height: 1.25;
+  /* A label never breaks across lines: "Re-verify" otherwise wraps at the
+     hyphen in narrow table cells and the button grows taller. */
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -126,7 +134,7 @@ button[aria-busy="true"] {
 input:not([type="checkbox"], [type="radio"], [type="file"]),
 select,
 textarea {
-  padding: 6px 10px;
+  padding: var(--button-pad-y) var(--input-pad-x);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background-color: var(--surface-sunk);
