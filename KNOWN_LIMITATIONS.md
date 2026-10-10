@@ -9743,7 +9743,7 @@ actually has - three independent failures were reproduced, not inferred:
 
 ---
 
-## [found during B17 Phase 0b, open, decision pending] Dependency audit: 37 known Python vulnerabilities in 5 packages, 5 high npm advisories
+## [found during B17 Phase 0b, RESOLVED on chore/deps-security, 2026-10-10 - see the entries at the end] Dependency audit: 37 known Python vulnerabilities in 5 packages, 5 high npm advisories
 
 - **Observed 2026-10-06** (`uv run pip-audit`, `npm audit --audit-level=high`
   - the CI security job's own commands; results depend on the date, since
@@ -9931,7 +9931,7 @@ actually has - three independent failures were reproduced, not inferred:
 - **The old volume `tenderos_minio_data` is kept, unchanged.** Only the
   owner may delete it, with `docker volume rm tenderos_minio_data`.
 
-## [found during B17, open, proposal pending] Local test runs write their uploads into the app bucket
+## [found during B17, RESOLVED on chore/deps-security, 2026-10-10 - see the entries at the end] Local test runs write their uploads into the app bucket
 
 - `scripts/test-backend.env` does not set `S3_BUCKET`, so local pytest
   falls back to `.env`'s value - the app bucket `tenderos`. Only CI sets
@@ -9955,7 +9955,7 @@ actually has - three independent failures were reproduced, not inferred:
   per test. **Proposal (not applied):**
   `fileConfig(..., disable_existing_loggers=False)` in env.py.
 
-## [found during B17, open, unexplained] Intermittent failures in tests/integration/test_outbox_dispatcher.py
+## [found during B17, open, measured 2026-10-10, likely mechanism identified, not fixed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
 
 - Observed during the swap's verification, against a fresh CI-style stack:
   the first full run had 2 failures
@@ -9966,3 +9966,251 @@ actually has - three independent failures were reproduced, not inferred:
 - One of the two named tests touches no object storage, so the swap is
   not the obvious cause; that is not proven either.
 - **Next:** capture the failure (`-x`, full output) when it recurs.
+
+## [chore/deps-security, RESOLVED 2026-10-10] Dependency audit: Python and npm advisories fixed, CI security job can exit 0
+
+- **Python (uv.lock only, no pyproject change - no upper bound blocked any
+  of them):** minimum fixing versions, one `uv lock --upgrade-package
+  NAME==VERSION` per package, never a blanket upgrade:
+  pyjwt 2.13.0 -> 2.15.0, pypdf 6.15.0 -> 6.19.0, urllib3 2.7.0 -> 2.8.0,
+  virtualenv 21.7.0 -> 21.7.13, langgraph-sdk 0.4.2 -> 0.4.4. One forced
+  transitive change: python-discovery 1.5.0 -> 1.6.2 (virtualenv 21.7.13
+  requires `python-discovery>=1.6`); 1.6.2 no longer depends on
+  platformdirs, which stays locked for pip-audit and virtualenv. Nothing
+  else in the lockfile moved.
+- **pip-audit, run as ci.yml runs it (`uv run pip-audit` after `uv sync`),
+  measured 2026-10-10:** "No known vulnerabilities found", exit 0, with the
+  four skip rows below still printed. Results depend on the date: the
+  advisory databases change without any code change.
+- **npm, lockfiles only, `npm audit fix` without `--force` (web) and
+  `npm update source-map-js` (landing); no package.json change, no major
+  bump:**
+  - `apps/web/package-lock.json`, 5 entries for the 4 advisory packages:
+    brace-expansion 5.0.9 -> 5.0.12, the nested
+    `minimatch/node_modules/brace-expansion` 1.1.18 -> 1.1.21 (also inside
+    the advisory range), js-yaml 4.3.1 -> 4.3.2, source-map-js 1.2.1 ->
+    1.2.2, undici 7.29.0 -> 7.30.0. Every step of ci.yml's web job passed
+    locally: `npm ci`, `npx tsc -b`, `npm run lint`, `npm test` (37 passed).
+    `npm audit --audit-level=high` exit 0.
+  - `apps/landing/package-lock.json`, 1 entry: source-map-js 1.2.1 -> 1.2.2
+    (required by postcss 8.5.28 as `^1.2.1`). Every step of ci.yml's
+    landing job passed locally: `npm ci`, typecheck, lint, build.
+    `npm audit --audit-level=high` exit 0.
+  - `npm ci` warns EBADENGINE for eslint-visitor-keys on this machine's
+    Node 22.12.0 (needs ^22.13.0). Pre-existing, not touched by this
+    change; CI's `node-version: "22"` resolves a newer 22.x.
+- **Verified after the upgrade (measured):** backend suite 648 passed via
+  scripts/test-backend.ps1; mypy 0 issues (248 files); ruff 0; the rebuilt
+  api and worker images carry pyjwt 2.15.0, pypdf 6.19.0, urllib3 2.8.0,
+  langgraph-sdk 0.4.4; fake E2E (scripts/fake-stack.ps1 then
+  scripts/e2e.ps1, LLM_PROVIDER=fake in api, worker and
+  outbox_dispatcher): 1 passed - "golden path: login through readiness,
+  live Docker stack", 2.7 min, results fake (FakeLLMClient).
+- **Test:** the CI `security` job.
+
+## [chore/deps-security, analysed 2026-10-10] PYSEC-2026-4146 (pyjwt): not reachable from our code, and cleared by 2.15.0 - no ignore added
+
+- **Advisory (GHSA-gvp8-978c-rx2q, CVE-2026-103001), as pip-audit printed
+  it:** `jwt.decode()`/`decode_complete()` write `verify_exp`,
+  `verify_aud` and five more keys into a caller-supplied `options` dict
+  when `verify_signature` is falsy. If the caller reuses that same dict in
+  a later verifying call, the registered-claim checks stay off and an
+  expired or wrong-audience token is accepted. The signature check is not
+  affected. Precondition: one mutable `options` object reused across calls.
+  pip-audit listed no fix version.
+- **Our usage, every call site:** sign at
+  `packages/tenderos_backend/src/tenderos_backend/core/security.py:35`
+  (`jwt.encode(..., algorithm="HS256")`); verify at `security.py:47`
+  (`jwt.decode(token, key, algorithms=["HS256"])`, **no `options`
+  argument**). With `options=None`, `_merge_options` returns its own
+  defaults and never reaches the code that writes to the dict. Elsewhere only
+  `jwt.PyJWTError` is caught
+  (`apps/api/src/tenderos_api/dependencies.py:38`,
+  `domain/services/auth_service.py:94`). No other locked package depends
+  on pyjwt; no test passes `options`. **Not reachable.**
+- **Fixed upstream anyway:** OSV records the affected range as 2.11.0 to
+  2.13.0 (`last_affected`). The 2.15.0 and 2.15.1 tags copy the dict
+  (`merged_options = dict(options)`), and the advisory's own PoC, run
+  against the installed 2.15.0, raises `ExpiredSignatureError` and leaves
+  the caller's dict unchanged (measured). pip-audit no longer reports it,
+  so no `--ignore-vuln` was added to ci.yml.
+- **Re-check if:** any `jwt.decode` call ever starts passing `options`, or
+  pip-audit reports this ID again for the locked version.
+
+## [chore/deps-security, documented] What pip-audit and npm audit do not cover
+
+- pip-audit prints four "Skip Reason" rows and does not audit them:
+  `tenderos-api`, `tenderos-backend`, `tenderos-worker` (our own workspace
+  packages, not on PyPI) and `torch 2.13.0+cpu` (the CPU build from the
+  PyTorch index; the `+cpu` local version is not on PyPI). CI runs
+  pip-audit without `--strict`, so skips do not fail the job - and torch
+  advisories are therefore never seen by CI. Checking torch means reading
+  PyTorch's own security advisories by hand.
+- CI's `npm audit` covers `apps/web` only. `apps/landing` has its own
+  lockfile and no audit step (its one high advisory was found by hand and
+  fixed above). Adding a landing audit step is deferred, by decision.
+- dependabot.yml has no npm entry for `apps/landing` either.
+- **Checked, not a gap:** virtualenv and pre-commit (root `dev` group) are
+  **not** installed in the api or worker images (measured in `/app/.venv`
+  of the running containers). `uv export --package tenderos-api` lists
+  them, but `uv sync --frozen --package ...` and the CMD's `uv run
+  --frozen --package ...` do not install the root dev group. The planned
+  "virtualenv in images" Phase 4 hardening item was based on the export
+  output and turned out to be false; nothing to harden.
+
+## [chore/deps-security, RESOLVED 2026-10-10] Local test uploads now go to tenderos-ci
+
+- `scripts/test-backend.env` sets `S3_BUCKET=tenderos-ci`, the same value
+  ci.yml's test job sets. One file, so test-backend.ps1, the Makefile and
+  CI all agree.
+- **Before (measured, the two S3-using test files via test-backend.ps1, 17
+  passed):** app bucket 18,739 -> 18,758 (+19), tenderos-ci unchanged.
+- **After (measured, full suite, 648 passed):** app bucket 18,758 ->
+  18,758 (unchanged), tenderos-ci 654 -> 825 (+171).
+- A missing bucket is created on first use (`ObjectStorage._ensure_bucket`,
+  head then create, `db/storage.py:33-47`): proven with the real adapter
+  against a fresh `tenderos-ci-probe-<timestamp>` bucket (absent, created
+  on first put, round-trip ok), which was then emptied and deleted.
+- The 18,357 unreferenced objects already in the app bucket are untouched.
+
+## [chore/deps-security, measured 2026-10-10] Object store: a maximum-size object round-trips through the real adapter; the HTTP limit is slightly below it
+
+- Configured maximum: `max_upload_size_mb: int = 50`
+  (`core/config.py:28`; `.env` does not override it) = 52,428,800 bytes.
+- `ObjectStorage.put` is a single `put_object` call, not multipart
+  (`db/storage.py:52-54`); the stored ETag has no `-N` part suffix.
+- Probe against VersityGW (localhost, bucket tenderos-ci, temporary key
+  under `tmp/`): 52,428,800 random bytes, put 0.67 s, get 0.30 s
+  (measured, one run), SHA-256 equal, ContentLength equal; deleted with
+  `delete_object`, then `head_object` returned 404.
+- **Open, not fixed:** the API's body-size middleware rejects any request
+  whose Content-Length exceeds 50 MiB (`apps/api/src/tenderos_api/main.py:
+  139,152`), and that counts the multipart framing too. A file of exactly
+  50 MiB therefore gets 413 from the middleware before `_read_bounded`
+  (`routes/documents.py:123-141`, which allows exactly 50 MiB) ever sees
+  it. The effective upload limit is 50 MiB minus the framing (a few hundred
+  bytes). Inferred from the code, not measured with an HTTP upload.
+
+## [found 2026-10-10, open, owner decision] The dev .env's JWT signing key is 8 bytes
+
+- pyjwt emits `InsecureKeyLengthWarning: The HMAC key is 8 bytes long,
+  which is below the minimum recommended length of 32 bytes for SHA256`
+  in the dispatcher test runs that took their key from `.env` (length
+  measured; the value was never printed). `.env` is untracked and local;
+  CI uses its own longer throwaway key.
+- **Risk:** none locally; any deployment that copies `.env` as-is would
+  sign tokens with a guessable key. Settings does not enforce a minimum
+  length.
+
+## [measured 2026-10-10, open, not fixed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
+
+- **Method:** two scratch clones, at df3dd96 and at 8c275e5 (before the
+  VersityGW swap), each with its own `uv sync`; the file run 20 times per
+  commit, one after the other, with `--tb=long`, against the same local
+  postgres, redis and neo4j (app containers stopped), with
+  test-backend.ps1's environment and guards. The file needs no object
+  storage (imports at lines 1-16; the integration conftest's autouse
+  fixtures are Postgres-only), so both commits used identical infra.
+- **Counts (measured):** df3dd96 2/20 failing runs; 8c275e5 3/20. The
+  flake predates the swap.
+- **Signatures:**
+  1. `test_two_concurrent_dispatchers_claim_each_event_exactly_once`,
+     `test_outbox_dispatcher.py:177` - not every one of the 10 events is
+     `dispatched` after two concurrent `_dispatch_once()` calls (df3dd96
+     runs 1 and 15; 8c275e5 runs 7 and 19).
+  2. `test_dispatcher_marks_event_dispatched_on_success`,
+     `test_outbox_dispatcher.py:38` - the tender's event is still pending
+     after `_dispatch_once()` (8c275e5 run 9).
+  Neither assertion prints the events' statuses, so the failure text alone
+  does not name a cause.
+- **Likely mechanism (reproduced in isolation, not yet proven to be the
+  cause of these failures):** `outbox_events.available_at` defaults to
+  Postgres `now()` (`db/models/outbox.py:29-31`) - the Docker VM's clock,
+  at transaction start - while `get_pending` and `claim_by_id` filter
+  `available_at <= datetime.now(UTC)` - the host's clock, sent as a
+  parameter (`db/repositories/outbox.py:41,81`). Measured skew: Postgres
+  about +2 ms ahead of the host (8 samples, +1.8 to +3.4 ms). A
+  session-local temp-table probe (insert with `default now()`, then filter
+  with the host's now immediately) found the fresh row invisible 499 of 500
+  times. Both failing tests create events and dispatch at once; when the
+  gap is shorter than the current skew, the event is skipped and stays
+  pending. WSL2 clock drift varies over time, which fits failures that
+  come in clusters.
+- **Second Windows-specific finding:** `test_redis_unavailable_...` points
+  Redis at `localhost:1`, expecting an instant refusal (comment at lines
+  102-106). On this host a refused connect takes about 2.0 s per address
+  family, and a redis-py ping to `localhost:1` took 4.2 s (measured). The
+  test still passes but costs seconds per enqueue attempt.
+- **Unexplained:** df3dd96 run 1 took 1,149 s (median run 53 s). A py-spy
+  sample during a later, normal run showed time spent in the
+  `localhost:1` connect; whether that is what stretched run 1 is not
+  known (no per-test durations were recorded).
+- The dispatcher holds the `FOR UPDATE SKIP LOCKED` row lock across a
+  blocking `Queue.enqueue` (`apps/worker/src/tenderos_worker/
+  outbox_dispatcher.py:218-258`), which also blocks the event loop, so the
+  two `gather`ed dispatchers in signature 1 run effectively one after the
+  other.
+- **Next (not done):** make the assertions print each event's status and
+  `available_at`, then decide whether the comparison should use one clock
+  (e.g. `func.now()` on the database side).
+- **Follow-up from code reading only (2026-10-10, no new runs, no code
+  change):**
+  1. **Redis timeouts.** The dispatcher builds its client as
+     `Redis.from_url(settings.redis_url)` with no keyword arguments
+     (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:262`); the
+     URL in `scripts/test-backend.env` carries no query parameters, and no
+     file under apps/ or packages/ sets `socket_connect_timeout` or
+     `socket_timeout`. Our code sets neither. The installed redis-py 8.0.1
+     does, by default: `DEFAULT_SOCKET_TIMEOUT = 5` and
+     `DEFAULT_SOCKET_CONNECT_TIMEOUT = DEFAULT_SOCKET_TIMEOUT`
+     (`redis/_defaults.py:7-8`), applied per address in the connect loop
+     (`redis/connection.py:1546-1567`, `sock.settimeout(
+     self.socket_connect_timeout)` before `connect`). A pooled connection
+     made through `from_url` gets `Retry(NoBackoff(), 0)` when no retry
+     is passed and no retry-on-error list is configured
+     (`redis/connection.py:884-894`), which fits the measured 4.2 s for one
+     ping to `localhost:1` (two address families, about 2 s each, no
+     retry). So one enqueue against the dead port is bounded at about 10 s
+     (2 addresses x 5 s), and the 1,149 s run would need on the order of
+     100 or more such attempts - nothing in the test creates that many
+     events. **Correction to the wording above:** the py-spy sample that
+     showed the stack inside the redis connect at
+     `outbox_dispatcher.py:242` was taken during a later, normal run
+     (df3dd96 run 2), not during the 18-minute run 1. Where run 1 spent
+     its time is not known.
+  2. **Can the claim's row lock be released before `Queue.enqueue`? No,
+     as written.** `claim_by_id`'s `SELECT ... FOR UPDATE SKIP LOCKED`
+     (`db/repositories/outbox.py:77-87`) opens the session's transaction
+     (SQLAlchemy autobegin; plain `async_sessionmaker(engine,
+     expire_on_commit=False)`, `db/session.py:23`). Between the claim
+     (`outbox_dispatcher.py:218`) and the enqueue (`:242`) nothing commits
+     or rolls back - `build_dispatch` is a pure function and the repository
+     methods only `flush()` (`db/repositories/outbox.py:30,95,104`). The
+     transaction ends only at `await uow.commit()` (`:258`) or at the
+     rollback in `UnitOfWork.__aexit__` on an exception
+     (`db/unit_of_work.py:83-84`). Releasing the lock earlier would need a
+     commit before the enqueue, which reopens the double-dispatch race the
+     lock exists to prevent unless the row is first moved to a separate
+     "claimed" status.
+  3. **The two failing tests and their signatures:**
+     `test_two_concurrent_dispatchers_claim_each_event_exactly_once`
+     fails at `test_outbox_dispatcher.py:177`
+     (`AssertionError: every event must reach a real terminal dispatched
+     state - none silently lost between two concurrent claimants`), 4 of
+     the 5 failing runs; `test_dispatcher_marks_event_dispatched_on_success`
+     fails at `test_outbox_dispatcher.py:38`
+     (`assert all(e.aggregate_id != tender.id for e in still_pending)`),
+     1 of 5. **Database clock ahead of host clock - likely, not proven to
+     be the cause.** Evidence: `available_at` is stamped by Postgres
+     `now()` (`db/models/outbox.py:29-31`) and filtered against the host's
+     `datetime.now(UTC)` (`db/repositories/outbox.py:41,81`); the
+     container's clock measured +1.8 to +3.4 ms ahead of the host (8
+     samples, round trip about 1 ms); an insert-then-filter probe hid the
+     fresh row 499 of 500 times. What is missing for proof: neither
+     assertion prints the events' statuses or `available_at`, so no
+     failing run shows the skipped rows directly.
+  4. **CI job timeouts:** no job in `.github/workflows/ci.yml` sets
+     `timeout-minutes` (0 occurrences; jobs lint, typecheck, test, web,
+     landing, security), so GitHub's default of 360 minutes per job
+     applies. A hang like run 1 in CI would hold a runner for up to 6
+     hours. Reported only; ci.yml unchanged.
