@@ -10225,3 +10225,100 @@ actually has - three independent failures were reproduced, not inferred:
      landing, security), so GitHub's default of 360 minutes per job
      applies. A hang like run 1 in CI would hold a runner for up to 6
      hours. Reported only; ci.yml unchanged.
+
+## [found 2026-10-10 (phase1/design survey), open, docs only] `tenders.status` is never written by the workflow; the dashboard's Status column reads "created" for every tender, and the comment at `BidDashboard.tsx:7-9` is wrong
+
+- **Observed (measured, live dev database, 2026-10-10):** all 47 tenders
+  have `status = 'created'` (`select distinct status from tenders` returns
+  one row), including tenders whose latest run is `waiting_for_human`,
+  `running` or `failed`. The Bids dashboard renders that column directly
+  (`apps/web/src/routes/BidDashboard.tsx:70`), so every bid shows
+  "created" (screenshot `02_dashboard`, fake-provider data, scratchpad
+  only).
+- **Mechanism, read directly:** the only write is
+  `TenderRepository.update`'s optional `status` argument
+  (`packages/tenderos_backend/src/tenderos_backend/db/repositories/tenders.py:60`),
+  reached only from `PATCH /tenders/{id}`
+  (`apps/api/src/tenderos_api/routes/tenders.py:24`). Nothing in the
+  workflow, the run-status sync (`core/enums.py::coarse_status_for`) or
+  any node sets it. The column defaults to `created`
+  (`db/models/tender.py:21`).
+- **The comment is the bug that hid it:** `BidDashboard.tsx:7-9` says the
+  list endpoint "returns the coarse 6-value tenders.status column directly
+  (core/enums.py::coarse_status_for)". `coarse_status_for` maps
+  `workflow_runs.status`, not `tenders.status`; no wiring connects them.
+  Another instance of "a comment asserting a wiring that doesn't exist".
+- **Pattern: column exists, nothing populates it - fourth instance.** The
+  earlier three in this file: `knowledge_import_batches.status` never
+  advances past `queued` (`[B6, re-confirmed B9]` entry),
+  `tenders.state_version` was never bumped (`[B7/B8]` entry), and
+  `agent_traces.estimated_cost_usd` was never populated (`[B16]` entry,
+  since resolved). This file has no single heading carrying a count for
+  this shape; the count here is assembled from those three entries.
+- **Decision recorded in DESIGN.md (decision 9):** restyle batch 2 ships
+  the dashboard without a Status column, and the tender-header status badge
+  appears only on screens that already fetch the latest run. The real fix
+  is a separate backend block - the workflow writes `tenders.status` from
+  the coarse run status, or the tender list endpoint returns the latest
+  run's status - and it must land before any batch shows the column again.
+- **Test:** none. No test asserts the dashboard's Status column (checked:
+  `full-flow.spec.ts` only clicks the tender link there, `:513`).
+
+## [found 2026-10-10 (phase1/design survey), open, docs only, cause MEASURED] A rate-limited request (429) is shown as "Could not reach the server"; the 429 carries no CORS header
+
+- **Observed:** a first, unpaced screenshot pass tripped B15's limiter
+  (100 requests and 5 logins per 60 s per IP,
+  `apps/api/src/tenderos_api/rate_limit.py:32-35`); the API log showed
+  `POST /auth/login` 429 and repeated `GET /auth/me` 429, and the login
+  form displayed "Could not reach the server. Please try again." That is
+  false: the server was reached and refused. The text is what
+  `apps/web/src/api/formatErrorDetail.ts:12-13` returns for any error that
+  is not an `ApiError`, i.e. for a `fetch` that threw.
+- **Cause (measured 2026-10-10, fake-provider stack):** seven
+  `POST /auth/login` calls with a wrong password and
+  `Origin: http://localhost:5173`, sent with curl (status codes and
+  `access-control-*` header names only were printed). Attempts 1-5: `401`
+  with `access-control-allow-origin`. Attempts 6-7: `429` with
+  `Retry-After` and **no `access-control-*` header at all**. A browser
+  discards a cross-origin response without `Access-Control-Allow-Origin`,
+  so page code sees a network `TypeError`, never the 429.
+- **Why the 429 skips CORS (read directly):** FastAPI's
+  `@app.middleware("http")` calls `add_middleware(BaseHTTPMiddleware, ...)`
+  (fastapi 0.140.13, `fastapi/applications.py:4718`); Starlette's
+  `add_middleware` does `user_middleware.insert(0, ...)`
+  (starlette 1.3.1, `starlette/applications.py:101`) and
+  `build_middleware_stack` wraps `reversed(...)` (`:75`), so the
+  **last-registered middleware is outermost**. `app.user_middleware` is,
+  measured from the imported app: `_rate_limit`, `_max_body_size`,
+  `_security_headers`, `CORSMiddleware`. `_rate_limit`
+  (`apps/api/src/tenderos_api/main.py:182`) is outermost and returns its
+  `JSONResponse(429)` itself (`main.py:238-241` and `:252-258`), so the response never
+  passes through `CORSMiddleware` (`main.py:70`). The same applies to any
+  other response `_max_body_size` or `_security_headers` short-circuits
+  (not measured).
+- **Consequences:** the UI cannot tell a rate limit from a network drop,
+  cannot read `Retry-After`, and shows false copy. `retryTransient` still
+  retries (a non-`ApiError` counts as retryable,
+  `apps/web/src/api/retryTransient.ts:54-56`), but with its own short
+  backoff (3 attempts by default, `:37`) rather than the server's
+  `Retry-After`, against a fixed window of up to 60 s.
+- **Bearing on the B16 `/auth/me` bounce** (the `Login.tsx` "already
+  logged in" entry, which recorded 24 consecutive 429s on `GET /auth/me`
+  server-side): consistent with it, not proven to be it. In the browser
+  those 429s arrived as network errors; `AuthContext.refresh()` retries
+  them through `retryTransient`, exhausts its attempts well inside the
+  60 s window, and sets `meResponse` to `null`, which `RequireAuth` turns
+  into a redirect to `/login`. A readable 429 with `Retry-After` would at
+  least let the client wait the right amount. A deterministic repro needs
+  no LLM at all (so no paid run): the fake stack, a logged-in browser
+  session on `localhost:5173`, the rate-limit counter for the browser's
+  client IP pushed past 100 within one window (100 cheap requests from
+  the same IP, or setting `ratelimit:global:<ip>` in Redis DB 0), then one
+  deep-link navigation, asserting the page saw `TypeError` rather than a
+  429 and where it landed. A backend route test can pin the header half
+  alone: a 429 from the limiter must carry `Access-Control-Allow-Origin`
+  for an allowed origin. Neither is built.
+- **Fix candidates, not decided:** register `CORSMiddleware` last so it is
+  outermost, or add the CORS headers to the limiter's own responses. Both
+  touch B15's middleware order, so they need their own review.
+- **Test:** none.
