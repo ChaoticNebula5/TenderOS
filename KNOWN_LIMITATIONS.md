@@ -9435,6 +9435,17 @@ of a third and fourth hand-rolled copy.
 - **Standing rule (B17 Phase 0):** no pytest between a real-provider run
   and its captures - a test run would wipe that run's graph projection.
 - **Test:** none - a harness-isolation finding.
+- Update 2026-10-10: scripts/test-backend.ps1 reads the same
+  scripts/test-backend.env, so it wipes the shared graph exactly as make
+  test does. Its guard refuses to run while api, worker or
+  outbox_dispatcher are up, which prevents a race with a live worker but
+  not the wipe itself. Observed (measured): after a full suite run, live
+  Neo4j held 27 nodes (one tender, re-projected by the following fake
+  E2E); scripts/project_all_tenders.py restored 47/47 tenders (3,585
+  nodes). Working rule: after any test-backend.ps1 run that includes the
+  graph fixtures, run project_all_tenders.py before relying on the live
+  graph or on the invariant checker. The guard can be bypassed with
+  -AllowRunningStack.
 
 ---
 
