@@ -1,0 +1,17 @@
+/* Skeleton rows - a flat --rule-2 bar per cell. Static: DESIGN.md asks for
+   skeleton rows but no motion for them, and rules out decorative motion
+   ("What the app will not do"). Bar size is in em so it follows the
+   table's data type size rather than a fixed pixel height. */
+
+.skeleton-row:hover {
+  background: none;
+}
+
+.skeleton-row__bar {
+  display: block;
+  width: 60%;
+  height: 0.75em;
+  margin-top: 0.3em;
+  border-radius: var(--radius-sm);
+  background: var(--rule-2);
+}

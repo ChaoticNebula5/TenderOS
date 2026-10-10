@@ -1,0 +1,30 @@
+/* Table scroll region - full width up to --width-table, scrolls on its own
+   axis; the first column is sticky so a row stays identifiable while
+   scrolling. The sticky cell needs an opaque background or scrolled cells
+   show through it. */
+
+.table-scroll {
+  max-width: var(--width-table);
+  overflow-x: auto;
+}
+
+.table-scroll > table {
+  width: 100%;
+}
+
+.table-scroll th:first-child,
+.table-scroll td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.table-scroll td:first-child {
+  background: var(--surface);
+}
+
+/* Keep the row-hover tint (index.css, tbody tr:hover) visible on the
+   sticky cell too: the tint layered over the opaque surface. */
+.table-scroll tbody tr:hover td:first-child {
+  background: linear-gradient(var(--rule-2), var(--rule-2)), var(--surface);
+}

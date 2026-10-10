@@ -1,0 +1,46 @@
+/* Notice - DESIGN.md Components "Notices". Icon + message on a tint; no
+   coloured side-stripe (craft-floor ban, DESIGN.md Shapes). The message is
+   ink, not the status hue, so long text keeps full contrast; the icon
+   carries the hue. */
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+}
+
+.notice__icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  /* Centre the 12px icon on the first 14px/1.5 line of text. */
+  margin-top: calc((var(--text-body) * var(--leading-body) - var(--icon-size)) / 2);
+}
+
+.notice--failed {
+  background: var(--status-failed-tint);
+}
+
+.notice--failed .notice__icon {
+  color: var(--status-failed);
+}
+
+.notice--warning {
+  background: var(--status-warning-tint);
+}
+
+.notice--warning .notice__icon {
+  color: var(--status-warning);
+}
+
+.notice--info {
+  background: var(--surface-raise);
+}
+
+.notice--info .notice__icon {
+  color: var(--ink-2);
+}

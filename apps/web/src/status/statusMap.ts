@@ -1,0 +1,187 @@
+// The one status label map (DESIGN.md "Status mapping" and "Label map").
+// Turns a backend status value into a tone (which colour + icon) and the
+// words an operator reads. No screen shows a raw enum (No Raw Enum Rule);
+// they all come through here.
+//
+// Vocabulary is the backend's (CHECK constraints, cited per family below,
+// paths under packages/tenderos_backend/src/tenderos_backend/). The tone
+// column is DESIGN.md's mapping table (DESIGN.md:274-281); labels are its
+// Label map (DESIGN.md:296-317). Every row quotes the DESIGN.md line it
+// implements; rows DESIGN.md does not specify are marked
+// "chosen, not in DESIGN".
+//
+// "Ready" is reserved for the readiness verdict (DESIGN.md:309-311). No
+// family below may use it; statusMap.test.ts enforces that.
+
+export type StatusTone = "ready" | "running" | "warning" | "blocked" | "failed" | "neutral";
+
+export interface StatusDescriptor {
+  tone: StatusTone;
+  label: string;
+}
+
+export type StatusFamily =
+  | "gate"
+  | "run"
+  | "task"
+  | "parse"
+  | "severity"
+  | "grounding"
+  | "compliance"
+  | "importItem";
+
+type FamilyMap = Readonly<Record<string, StatusDescriptor>>;
+
+// Gate - db/models/workflow.py:86
+const gate: FamilyMap = {
+  // DESIGN.md:302 'Gate `approved` -> **"Approved"**'; :276 Ready row, Gate `approved`
+  approved: { tone: "ready", label: "Approved" },
+  // DESIGN.md:302 '`rejected` -> "Rejected"'; :283 '`rejected` = Failed'
+  rejected: { tone: "failed", label: "Rejected" },
+  // DESIGN.md:303 '`changes_requested` -> "Changes requested"'; :283-284 '`changes_requested` = Blocked'
+  changes_requested: { tone: "blocked", label: "Changes requested" },
+  // DESIGN.md:303-304 '`pending` -> "Awaiting decision"'; :278 Blocked row, Gate `pending`
+  pending: { tone: "blocked", label: "Awaiting decision" },
+};
+
+// Run - db/models/workflow.py:15
+const run: FamilyMap = {
+  // DESIGN.md:305-306 '`queued` and task `pending` -> "Queued"'; :277 Running row, Run `queued`
+  queued: { tone: "running", label: "Queued" },
+  // DESIGN.md:305 '`running` -> "Running"'; :277 Running row, Run `running`
+  running: { tone: "running", label: "Running" },
+  // DESIGN.md:306-307 '`waiting_for_human` -> "Waiting for review"'; :278 Blocked row
+  waiting_for_human: { tone: "blocked", label: "Waiting for review" },
+  // DESIGN.md:305 'Run and task `completed` -> **"Done"**'; :276 Ready row
+  completed: { tone: "ready", label: "Done" },
+  // DESIGN.md:307 '`failed` -> "Failed"'; :279 Failed row
+  failed: { tone: "failed", label: "Failed" },
+  // DESIGN.md:307 '`cancelled` -> "Cancelled"'; :281 Neutral row
+  cancelled: { tone: "neutral", label: "Cancelled" },
+};
+
+// Task - db/models/workflow.py:42
+const task: FamilyMap = {
+  // DESIGN.md:306 'task `pending` -> "Queued"'; :277 Running row, Task `pending`
+  pending: { tone: "running", label: "Queued" },
+  // DESIGN.md:305 'Run and task ... `running` -> "Running"'; :277 Running row
+  running: { tone: "running", label: "Running" },
+  // DESIGN.md:305 'Run and task `completed` -> **"Done"**'; :276 Ready row
+  completed: { tone: "ready", label: "Done" },
+  // DESIGN.md:307 '`failed` -> "Failed"' (run-and-task bullet); :279 Failed row
+  failed: { tone: "failed", label: "Failed" },
+  // DESIGN.md:307-308 '`skipped` -> "Skipped"'; :281 Neutral row
+  skipped: { tone: "neutral", label: "Skipped" },
+  // DESIGN.md:308 'task `blocked` -> "Blocked"'; :278 Blocked row
+  blocked: { tone: "blocked", label: "Blocked" },
+};
+
+// Document parse - db/models/document.py:25. Tones from DESIGN.md:276-279
+// (Ready `parsed`, Running `uploaded, queued, parsing`, Failed `failed`);
+// DESIGN.md gives no labels for this family.
+const parse: FamilyMap = {
+  // chosen, not in DESIGN (label); tone :277 Running row
+  uploaded: { tone: "running", label: "Uploaded" },
+  // chosen, not in DESIGN (label); tone :277 Running row
+  queued: { tone: "running", label: "Queued" },
+  // chosen, not in DESIGN (label); tone :277 Running row
+  parsing: { tone: "running", label: "Parsing" },
+  // chosen, not in DESIGN (label); tone :276 Ready row
+  parsed: { tone: "ready", label: "Parsed" },
+  // chosen, not in DESIGN (label); tone :279 Failed row
+  failed: { tone: "failed", label: "Failed" },
+};
+
+// Severity - db/models/redteam.py:22, db/models/commercial.py:68,
+// agents/schemas/redteam.py:5, agents/schemas/commercial.py:5.
+// Applies to OPEN findings only (DESIGN.md:287-291) - see describeFinding.
+const severity: FamilyMap = {
+  // DESIGN.md:314 'Severity: "Critical"'; :279 Failed row, Severity `critical`
+  critical: { tone: "failed", label: "Critical" },
+  // DESIGN.md:314 '"Major"'; :280 Warning row, Severity `major`
+  major: { tone: "warning", label: "Major" },
+  // DESIGN.md:314 '"Minor"'; :281 Neutral row, Severity `minor`
+  minor: { tone: "neutral", label: "Minor" },
+};
+
+// Proposal claim grounding - db/models/proposal.py:58
+const grounding: FamilyMap = {
+  // DESIGN.md:314-315 'Grounding: "Grounded"'; :276 Ready row
+  grounded: { tone: "ready", label: "Grounded" },
+  // DESIGN.md:315 '"Unsupported"'; :279 Failed row
+  unsupported: { tone: "failed", label: "Unsupported" },
+  // DESIGN.md:315 '"Needs review"'; :278 Blocked row
+  needs_review: { tone: "blocked", label: "Needs review" },
+  // DESIGN.md:315 '"Not required"'; :281 Neutral row
+  not_required: { tone: "neutral", label: "Not required" },
+};
+
+// Compliance entry - db/models/compliance.py:53-56
+const compliance: FamilyMap = {
+  // DESIGN.md:315 'Compliance: "Compliant"'; :276 Ready row
+  fully_compliant: { tone: "ready", label: "Compliant" },
+  // DESIGN.md:316 '"Partly compliant"'; :280 Warning row
+  partially_compliant: { tone: "warning", label: "Partly compliant" },
+  // DESIGN.md:316 '"Not compliant"'; :279 Failed row
+  non_compliant: { tone: "failed", label: "Not compliant" },
+  // DESIGN.md:316 '"Clarification needed"'; :278 Blocked row
+  clarification_required: { tone: "blocked", label: "Clarification needed" },
+  // DESIGN.md:316-317 '"No evidence"'; :280 Warning row and :292-294
+  evidence_unavailable: { tone: "warning", label: "No evidence" },
+  // DESIGN.md:317 '"Not reviewed"'; :281 Neutral row
+  not_reviewed: { tone: "neutral", label: "Not reviewed" },
+};
+
+// Knowledge import item - db/models/knowledge.py:61. Tones from
+// DESIGN.md:276-279 "Other" column; DESIGN.md gives no labels.
+const importItem: FamilyMap = {
+  // chosen, not in DESIGN (label, matches task `pending`); tone :277 'import item `pending`'
+  pending: { tone: "running", label: "Queued" },
+  // chosen, not in DESIGN (label); tone :277 'import item ... `extracted`'
+  extracted: { tone: "running", label: "Extracted" },
+  // chosen, not in DESIGN (label); tone :278 'import item `needs_review`'
+  needs_review: { tone: "blocked", label: "Needs review" },
+  // chosen, not in DESIGN (label); tone :276 'import item `approved`'
+  approved: { tone: "ready", label: "Approved" },
+  // chosen, not in DESIGN (label); tone :279 'import item `failed`, `rejected`'
+  rejected: { tone: "failed", label: "Rejected" },
+  // chosen, not in DESIGN (label); tone :279 'import item `failed`, `rejected`'
+  failed: { tone: "failed", label: "Failed" },
+};
+
+export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
+  gate,
+  run,
+  task,
+  parse,
+  severity,
+  grounding,
+  compliance,
+  importItem,
+};
+
+// chosen, not in DESIGN: a value the backend adds later that this map does
+// not know yet. Neutral tone, and the raw value as its label - honest and
+// greppable, rather than a made-up word; the No Raw Enum Rule is broken
+// visibly, so the gap gets noticed and mapped instead of hidden.
+export function describeStatus(family: StatusFamily, value: string): StatusDescriptor {
+  return STATUS_MAP[family][value] ?? { tone: "neutral", label: value };
+}
+
+// Readiness verdict - the only place the word "Ready" appears.
+// DESIGN.md:309-310 '(`ready: true` -> "Ready", `false` -> "Not ready")';
+// tones :276 'readiness `ready: true`' (Ready) and :278 'readiness `ready: false`' (Blocked).
+export function describeReadiness(ready: boolean): StatusDescriptor {
+  return ready ? { tone: "ready", label: "Ready" } : { tone: "blocked", label: "Not ready" };
+}
+
+// Red-team and commercial findings. DESIGN.md:287-289: 'A resolved finding
+// shows the Ready treatment with the label "Resolved", whatever its
+// severity; an open one shows its severity badge.' DESIGN.md:317's
+// '"Resolved" / "Open"' label pair is therefore only half used: an open
+// finding is labelled by its severity, never "Open".
+export function describeFinding(resolved: boolean, findingSeverity: string): StatusDescriptor {
+  return resolved
+    ? { tone: "ready", label: "Resolved" }
+    : describeStatus("severity", findingSeverity);
+}

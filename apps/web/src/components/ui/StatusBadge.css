@@ -1,0 +1,51 @@
+/* Status badge - DESIGN.md frontmatter status-badge-*: status hue on its
+   own 14% tint, 2px radius, label type, 2px 8px padding. Neutral has no
+   tint (frontmatter status-badge-neutral sets no background). */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--badge-pad-y) var(--badge-pad-x);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--leading-label);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.status-badge__icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.status-badge--ready {
+  color: var(--status-ready);
+  background: var(--status-ready-tint);
+}
+
+.status-badge--running {
+  color: var(--status-running);
+  background: var(--status-running-tint);
+}
+
+.status-badge--warning {
+  color: var(--status-warning);
+  background: var(--status-warning-tint);
+}
+
+.status-badge--blocked {
+  color: var(--status-blocked);
+  background: var(--status-blocked-tint);
+}
+
+.status-badge--failed {
+  color: var(--status-failed);
+  background: var(--status-failed-tint);
+}
+
+.status-badge--neutral {
+  color: var(--ink-2);
+}
