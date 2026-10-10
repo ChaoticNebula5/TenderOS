@@ -17,8 +17,10 @@
       unstaged baseline);
     - runs CI's command, `detect-secrets-hook --baseline .secrets.baseline
       <files>`, with this repo's pinned detect-secrets;
-    - prints PASS, or the hook's own findings plus every baseline entry
-      whose line number moved (file, type, old -> new; never the hash);
+    - prints PASS, or the hook's own output plus every baseline entry
+      REMOVED (no longer found), ADDED (a new finding) and MOVED (line
+      number changed), each by file, detector type and line - never a hash
+      or a value;
     - deletes the temp folder. The real .secrets.baseline is never written.
 
   Scope: tracked files only, like CI. A new file is checked once it is
@@ -72,8 +74,11 @@ try {
     Write-Host "command:  detect-secrets-hook --baseline .secrets.baseline <files>  ($(& uv run --project $repo detect-secrets --version))"
     Push-Location $tmp
     try {
-        & uv run --project $repo detect-secrets-hook --baseline .secrets.baseline @files
+        # Captured (and echoed in full) so new findings can be listed below. The
+        # hook prints type and location only, never the value.
+        $hookOutput = @(& uv run --project $repo detect-secrets-hook --baseline .secrets.baseline @files 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
+        $hookOutput | ForEach-Object { Write-Host $_ }
     } finally {
         Pop-Location
     }
@@ -83,30 +88,63 @@ try {
         exit 0
     }
 
-    # The hook rewrote the copy's baseline (line numbers moved) and/or
-    # reported new findings above. List every entry whose line number moved.
+    # The hook rewrote the copy's baseline and/or reported new findings above.
+    # Compare the two baselines entry by entry. An entry is identified by
+    # (file, detector type, hash); the hash is used only to pair entries and
+    # is never printed. Entries sharing a key are paired in line order, so a
+    # count difference shows up as REMOVED or ADDED, not as a bogus MOVED.
     $old = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repo ".secrets.baseline") | ConvertFrom-Json
     $new = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $tmp ".secrets.baseline") | ConvertFrom-Json
-    $moved = @()
-    foreach ($file in $old.results.PSObject.Properties) {
-        $after = $new.results.PSObject.Properties[$file.Name]
-        if ($null -eq $after) { continue }
-        foreach ($entry in $file.Value) {
-            $match = $after.Value | Where-Object { $_.hashed_secret -eq $entry.hashed_secret -and $_.type -eq $entry.type }
-            foreach ($m in @($match)) {
-                if ($m.line_number -ne $entry.line_number) {
-                    $moved += "  $($file.Name)  [$($entry.type)]  line $($entry.line_number) -> $($m.line_number)"
-                }
+    function Get-BaselineLines($baseline) {
+        $byKey = @{}
+        foreach ($file in $baseline.results.PSObject.Properties) {
+            foreach ($entry in @($file.Value)) {
+                $key = "$($file.Name)`t$($entry.type)`t$($entry.hashed_secret)"
+                if (-not $byKey.ContainsKey($key)) { $byKey[$key] = New-Object System.Collections.Generic.List[int] }
+                $byKey[$key].Add([int]$entry.line_number)
             }
         }
+        return $byKey
+    }
+    $oldLines = Get-BaselineLines $old
+    $newLines = Get-BaselineLines $new
+    $removed = @(); $added = @(); $moved = @()
+    # A new finding is never written into the baseline: the hook only reports
+    # it ("Secret Type: X" then "Location: file:line"), so ADDED comes from
+    # its output. Baseline-only additions are collected below as well.
+    $pendingType = $null
+    foreach ($line in $hookOutput) {
+        if ($line -match '^\s*Secret Type:\s*(.+?)\s*$') { $pendingType = $Matches[1] }
+        elseif ($line -match '^\s*Location:\s*(.+):(\d+)\s*$' -and $pendingType) {
+            $added += "  $($Matches[1])  [$pendingType]  line $($Matches[2])"
+            $pendingType = $null
+        }
+    }
+    foreach ($key in (@($oldLines.Keys) + @($newLines.Keys) | Sort-Object -Unique)) {
+        $file, $type, $null = $key -split "`t"
+        $before = @(if ($oldLines.ContainsKey($key)) { $oldLines[$key] | Sort-Object })
+        $after = @(if ($newLines.ContainsKey($key)) { $newLines[$key] | Sort-Object })
+        $paired = [Math]::Min($before.Count, $after.Count)
+        for ($i = 0; $i -lt $paired; $i++) {
+            if ($before[$i] -ne $after[$i]) { $moved += "  $file  [$type]  line $($before[$i]) -> $($after[$i])" }
+        }
+        for ($i = $paired; $i -lt $before.Count; $i++) { $removed += "  $file  [$type]  line $($before[$i])" }
+        for ($i = $paired; $i -lt $after.Count; $i++) { $added += "  $file  [$type]  line $($after[$i])" }
     }
     Write-Host "FAIL (detect-secrets-hook exit $code)"
-    if ($moved.Count -gt 0) {
-        Write-Host "baseline entries whose line numbers moved:"
-        $moved | ForEach-Object { Write-Host $_ }
-        Write-Host "Refresh .secrets.baseline line numbers in the same commit as the change that moved them."
+    foreach ($section in @(@("REMOVED (in the baseline, no longer found)", $removed),
+                           @("ADDED (found, not in the baseline)", $added),
+                           @("MOVED (line number changed)", $moved))) {
+        if ($section[1].Count -gt 0) {
+            Write-Host "$($section[0]):"
+            $section[1] | ForEach-Object { Write-Host $_ }
+        }
+    }
+    if ($removed.Count + $added.Count + $moved.Count -eq 0) {
+        Write-Host "the baseline entries did not change; see the hook's findings above."
     } else {
-        Write-Host "no line numbers moved; see the hook's findings above."
+        Write-Host ("Review each entry. ADDED: remove the secret, or record an audited false positive in " +
+            ".secrets.baseline. REMOVED/MOVED: refresh .secrets.baseline in the same commit as the change that caused it.")
     }
     exit 1
 } finally {
