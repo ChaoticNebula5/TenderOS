@@ -1,8 +1,207 @@
-:root {
-  font-family: system-ui, sans-serif;
-  color-scheme: light dark;
+/* Base element styles - restyle batch 1 (DESIGN.md "Restyle batches" 1).
+   Plain element selectors only: screens change through inherited styles,
+   no markup or class names are involved. Every value is a token from
+   styles/tokens.css, which main.tsx imports before this file.
+
+   Deliberately no global margin reset: today's screens are unstyled and
+   rely on the browser's default spacing between paragraphs and lists. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scrollbar-color: var(--ink-3) var(--surface-sunk);
 }
 
 body {
   margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Headings. h1 is the page title, the one Newsreader line per screen. */
+h1 {
+  margin: var(--space-5) 0 var(--space-4);
+  font-family: var(--font-display);
+  font-size: var(--text-page-title);
+  font-weight: 300;
+  line-height: var(--leading-page-title);
+  letter-spacing: var(--tracking-page-title);
+}
+
+h2 {
+  margin: var(--space-5) 0 var(--space-3);
+  font-size: var(--text-section);
+  font-weight: 600;
+  line-height: var(--leading-section);
+}
+
+h3 {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-subsection);
+  font-weight: 600;
+  line-height: var(--leading-subsection);
+}
+
+p {
+  max-width: var(--measure-prose);
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Focus ring on :focus-visible only - keyboard focus, not mouse clicks. */
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--accent);
+  outline-offset: var(--focus-ring-offset);
+}
+
+a:focus-visible {
+  border-radius: var(--radius-sm);
+}
+
+/* Form controls. A bare <button> takes the secondary look; the primary,
+   quiet and danger variants arrive with the button component (batch 2). */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button,
+::file-selector-button {
+  min-height: var(--control-height);
+  padding: 6px 14px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background-color: var(--surface-raise);
+  color: var(--ink);
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+/* Hover and press are a translucent ink overlay, so they work on any
+   fill without a second colour per variant. */
+button:hover:not(:disabled),
+::file-selector-button:hover {
+  background-image: linear-gradient(var(--rule-2), var(--rule-2));
+}
+
+button:active:not(:disabled),
+::file-selector-button:active {
+  background-image: linear-gradient(var(--rule), var(--rule));
+}
+
+button:disabled {
+  color: var(--ink-3);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button[aria-busy="true"] {
+  cursor: progress;
+}
+
+input:not([type="checkbox"], [type="radio"], [type="file"]),
+select,
+textarea {
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background-color: var(--surface-sunk);
+}
+
+input:not([type="checkbox"], [type="radio"], [type="file"]),
+select {
+  min-height: var(--control-height);
+}
+
+::placeholder {
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+input[type="file"] {
+  font-size: var(--text-data);
+}
+
+::file-selector-button {
+  margin-right: var(--space-3);
+}
+
+/* Tables: sunk header band, rule dividers, data type with tabular figures.
+   Archivo's default figures are proportional, so tabular-nums is required
+   for any column of numbers to align (DESIGN.md Numerals). */
+table {
+  border-collapse: collapse;
+  font-size: var(--text-data);
+  line-height: var(--leading-data);
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  height: var(--row-height);
+  padding: var(--cell-pad-y) var(--cell-pad-x);
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--surface-sunk);
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--leading-label);
+}
+
+tbody tr:hover {
+  background: var(--rule-2);
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+/* Motion: transitions exist only for people who have not asked for
+   reduced motion; under reduce, every state change is instant. */
+@media (prefers-reduced-motion: no-preference) {
+  a,
+  button,
+  input,
+  select,
+  textarea {
+    transition:
+      background-color var(--dur-fast) ease-out,
+      border-color var(--dur-fast) ease-out,
+      color var(--dur-fast) ease-out;
+  }
 }

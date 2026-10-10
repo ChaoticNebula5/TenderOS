@@ -111,8 +111,11 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: proposal, nothing in this file is built yet.** It describes what
-> the apps/web restyle *will* do. Every statement about the UI as it is
+> **Status: batch 1 (foundation) is built; everything else is a proposal.**
+> Batch 1's tokens, `@font-face` rules and base element styles exist
+> (`apps/web/src/styles/tokens.css`, `apps/web/src/index.css`); the woff2
+> files they point at are added in a separate commit. The rest describes
+> what the apps/web restyle *will* do. Every statement about the UI as it is
 > today cites a file and line; everything else is future tense. When a batch
 > lands, its section moves from "will" to "does", in the same commit as the
 > code - never ahead of it (see Copy rules).
@@ -632,7 +635,8 @@ measured by grep). Each component will exist once and be reused.
   below 18px except page titles), 3:1 for control boundaries, focus ring
   and icons. Every token pair above is measured against these.
 - **Focus ring:** 2px solid amber, 2px offset, on `:focus-visible` only;
-  the landing's own rule, `apps/landing/src/styles/tokens.css:37`. 6.45:1 on
+  the landing's own rule (`apps/landing/src/styles/tokens.css:37`) except
+  the offset, which is 3px there. 6.45:1 on
   `surface`, 5.84:1 on `surface-raise` (measured). Today apps/web has no
   focus styling at all (0 `:focus`/`outline` rules, measured).
 - **Keyboard order:** DOM order equals visual order; skip link to main
@@ -829,11 +833,12 @@ that introduces its component - icon present, label text from the label
 map, the matching status class - using the existing vitest and Testing
 Library setup, **no new dependency**.
 
-1. **Foundation.** Token stylesheet rewritten to semantic names under the
-   `[data-theme]` hook; self-hosted fonts (binary files, separate approval)
-   with the numerals re-check; base element styles (body, headings, links,
-   tables, forms, buttons, focus ring, selection, scrollbars); reduced-motion
-   guard. Screens change only through inherited element styles.
+1. **Foundation (built).** The token stylesheet is rewritten to semantic
+   names under the `[data-theme]` hook; self-hosted fonts (binary files,
+   separate approval) with the numerals re-check; base element styles (body,
+   headings, links, tables, forms, buttons, focus ring, selection,
+   scrollbars); reduced-motion guard. Screens change only through inherited
+   element styles.
 2. **Shell and shared components.** App shell, tender header and workflow
    nav; button variants, status badge with icon set and label map, notice,
    empty state, skeleton, INR and date formatters, with the render tests

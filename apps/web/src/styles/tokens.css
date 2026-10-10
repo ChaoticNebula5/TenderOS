@@ -1,26 +1,122 @@
-/* Design tokens - Part J's "function before visual polish" rule for B13
-   means these values are deliberately boring. The point of this file is
-   that it EXISTS and every component reads from it, not that the values
-   are final - B17 (UI Polish) restyles by changing values here plus
-   targeted swap-outs, not by rewriting 17 screens' worth of inline
-   styling. */
+/* Design tokens for apps/web - DESIGN.md (Colors, Typography, Layout,
+   Shapes, Accessibility) is the spec; this file is its only home for raw
+   values. Components read semantic names (--surface, --ink-2,
+   --status-failed), never hex.
 
-:root {
-  /* Color - neutral, functional palette only */
-  --color-background: #ffffff;
-  --color-surface: #f5f5f5;
-  --color-border: #d4d4d4;
-  --color-text-primary: #1a1a1a;
-  --color-text-secondary: #595959;
+   Theming hook: index.html sets <html data-theme="dark">. The plain :root
+   selector is the fallback for a missing attribute; both share ONE block so
+   the two can never drift. A light set would be a separate
+   :root[data-theme="light"] block (deferred, DESIGN.md Deferred). */
 
-  /* Color - semantic status (compliant/non-compliant, resolved/unresolved,
-     gate status - reused across every gate/finding/readiness screen) */
-  --color-success: #1a7f37;
-  --color-warning: #9a6700;
-  --color-danger: #cf222e;
-  --color-info: #0969da;
+/* Self-hosted fonts (DESIGN.md "Font loading"): woff2 files in
+   public/fonts/, served from our own origin. Each family is split the way
+   Google Fonts serves it - a latin file and a latin-ext file, chosen by
+   unicode-range - so the latin-ext file is only fetched when a page has a
+   glyph from it. The rupee sign U+20B9 is in latin-ext (U+20AD-20C4), not
+   latin. Archivo is one variable file covering 400-600. */
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 400 600;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/archivo-latin-ext.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 400 600;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("/fonts/archivo-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/newsreader-300-latin-ext.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/newsreader-300-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 
-  /* Spacing scale */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces - landing --bg-2 / --bg / --raise. Depth comes from these
+     three tones, not shadows (Tone-Not-Shadow Rule). */
+  --surface-sunk: #100d09;
+  --surface: #15110d;
+  --surface-raise: #221b14;
+
+  /* Ink ramp. ink-3 is #948979, deliberately lighter than the landing's
+     #8B8073, which measures 4.40:1 on surface-raise (DESIGN.md Neutral). */
+  --ink: #f3ece1;
+  --ink-2: #bcb0a0;
+  --ink-3: #948979;
+
+  /* Custody Amber: links, primary action, focus, current nav. Never a
+     state (Reserved Amber Rule). */
+  --accent: #c98a47;
+  --on-accent: #15110d;
+
+  /* Status hues. Always paired with an icon and a text label (Three
+     Signals Rule); badges and tints arrive with the badge component. */
+  --status-ready: #7db88a;
+  --status-running: #7fa5aa;
+  --status-warning: #d4cc63;
+  --status-blocked: #b79be0;
+  --status-failed: #ec6b73;
+
+  /* Rules and boundaries. --rule is decorative only (1.43:1); anything
+     interactive is bounded by --control-border (3:1 for WCAG 1.4.11). */
+  --rule: rgba(243, 236, 225, 0.14);
+  --rule-2: rgba(243, 236, 225, 0.07);
+  --control-border: rgba(243, 236, 225, 0.4);
+
+  /* The one shadow: landing --cshadow, for the traceability drawer only. */
+  --shadow-overlay: 0 26px 44px -26px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(0, 0, 0, 0.25);
+
+  /* Type. Newsreader is for page titles and empty-state headings only
+     (One Serif Rule); Archivo for everything else. */
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-ui: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --text-page-title: 1.75rem;
+  --leading-page-title: 1.15;
+  --tracking-page-title: -0.015em;
+  --text-section: 1.125rem;
+  --leading-section: 1.3;
+  --text-subsection: 1rem;
+  --leading-subsection: 1.35;
+  --text-body: 0.875rem;
+  --leading-body: 1.5;
+  --text-data: 0.8125rem;
+  --leading-data: 1.4;
+  --text-label: 0.75rem;
+  --leading-label: 1.3;
+
+  /* Spacing - the existing 4px-based scale, unchanged (DESIGN.md Layout). */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -30,11 +126,35 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  /* Type scale */
-  --font-size-1: 12px;
-  --font-size-2: 14px;
-  --font-size-3: 16px;
-  --font-size-4: 20px;
-  --font-size-5: 28px;
-  --font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Shapes */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-pill: 999px;
+
+  /* Density and widths */
+  --control-height: 32px;
+  --row-height: 36px;
+  --cell-pad-y: 8px;
+  --cell-pad-x: 12px;
+  --width-form: 640px;
+  --width-table: 1440px;
+  --measure-prose: 72ch;
+
+  /* Focus ring: 2px amber, 2px offset (DESIGN.md Accessibility). */
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* Motion - used only inside prefers-reduced-motion: no-preference. */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-panel: 240ms;
+
+  /* Transitional aliases. Screens still read these three names from inline
+     styles (22x --color-danger, 4x --color-warning, 1x --color-border);
+     the old light-theme values measure 3.51:1 and 3.86:1 on --surface,
+     below 4.5:1. Delete each alias in the batch that removes its last
+     reader. */
+  --color-danger: var(--status-failed);
+  --color-warning: var(--status-warning);
+  --color-border: var(--rule);
 }
