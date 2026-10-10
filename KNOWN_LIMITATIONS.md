@@ -9801,3 +9801,168 @@ actually has - three independent failures were reproduced, not inferred:
   no longer resolve. Find a commit by its subject instead, e.g.
   `git log --all --oneline --grep="import-batch poll"`. An old-to-new
   hash map is kept outside the repository.
+
+## [B17, recorded deviation from A2 under section 0.1, approved 2026-10-07] MinIO replaced by VersityGW v1.8.0 behind the unchanged S3 adapter
+
+- **Why MinIO had to go (observed 2026-10-07 unless marked):** the first
+  GitHub CI run failed at "pull access denied for minio/minio".
+  `docker manifest inspect minio/minio:RELEASE.2025-09-07T16-13-09Z` is
+  denied anonymously; `quay.io/minio/minio` refuses anonymous pulls (its
+  anonymous pull token grants no actions, while a control repository's
+  grants `pull`); github.com/minio/minio was archived on 2026-04-25 with the
+  banner "THIS REPOSITORY IS NO LONGER MAINTAINED". *Reported, not verified
+  here:* that MinIO deleted its Docker Hub images on 2026-09-11.
+- **The deviation:** A2 (Build Guide :153) names "MinIO locally,
+  S3-compatible adapter". The adapter is unchanged: `db/storage.py` is the
+  same boto3 S3 client, its endpoint still comes from `S3_ENDPOINT_URL`, and
+  nothing in application code is VersityGW-specific. Only the server, the
+  compose service (`s3`, volume `s3_data`), the CI step and the readiness
+  probe changed.
+- **Why VersityGW:** of nine images evaluated in scratch (pgsty/silo,
+  pgsty/minio, Chainguard minio, SeaweedFS, Garage, RustFS, VersityGW,
+  Scality CloudServer, plus the old MinIO as reference), all passed the
+  app's four S3 operations and its 161 storage-touching tests. VersityGW
+  ranked first on maintenance evidence: published by Versity (an
+  organisation), Apache-2.0, monthly releases, its 5 published GitHub
+  advisories all patched at v1.8.0, 31.4 MB image, about 13 MiB idle, a
+  built-in health endpoint and two settings. pgsty/silo (a MinIO fork) was
+  the smallest-diff alternative.
+- **Pinned:** `versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499`,
+  re-verified to resolve anonymously on 2026-10-07, in both
+  docker-compose.yml and ci.yml.
+- **Verified (local; fake provider wherever an LLM is involved):** the
+  project's own ObjectStorage against VersityGW (head/create bucket, put
+  with ContentType, byte-exact get, NoSuchKey); full backend suite 648
+  passed via scripts/test-backend.ps1; ci.yml's test job steps run verbatim
+  in a clean checkout with no .env (648 passed on the second run; see the
+  intermittent dispatcher entry below); persistence on the named volume
+  across `restart` and `down`/`up` without `-v`; a fresh stack (no app
+  bucket) turns the api container healthy with /health/ready 200 and
+  object_storage true; fake E2E green with invariants 6/6, and its 9 new
+  uploads present in the store.
+- **Facts the swap depends on (observed):** the image has no `/data`, and
+  the posix backend exits at once without a mount there ("chdir /data: no
+  such file or directory"), so CI mounts `-v s3_data:/data`. The image
+  ships `wget`, not `curl`. Object metadata (`user.content-type`,
+  `user.etag`, `user.checksums`) and bucket ACLs live in extended
+  attributes: a backup must preserve xattrs (GNU tar `--xattrs
+  --xattrs-include='*'`). Proven by round trip: GNU tar restore kept
+  ContentType and ETag on 18,730/18,730 objects; a busybox tar restore kept
+  0/18,730 (every object came back `text/plain; charset=utf-8`).
+- **What the readiness probe cannot see:** /health/ready's key is now
+  `object_storage` (was `minio`; nothing in the repo read it). It is an
+  authenticated HeadBucket on the app bucket: 200, or 404 because the bucket
+  is created lazily on the first upload, means ready; 403, any other status
+  and any connection error mean not ready. It checks reachability and
+  credentials, not the write path: a server whose front end answers while
+  its storage cannot yet accept writes reports ready (observed with
+  CloudServer's warm-up during the evaluation), and so would a non-S3
+  server that answers HEAD with 404.
+- **Anyone with an older .env must change one line:**
+  `S3_ENDPOINT_URL=http://s3:9000` (it was `http://minio:9000`). Otherwise
+  the api reports not ready - the probe refuses, correctly. Observed with
+  the old line: api container unhealthy, /health/ready 503 with
+  object_storage false, log "object storage not ready:
+  EndpointConnectionError". The access and secret keys need no change.
+- **Data:** see the migration and backup entry below.
+- **Not verified:** behaviour under concurrent multi-writer load and very
+  large objects (the app uses single-part put_object only); VersityGW's
+  long-term maintenance beyond its release history; S3 operations the app
+  does not use (presigned URLs, multipart, listing, deletes); a public
+  deployment's configuration (TLS, IAM accounts instead of the root
+  credentials, which the public deployment must not use); restore of a
+  backup larger than this volume.
+- **Test:** tests/unit/test_object_storage_readiness.py (the probe's
+  decision table); the integration suite against the live s3 service.
+
+## [B17 incident, open, owner: Phase 0c] An image reference with no tag means `:latest`, and nothing in the repo is pinned by digest
+
+- **What happened:** `docker-compose.yml` said `image: minio/minio` and
+  ci.yml ran `minio/minio` - no tag, so `:latest` at pull time. When the
+  upstream image became unpullable, CI broke with no change to the repo.
+- **Pin audit (2026-10-07, before the swap):**
+
+  | Reference | Where | Tag | Digest | Cached locally | Resolves anonymously |
+  |---|---|---|---|---|---|
+  | `pgvector/pgvector:pg16` | compose:3, ci.yml | floating | no | PG 16.13, pgvector 0.8.2 | yes, digest moved |
+  | `redis:7-alpine` | compose:19, ci.yml | floating | no | 7.4.8 | yes, moved |
+  | `neo4j:5.26-community` | compose:31, ci.yml | floating | no | 5.26.28 | yes, moved |
+  | `minio/minio` | compose:47, ci.yml | **none (latest)** | no | RELEASE.2025-09-07 | **no** |
+  | `prom/prometheus` | compose:123 | **none (latest)** | no | 3.13.1 | yes, moved |
+  | `grafana/grafana` | compose:131 | **none (latest)** | no | 13.1.1 | yes, moved |
+  | `python:3.12-slim` | api and worker Dockerfiles | floating | no | 3.12.13 | yes, moved |
+  | `node:22-slim` | web Dockerfile | floating | no | not cached | yes |
+
+  Only the object store is pinned by digest now (the VersityGW swap). Every
+  other reference still floats; `prom/prometheus` and `grafana/grafana`
+  have no tag at all.
+- **To do in Phase 0c:** pin every image by `tag@sha256:digest`, and pin
+  GitHub Actions `uses:` by commit SHA. Not done here (out of scope for
+  the swap).
+
+## [B17, backups kept, 2026-10-07] Object-store migration from MinIO to VersityGW, and the backups it left
+
+- **Backups (all in `D:\TenderOS-private-backup\`, outside the repo and
+  any synced folder; private):**
+
+  | File | Size (bytes) | SHA-256 |
+  |---|---|---|
+  | `minio-RELEASE.2025-09-07T16-13-09Z.tar` (the old MinIO image, `docker save`) | 62,259,712 | `ff5c117e1c9bb62adb75c040abdcaa7501f0810c3ec4f18098501ba669516ace` |
+  | `versitygw-v1.8.0.tar` (the pinned VersityGW image) | 31,522,816 | `6d796e94a1e7923f5abb6f1871d0def0acd803536f297c2a804dc7851c83afcd` |
+  | `tenderos_minio_data-2026-10-07.tar` (old volume, read-only mount; MinIO keeps no xattr metadata) | 702,188,032 | `b4582fab71b8ad2d8010421df0ea5b7896e2b14c5515758663829899b25d12ed` |
+  | `tenderos_s3_data-2026-10-07.xattrs.tar` (new volume, GNU tar with xattrs, after the migration) | 674,017,280 | `d93e8e9bd3be4b8899366750376a8d59be84addb7c19f236881c54687f9b46b9` |
+
+- **Migration (scripts/migrate_object_store.py, old MinIO started from the
+  saved image on a scratch volume restored from the tar - never the live
+  volume):** bucket `tenderos`, 18,730 objects, 574,900,549 bytes copied
+  and verified (SHA-256 and ContentType on every object, 0 mismatches,
+  0 failures); a re-run skipped all 18,730 as identical.
+- **References:** `documents.storage_key` (373 rows, the only column holding
+  object keys) - all 373 present in the new store. 18,357 objects in the
+  old `tenderos` bucket are referenced by no row (most likely local test
+  uploads; see the next entry); they were copied anyway, nothing was
+  deleted. Bucket `tenderos-ci` (479 objects) is referenced by no row and
+  was not migrated.
+- **What a missing object would break:** no screen or endpoint serves stored
+  bytes. After ingestion, bytes are re-read only by commercial evaluation
+  (`evaluate_commercial_for_tender`, .xlsx documents) and G9's manual
+  re-validation (`ingest_pricing_workbook`), and by any re-ingestion. Review
+  data already in Postgres does not need them.
+- **The old volume `tenderos_minio_data` is kept, unchanged.** Only the
+  owner may delete it, with `docker volume rm tenderos_minio_data`.
+
+## [found during B17, open, proposal pending] Local test runs write their uploads into the app bucket
+
+- `scripts/test-backend.env` does not set `S3_BUCKET`, so local pytest
+  falls back to `.env`'s value - the app bucket `tenderos`. Only CI sets
+  `S3_BUCKET=tenderos-ci`. That is the most likely source of the 18,357
+  objects in the old `tenderos` bucket that no `documents` row references.
+- During the swap's verification the suite was run with
+  `S3_BUCKET=tenderos-ci` set in the process environment, so no test
+  objects landed in the migrated bucket.
+- **Proposal (not applied):** add `S3_BUCKET=tenderos-ci` to
+  scripts/test-backend.env, matching CI.
+
+## [found during B17, open, test-process only] Alembic's env.py disables every existing logger when migrations run inside pytest
+
+- `packages/.../db/migrations/env.py` calls `logging.config.fileConfig()`,
+  whose default `disable_existing_loggers=True` disables every logger that
+  already exists. tests/integration/test_schema_diff.py runs the
+  migrations in the pytest process, after which `tenderos_api.main`'s
+  logger is `disabled=True` (observed) and log assertions see nothing.
+- Not a production path: the api and worker never run Alembic in-process.
+- tests/unit/test_object_storage_readiness.py re-enables that one logger
+  per test. **Proposal (not applied):**
+  `fileConfig(..., disable_existing_loggers=False)` in env.py.
+
+## [found during B17, open, unexplained] Intermittent failures in tests/integration/test_outbox_dispatcher.py
+
+- Observed during the swap's verification, against a fresh CI-style stack:
+  the first full run had 2 failures
+  (`test_dispatcher_marks_event_dispatched_on_success`,
+  `test_workflow_run_created_routes_to_the_workflow_queue`); then 3 of 5
+  runs of that file failed. Afterwards 11 runs of the file and a full run
+  (648) all passed. The error text was not captured.
+- One of the two named tests touches no object storage, so the swap is
+  not the obvious cause; that is not proven either.
+- **Next:** capture the failure (`-x`, full output) when it recurs.
