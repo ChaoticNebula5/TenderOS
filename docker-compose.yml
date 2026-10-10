@@ -43,19 +43,25 @@ services:
       retries: 20
       start_period: 30s
 
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
+  # S3-compatible object store behind the unchanged boto3 adapter
+  # (db/storage.py). VersityGW replaces MinIO: minio/minio is no longer
+  # pullable from Docker Hub and upstream MinIO is archived. A recorded
+  # deviation from A2 (Build Guide :153) under section 0.1 - see
+  # KNOWN_LIMITATIONS.md. Pinned by digest; the tag is for readability.
+  s3:
+    image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499
+    command: ["--health", "/health", "posix", "/data"]
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+      ROOT_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      ROOT_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      VGW_PORT: ":9000"
     volumes:
-      - minio_data:/data
+      - s3_data:/data
     ports:
       - "9000:9000"
-      - "9001:9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # The image ships wget, not curl.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -74,11 +80,11 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
-      minio:
+      s3:
         condition: service_healthy
     healthcheck:
       # /health/ready (not /health/live) - checks real Postgres/Redis/
-      # Neo4j/MinIO connectivity, not just "the process is up." Does NOT
+      # Neo4j/object-storage connectivity, not just "the process is up." Does NOT
       # detect the healthy-but-unreachable-from-the-host trap (KNOWN_
       # LIMITATIONS.md's environment-traps entry, incidents 6/8) - that's
       # a host-to-container port-publish failure, invisible to any check
@@ -142,5 +148,5 @@ volumes:
   postgres_data:
   redis_data:
   neo4j_data:
-  minio_data:
+  s3_data:
   grafana_data:

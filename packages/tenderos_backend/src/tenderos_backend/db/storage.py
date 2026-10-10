@@ -8,7 +8,8 @@ from tenderos_backend.core.config import settings
 
 
 class ObjectStorage:
-    """Thin wrapper around a boto3 S3 client pointed at MinIO.
+    """Thin wrapper around a boto3 S3 client pointed at the S3-compatible
+    store (VersityGW locally and in CI; any S3 server via S3_ENDPOINT_URL).
 
     boto3 is a synchronous library - every method here wraps its blocking
     calls in asyncio.to_thread internally, so no caller (API route or worker

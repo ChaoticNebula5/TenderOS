@@ -1,9 +1,14 @@
 import asyncio
+import functools
+import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import asyncpg
-import httpx
+import boto3
 import redis.asyncio as redis
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -54,6 +59,8 @@ configure_logging()
 # already documents, right after it, so a fake-provider process is fully
 # ready to answer before it starts serving.
 install_fake_fallback_responses()
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TenderOS API")
 # The web app is a separate origin in every configuration this project has
@@ -304,10 +311,61 @@ async def _check_neo4j() -> bool:
         await driver.close()
 
 
-async def _check_minio() -> bool:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{settings.s3_endpoint_url}/minio/health/live", timeout=5.0)
-        return response.status_code == 200
+@functools.cache
+def _object_storage_probe_client() -> Any:
+    # One client for the life of the process, built from the same settings
+    # db/storage.py's ObjectStorage uses, so the probe checks exactly the
+    # endpoint, credentials and region that uploads will use. One attempt
+    # and short timeouts: a readiness probe must answer, not retry.
+    return boto3.client(
+        "s3",
+        endpoint_url=backend_settings.s3_endpoint_url,
+        aws_access_key_id=backend_settings.s3_access_key,
+        aws_secret_access_key=backend_settings.s3_secret_key,
+        region_name=backend_settings.s3_region,
+        config=BotoConfig(
+            signature_version="s3v4",
+            retries={"max_attempts": 1, "mode": "standard"},
+            connect_timeout=3,
+            read_timeout=5,
+        ),
+    )
+
+
+def _head_bucket_ready() -> bool:
+    try:
+        _object_storage_probe_client().head_bucket(Bucket=backend_settings.s3_bucket)
+    except ClientError as exc:
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if status == 404:
+            # Reachable and authenticated; the bucket is created lazily on
+            # the first upload (ObjectStorage._ensure_bucket), so a fresh
+            # stack has none yet. Requiring 200 here would keep a fresh
+            # stack unhealthy forever.
+            return True
+        code = exc.response.get("Error", {}).get("Code")
+        logger.warning("object storage not ready: HeadBucket returned HTTP %s (%s)", status, code)
+        return False
+    except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
+        logger.warning("object storage not ready: %s", type(exc).__name__)
+        return False
+    return True
+
+
+async def _check_object_storage() -> bool:
+    """Vendor-neutral readiness: an authenticated S3 HeadBucket on the app's bucket.
+
+    200 or 404 (bucket not created yet) mean ready; 403 (wrong credentials),
+    any other HTTP status, and any connection or client error mean not ready.
+    Logs the HTTP status and error code or the exception type, never
+    credentials.
+
+    What it cannot see: it checks reachability and credentials, not the
+    write path. A server whose front end answers while its storage cannot
+    yet accept writes reports ready here; so does a non-S3 server at the
+    endpoint that happens to answer HEAD with 404.
+    """
+    return await asyncio.to_thread(_head_bucket_ready)
 
 
 @app.get("/health/ready")
@@ -316,7 +374,7 @@ async def health_ready() -> JSONResponse:
         "postgres": _check_postgres(),
         "redis": _check_redis(),
         "neo4j": _check_neo4j(),
-        "minio": _check_minio(),
+        "object_storage": _check_object_storage(),
     }
     results = await asyncio.gather(*checks.values(), return_exceptions=True)
     status = {name: (result is True) for name, result in zip(checks.keys(), results, strict=True)}

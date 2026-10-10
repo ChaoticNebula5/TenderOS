@@ -5,7 +5,7 @@ ground truth.
 Runs everything in-process (no live API/worker containers required) - upload
 -> ingest -> extract are called directly via the same domain/agent functions
 the real system uses, just without going through HTTP or RQ. Needs Postgres,
-Redis, and MinIO reachable (docker compose up postgres redis minio) and a
+Redis, and the S3 store reachable (docker compose up postgres redis s3) and a
 real GEMINI_API_KEY in your local .env - this is the one part of B5 that
 deliberately is NOT run against the fake LLM client, because the number it
 produces has to mean something.

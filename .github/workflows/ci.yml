@@ -91,17 +91,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      # minio/minio's image needs an explicit `server /data ...` command to
-      # start in server mode - GitHub Actions' services: block has no
-      # command: field (unlike docker-compose's own minio service below),
-      # so it's started directly here instead of alongside the three
-      # above.
-      - name: Start MinIO
+      # The S3 store needs a command (backend and health path) - GitHub
+      # Actions' services: block has no command: field, so it is started
+      # directly here. Same image, digest and settings as docker-compose.yml's
+      # s3 service (VersityGW replaces MinIO, whose Docker Hub image is gone;
+      # see KNOWN_LIMITATIONS.md). Credentials are the CI throwaway pair.
+      # The named volume is required, not optional: the image has no /data,
+      # and the posix backend exits at once ("chdir /data: no such file or
+      # directory") without a mount there.
+      - name: Start S3 (VersityGW)
         run: |
-          docker run -d --name minio -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=changeme -e MINIO_ROOT_PASSWORD=changeme \
-            minio/minio server /data --console-address ":9001"
-          timeout 30 bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
+          docker run -d --name s3 -p 9000:9000 -v s3_data:/data \
+            -e ROOT_ACCESS_KEY_ID=changeme -e ROOT_SECRET_ACCESS_KEY=changeme \
+            -e VGW_PORT=":9000" \
+            versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499 \
+            --health /health posix /data
+          timeout 30 bash -c 'until curl -sf http://localhost:9000/health; do sleep 1; done'
       - run: uv sync
       # B17 Phase 0b: data/synthetic/ is gitignored except .gitkeep - the
       # fixtures are generated, never committed (make_synthetic_fixtures.py's

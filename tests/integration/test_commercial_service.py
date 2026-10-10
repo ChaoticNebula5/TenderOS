@@ -1,4 +1,4 @@
-"""domain/services/commercial_service.py against real Postgres/MinIO and a
+"""domain/services/commercial_service.py against real Postgres/S3 and a
 scripted FakeLLMClient - ingestion idempotency, the full ingest -> check ->
 explain -> persist pipeline against the real synthetic pricing workbooks,
 and resolve_pricing_finding's audit trail."""

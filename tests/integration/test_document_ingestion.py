@@ -1,4 +1,4 @@
-"""Upload -> outbox -> ingestion job, against real Postgres and MinIO.
+"""Upload -> outbox -> ingestion job, against real Postgres and S3.
 
 Covers B4's smoke-test list and its do-not-proceed conditions: upload returns
 without parsing, duplicate upload is safe, chunks keep page/sheet references,
