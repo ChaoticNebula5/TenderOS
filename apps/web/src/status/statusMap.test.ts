@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   STATUS_MAP,
+  describeApproved,
   describeFinding,
+  describeSelected,
   describeReadiness,
   describeStatus,
   describeVerified,
@@ -34,6 +36,24 @@ describe("statusMap", () => {
     }
     expect(describeReadiness(true)).toEqual({ tone: "ready", label: "Ready" });
     expect(describeReadiness(false)).toEqual({ tone: "blocked", label: "Not ready" });
+    // Batch 4: every boolean describer, both values, and every finding
+    // combination over the severity family.
+    for (const flag of [true, false]) {
+      expect(describeApproved(flag).label).not.toBe("Ready");
+      expect(describeSelected(flag).label).not.toBe("Ready");
+      expect(describeVerified(flag, true).label).not.toBe("Ready");
+      expect(describeVerified(flag, false).label).not.toBe("Ready");
+      for (const severity of Object.keys(STATUS_MAP.severity)) {
+        expect(describeFinding(flag, severity).label).not.toBe("Ready");
+      }
+    }
+  });
+
+  it("describes approval and selection: Approved/Selected as Ready-toned, the negatives Neutral", () => {
+    expect(describeApproved(true)).toEqual({ tone: "ready", label: "Approved" });
+    expect(describeApproved(false)).toEqual({ tone: "neutral", label: "Not approved" });
+    expect(describeSelected(true)).toEqual({ tone: "ready", label: "Selected" });
+    expect(describeSelected(false)).toEqual({ tone: "neutral", label: "Not selected" });
   });
 
   it("never shows a raw enum for a known value", () => {

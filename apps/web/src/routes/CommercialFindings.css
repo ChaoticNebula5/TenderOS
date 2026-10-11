@@ -1,0 +1,29 @@
+/* Commercial findings - the note column, resolved rows, actions columns.
+   Tables take the shared base styles (index.css) and TableScroll. */
+
+/* Prose column: wraps at a readable width (as the requirement register). */
+.findings__note {
+  min-width: 16rem;
+  max-width: var(--measure-prose);
+}
+
+/* DESIGN.md Screen patterns, "Findings lists": resolved rows collapse to
+   one line. CSS only - the note's full text stays in the DOM (and in the
+   accessibility tree); it is clamped visually, with an ellipsis. */
+.findings__row--resolved .findings__note-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
+.findings__row--resolved td {
+  color: var(--ink-2);
+}
+
+/* Actions columns shrink to their one button. */
+.pricing-documents td:last-child,
+.findings td:last-child {
+  width: 1%;
+}

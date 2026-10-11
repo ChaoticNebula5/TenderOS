@@ -111,8 +111,9 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: batches 1 (foundation), 2 (shell and shared components) and 3
-> (intake and requirements) are built; everything else is a proposal.**
+> **Status: batches 1 (foundation), 2 (shell and shared components), 3
+> (intake and requirements) and 4 (analysis screens) are built; everything
+> else is a proposal.**
 > Batch 1's tokens, `@font-face`
 > rules and base element styles exist (`apps/web/src/styles/tokens.css`,
 > `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
@@ -122,7 +123,9 @@ components:
 > Bid dashboard and Create bid; see "Batch 2: as built" under Restyle
 > batches. Batch 3 applies them to the processing screen, the requirement
 > register and the shared gate panel, and adds the tender bar's run status
-> badge; see "Batch 3: as built". The rest describes what the apps/web
+> badge; see "Batch 3: as built". Batch 4 applies them to compliance, team,
+> commercial findings and knowledge selections; see "Batch 4: as built".
+> The rest describes what the apps/web
 > restyle *will* do. Every
 > statement about the UI as it is today cites a file and line; everything
 > else is future tense. When a batch lands, its section moves from "will"
@@ -337,7 +340,9 @@ together. Remove the colour and the screen must still read correctly
 
 **The No Raw Enum Rule.** `fully_compliant`, `waiting_for_human` and
 friends are never shown as-is; one shared label map turns them into words.
-(Today the compliance select shows raw values, `ComplianceMatrix.tsx:110-115`.)
+(Since batch 4 the compliance select shows mapped labels; its option
+*values* stay the backend words, which `full-flow.spec.ts:714` and `:736`
+read - `apps/web/src/routes/ComplianceMatrix.tsx`.)
 
 ### Theming hook (decided: dark only for this restyle)
 
@@ -459,8 +464,9 @@ cleanup withdraws the status when the screen unmounts, so navigating to a
 step that does not report clears it. Wired in batch 3 on the processing
 screen (the streamed run's status, else the last run's) and the
 requirement register (the first caller: `runs[0].status` from the
-`listWorkflowRuns` call it already made for the gate). Compliance, team,
-commercial and readiness are wired in their own batches. The bar updates
+`listWorkflowRuns` call it already made for the gate). Batch 4 wires
+compliance, team and commercial the same way (each clears its badge after a
+gate decision); readiness is wired in batch 5. The bar updates
 from an effect, one React commit after the screen. After a gate decision
 the requirement register clears its badge (blank until the next load)
 rather than keep a status the decision made stale.
@@ -575,6 +581,12 @@ measured by grep). Each component will exist once and be reused.
   danger), Retry (quiet) and Start processing (primary, "Starting...").
   6 bare buttons migrated; 21 remain (measured after batch 3). Buttons and
   inputs share `--control-pad-y` (renamed from `--button-pad-y`, same 6px).
+- **Built (batch 4):** row actions quiet (compliance Approve, View
+  candidates, Select/Deselect, Re-validate, Resolve, Preview impact); the
+  knowledge "Confirm select/deselect" primary. Labels unchanged. Re-validate,
+  Preview impact and Confirm carry `aria-busy` on the one in flight (no busy
+  label: no participle existed). 7 bare buttons migrated; 14 remain
+  (measured after batch 4).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -602,6 +614,12 @@ measured by grep). Each component will exist once and be reused.
   a state: `full-flow.spec.ts:653` reads that cell (td index 5) and expects
   exactly "yes". Mandatory is a fact and stays a plain word by this file's
   own rule.
+- **Built (batch 4):** compliance status (badge beside the override
+  select), compliance Approved, candidate and knowledge Selected, and the
+  finding status (`describeFinding`). New, chosen, not in this file
+  (`status/statusMap.ts`): `describeApproved` (Ready "Approved" / Neutral
+  "Not approved") and `describeSelected` (Ready "Selected" / Neutral "Not
+  selected"); neither can return "Ready" (`statusMap.test.ts`).
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -629,9 +647,10 @@ measured by grep). Each component will exist once and be reused.
   with the blocked icon; notes field labelled "Notes (optional)"; decided
   state is "Decided {date}" through `formatDate` - no `<strong>`, no raw
   ISO, and no "who" (`decided_by` is a user id; a name needs a fetch). Used
-  unchanged on compliance, team, commercial and readiness. On the
-  requirement register the heading and panel move together above the
-  table while the gate is pending (Screen patterns, "Gates").
+  unchanged on compliance, team, commercial (batch 4) and readiness. On the
+  requirement register, and since batch 4 on compliance, team and
+  commercial, the heading and panel move together above the table while
+  the gate is pending (Screen patterns, "Gates").
 
 ### Tables
 - **Today:** 14 bare `<table>`s in 11 files (measured), no header styling,
@@ -659,6 +678,23 @@ measured by grep). Each component will exist once and be reused.
   (deviation): text in `ink-3`, and a badge in that row drops its hue and
   tint. At the old 0.5 opacity the Verified badge in a rejected row
   measured 2.62:1; `ink-3` measures 5.47:1.
+- **Built (batch 4):** `TableScroll` on all six tables of compliance, team
+  (roles, candidates), commercial (documents, findings) and knowledge
+  selections; confidence and score as whole percents (`format/percent.ts`:
+  "100%" only for exactly 1, "0%" only for exactly 0; chosen, not in this
+  file); numbers right-aligned through the shared `.cell-num`, UUID cells
+  wrapping through `.cell-id` (`styles/layout.css`). The compliance
+  requirement column and the candidate column still show raw UUIDs: the
+  display code and the employee name each need a fetch those screens do not
+  make, and `full-flow.spec.ts:855` reads the candidate id verbatim.
+  **`stickyLastColumn` only where it fits (measured at 390px):** kept on
+  roles, pricing documents and knowledge items, whose actions column always
+  holds a button; dropped on compliance, candidates and findings, where
+  pinning it left less room between the two sticky columns than one content
+  column needs (compliance Status 181px into 126; candidates 125 into 124;
+  findings Note 256 into 175, and 253 even with every finding resolved), so
+  that column could never be seen whole. Those three tables' row actions
+  scroll with the table instead.
 
 ### Forms and inputs
 - **Today:** labels wrap inputs (good for accessibility, keep it), no
@@ -694,6 +730,10 @@ measured by grep). Each component will exist once and be reused.
   `warning` variant. Remaining inline readers after batch 3 (measured by
   grep, comment mentions excluded): `--color-danger` 15, `--color-warning`
   2, `--color-border` 1 - no alias can be deleted yet.
+- **Built (batch 4):** errors on compliance, team, commercial and knowledge
+  selections (`failed`, `alert`, as each had `role="alert"`). Remaining
+  inline readers after batch 4 (measured, same method): `--color-danger`
+  11, `--color-warning` 2, `--color-border` 1 - still none deletable.
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -720,6 +760,16 @@ measured by grep). Each component will exist once and be reused.
   register's E2E waits for the table's first `<tr>` as its "data has
   loaded" signal (`full-flow.spec.ts:629-638`), which placeholder rows would
   satisfy early, and neither screen has a loading flag for its table.
+- **Built (batch 4):** each of the six tables gets a loaded flag from the
+  fetch it already makes, `aria-busy` while loading, and an `EmptyState`
+  **after** the table once the response is empty. The table itself always
+  renders: the spec reaches these tables by position (`table.first()`,
+  `:696`, `:780`, `:1182`; `table.nth(1)`, `:922`, `:1058`). Still no
+  skeleton rows: `:701`, `:785` and `:1182` count `tbody tr` as "loaded"
+  and `:922` counts it once. The team screen's candidate list shows
+  "Loading candidates..." while its fetch is in flight instead of claiming
+  "no candidates" before the response says so (display state only). The
+  knowledge preview's "Loading..." stays a paragraph (no table there).
 
 ### Navigation
 - **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
@@ -783,6 +833,14 @@ measured by grep). Each component will exist once and be reused.
   `JSON.stringify(row)` (`KnowledgeSelections.tsx:165`); the confirm action
   states what will change ("Deselect and mark 3 facts for review"), using
   only counts the response actually carries.
+  **Batch 4 deviation (spec-forced):** the rows stay one `<li>` each whose
+  text is exactly `JSON.stringify(row)` - `full-flow.spec.ts:1253` counts
+  every `<li>` on the page and `:1258` `JSON.parse`s every `ul li` - shown
+  as a sunk well of wrapped data text inside `<code>` (no added text). The
+  readable part is a summary line above the list, outside it ("3
+  downstream facts affected: Compliance 1, Proposal claim 1, Requirement
+  1", `format/impactSummary.ts`). The confirm label stays exactly "Confirm
+  select" / "Confirm deselect" (`:1323` regex, `:1325` exact text).
 - **Processing:** task list as a vertical sequence with running/ready/failed
   badges, and the existing "Live updates are currently unavailable" notice
   (`UploadAndProcessingStatus.tsx:245-248`) as a warning notice.
@@ -852,6 +910,15 @@ measured by grep). Each component will exist once and be reused.
     fake-provider data; the currencies come from the synthetic fixture). A
     frontend formatter cannot reach an amount embedded in a backend string.
     Decided: see Decisions, item 8.
+  - **Batch 4: `formatInr` still has no caller.** The only structured
+    amount on these screens, `delta`, is `actual - expected` in the pricing
+    sheet's own currency (`domain/services/pricing_checks.py:265`, `:373`,
+    `:501`), and the fixture's sheets are USD and EUR with `currency` null
+    on both pricing documents. Labelling it "₹" would claim INR for a
+    non-INR figure; a bare number breaks "Don't show ... a bare number for
+    money". So `delta` stays unshown, and the commercial screen's Currency
+    column shows the stored code or "Not stated". The first caller waits for
+    the INR demo data (decision 8, Phase 4 note).
   - Note: the landing's copy spells the unit out ("₹68.4 crore",
     `apps/landing/src/data/tender.ts:11`) as hand-written strings. The app's
     compact mode uses "Cr" as decided. Not changed here; flagged so the
@@ -1027,9 +1094,9 @@ Library setup, **no new dependency**.
    list, live-updates notice), requirement register, and the gate panel
    (first used here, then reused unchanged). Details under "Batch 3: as
    built".
-4. **Analysis gates.** Compliance matrix, team workspace, commercial
-   findings (first INR use if amounts are surfaced), knowledge selections
-   with the impact list.
+4. **Analysis gates (built).** Compliance matrix, team workspace,
+   commercial findings, knowledge selections with the impact summary. No
+   INR use (no INR amount to show). Details under "Batch 4: as built".
 5. **Proposal, evidence and readiness.** Proposal workspace, traceability
    drawer, red-team findings, graph explorer, readiness.
 6. **Talent.** Talent library, import and review queue, employee profile.
@@ -1064,10 +1131,10 @@ Library setup, **no new dependency**.
 | `StatusBadge` | `components/ui/StatusBadge.tsx` | batch 3 - **wired** (tender bar, gate panel, processing, requirements) |
 | `describeStatus`, `STATUS_MAP` | `status/statusMap.ts` | batch 3 - **wired** (gate, run, task, parse badges; `STATUS_MAP` read by the parse-label test) |
 | `describeReadiness` | `status/statusMap.ts` | batch 3 - **wired** (gate panel's final-readiness summary) |
-| `describeFinding` | `status/statusMap.ts` | batch 4 (commercial findings) / batch 5 (red team) |
+| `describeFinding` | `status/statusMap.ts` | batch 4 - **wired** (commercial findings); batch 5 (red team) |
 | `StatusTone`, `StatusDescriptor`, `StatusFamily` (types) | `status/statusMap.ts` | batch 2 (StatusBadge, icons) |
 | `formatDate` | `format/date.ts` | batch 3 - **wired** (gate panel: request and decided dates) |
-| `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | batch 4 (commercial findings, if amounts are surfaced) |
+| `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | **still unused after batch 4** - no INR amount on any screen (Copy rules, "Money"); waits for the INR demo data (decision 8, Phase 4) |
 | `AppShell`, `PageContent` | `shell/AppShell.tsx` | batch 2 (App.tsx) |
 | `TenderLayout` | `shell/TenderLayout.tsx` | batch 2 (App.tsx) |
 | `AppRoutes` | `App.tsx` | batch 2 (App, AppRoutes.test.tsx) |
@@ -1118,6 +1185,69 @@ Library setup, **no new dependency**.
 | `describeVerified` | `status/statusMap.ts` | batch 3 (requirement register) |
 | `humanize` | `format/humanize.ts` | batch 3 (processing task list) |
 | `TableScroll` `stickyLastColumn` prop | `components/ui/TableScroll.tsx` | batch 3 (requirement register) |
+
+### Batch 4: as built
+
+- **Screens:** `ComplianceMatrix.tsx`, `TeamWorkspace.tsx`,
+  `CommercialFindings.tsx`, `KnowledgeSelections.tsx` (see Components and
+  Screen patterns for each). Run status badge wired on compliance, team
+  and commercial from the run each already fetched; none on knowledge
+  selections (no run fetch). Pending gates sit above the tables.
+- **Spec-forced choices** (`apps/web/e2e/full-flow.spec.ts` unchanged,
+  byte-identical to main):
+  - **Compliance option values stay backend words** (`:714` reads
+    `inputValue()`, `:736` selects by value); only the option text is
+    mapped. The row's Approve is removed, not disabled, once approved
+    (`:728`, `:737`).
+  - **Candidate id stays raw and alone in its cell** (`:855`, exact
+    `toHaveText`); "Select"/"Deselect" labels unchanged (`:877`, exact).
+  - **Both commercial tables always render, documents first** (`:922`,
+    `:1058` use `table.nth(1)`).
+  - **Impact rows stay raw JSON `<li>`s; confirm labels unchanged** (see
+    Screen patterns, "Impact list").
+  - **No skeleton rows** on any of the six tables (Empty states).
+- **Chosen, not in this file** (marked in code): `describeApproved`,
+  `describeSelected` (Status badge); `formatPercent` (Tables);
+  `summarizeImpact` rules - the total is the number of rows (= `<li>`s);
+  the per-label breakdown counts only rows with a string `labels` array,
+  once per distinct label, so it can exceed the total; unrecognised rows
+  count in the total only; nothing renders for zero rows. Finding type and
+  knowledge item type through `humanize`; Neo4j labels re-cased only
+  ("ProposalClaim" -> "Proposal claim"). Null texts: "Not scored"
+  (confidence, score), "None stated" (minimum experience), "Not stated"
+  (currency). Resolved findings collapse to one line (CSS clamp; full text
+  stays in the DOM).
+- **`<li>` audit** (measured with fixture data in the browser): knowledge
+  selections 0 `li` / 0 `ul li` with no preview open, 3 / 3 (all 3
+  `JSON.parse`) for a 3-row preview, 0 / 0 for an empty one; compliance,
+  team and commercial render none (the gate panel's `<ul>` is only for
+  `final_readiness`).
+- **Checks at batch 4 (measured):** vitest 183 (146 at batch 3), stable
+  over three runs; fake E2E (`scripts/e2e.ps1`) 1 passed on the final code.
+  One earlier fake run failed at step 13 (`:1466`, readiness read "Ready")
+  for a reason outside these screens: when the worker has already opened
+  the `final_readiness` gate before step 14, that gate's readiness report
+  (pre-deselection, ready) is what `Readiness.tsx` shows on mount, and
+  `:1451` passes on it before the clicked report replaces it; recorded for
+  KNOWN_LIMITATIONS. Page `scrollWidth` 390 at 390px on all four screens in
+  every state. Contrast: 23 new pairs, 22 at or above target; the failed
+  badge on a hovered row measures 4.36:1 (the badge tint is translucent,
+  so the row-hover overlay shows through) - the same pairing already exists
+  on the batch 3 documents table; not fixed here (a `StatusBadge.css`
+  change), recorded for decision. Greyscale, deuteranopia and protanopia
+  passes: every badge reads by icon and label; under deuteranopia Critical
+  and Resolved share one hue, and the amber Approve sits close to Major's
+  yellow, as Colors predicts. Keyboard: a ring on every stop, no `tabIndex`
+  above 0. Bare buttons 14 remain (21 at batch 3).
+- **New exports and their first caller:**
+
+| Export | File (under `apps/web/src/`) | First caller |
+|---|---|---|
+| `formatPercent` | `format/percent.ts` | batch 4 (compliance confidence, team score) |
+| `summarizeImpact`, `labelWords`, `ImpactSummary` | `format/impactSummary.ts` | batch 4 (knowledge selections) |
+| `describeApproved` | `status/statusMap.ts` | batch 4 (compliance) |
+| `describeSelected` | `status/statusMap.ts` | batch 4 (team candidates, knowledge selections) |
+| `.count-line`, `.cell-id`, `.cell-num` (classes) | `styles/layout.css` | batch 4 (the four screens); `RequirementRegister`'s own `.requirements__count` is the same rule, left for the polish pass |
 
 ## Deferred
 

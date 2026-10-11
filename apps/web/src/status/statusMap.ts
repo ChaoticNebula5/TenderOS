@@ -187,6 +187,29 @@ export function describeVerified(verified: boolean, mandatory: boolean): StatusD
     : { tone: "neutral", label: "Not verified" };
 }
 
+// Compliance entry approval (ComplianceMatrix's Approved column).
+// DESIGN.md:585-587: 'Booleans that are states (verified, approved,
+// resolved, selected) become badges'. chosen, not in DESIGN (tones and the
+// "Not approved" label): approved -> Ready "Approved", the gate family's own
+// word for approval (DESIGN.md:311); not approved -> Neutral, not Blocked,
+// so a matrix of unreviewed rows does not read as a wall of violet. Never
+// "Ready" (reserved).
+export function describeApproved(approved: boolean): StatusDescriptor {
+  return approved
+    ? { tone: "ready", label: "Approved" }
+    : { tone: "neutral", label: "Not approved" };
+}
+
+// Candidate and knowledge-item selection (TeamWorkspace's and
+// KnowledgeSelections' Selected columns). DESIGN.md:585-587 as above.
+// chosen, not in DESIGN (tones and labels): selected -> Ready "Selected";
+// not selected -> Neutral "Not selected". Never "Ready" (reserved).
+export function describeSelected(selected: boolean): StatusDescriptor {
+  return selected
+    ? { tone: "ready", label: "Selected" }
+    : { tone: "neutral", label: "Not selected" };
+}
+
 // Red-team and commercial findings. DESIGN.md:287-289: 'A resolved finding
 // shows the Ready treatment with the label "Resolved", whatever its
 // severity; an open one shows its severity badge.' DESIGN.md:317's

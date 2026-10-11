@@ -1,0 +1,18 @@
+/* Compliance matrix - the status cell and the actions column. The table
+   takes the shared base styles (index.css), TableScroll, and the shared
+   .cell-id / .cell-num classes (styles/layout.css). */
+
+/* Badge and override select side by side; at phone width the select wraps
+   under the badge rather than widening the column. */
+.compliance__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The actions column shrinks to its one button (same rule as the
+   requirement register's). */
+.compliance td:last-child {
+  width: 1%;
+}

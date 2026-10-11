@@ -1,0 +1,46 @@
+/* Company knowledge selections - the impact preview and the actions
+   column. The table takes the shared base styles (index.css) and
+   TableScroll. */
+
+.impact {
+  margin-top: var(--space-5);
+}
+
+.impact__loading,
+.impact__summary {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The raw impact rows (a spec-forced deviation: full-flow.spec.ts:1258
+   parses each <li> as JSON). Shown as a sunk well of wrapped data text so
+   it reads as raw data rather than prose; Archivo, as everywhere outside
+   page titles - no monospace face is in the type system. Long JSON breaks
+   anywhere so it never widens the page at 390px. */
+.impact__list {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  list-style: none;
+  border-radius: var(--radius-md);
+  background: var(--surface-sunk);
+  max-width: var(--measure-prose);
+}
+
+.impact__list li + li {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--rule);
+}
+
+.impact__list code {
+  font-family: inherit;
+  font-size: var(--text-data);
+  line-height: var(--leading-data);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* The actions column shrinks to its one button. */
+.knowledge td:last-child {
+  width: 1%;
+}

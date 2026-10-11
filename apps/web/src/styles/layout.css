@@ -85,3 +85,35 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Batch 4 shared table and register classes (compliance, team,
+   commercial, knowledge selections). */
+
+/* A count line above a register table ("94 entries, 12 approved"), from
+   data already in the response (DESIGN.md Screen patterns, "Register
+   tables"). RequirementRegister still has its own .requirements__count with
+   the same rules; unifying them is on the polish list. */
+.count-line {
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A raw identifier (UUID) in a table cell. It may break anywhere, so a
+   36-character id does not set the width of a sticky first column at
+   390px; the text itself is unchanged (the E2E reads it exactly,
+   full-flow.spec.ts:855). */
+.cell-id {
+  min-width: 8rem;
+  max-width: 12rem;
+  overflow-wrap: anywhere;
+}
+
+/* A number column: right-aligned, tabular (DESIGN.md Typography, "The
+   Tabular Rule"; tables already set tabular-nums, kept here for a cell
+   used outside one). */
+.cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

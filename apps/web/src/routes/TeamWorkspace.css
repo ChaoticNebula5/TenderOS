@@ -1,0 +1,21 @@
+/* Team workspace - the candidates section and the actions columns. Tables
+   take the shared base styles (index.css), TableScroll, and the shared
+   .cell-id / .cell-num classes (styles/layout.css). */
+
+.candidates {
+  margin-top: var(--space-5);
+}
+
+/* Which role the candidates belong to, and the in-flight line: secondary
+   text under the section heading. */
+.candidates__role,
+.candidates__loading {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-2);
+}
+
+/* Actions columns shrink to their one button. */
+.roles td:last-child,
+.candidates__table td:last-child {
+  width: 1%;
+}
