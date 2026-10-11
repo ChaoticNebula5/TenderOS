@@ -111,15 +111,19 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: batches 1 (foundation) and 2 (shell and shared components) are
-> built; everything else is a proposal.** Batch 1's tokens, `@font-face`
+> **Status: batches 1 (foundation), 2 (shell and shared components) and 3
+> (intake and requirements) are built; everything else is a proposal.**
+> Batch 1's tokens, `@font-face`
 > rules and base element styles exist (`apps/web/src/styles/tokens.css`,
 > `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
 > Batch 2's app shell, workflow nav, shared components, status label map and
 > formatters exist (`apps/web/src/shell/`, `apps/web/src/components/ui/`,
 > `apps/web/src/status/`, `apps/web/src/format/`) and are applied to Login,
 > Bid dashboard and Create bid; see "Batch 2: as built" under Restyle
-> batches. The rest describes what the apps/web restyle *will* do. Every
+> batches. Batch 3 applies them to the processing screen, the requirement
+> register and the shared gate panel, and adds the tender bar's run status
+> badge; see "Batch 3: as built". The rest describes what the apps/web
+> restyle *will* do. Every
 > statement about the UI as it is today cites a file and line; everything
 > else is future tense. When a batch lands, its section moves from "will"
 > to "does", in the same commit as the code - never ahead of it (see Copy
@@ -423,9 +427,10 @@ Log out** yet: `logout()` exists in the auth context with no UI and no
 tested path (deferred, see below). Inside a tender, the **workflow nav**
 (built) gives every tender screen a way back to the dashboard (the
 wordmark and "Bids") and to every other step. The processing screen's old
-dot-separated link row (`UploadAndProcessingStatus.tsx:180-190`) still
-renders until batch 3 restyles that screen. The **tender header** (name,
-client, run status badge) is **not built**: see the next paragraph.
+dot-separated link row was removed in batch 3. The **tender bar** carries
+the workflow nav and, since batch 3, the **run status badge** (next
+paragraph); the tender **name and client** are still not built (deferred,
+below).
 
 **The shell sits outside `<main>`.** Top bar, tender header and workflow nav
 are siblings of `<main>`, never inside it, and contain no `<strong>`, no
@@ -445,14 +450,26 @@ team, commercial, readiness (measured: the files that call
 knowledge selections, proposal, red team and graph. No restyle batch adds a
 run fetch to get it. See Decisions, item 9.
 
+**Built in batch 3** (`apps/web/src/shell/runStatus.ts`,
+`apps/web/src/shell/TenderLayout.tsx`): `TenderLayout` owns the value and
+renders "Run" plus a `StatusBadge` (a `<span>`, outside `<main>`) at the
+right of the tender bar; a screen reports a status it already has with
+`useReportRunStatus(status)`. `null` or no report shows nothing; the hook's
+cleanup withdraws the status when the screen unmounts, so navigating to a
+step that does not report clears it. Wired in batch 3 on the processing
+screen (the streamed run's status, else the last run's) and the
+requirement register (the first caller: `runs[0].status` from the
+`listWorkflowRuns` call it already made for the gate). Compliance, team,
+commercial and readiness are wired in their own batches. The bar updates
+from an effect, one React commit after the screen. After a gate decision
+the requirement register clears its badge (blank until the next load)
+rather than keep a status the decision made stale.
+
 **Deferred from batch 2 (decided at batch 2 plan review):**
-- **Run status badge -> batch 3.** Neither the badge slot nor a
-  `useTenderRunStatus()` hook is built in batch 2: a slot with no caller is
-  an "exists, nothing uses it" contract designed without a real user. Both
-  are built in batch 3 with the requirements screen as the first caller.
-  Note for batch 3: five of the six screens keep only `runs[0].id`, not the
-  run's status (e.g. `RequirementRegister.tsx:48-53`), so each needs that
-  value kept in state; no new fetch.
+- **Run status badge -> built in batch 3** (above), with the requirement
+  register as its first caller. Each remaining screen that fetches the run
+  keeps only `runs[0].id` today, so wiring it means keeping the status in
+  state from the call it already makes; no new fetch.
 - **Tender name and client.** Showing them needs `getTender`
   (`apps/web/src/api/client.ts:233`), which no screen calls today, so it
   would be a new fetch inside a restyle. Not built; needs an explicit
@@ -551,6 +568,13 @@ measured by grep). Each component will exist once and be reused.
   buttons); 27 bare `<button>`s in 14 files remain for their own batches
   (measured after batch 2). Adjacent actions use the shared `.action-row`
   gap.
+- **Built (batch 3):** the gate panel (Approve primary, Request changes
+  secondary, Reject danger; the clicked one `aria-busy`, all three
+  disabled while submitting, labels unchanged since no participle
+  existed), requirement row actions (Confirm and Re-verify quiet, Reject
+  danger), Retry (quiet) and Start processing (primary, "Starting...").
+  6 bare buttons migrated; 21 remain (measured after batch 3). Buttons and
+  inputs share `--control-pad-y` (renamed from `--button-pad-y`, same 6px).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -571,6 +595,13 @@ measured by grep). Each component will exist once and be reused.
   DESIGN": parse and import-item labels, the unknown-value fallback). Not
   yet placed on any screen: the dashboard ships without a Status column
   (decision 9); the first badges arrive in batch 3.
+- **Built (batch 3):** first badges on real screens - gate status, run
+  status (tender bar and "Last run"), task status, document parse status,
+  requirement Verified. **Spec-forced deviation:** the requirement
+  register's Reviewed column stays the plain word "yes"/"no", although it is
+  a state: `full-flow.spec.ts:653` reads that cell (td index 5) and expects
+  exactly "yes". Mandatory is a fact and stays a plain word by this file's
+  own rule.
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -590,6 +621,17 @@ measured by grep). Each component will exist once and be reused.
 - **States:** not yet opened ("No open ... gate" - today a bare `<p>` on
   five screens, measured), pending (blocked), approved (ready), rejected, changes
   requested, submitting, error (409 message kept verbatim in meaning).
+- **Built (batch 3):** `apps/web/src/components/GateDecisionPanel.tsx`. Root
+  still a `<section>` (the screens' `<h2>` + `<section>` sibling pair that
+  `full-flow.spec.ts:56` finds); header badge; "At request time ·
+  {date}" above the summary; the summary is a `<dl>` grid with tabular
+  values; final readiness shows the readiness badge and the blockers list
+  with the blocked icon; notes field labelled "Notes (optional)"; decided
+  state is "Decided {date}" through `formatDate` - no `<strong>`, no raw
+  ISO, and no "who" (`decided_by` is a user id; a name needs a fetch). Used
+  unchanged on compliance, team, commercial and readiness. On the
+  requirement register the heading and panel move together above the
+  table while the gate is pending (Screen patterns, "Gates").
 
 ### Tables
 - **Today:** 14 bare `<table>`s in 11 files (measured), no header styling,
@@ -607,6 +649,16 @@ measured by grep). Each component will exist once and be reused.
   used on the Bid dashboard. Other tables get it in their own batch; the
   requirements table still overflows at 390px (579px wide, measured after
   batch 2) until batch 3 wraps it.
+- **Built (batch 3):** `TableScroll` on the documents and requirements
+  tables; an optional `stickyLastColumn` pins the requirements table's row
+  actions to the right edge (they cannot move to the first column: the
+  spec reads cells by position). Both screens measure `scrollWidth` 390 at
+  390px. The region is now `position: relative`, the containing block for
+  anything absolutely positioned inside its table: a visually-hidden
+  header label otherwise escaped it and widened the page to 417px. Rejected requirement rows are dimmed **by colour, not opacity**
+  (deviation): text in `ink-3`, and a badge in that row drops its hue and
+  tint. At the old 0.5 opacity the Verified badge in a rejected row
+  measured 2.62:1; `ink-3` measures 5.47:1.
 
 ### Forms and inputs
 - **Today:** labels wrap inputs (good for accessibility, keep it), no
@@ -621,6 +673,9 @@ measured by grep). Each component will exist once and be reused.
   (and the E2E's `getByLabel`) are unchanged; hint text sits outside the
   label. Used on Login and Create bid. Error-below-field and the styled file
   input are not built yet.
+- **Built (batch 3):** `Field` labels the gate notes ("Notes (optional)",
+  replacing a placeholder) and the processing screen's file input ("Upload
+  a document"); the input stays a native file input.
 
 ### Notices (error, warning, info)
 - **Today:** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
@@ -634,6 +689,11 @@ measured by grep). Each component will exist once and be reused.
 - **Built (batch 2):** `apps/web/src/components/ui/Notice.tsx`, used for the
   errors on Login, Bid dashboard and Create bid (3 of the
   `--color-danger` inline readers removed; 18 remain, measured).
+- **Built (batch 3):** errors on the processing screen, requirement register
+  and gate panel; the "Live updates are currently unavailable" notice is the
+  `warning` variant. Remaining inline readers after batch 3 (measured by
+  grep, comment mentions excluded): `--color-danger` 15, `--color-warning`
+  2, `--color-border` 1 - no alias can be deleted yet.
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -653,6 +713,13 @@ measured by grep). Each component will exist once and be reused.
   heading is a styled `<p>`, not a heading element, so no extra heading
   enters a screen's `<main>` for the E2E's heading locators to hit.
   `RequireAuth.tsx`'s app-level "Loading..." is unchanged.
+- **Built (batch 3):** the processing screen's "No documents uploaded yet"
+  is an `EmptyState` that waits for the first response (a loaded flag set
+  from the existing `listDocuments` call; before, it showed while still
+  loading). **No skeleton rows in batch 3** (deviation): the requirement
+  register's E2E waits for the table's first `<tr>` as its "data has
+  loaded" signal (`full-flow.spec.ts:629-638`), which placeholder rows would
+  satisfy early, and neither screen has a loading flag for its table.
 
 ### Navigation
 - **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
@@ -789,8 +856,10 @@ measured by grep). Each component will exist once and be reused.
     `apps/landing/src/data/tender.ts:11`) as hand-written strings. The app's
     compact mode uses "Cr" as decided. Not changed here; flagged so the
     difference is known.
-- **Dates:** `10 Oct 2026, 14:05` (en-IN), never a raw ISO string (today:
-  `GateDecisionPanel.tsx:91`).
+- **Dates:** `10 Oct 2026, 14:05` (en-IN), never a raw ISO string. The gate
+  panel's raw ISO decided date was replaced in batch 3 (`formatDate`,
+  viewer's local zone). en-IN abbreviates September as "Sept" (measured in
+  Node and Chromium).
 
 ## What the app will not do
 
@@ -954,9 +1023,10 @@ Library setup, **no new dependency**.
    scroll region, INR and date formatters, with the render tests above.
    Applied to Login, Bid dashboard (shipped **without** its Status column,
    decision 9) and Create bid. Details under "Batch 2: as built".
-3. **Intake and requirements.** Upload and processing status (task list,
-   live-updates notice), requirement register, and the gate panel (first
-   used here, then reused unchanged).
+3. **Intake and requirements (built).** Upload and processing status (task
+   list, live-updates notice), requirement register, and the gate panel
+   (first used here, then reused unchanged). Details under "Batch 3: as
+   built".
 4. **Analysis gates.** Compliance matrix, team workspace, commercial
    findings (first INR use if amounts are surfaced), knowledge selections
    with the impact list.
@@ -991,14 +1061,63 @@ Library setup, **no new dependency**.
 | `SkeletonRows` | `components/ui/SkeletonRows.tsx` | batch 2 (Bid dashboard) |
 | `TableScroll` | `components/ui/TableScroll.tsx` | batch 2 (Bid dashboard) |
 | `StatusIcon`, `InfoIcon` | `components/ui/icons.tsx` | batch 2 (StatusBadge, Notice) |
-| `StatusBadge` | `components/ui/StatusBadge.tsx` | batch 3 (tender run badge, gate panel) |
-| `describeStatus`, `describeReadiness`, `describeFinding`, `STATUS_MAP` | `status/statusMap.ts` | batch 3 (processing tasks, gate panel); readiness and findings in batch 5 |
+| `StatusBadge` | `components/ui/StatusBadge.tsx` | batch 3 - **wired** (tender bar, gate panel, processing, requirements) |
+| `describeStatus`, `STATUS_MAP` | `status/statusMap.ts` | batch 3 - **wired** (gate, run, task, parse badges; `STATUS_MAP` read by the parse-label test) |
+| `describeReadiness` | `status/statusMap.ts` | batch 3 - **wired** (gate panel's final-readiness summary) |
+| `describeFinding` | `status/statusMap.ts` | batch 4 (commercial findings) / batch 5 (red team) |
 | `StatusTone`, `StatusDescriptor`, `StatusFamily` (types) | `status/statusMap.ts` | batch 2 (StatusBadge, icons) |
-| `formatDate` | `format/date.ts` | batch 3 (gate panel decided-at date, today a raw ISO string at `GateDecisionPanel.tsx:91`) |
+| `formatDate` | `format/date.ts` | batch 3 - **wired** (gate panel: request and decided dates) |
 | `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | batch 4 (commercial findings, if amounts are surfaced) |
 | `AppShell`, `PageContent` | `shell/AppShell.tsx` | batch 2 (App.tsx) |
 | `TenderLayout` | `shell/TenderLayout.tsx` | batch 2 (App.tsx) |
 | `AppRoutes` | `App.tsx` | batch 2 (App, AppRoutes.test.tsx) |
+
+### Batch 3: as built
+
+- **Screens:** `UploadAndProcessingStatus.tsx`, `RequirementRegister.tsx`,
+  and the shared `GateDecisionPanel.tsx` (see Components for each).
+- **Spec-forced choices** (`apps/web/e2e/full-flow.spec.ts` is unchanged,
+  byte-identical to main):
+  - **Parse status text** (`:558-566` compares each cell's `textContent`,
+    read with `allTextContents()`, to `"parsed"`). The parse badge's DOM
+    text is the backend word and CSS `text-transform: capitalize` draws it
+    as "Parsed"; `textContent` is unaffected by CSS. Every parse label in
+    `statusMap.ts` is that capitalised word, and a vitest enforces it.
+  - **Reviewed stays "yes"/"no"** (`:653`, td index 5, exact text); no
+    column is added before it.
+  - **No skeleton rows** (`:629-638`, see Empty states).
+- **Chosen, not in this file** (marked in code): `describeVerified`
+  (`status/statusMap.ts`) - verified -> Ready "Verified"; unverified and
+  mandatory -> Warning "Not verified" (what the requirement review gate
+  counts as "Unverified mandatory"); unverified and optional -> Neutral
+  "Not verified". `humanize` (`format/humanize.ts`) turns `task_type` into
+  words ("requirement_extraction" -> "Requirement extraction"). Requirement
+  `category` is still shown as the backend writes it (lowercase words; no
+  label map).
+- **`<li>` audit for the gate summary's `<ul>` -> `<dl>`** (measured on
+  fake-provider tenders, before and after): the pages whose spec lines read
+  `li` page-wide render no gate panel - proposal (`:971`, `:974`) 5 `li`
+  before and after, 3 with "/ unsupported]" before and after; knowledge
+  selections (`:1253`, `:1258`) 0 and 0. Only the four gate pages lost
+  their summary `<li>`s, and no spec line reads `li` there.
+- **Run state seen after a decision** (measured): a Reject left the run
+  `waiting_for_human` for a few seconds before the worker moved it to
+  `failed`; the screens show what the API returns at load.
+- **Checks at batch 3 (measured):** fake E2E (`scripts/e2e.ps1`) passed;
+  vitest 146 (114 at batch 2). Contrast: 40 new pairs, all at or above
+  target after the rejected-row fix (closest: failed badge on
+  `surface-raise`, 4.58:1). Greyscale, deuteranopia and protanopia passes
+  on the real screens: every badge reads by icon and label; under
+  deuteranopia Verified and Rejected/Failed collapse toward one hue as the
+  Colors section predicts.
+- **New exports and their first caller:**
+
+| Export | File (under `apps/web/src/`) | First caller |
+|---|---|---|
+| `RunStatusContext`, `useReportRunStatus` | `shell/runStatus.ts` | batch 3 (TenderLayout; requirement register, processing) |
+| `describeVerified` | `status/statusMap.ts` | batch 3 (requirement register) |
+| `humanize` | `format/humanize.ts` | batch 3 (processing task list) |
+| `TableScroll` `stickyLastColumn` prop | `components/ui/TableScroll.tsx` | batch 3 (requirement register) |
 
 ## Deferred
 

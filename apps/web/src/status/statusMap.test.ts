@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { STATUS_MAP, describeFinding, describeReadiness, describeStatus } from "./statusMap";
+import {
+  STATUS_MAP,
+  describeFinding,
+  describeReadiness,
+  describeStatus,
+  describeVerified,
+} from "./statusMap";
 
 describe("statusMap", () => {
   it("maps gates as DESIGN.md decided: rejected is Failed, changes_requested is Blocked", () => {
@@ -58,4 +64,22 @@ describe("statusMap", () => {
       expect(describeStatus("gate", key)).toEqual({ tone: "neutral", label: key });
     },
   );
+
+  it("describes verification: Verified, or Not verified as Warning when mandatory, Neutral when not", () => {
+    expect(describeVerified(true, true)).toEqual({ tone: "ready", label: "Verified" });
+    expect(describeVerified(true, false)).toEqual({ tone: "ready", label: "Verified" });
+    expect(describeVerified(false, true)).toEqual({ tone: "warning", label: "Not verified" });
+    expect(describeVerified(false, false)).toEqual({ tone: "neutral", label: "Not verified" });
+  });
+
+  // UploadAndProcessingStatus renders a parse badge whose DOM text is the
+  // backend word ("parsed"), capitalised by CSS, because full-flow.spec.ts
+  // :558-566 reads that cell's textContent and compares it to "parsed".
+  // That only shows the right words if every parse label IS the capitalised
+  // backend word - this test keeps the map and the screen from drifting.
+  it("keeps every parse label equal to its backend word, capitalised", () => {
+    for (const [value, descriptor] of Object.entries(STATUS_MAP.parse)) {
+      expect(descriptor.label).toBe(value.charAt(0).toUpperCase() + value.slice(1));
+    }
+  });
 });

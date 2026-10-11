@@ -142,7 +142,7 @@
 
   /* Density and widths */
   --control-height: 32px;
-  --button-pad-y: 6px;
+  --control-pad-y: 6px;
   --button-pad-x: 14px;
   --input-pad-x: 10px;
   --badge-pad-y: 2px;
@@ -172,8 +172,8 @@
   --dur-panel: 240ms;
 
   /* Transitional aliases. Screens still read these three names from inline
-     styles. Code readers after restyle batch 2 (measured by grep, comment
-     mentions excluded): 18x --color-danger, 3x --color-warning,
+     styles. Code readers after restyle batch 3 (measured by grep, comment
+     mentions excluded): 15x --color-danger, 2x --color-warning,
      1x --color-border. The old light-theme values measure 3.51:1 and
      3.86:1 on --surface, below 4.5:1. Delete each alias in the batch that
      removes its last reader. */

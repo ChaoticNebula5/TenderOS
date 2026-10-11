@@ -2,21 +2,46 @@
    amber text with a 2px amber underline plus aria-current="page". The
    strip scrolls horizontally on its own at phone width; the page does not. */
 
+/* The tender bar: the workflow nav, which scrolls on its own, and - when a
+   screen reports one - the run status badge, pinned at the right so it
+   never scrolls out of view. */
+.tender-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--rule);
+}
+
+@media (min-width: 600px) {
+  .tender-bar {
+    padding-inline: var(--gutter-wide);
+  }
+}
+
 .workflow-nav {
   display: flex;
+  flex: 1;
   align-items: stretch;
   gap: var(--space-1);
-  padding: 0 var(--gutter);
+  min-width: 0;
   overflow-x: auto;
-  border-bottom: 1px solid var(--rule);
   white-space: nowrap;
   scrollbar-width: thin;
 }
 
-@media (min-width: 600px) {
-  .workflow-nav {
-    padding-inline: var(--gutter-wide);
-  }
+/* "Run" + badge. The label says what the badge is about; on its own,
+   "Waiting for review" in a nav bar does not say what is waiting. */
+.tender-bar__run {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.tender-bar__run-label {
+  color: var(--ink-3);
+  font-size: var(--text-label);
 }
 
 .workflow-nav__link {

@@ -14,15 +14,23 @@ import "./TableScroll.css";
 // Focusable with a name so a keyboard user can scroll it (an overflowing
 // region with no focusable content is otherwise unreachable); tabIndex 0,
 // never above (DESIGN.md Accessibility, "Keyboard order").
+//
+// stickyLastColumn: also pins the last column to the right edge, for
+// tables whose row actions live there - DESIGN.md Layout ("row actions stay
+// reachable without horizontal scroll"). The actions cannot move to the
+// first column instead: full-flow.spec.ts reads cells by position (e.g.
+// :653, td index 5 on the requirement register).
 
 interface TableScrollProps {
   label: string;
+  stickyLastColumn?: boolean;
   children: ReactNode;
 }
 
-export function TableScroll({ label, children }: TableScrollProps) {
+export function TableScroll({ label, stickyLastColumn = false, children }: TableScrollProps) {
+  const className = stickyLastColumn ? "table-scroll table-scroll--sticky-last" : "table-scroll";
   return (
-    <div className="table-scroll" role="region" aria-label={label} tabIndex={0}>
+    <div className={className} role="region" aria-label={label} tabIndex={0}>
       {children}
     </div>
   );

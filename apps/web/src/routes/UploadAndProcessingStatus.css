@@ -1,0 +1,48 @@
+/* Upload and processing status - parse badges, the start row, the task
+   list (DESIGN.md Screen patterns, "Processing"). */
+
+/* Spec-forced: the parse badge's DOM text is the backend word ("parsed"),
+   because full-flow.spec.ts:558-566 compares that cell's textContent to
+   "parsed". text-transform changes only what is drawn, not textContent, so
+   the operator reads "Parsed" - the same word statusMap.ts's parse labels
+   use. */
+.parse-status .status-badge {
+  text-transform: capitalize;
+}
+
+.processing__start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.processing__last-run {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--ink-2);
+}
+
+/* A vertical sequence: task type, then its status badge. */
+.task-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task-list__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  max-width: var(--width-form);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.task-list__type {
+  color: var(--ink);
+}

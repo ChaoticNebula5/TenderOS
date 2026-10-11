@@ -10,6 +10,7 @@ import type {
   ResourceSelectionGateResponse,
 } from "../api/client";
 import * as apiClient from "../api/client";
+import { formatDate } from "../format/date";
 import { GateDecisionPanel } from "./GateDecisionPanel";
 
 // Real ApiError class preserved, only decideGate mocked - GateDecisionPanel
@@ -30,6 +31,14 @@ afterEach(() => {
   // own cleanup still can't leak fake timers into the next test.
   vi.useRealTimers();
 });
+
+// The summary is a definition grid (restyle batch 3): each count is a <dt>
+// term followed by its <dd> value, where it used to be one "Label: n" <li>.
+function expectSummaryItem(term: string, value: string) {
+  const dt = screen.getByText(term, { selector: "dt" });
+  expect(dt.nextElementSibling?.tagName).toBe("DD");
+  expect(dt.nextElementSibling).toHaveTextContent(value);
+}
 
 const BASE = {
   gate_id: "11111111-1111-1111-1111-111111111111",
@@ -114,43 +123,43 @@ function finalReadinessGate(overrides: { ready: boolean }): FinalReadinessGateRe
 describe("GateSummary - each gate_type renders its own typed fields", () => {
   it("requirement_review", () => {
     render(<GateDecisionPanel gate={requirementReviewGate()} onDecided={vi.fn()} />);
-    expect(screen.getByText("Requirements: 12")).toBeInTheDocument();
-    expect(screen.getByText("Mandatory: 5")).toBeInTheDocument();
-    expect(screen.getByText("Unverified mandatory: 2")).toBeInTheDocument();
-    expect(screen.getByText("Submission items: 3")).toBeInTheDocument();
-    expect(screen.getByText("Clarifications: 1")).toBeInTheDocument();
+    expectSummaryItem("Requirements", "12");
+    expectSummaryItem("Mandatory", "5");
+    expectSummaryItem("Unverified mandatory", "2");
+    expectSummaryItem("Submission items", "3");
+    expectSummaryItem("Clarifications", "1");
   });
 
   it("compliance_review", () => {
     render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
-    expect(screen.getByText("Compliance entries: 8")).toBeInTheDocument();
-    expect(screen.getByText("Pending approval: 3")).toBeInTheDocument();
-    expect(screen.getByText("High risk: 1")).toBeInTheDocument();
+    expectSummaryItem("Compliance entries", "8");
+    expectSummaryItem("Pending approval", "3");
+    expectSummaryItem("High risk", "1");
   });
 
   it("resource_selection", () => {
     render(<GateDecisionPanel gate={resourceSelectionGate()} onDecided={vi.fn()} />);
-    expect(screen.getByText("Roles: 4")).toBeInTheDocument();
-    expect(screen.getByText("Candidates: 9")).toBeInTheDocument();
-    expect(screen.getByText("Unselected roles: 2")).toBeInTheDocument();
+    expectSummaryItem("Roles", "4");
+    expectSummaryItem("Candidates", "9");
+    expectSummaryItem("Unselected roles", "2");
   });
 
   it("commercial_approval", () => {
     render(<GateDecisionPanel gate={commercialApprovalGate()} onDecided={vi.fn()} />);
-    expect(screen.getByText("Findings: 6")).toBeInTheDocument();
-    expect(screen.getByText("Pending: 4")).toBeInTheDocument();
-    expect(screen.getByText("Critical: 1")).toBeInTheDocument();
+    expectSummaryItem("Findings", "6");
+    expectSummaryItem("Pending", "4");
+    expectSummaryItem("Critical", "1");
   });
 
   it("finding_resolution", () => {
     render(<GateDecisionPanel gate={findingResolutionGate()} onDecided={vi.fn()} />);
-    expect(screen.getByText("Open findings: 3")).toBeInTheDocument();
-    expect(screen.getByText("Critical: 2")).toBeInTheDocument();
+    expectSummaryItem("Open findings", "3");
+    expectSummaryItem("Critical", "2");
   });
 
   it("final_readiness - not ready, shows its blocker message", () => {
     render(<GateDecisionPanel gate={finalReadinessGate({ ready: false })} onDecided={vi.fn()} />);
-    expect(screen.getByText("Ready: no")).toBeInTheDocument();
+    expect(screen.getByText("Not ready")).toHaveClass("status-badge--blocked");
     expect(screen.getByText("REQ-001 has no resolved compliance decision.")).toBeInTheDocument();
   });
 });
@@ -219,7 +228,7 @@ describe("decision buttons", () => {
     decideGate.mockResolvedValue(complianceReviewGate());
     render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={onDecided} />);
 
-    await user.type(screen.getByPlaceholderText("Notes (optional)"), "not ready yet");
+    await user.type(screen.getByLabelText("Notes (optional)"), "not ready yet");
     await user.click(screen.getByRole("button", { name: "Reject" }));
 
     expect(decideGate).toHaveBeenCalledWith(
@@ -339,5 +348,78 @@ describe("an already-decided gate", () => {
 
     expect(screen.getByText("approved", { exact: false })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+});
+
+describe("restyle batch 3: status, decided line, busy state", () => {
+  it.each([
+    ["pending", "Awaiting decision", "blocked"],
+    ["approved", "Approved", "ready"],
+    ["rejected", "Rejected", "failed"],
+    ["changes_requested", "Changes requested", "blocked"],
+  ] as const)("a %s gate shows its status badge", (status, label, tone) => {
+    const decided = status !== "pending";
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      status,
+      decided_at: decided ? "2026-01-02T00:00:00Z" : null,
+    };
+    render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.getByText(label)).toHaveClass("status-badge", `status-badge--${tone}`);
+    expect(screen.queryByRole("button", { name: "Approve" }) !== null).toBe(!decided);
+  });
+
+  it("shows a decided gate's date through formatDate, with no raw ISO string and no <strong>", () => {
+    const iso = "2026-01-02T00:00:00Z";
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      status: "approved",
+      decided_at: iso,
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.getByText(`Decided ${formatDate(iso)}`)).toBeInTheDocument();
+    expect(container.textContent).not.toContain(iso);
+    expect(container.querySelector("strong")).toBeNull();
+  });
+
+  it("labels the summary as a snapshot from request time", () => {
+    render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
+    expect(
+      screen.getByText(`At request time · ${formatDate(BASE.requested_at)}`),
+    ).toBeInTheDocument();
+  });
+
+  it("while a decision is in flight: the clicked button is aria-busy and all three are disabled", async () => {
+    const user = userEvent.setup();
+    let resolve: (gate: ComplianceReviewGateResponse) => void = () => {};
+    decideGate.mockReturnValue(
+      new Promise<ComplianceReviewGateResponse>((r) => {
+        resolve = r;
+      }),
+    );
+    render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+
+    expect(screen.getByRole("button", { name: "Request changes" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("aria-busy");
+    for (const name of ["Approve", "Request changes", "Reject"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+
+    await act(async () => resolve(complianceReviewGate()));
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+  });
+
+  it("gives Approve, Request changes and Reject the primary, secondary and danger variants", () => {
+    render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Approve" })).toHaveClass("btn--primary");
+    expect(screen.getByRole("button", { name: "Request changes" })).toHaveClass("btn--secondary");
+    expect(screen.getByRole("button", { name: "Reject" })).toHaveClass("btn--danger");
   });
 });

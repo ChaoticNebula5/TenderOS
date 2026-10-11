@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   ApiError,
   createWorkflowRun,
@@ -12,7 +12,17 @@ import {
 } from "../api/client";
 import type { DocumentResponse, WorkflowTaskResponse } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Field } from "../components/ui/Field";
+import { Notice } from "../components/ui/Notice";
+import { StatusBadge } from "../components/ui/StatusBadge";
+import { TableScroll } from "../components/ui/TableScroll";
+import { humanize } from "../format/humanize";
 import { useEventStream } from "../hooks/useEventStream";
+import { useReportRunStatus } from "../shell/runStatus";
+import { describeStatus } from "../status/statusMap";
+import "./UploadAndProcessingStatus.css";
 
 // Module-level, not inside the component: this Set never changes, so
 // creating it once here (instead of on every render) is both cheaper and
@@ -28,6 +38,11 @@ const NON_TERMINAL_STATUSES = new Set(["queued", "running", "waiting_for_human"]
 export function UploadAndProcessingStatus() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
+  // documents starts as [] - the same value as "this tender has none". The
+  // empty state waits for the first response so it never claims "no
+  // documents" while the list is still loading. Set from the existing
+  // listDocuments call below; no extra fetch.
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
@@ -81,9 +96,12 @@ export function UploadAndProcessingStatus() {
   useEffect(() => {
     if (!tenderId) return;
     let cancelled = false;
+    setDocumentsLoaded(false);
     listDocuments(tenderId)
       .then((result) => {
-        if (!cancelled) setDocuments(result);
+        if (cancelled) return;
+        setDocuments(result);
+        setDocumentsLoaded(true);
       })
       .catch(() => {
         if (!cancelled) setError("Failed to load documents");
@@ -167,6 +185,12 @@ export function UploadAndProcessingStatus() {
   // it may no longer be live, rather than the screen blanking entirely.
   const streamError = tasksStreamError ?? runStreamError;
 
+  // The tender bar's run badge (useReportRunStatus): the live run's status
+  // from the stream above while one is active, otherwise the last run's
+  // from the listWorkflowRuns call at the top. Both are fetched already for
+  // this screen's own use; nothing extra is requested.
+  useReportRunStatus(workflowRunId !== null ? (activeRun?.status ?? null) : lastRunStatus);
+
   useEffect(() => {
     if (activeRun && !NON_TERMINAL_STATUSES.has(activeRun.status)) {
       setLastRunStatus(activeRun.status);
@@ -174,83 +198,113 @@ export function UploadAndProcessingStatus() {
     }
   }, [activeRun]);
 
+  // The dot-separated link row that sat under the heading is gone: the
+  // tender bar's workflow nav (shell/TenderLayout.tsx) links every step
+  // from every tender screen. No E2E locator or vitest used those links.
   return (
     <main>
       <h1>Upload and processing status</h1>
-      <p>
-        <Link to={`/tenders/${tenderId}/requirements`}>Requirements</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/compliance`}>Compliance</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/team`}>Team</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/commercial`}>Commercial</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/knowledge-selections`}>Knowledge selections</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/proposal`}>Proposal</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/redteam`}>Red team</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/graph`}>Graph</Link> ·{" "}
-        <Link to={`/tenders/${tenderId}/readiness`}>Readiness</Link>
-      </p>
 
       {error && (
-        <p role="alert" style={{ color: "var(--color-danger)" }}>
+        <Notice variant="failed" alert>
           {error}
-        </p>
+        </Notice>
       )}
 
       <section>
         <h2>Documents</h2>
-        <input type="file" onChange={handleUpload} disabled={uploading} />
-        {documents.length === 0 ? (
-          <p>No documents uploaded yet.</p>
-        ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Filename</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {documents.map((doc) => (
-                <tr key={doc.id}>
-                  <td>{doc.filename}</td>
-                  <td>{doc.doc_type}</td>
-                  <td>{doc.parse_status}</td>
-                  <td>
-                    {doc.parse_status === "failed" && (
-                      <button type="button" onClick={() => handleReprocess(doc.id)}>
-                        Retry
-                      </button>
-                    )}
-                  </td>
+        {/* Still the page's first file input: full-flow.spec.ts:531 finds it
+            by type, not by this label. */}
+        <Field label="Upload a document">
+          <input type="file" onChange={handleUpload} disabled={uploading} />
+        </Field>
+        {documentsLoaded && documents.length === 0 && (
+          <EmptyState title="No documents uploaded yet">
+            Upload the tender&apos;s documents above. Processing can start once every document is
+            parsed.
+          </EmptyState>
+        )}
+        {documents.length > 0 && (
+          <TableScroll label="Documents">
+            <table>
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>
+                    <span className="visually-hidden">Actions</span>
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {documents.map((doc) => (
+                  <tr key={doc.id}>
+                    <td>{doc.filename}</td>
+                    <td>{doc.doc_type}</td>
+                    {/* Spec-forced: full-flow.spec.ts:558-566 reads this
+                        cell's textContent and requires exactly "parsed". So
+                        the badge's DOM text is the backend word and CSS
+                        capitalises it (.parse-status); every parse label in
+                        statusMap.ts is that capitalised word, which
+                        statusMap.test.ts enforces. Third column, as before. */}
+                    <td>
+                      <span className="parse-status">
+                        <StatusBadge
+                          tone={describeStatus("parse", doc.parse_status).tone}
+                          label={doc.parse_status}
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      {doc.parse_status === "failed" && (
+                        <Button variant="quiet" onClick={() => handleReprocess(doc.id)}>
+                          Retry
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
         )}
       </section>
 
       <section>
         <h2>Processing</h2>
         {workflowRunId === null ? (
-          <>
-            {lastRunStatus && <p>Last run: {lastRunStatus}.</p>}
-            <button type="button" onClick={handleStartProcessing} disabled={startingRun}>
-              {startingRun ? "Starting..." : "Start processing"}
-            </button>
-          </>
+          <div className="processing__start">
+            {lastRunStatus && (
+              <p className="processing__last-run">
+                Last run <StatusBadge {...describeStatus("run", lastRunStatus)} />
+              </p>
+            )}
+            <Button
+              variant="primary"
+              onClick={handleStartProcessing}
+              busy={startingRun}
+              busyLabel="Starting..."
+            >
+              Start processing
+            </Button>
+          </div>
         ) : (
           <>
             {streamError && (
-              <p role="alert" style={{ color: "var(--color-warning)" }}>
+              <Notice variant="warning" alert>
                 Live updates are currently unavailable ({formatErrorDetail(streamError)}). The list
                 below may be out of date.
-              </p>
+              </Notice>
             )}
-            <ul>
+            {/* Announced politely as tasks change (DESIGN.md Accessibility,
+                "Live regions"). Task types have no hand-written labels, so
+                humanize() re-cases the backend's own word. */}
+            <ul className="task-list" aria-live="polite">
               {(tasks ?? []).map((task) => (
-                <li key={task.id}>
-                  {task.task_type}: {task.status}
+                <li key={task.id} className="task-list__item">
+                  <span className="task-list__type">{humanize(task.task_type)}</span>
+                  <StatusBadge {...describeStatus("task", task.status)} />
                 </li>
               ))}
               {tasks !== null && tasks.length === 0 && <li>Waiting for tasks to start...</li>}

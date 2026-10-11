@@ -97,7 +97,7 @@ textarea {
 button,
 ::file-selector-button {
   min-height: var(--control-height);
-  padding: var(--button-pad-y) var(--button-pad-x);
+  padding: var(--control-pad-y) var(--button-pad-x);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background-color: var(--surface-raise);
@@ -134,7 +134,7 @@ button[aria-busy="true"] {
 input:not([type="checkbox"], [type="radio"], [type="file"]),
 select,
 textarea {
-  padding: var(--button-pad-y) var(--input-pad-x);
+  padding: var(--control-pad-y) var(--input-pad-x);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
   background-color: var(--surface-sunk);

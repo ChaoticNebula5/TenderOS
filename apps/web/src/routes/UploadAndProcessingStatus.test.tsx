@@ -1,10 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
 import { ApiError } from "../api/client";
-import type { WorkflowRunResponse } from "../api/client";
+import type { DocumentResponse, WorkflowRunResponse, WorkflowTaskResponse } from "../api/client";
+import { TenderLayout } from "../shell/TenderLayout";
 import { UploadAndProcessingStatus } from "./UploadAndProcessingStatus";
 
 // B17 Phase 1 - see KNOWN_LIMITATIONS.md's useEventStream entry and the
@@ -115,9 +116,7 @@ describe("a dead event stream is visible, not silent", () => {
     // least one real fetch attempt). What this scenario actually proves is
     // narrower and still the point: the warning itself renders, where
     // before this fix nothing would have.
-    expect(
-      await screen.findByText(/Live updates are currently unavailable/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Live updates are currently unavailable/)).toBeInTheDocument();
     expect(mintWorkflowEventsTicket).toHaveBeenCalled();
   });
 
@@ -132,5 +131,124 @@ describe("a dead event stream is visible, not silent", () => {
 
     expect(await screen.findByText("Waiting for tasks to start...")).toBeInTheDocument();
     expect(screen.queryByText(/Live updates are currently unavailable/)).not.toBeInTheDocument();
+  });
+});
+
+// Restyle batch 3. Fixture values are fake.
+function parsedDocument(): DocumentResponse {
+  return {
+    id: "doc-1",
+    filename: "rfp.pdf",
+    doc_type: "rfp",
+    parse_status: "parsed",
+  } as DocumentResponse;
+}
+
+function task(overrides: Partial<WorkflowTaskResponse>): WorkflowTaskResponse {
+  return {
+    id: "task-1",
+    workflow_run_id: "run-1",
+    task_key: "k",
+    task_type: "requirement_extraction",
+    assigned_agent: "a",
+    status: "running",
+    priority: 1,
+    attempt_count: 0,
+    max_attempts: 3,
+    error_code: null,
+    created_at: "2026-01-01T00:00:00Z",
+    started_at: null,
+    completed_at: null,
+    ...overrides,
+  };
+}
+
+function renderInTenderLayout(tenderId: string) {
+  return render(
+    <MemoryRouter initialEntries={[`/tenders/${tenderId}`]}>
+      <Routes>
+        <Route path="/tenders/:tenderId" element={<TenderLayout />}>
+          <Route index element={<UploadAndProcessingStatus />} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("restyle batch 3: processing screen", () => {
+  it("keeps the parse cell's DOM text the backend word (full-flow.spec.ts:558-566 compares it to 'parsed')", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listDocuments.mockResolvedValue([parsedDocument()]);
+    const { container } = render(
+      <MemoryRouter initialEntries={["/tenders/tender-1"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<UploadAndProcessingStatus />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("rfp.pdf");
+    const cell = container.querySelector("table tbody tr td:nth-child(3)");
+    expect(cell?.textContent).toBe("parsed");
+    expect(cell?.querySelector(".parse-status .status-badge--ready")).not.toBeNull();
+  });
+
+  it("does not claim 'no documents' before the documents have loaded", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    let resolveDocuments: (docs: DocumentResponse[]) => void = () => {};
+    listDocuments.mockReturnValue(
+      new Promise<DocumentResponse[]>((r) => {
+        resolveDocuments = r;
+      }),
+    );
+    renderAt("tender-1");
+
+    expect(screen.queryByText("No documents uploaded yet")).toBeNull();
+    resolveDocuments([]);
+    expect(await screen.findByText("No documents uploaded yet")).toBeInTheDocument();
+  });
+
+  it("no longer renders the old link row - the workflow nav replaces it", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listDocuments.mockResolvedValue([]);
+    renderAt("tender-1");
+
+    await screen.findByText("No documents uploaded yet");
+    expect(screen.queryAllByRole("link")).toEqual([]);
+  });
+
+  it("lists tasks with a humanized type and a status badge", async () => {
+    listWorkflowRuns.mockResolvedValue([activeRun()]);
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([
+      task({ id: "t1", task_type: "requirement_extraction", status: "completed" }),
+      task({ id: "t2", task_type: "compliance_review", status: "failed" }),
+    ]);
+    getWorkflowRun.mockResolvedValue(activeRun());
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    renderAt("tender-1");
+
+    expect(await screen.findByText("Requirement extraction")).toBeInTheDocument();
+    expect(screen.getByText("Done")).toHaveClass("status-badge--ready");
+    expect(screen.getByText("Compliance review")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toHaveClass("status-badge--failed");
+    expect(screen.queryByText(/requirement_extraction/)).toBeNull();
+  });
+
+  it("reports the last run's status to the tender bar, from the run list it already fetches", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "failed" }]);
+    listDocuments.mockResolvedValue([]);
+    const { container } = renderInTenderLayout("tender-1");
+
+    await screen.findByText("No documents uploaded yet");
+    // The bar updates from an effect, one commit after the screen: wait for it.
+    await waitFor(() =>
+      expect(container.querySelector(".tender-bar .status-badge")).toHaveTextContent("Failed"),
+    );
+    const barBadge = container.querySelector(".tender-bar .status-badge");
+    expect(barBadge?.closest("main")).toBeNull();
+    // No new call: the run list and documents, as before, and no run fetch.
+    expect(listWorkflowRuns).toHaveBeenCalledTimes(1);
+    expect(getWorkflowRun).not.toHaveBeenCalled();
   });
 });

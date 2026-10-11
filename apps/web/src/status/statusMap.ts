@@ -173,6 +173,20 @@ export function describeReadiness(ready: boolean): StatusDescriptor {
   return ready ? { tone: "ready", label: "Ready" } : { tone: "blocked", label: "Not ready" };
 }
 
+// Requirement verification (RequirementRegister's Verified column).
+// chosen, not in DESIGN: DESIGN.md says booleans that are states become
+// badges but gives no tones for "verified". An unverified MANDATORY
+// requirement is Warning because it is what the requirement review gate
+// counts against approval ("Unverified mandatory", the gate summary's
+// unverified_mandatory_count, GateDecisionPanel's requirement_review
+// summary); an unverified optional one is Neutral. Never "Ready" (reserved).
+export function describeVerified(verified: boolean, mandatory: boolean): StatusDescriptor {
+  if (verified) return { tone: "ready", label: "Verified" };
+  return mandatory
+    ? { tone: "warning", label: "Not verified" }
+    : { tone: "neutral", label: "Not verified" };
+}
+
 // Red-team and commercial findings. DESIGN.md:287-289: 'A resolved finding
 // shows the Ready treatment with the label "Resolved", whatever its
 // severity; an open one shows its severity badge.' DESIGN.md:317's
