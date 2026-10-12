@@ -94,6 +94,27 @@ describe("TraceabilityDrawer (restyle batch 5)", () => {
     expect(await screen.findByRole("heading", { name: "Claim trace" })).toBeInTheDocument();
     // The in-scope result is already there when the heading appears.
     expect(screen.getByText("No additional in-scope evidence.")).toBeInTheDocument();
+    // Polish pass (P5): the heading shares the bar with Close, inside the aside.
+    const heading = screen.getByRole("heading", { name: "Claim trace" });
+    expect(heading.parentElement).toBe(screen.getByRole("button", { name: "Close" }).parentElement);
+    expect(heading.closest("aside")).not.toBeNull();
+  });
+
+  // Polish pass (P5): the page behind does not scroll while the drawer is
+  // open, and its own styles come back exactly on close.
+  it("locks page scroll while open and restores it on close", async () => {
+    traceProposalClaim.mockResolvedValue(trace());
+    const html = document.documentElement;
+    html.style.overflow = "auto";
+    html.style.paddingRight = "";
+    const { unmount } = render(<TraceabilityDrawer claimId="c1" onClose={vi.fn()} />);
+    await screen.findByRole("heading", { name: "Claim trace" });
+    expect(html.style.overflow).toBe("hidden");
+    // jsdom lays nothing out (clientWidth 0), so no scrollbar width is added.
+    expect(html.style.paddingRight).toBe("");
+    unmount();
+    expect(html.style.overflow).toBe("auto");
+    html.style.overflow = "";
   });
 
   it("keeps Tab and Shift+Tab inside the drawer", async () => {

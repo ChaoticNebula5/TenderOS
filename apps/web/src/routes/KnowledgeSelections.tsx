@@ -224,9 +224,16 @@ export function KnowledgeSelections() {
           empty sentence is read verbatim (:1254). The confirm label is
           exactly "Confirm select" / "Confirm deselect" (:1323, :1325). A
           spec-forced deviation from DESIGN.md's readable impact list. */}
+      {/* Polish pass (P2): the item being previewed is named under the
+          heading - a <p>, so the heading's text, every <li> count and the
+          `ul li` parse above are untouched; the title comes from the list
+          this screen already loaded (no fetch). */}
       {previewedItemId && (
         <section className="impact">
           <h2>Impact preview</h2>
+          <p className="impact__item">
+            For {items.find((i) => i.id === previewedItemId)?.title ?? "the selected item"}
+          </p>
           {impact === null && <p className="impact__loading">Loading...</p>}
           {impact !== null && impact.length === 0 && <p>No downstream facts would be affected.</p>}
           {summary && <p className="impact__summary">{summary}</p>}

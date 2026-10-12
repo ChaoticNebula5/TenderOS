@@ -188,6 +188,58 @@ describe("Readiness (restyle batch 5)", () => {
     expect(container.querySelectorAll("table")).toHaveLength(0);
   });
 
+  // Polish pass (P7): identical blockers become one <li> with a count, the
+  // message verbatim (:1464 looks for it inside an <li>; :1459 needs at
+  // least one); categories read from a hand-written map.
+  it("groups identical blockers into one li with a count and names categories in words", async () => {
+    const d6 = (id: string) => ({
+      category: "critical_redteam_finding",
+      target_type: "redteam_finding",
+      target_id: id,
+      message: D6,
+    });
+    getReadiness.mockResolvedValue(
+      report({
+        ready: false,
+        blockers: [
+          d6("f1"),
+          d6("f2"),
+          d6("f3"),
+          {
+            category: "role_with_no_selected_candidate",
+            target_type: "role_requirement",
+            target_id: "r1",
+            message: "Role 'Quality Lead' has no selected candidate.",
+          },
+          {
+            category: "some_new_category",
+            target_type: "x",
+            target_id: "x1",
+            message: "Something new.",
+          },
+        ],
+      }),
+    );
+    listWorkflowRuns.mockResolvedValue([]);
+    const { container } = renderScreen();
+
+    const h2 = await screen.findByRole("heading", { name: "Blockers" });
+    let ul = h2.nextElementSibling;
+    while (ul && ul.tagName !== "UL") ul = ul.nextElementSibling;
+    const items = Array.from(ul!.querySelectorAll(":scope > li")).map((li) => li.textContent ?? "");
+    expect(items).toEqual([
+      `Critical red-team finding ${D6} (3 blockers)`,
+      "Role without a selected candidate Role 'Quality Lead' has no selected candidate.",
+      "Some new category Something new.",
+    ]);
+    expect(items.filter((t) => t.includes(D6))).toHaveLength(1);
+    // The count never splits across lines; the space before it is outside it.
+    const count = ul!.querySelector(".readiness__blocker-count")!;
+    expect(count.textContent).toBe("(3 blockers)");
+    // The stored line still counts every blocker, not every line.
+    expect(container.textContent).toMatch(/5 blockers at that version/);
+  });
+
   it("labels the counts by hand, falls back to humanize, and renders them as a <dl>", async () => {
     getReadiness.mockResolvedValue(report());
     listWorkflowRuns.mockResolvedValue([]);

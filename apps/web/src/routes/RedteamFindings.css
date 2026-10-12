@@ -61,3 +61,23 @@
     flex-wrap: nowrap;
   }
 }
+
+/* A resolved row's resolution note (polish pass), in the actions column -
+   a .cell-actions cell, which is nowrap and 1% wide. The note wraps
+   normally and has its own width, so a long note neither widens the column
+   past the open rows' note field + Resolve nor, in an all-resolved table,
+   shrinks the column to a word per line. 16rem is about the open rows'
+   control width (12rem field + Resolve); 12rem at phone width. */
+.redteam__note {
+  width: 16rem;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  font-size: var(--text-label);
+}
+
+@media (max-width: 599.98px) {
+  .redteam__note {
+    width: 12rem;
+  }
+}

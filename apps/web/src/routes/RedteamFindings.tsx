@@ -138,6 +138,14 @@ export function RedteamFindings() {
                   </td>
                   <td>{finding.resolved ? "yes" : "no"}</td>
                   <td className="cell-actions">
+                    {/* Polish pass (P3): a resolved row shows the note it was
+                        resolved with (fetched before, never shown). td 4 is
+                        not read by the spec, and the note adds no button, so
+                        the page-wide "Resolve" count (:1083, :1088) is
+                        unchanged. */}
+                    {finding.resolved && finding.resolution_note && (
+                      <p className="redteam__note">{finding.resolution_note}</p>
+                    )}
                     {!finding.resolved && (
                       <div className="action-row redteam__resolve">
                         <input

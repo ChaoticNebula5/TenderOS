@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
 import type { GraphTraceResponse } from "../api/client";
+import { StatusIcon } from "../components/ui/icons";
 import { GraphExplorer } from "./GraphExplorer";
 
 // Restyle batch 5. The spec never visits this screen; these pin the
@@ -152,5 +153,54 @@ describe("GraphExplorer (restyle batch 5)", () => {
     expect(within(alert).getByText("Deselected fact in use")).toBeInTheDocument();
     expect(within(alert).getByText("Fact: Dana Whitfield")).toBeInTheDocument();
     expect(alert.textContent).not.toContain("{");
+    // Polish pass (decided): the failed tone - the red team's critical defect.
+    // The icon is the failed one (same drawing as StatusIcon tone="failed").
+    const { container: failedIcon } = render(<StatusIcon tone="failed" />);
+    expect(alert.querySelector("h2 svg")!.innerHTML).toBe(
+      failedIcon.querySelector("svg")!.innerHTML,
+    );
+  });
+
+  // Polish pass (P6): a Compliance node with the projector's own keys
+  // (status, human_approved, confidence) reads in words; ids come last.
+  it("shows a node's properties in words, ids last and quiet", async () => {
+    const user = userEvent.setup();
+    getGraphTrace.mockResolvedValue(
+      trace({
+        n: {
+          id: "c-1",
+          tender_id: "t1",
+          status: "partially_compliant",
+          human_approved: false,
+          confidence: 0.8999999761581421,
+        },
+        node_labels: ["Compliance"],
+        neighbors: [],
+      }),
+    );
+    getGraphStatus.mockResolvedValue({
+      fresh: true,
+      current_state_version: 1,
+      projected_state_version: 1,
+      last_projected_at: null,
+    });
+    getGraphContradictions.mockResolvedValue([]);
+    const { container } = renderScreen();
+
+    await load(user, "c-1");
+    await screen.findByRole("heading", { name: "Compliance" });
+    const rows = Array.from(container.querySelectorAll(".graph__props > div")).map((d) => [
+      d.querySelector("dt")!.textContent,
+      d.querySelector("dd")!.textContent,
+    ]);
+    expect(rows).toEqual([
+      ["Status", "Partly compliant"],
+      ["Human approved", "No"],
+      ["Confidence", "90%"],
+      ["Id", "c-1"],
+      ["Tender id", "t1"],
+    ]);
+    expect(container.querySelectorAll(".graph__props dd.graph__id")).toHaveLength(2);
+    expect(container.textContent).not.toContain("partially_compliant");
   });
 });

@@ -130,6 +130,16 @@ describe("TeamWorkspace (restyle batch 4)", () => {
     expect(rows[0].querySelector("td")!.textContent).toBe("Project Manager");
     expect(screen.getByText("5 years")).toBeInTheDocument();
     expect(screen.getByText("None stated")).toBeInTheDocument();
+    // Polish pass (P1): a "Roles" heading names the table, outside any
+    // <section>, so the spec's section-with-heading-"Candidates" match (:827)
+    // still finds only the candidates section.
+    const roles = screen.getByRole("heading", { name: "Roles" });
+    expect(roles.closest("section")).toBeNull();
+    expect(
+      roles.compareDocumentPosition(container.querySelector("table")!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.queryAllByRole("heading", { name: /candidates/i })).toHaveLength(0);
   });
 
   it("candidates: a section with the Candidates heading, one row per match, first cell exactly the raw employee id (full-flow.spec.ts:827, :852, :855)", async () => {

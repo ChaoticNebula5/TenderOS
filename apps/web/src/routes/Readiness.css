@@ -69,6 +69,13 @@
   font-size: var(--text-label);
 }
 
+/* "(3 blockers)" after a grouped blocker's message (polish pass): kept on
+   one line - it wrapped as "(3" / "blockers)". The space before it is
+   outside this span, so the line can still break before the count. */
+.readiness__blocker-count {
+  white-space: nowrap;
+}
+
 /* Counts: label and number in a two-column grid, numbers right-aligned and
    tabular (DESIGN.md "The Tabular Rule"). */
 .readiness__counts {

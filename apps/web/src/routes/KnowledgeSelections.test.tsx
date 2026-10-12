@@ -113,6 +113,14 @@ describe("KnowledgeSelections (restyle batch 4)", () => {
     const summary = screen.getByText("3 downstream facts affected: Requirement 2, Compliance 1");
     expect(summary.tagName).toBe("P");
     expect(summary.closest("ul")).toBeNull();
+    // Polish pass (P2): the previewed item is named in a <p>, not the
+    // heading (its name stays exactly "Impact preview") and not an <li>.
+    const named = screen.getByText("For Dana Whitfield");
+    expect(named.tagName).toBe("P");
+    expect(screen.getByRole("heading", { name: "Impact preview" }).textContent).toBe(
+      "Impact preview",
+    );
+    expect(container.querySelectorAll("li")).toHaveLength(ROWS.length);
   });
 
   it("keeps the empty sentence verbatim and shows no summary or list for no rows (full-flow.spec.ts:1254)", async () => {

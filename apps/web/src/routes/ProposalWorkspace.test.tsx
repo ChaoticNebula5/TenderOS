@@ -138,6 +138,42 @@ describe("ProposalWorkspace (restyle batch 5)", () => {
     expect(
       within(items[0] as HTMLElement).getByRole("button", { name: "Inspect trace" }),
     ).toBeInTheDocument();
+    // Polish pass (P4): the button is a sibling of the tag-and-text block,
+    // still inside the li, so it can sit on its own line.
+    const button = within(items[0] as HTMLElement).getByRole("button", { name: "Inspect trace" });
+    expect(button.parentElement).toBe(items[0]);
+    expect(items[0].querySelector(".claim__body")!.textContent).toBe(
+      "[Capability / unsupported] Claim c1.",
+    );
+  });
+
+  // Polish pass (P4). The spec never reads "Save edits" (0 matches).
+  it("shows Save edits only while a section has an unsaved change, and hides it after saving", async () => {
+    const user = userEvent.setup();
+    listProposalSections.mockResolvedValue([section("s1"), section("s2")]);
+    listProposalClaims.mockResolvedValue([]);
+    vi.mocked(apiClient.patchProposalSection).mockResolvedValue({
+      ...section("s1"),
+      content: "Drafted text. Edited.",
+      version: 3,
+    });
+    renderScreen();
+
+    await screen.findByRole("heading", { name: "Section s2" });
+    expect(screen.queryByRole("button", { name: "Save edits" })).toBeNull();
+
+    const [field] = screen.getAllByLabelText("Section text");
+    await user.type(field, " Edited.");
+    expect(screen.getAllByRole("button", { name: "Save edits" })).toHaveLength(1);
+
+    // Back to the stored text: nothing to save, no button.
+    await user.clear(field);
+    await user.type(field, "Drafted text.");
+    expect(screen.queryByRole("button", { name: "Save edits" })).toBeNull();
+
+    await user.type(field, " Edited.");
+    await user.click(screen.getByRole("button", { name: "Save edits" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save edits" })).toBeNull());
   });
 
   it("returns focus to the exact Inspect trace button that opened the drawer, which still exists after close", async () => {

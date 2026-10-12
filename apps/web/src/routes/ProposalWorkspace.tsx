@@ -143,21 +143,33 @@ export function ProposalWorkspace() {
                 }
               />
             </Field>
-            <div className="action-row">
-              <Button
-                variant="secondary"
-                onClick={() => handleSaveContent(section.id)}
-                disabled={editingContent[section.id] === undefined}
-              >
-                Save edits
-              </Button>
-            </div>
+            {/* Polish pass (P4): "Save edits" appears only while this
+                section has an unsaved draft that differs from the stored
+                text, instead of a disabled button on every section. A
+                successful save clears the draft (handleSaveContent), so it
+                goes again. The spec never reads it (0 matches in
+                full-flow.spec.ts). */}
+            {editingContent[section.id] !== undefined &&
+              editingContent[section.id] !== section.content && (
+                <div className="action-row">
+                  <Button variant="secondary" onClick={() => handleSaveContent(section.id)}>
+                    Save edits
+                  </Button>
+                </div>
+              )}
 
             <h3>Claims</h3>
             <ul className="claims">
               {claims.map((claim) => (
                 <li key={claim.id} className="claim">
-                  <ClaimTag claim={claim} /> <span className="claim__text">{claim.claim_text}</span>{" "}
+                  {/* Polish pass (P4): tag and text in one block, "Inspect
+                      trace" on its own line below, instead of trailing a long
+                      claim raggedly. The <li> still holds the tag text
+                      "/ unsupported]" and the button (:971-974). */}
+                  <span className="claim__body">
+                    <ClaimTag claim={claim} />{" "}
+                    <span className="claim__text">{claim.claim_text}</span>
+                  </span>
                   <Button
                     variant="quiet"
                     onClick={(e) => {

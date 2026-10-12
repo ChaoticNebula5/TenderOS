@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { contradictionParts, graphValue, nodeSummary } from "./graphExplorerValues";
+import {
+  contradictionParts,
+  graphValue,
+  nodeSummary,
+  propertyEntries,
+  propertyValue,
+} from "./graphExplorerValues";
 
 describe("graphValue", () => {
   it.each([
@@ -174,5 +180,75 @@ describe("contradictionParts", () => {
       { key: "via", text: "Provides" },
       { key: "target", text: "c1" },
     ]);
+  });
+});
+
+// Polish pass (P6): properties in words, with the keys
+// graph_projection/projector.py really writes. Fake values.
+describe("propertyValue", () => {
+  it("names status values through their family, by key or by node label", () => {
+    expect(propertyValue("status", "partially_compliant", ["Compliance"])).toEqual({
+      kind: "text",
+      text: "Partly compliant",
+    });
+    expect(propertyValue("grounding_status", "needs_review")).toEqual({
+      kind: "text",
+      text: "Needs review",
+    });
+    expect(propertyValue("validity_status", "expired")).toEqual({ kind: "text", text: "Expired" });
+    expect(propertyValue("availability_status", "partially_available")).toEqual({
+      kind: "text",
+      text: "Partly available",
+    });
+    expect(propertyValue("profile_review_status", "verified")).toEqual({
+      kind: "text",
+      text: "Verified",
+    });
+    expect(propertyValue("status", "active", ["Employee"])).toEqual({
+      kind: "text",
+      text: "Active",
+    });
+  });
+
+  it("humanises a status it has no family for, never shows the raw word", () => {
+    expect(propertyValue("status", "some_new_state", ["Requirement"])).toEqual({
+      kind: "text",
+      text: "Some new state",
+    });
+    expect(propertyValue("status", "brand_new", ["Compliance"])).toEqual({
+      kind: "text",
+      text: "Brand new",
+    });
+  });
+
+  it("formats date-only values, timestamps and confidence", () => {
+    expect(propertyValue("valid_until", "2026-12-31")).toEqual({
+      kind: "text",
+      text: "31 Dec 2026",
+    });
+    expect(propertyValue("submission_date", "2026-11-30")).toEqual({
+      kind: "text",
+      text: "30 Nov 2026",
+    });
+    const at = propertyValue("selected_at", "2026-10-10T08:35:00Z");
+    expect(at.kind).toBe("text");
+    expect(at.text).toMatch(/^10 Oct 2026, \d{2}:\d{2}$/);
+    expect(propertyValue("confidence", 0.8999999761581421)).toEqual({ kind: "text", text: "90%" });
+  });
+
+  it("marks ids, keeps other values as graphValue does", () => {
+    expect(propertyValue("id", "abc")).toEqual({ kind: "id", text: "abc" });
+    expect(propertyValue("tender_id", "t1")).toEqual({ kind: "id", text: "t1" });
+    expect(propertyValue("display_code", "STAFF-004")).toEqual({ kind: "text", text: "STAFF-004" });
+    expect(propertyValue("human_approved", false)).toEqual({ kind: "text", text: "No" });
+    expect(propertyValue("category", "staffing")).toEqual({ kind: "text", text: "staffing" });
+  });
+});
+
+describe("propertyEntries", () => {
+  it("lists ids last, everything else in the node's own order", () => {
+    expect(
+      propertyEntries({ id: "c1", tender_id: "t1", status: "x", confidence: 0.5 }).map(([k]) => k),
+    ).toEqual(["status", "confidence", "id", "tender_id"]);
   });
 });

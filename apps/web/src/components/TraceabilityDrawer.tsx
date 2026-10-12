@@ -121,6 +121,24 @@ export function TraceabilityDrawer({ claimId, onClose, returnFocusTo }: Traceabi
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Polish pass (P5): the page behind does not scroll while the modal is
+  // open. overflow: hidden on <html>, restored exactly on close. Hiding the
+  // page's scrollbar would widen the page and shift it sideways, so the
+  // scrollbar's measured width is added as right padding for as long as the
+  // lock holds (0 where scrollbars overlay, e.g. phones; and none where
+  // nothing is laid out - clientWidth 0 - so no width is invented).
+  useEffect(() => {
+    const html = document.documentElement;
+    const previous = { overflow: html.style.overflow, paddingRight: html.style.paddingRight };
+    const scrollbar = html.clientWidth > 0 ? window.innerWidth - html.clientWidth : 0;
+    html.style.overflow = "hidden";
+    if (scrollbar > 0) html.style.paddingRight = `${scrollbar}px`;
+    return () => {
+      html.style.overflow = previous.overflow;
+      html.style.paddingRight = previous.paddingRight;
+    };
+  }, []);
+
   return (
     <>
       {/* Visual only for assistive tech (aria-hidden); a pointer click on it
@@ -133,7 +151,12 @@ export function TraceabilityDrawer({ claimId, onClose, returnFocusTo }: Traceabi
         aria-modal="true"
         aria-label="Claim trace"
       >
+        {/* Polish pass (P5): the heading shares the bar with Close instead of
+            sitting under an otherwise empty band. It still renders only once
+            the trace has loaded (:981 waits for it, :985-987 read right
+            after), and stays inside the <aside> (:980). */}
         <div className="trace-drawer__bar">
+          {trace !== null && <h2>Claim trace</h2>}
           <Button variant="quiet" className="trace-drawer__close" onClick={onClose}>
             Close
           </Button>
@@ -149,7 +172,6 @@ export function TraceabilityDrawer({ claimId, onClose, returnFocusTo }: Traceabi
 
         {trace !== null && (
           <>
-            <h2>Claim trace</h2>
             <p className="trace-drawer__claim">{trace.claim_text}</p>
             <dl className="trace-drawer__meta">
               <div>

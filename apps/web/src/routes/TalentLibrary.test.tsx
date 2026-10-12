@@ -54,6 +54,7 @@ const ITEMS = [
   ki("k3", "certification", "PMP", { status: "expired", valid_until: "2025-03-31" }),
   ki("k4", "past_project", "Harbour Systems"),
   ki("k5", "company_document", "Capability statement", { status: "archived" }),
+  ki("k6", "certification", "ISO 9001 Lead Auditor"),
 ];
 
 beforeEach(() => {
@@ -113,7 +114,10 @@ describe("TalentLibrary (restyle batch 6)", () => {
     expect(unverified.querySelector(".status-badge--warning")).toHaveTextContent("Unverified");
   });
 
-  it("shows types in words and a date-only valid-until, or Not set", async () => {
+  // Polish pass (decided): Valid until is blank where it does not apply
+  // (only certifications carry one); "Not set" only for a certification
+  // without one.
+  it("shows types in words, a date-only valid-until, Not set only for a certification without one", async () => {
     const { container } = renderScreen();
     await screen.findByText("Harbour Systems");
     const pmp = screen.getByText("PMP").closest("tr")!;
@@ -121,11 +125,14 @@ describe("TalentLibrary (restyle batch 6)", () => {
     expect(within(pmp).getByText("31 Mar 2025")).toBeInTheDocument();
     const project = screen.getByText("Harbour Systems").closest("tr")!;
     expect(within(project).getByText("Past project")).toBeInTheDocument();
-    expect(within(project).getByText("Not set")).toBeInTheDocument();
+    expect(project.querySelectorAll("td")[3].textContent).toBe("");
+    const iso = screen.getByText("ISO 9001 Lead Auditor").closest("tr")!;
+    expect(iso.querySelectorAll("td")[3].textContent).toBe("Not set");
+    expect(screen.getAllByText("Not set")).toHaveLength(1);
     for (const raw of ["past_project", "company_document"]) {
       expect(container.querySelector("tbody")!.textContent).not.toContain(raw);
     }
-    expect(screen.getByText("5 items, 2 employees")).toBeInTheDocument();
+    expect(screen.getByText("6 items, 2 employees")).toBeInTheDocument();
   });
 
   it("renders no rows while loading, and the empty state only after an empty response", async () => {

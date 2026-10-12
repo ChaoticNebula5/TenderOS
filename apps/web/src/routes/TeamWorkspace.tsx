@@ -178,6 +178,12 @@ export function TeamWorkspace() {
 
       {gateFirst && gateBlock}
 
+      {/* Polish pass: the roles table gets its own heading - it sat straight
+          under the gate panel with nothing naming it. A plain <h2> in <main>,
+          not a <section>: the spec's "section with heading Candidates" (:827)
+          and the gate's heading-then-section pair (:56) are unaffected, and
+          "Roles" contains neither "Candidates" nor the gate's heading text. */}
+      <h2>Roles</h2>
       {/* E2E contract (full-flow.spec.ts:780-795): the page's first table,
           data rows only in tbody (:785 counts them as "loaded"), role name in
           the first cell, a "View candidates" button per row (:825). */}

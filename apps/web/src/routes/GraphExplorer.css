@@ -10,16 +10,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Contradictions: a warning panel (tint over the page, warning border), as
-   the drawer's uncited-evidence panel - a signal to review, stated with
-   its count first. */
+/* Contradictions: a failed-tone panel (tint over the page, failed border),
+   stated with its count first. Failed since the polish pass (decided), not
+   Warning: a contradiction is the defect the red team reports as critical
+   (deselected_fact_in_use), so the two screens give it one hue. */
 .graph__contradictions {
   margin: var(--space-3) 0;
   padding: var(--space-3);
-  border: 1px solid var(--status-warning);
+  border: 1px solid var(--status-failed);
   border-radius: var(--radius-md);
-  background:
-    linear-gradient(var(--status-warning-tint), var(--status-warning-tint)), var(--surface);
+  background: linear-gradient(var(--status-failed-tint), var(--status-failed-tint)), var(--surface);
 }
 
 .graph__contradictions h2 {
@@ -27,7 +27,7 @@
   align-items: center;
   gap: var(--space-2);
   margin: 0 0 var(--space-2);
-  color: var(--status-warning);
+  color: var(--status-failed);
 }
 
 .graph__contradictions-icon {
@@ -68,6 +68,13 @@
   margin-bottom: var(--space-3);
 }
 
+/* Polish pass (P6): Field's own 16px bottom margin moves out of this
+   flex-end row, or Load lines up with the bottom of that margin - 16px
+   below its fields (measured). */
+.graph__lookup .field {
+  margin-bottom: 0;
+}
+
 .graph__id-input {
   width: min(24rem, 100%);
 }
@@ -102,6 +109,11 @@
   margin: 0;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
+}
+
+/* A raw id (id, tender_id, ...): still shown, in tertiary ink. */
+.graph__id {
+  color: var(--ink-3);
 }
 
 .graph__props code {

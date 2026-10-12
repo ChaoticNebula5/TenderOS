@@ -55,6 +55,11 @@ export function TalentImportReview() {
   // only claims "none yet" after the response says so.
   const [batchesLoaded, setBatchesLoaded] = useState(false);
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  // Bumped when "Review items" is clicked on the batch that is already open
+  // (polish pass, item 18b): the items effect re-runs and refetches. Before,
+  // re-selecting the same id changed nothing, so it did not refresh,
+  // although this screen's own comment says re-selecting shows progress.
+  const [itemsReload, setItemsReload] = useState(0);
   const [items, setItems] = useState<ImportItemDetailResponse[] | null>(null);
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +88,7 @@ export function TalentImportReview() {
   useEffect(() => {
     // Display state only (as the team screen's candidates, batch 4): a
     // newly selected batch shows as loading, not the previous batch's
-    // items under its name. The fetch itself is unchanged.
+    // items under its name. Runs again, refetching, on itemsReload.
     setItems(null);
     setItemsLoaded(false);
     if (!selectedBatchId) return;
@@ -101,7 +106,14 @@ export function TalentImportReview() {
     return () => {
       cancelled = true;
     };
-  }, [selectedBatchId]);
+  }, [selectedBatchId, itemsReload]);
+
+  // Opening a batch, or - on the batch already open - fetching its items
+  // again (item 18b).
+  function handleReviewItems(batchId: string) {
+    if (batchId === selectedBatchId) setItemsReload((n) => n + 1);
+    else setSelectedBatchId(batchId);
+  }
 
   async function handleEmployeeMasterUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -241,6 +253,9 @@ export function TalentImportReview() {
                 <tr
                   key={batch.id}
                   className={batch.id === selectedBatchId ? "is-selected" : undefined}
+                  // Polish pass (P8): the open batch is named for assistive
+                  // tech too, not only by its tint.
+                  aria-current={batch.id === selectedBatchId ? "true" : undefined}
                 >
                   <td>{importTypeLabel(batch.import_type)}</td>
                   <td>
@@ -250,7 +265,7 @@ export function TalentImportReview() {
                   <td className="cell-num">{batch.completed_items}</td>
                   <td className="cell-num">{batch.failed_items}</td>
                   <td className="cell-actions">
-                    <Button variant="quiet" onClick={() => setSelectedBatchId(batch.id)}>
+                    <Button variant="quiet" onClick={() => handleReviewItems(batch.id)}>
                       Review items
                     </Button>
                   </td>
@@ -334,8 +349,8 @@ export function TalentImportReview() {
           </TableScroll>
           {itemsLoaded && items !== null && items.length === 0 && (
             <EmptyState title="No items in this batch yet">
-              A queued batch gets its items once the worker picks it up. Reload the page to see
-              them.
+              A queued batch gets its items once the worker picks it up. Select Review items again
+              to check.
             </EmptyState>
           )}
         </section>

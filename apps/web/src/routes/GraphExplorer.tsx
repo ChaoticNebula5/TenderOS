@@ -20,7 +20,12 @@ import { formatDate } from "../format/date";
 import { humanize } from "../format/humanize";
 import { labelWords } from "../format/impactSummary";
 import { describeGraphFreshness } from "../status/statusMap";
-import { contradictionParts, graphValue, nodeSummary } from "./graphExplorerValues";
+import {
+  contradictionParts,
+  nodeSummary,
+  propertyEntries,
+  propertyValue,
+} from "./graphExplorerValues";
 import "./GraphExplorer.css";
 
 // Screen 17 (Part J). Click-to-expand: clicking a neighbor re-queries
@@ -127,9 +132,12 @@ export function GraphExplorer() {
       )}
 
       {contradictions !== null && contradictions.length > 0 && (
+        // Polish pass (decided): Failed, not Warning - a graph contradiction
+        // is the same defect the red team reports as critical
+        // (deselected_fact_in_use), so one meaning gets one hue.
         <div role="alert" className="graph__contradictions">
           <h2>
-            <StatusIcon tone="warning" className="graph__contradictions-icon" />
+            <StatusIcon tone="failed" className="graph__contradictions-icon" />
             {contradictions.length} graph contradiction{contradictions.length === 1 ? "" : "s"}
           </h2>
           <ul className="graph__contradiction-list">
@@ -205,12 +213,16 @@ export function GraphExplorer() {
         <section className="graph__node">
           <h2>{trace.node_labels.map(labelWords).join(", ")}</h2>
           <dl className="graph__props">
-            {Object.entries(trace.n).map(([key, value]) => {
-              const shown = graphValue(value);
+            {/* Polish pass (P6): values in words (graphExplorerValues.ts,
+                propertyValue); ids still shown, quietly and last. */}
+            {propertyEntries(trace.n).map(([key, value]) => {
+              const shown = propertyValue(key, value, trace.node_labels);
               return (
                 <div key={key}>
                   <dt>{humanize(key)}</dt>
-                  <dd>{shown.kind === "json" ? <code>{shown.text}</code> : shown.text}</dd>
+                  <dd className={shown.kind === "id" ? "graph__id" : undefined}>
+                    {shown.kind === "json" ? <code>{shown.text}</code> : shown.text}
+                  </dd>
                 </div>
               );
             })}

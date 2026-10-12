@@ -156,4 +156,27 @@ describe("RedteamFindings (restyle batch 5)", () => {
     expect(row).toHaveClass("redteam__row--resolved");
     expect(within(row).queryByRole("button")).toBeNull();
   });
+
+  // Polish pass (P3): a resolved row shows its resolution note in the
+  // actions cell (td 4); the spec's cells (td 0, 1, 3) and the page-wide
+  // "Resolve" count are unchanged. Fake note text.
+  it("shows a resolved row's note in td 4 without changing the spec's cells or Resolve count", async () => {
+    const LONG =
+      "Checked with the bid manager: the claim now cites the close-out report and the client reference letter, so nothing further is needed before submission.";
+    listRedteamFindings.mockResolvedValue([
+      finding("f1"),
+      finding("f2", { severity: "major", resolved: true, resolution_note: LONG }),
+      finding("f3", { severity: "minor", resolved: true, resolution_note: null }),
+    ]);
+    const { container } = renderScreen();
+    await screen.findByText(LONG);
+
+    const rows = container.querySelectorAll("tbody tr");
+    expect(cells(rows[1])).toEqual(["deselected_fact_in_use", "major", "Finding f2.", "yes", LONG]);
+    expect(rows[1].querySelectorAll("td")[4].querySelector(".redteam__note")).not.toBeNull();
+    // A resolved row with no note shows nothing there.
+    expect(cells(rows[2])[4]).toBe("");
+    // Still exactly one Resolve button (the open row), page-wide.
+    expect(screen.getAllByRole("button", { name: /resolve/i })).toHaveLength(1);
+  });
 });

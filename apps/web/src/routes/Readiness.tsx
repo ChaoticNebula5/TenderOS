@@ -41,6 +41,49 @@ function countLabel(key: string): string {
   return Object.hasOwn(COUNT_LABELS, key) ? COUNT_LABELS[key] : humanize(key);
 }
 
+// The eight blocker categories (readiness_service.py:33-40) in words.
+// chosen, not in DESIGN (polish pass): hand-written like COUNT_LABELS, so
+// "critical_redteam_finding" reads "Critical red-team finding" - as the nav
+// says "Red team" - not humanize()'s "Critical redteam finding". A category
+// the backend adds later falls back to humanize.
+const BLOCKER_CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  unresolved_mandatory_requirement: "Unresolved mandatory requirement",
+  compliant_decision_without_valid_evidence: "Compliant decision without valid evidence",
+  critical_redteam_finding: "Critical red-team finding",
+  missing_mandatory_submission_item: "Missing mandatory submission item",
+  unapproved_required_commercial_item: "Unapproved required commercial item",
+  role_with_no_selected_candidate: "Role without a selected candidate",
+  stale_graph_projection: "Stale graph projection",
+  red_team_review_incomplete: "Red-team review incomplete",
+};
+
+function blockerCategoryLabel(category: string): string {
+  return Object.hasOwn(BLOCKER_CATEGORY_LABELS, category)
+    ? BLOCKER_CATEGORY_LABELS[category]
+    : humanize(category);
+}
+
+// Blockers with the same category and message, as one line with a count
+// (polish pass): three distinct critical findings carry one identical
+// message, and three identical lines read as a glitch. Order is the
+// report's own, by first appearance.
+interface BlockerGroup {
+  category: string;
+  message: string;
+  count: number;
+}
+
+function groupBlockers(blockers: ReadinessReportResponse["blockers"]): BlockerGroup[] {
+  const groups = new Map<string, BlockerGroup>();
+  for (const b of blockers) {
+    const key = `${b.category}\u0000${b.message}`;
+    const group = groups.get(key);
+    if (group) group.count += 1;
+    else groups.set(key, { category: b.category, message: b.message, count: 1 });
+  }
+  return [...groups.values()];
+}
+
 function blockerCount(n: number): string {
   if (n === 0) return "no blockers";
   return `${n} ${n === 1 ? "blocker" : "blockers"}`;
@@ -218,15 +261,27 @@ export function Readiness() {
           {report.blockers.length === 0 ? (
             <p className="readiness__none">No blockers.</p>
           ) : (
+            // Polish pass (P7): one <li> per distinct blocker, its message
+            // verbatim (:1464 looks for the D6 message inside an <li>; :1459
+            // needs at least one), and how many blockers it stands for.
             <ul className="readiness__blockers">
-              {report.blockers.map((blocker, i) => (
-                <li key={i}>
+              {groupBlockers(report.blockers).map((group) => (
+                <li key={`${group.category}:${group.message}`}>
                   <StatusIcon tone="blocked" className="readiness__blocker-icon" />
                   <span>
                     <span className="readiness__blocker-category">
-                      {humanize(blocker.category)}
+                      {blockerCategoryLabel(group.category)}
                     </span>{" "}
-                    {blocker.message}
+                    {group.message}
+                    {/* The space sits outside the count, so the line can still
+                        break before it; the count itself never splits
+                        (.readiness__blocker-count). textContent unchanged. */}
+                    {group.count > 1 && " "}
+                    {group.count > 1 && (
+                      <span className="readiness__blocker-category readiness__blocker-count">
+                        ({group.count} blockers)
+                      </span>
+                    )}
                   </span>
                 </li>
               ))}

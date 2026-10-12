@@ -112,9 +112,16 @@
 /* A 1%-wide cell sizes to its min-content width, which for a wrapping
    .action-row is its widest single control - so Approve and Reject (or a
    note field and Resolve) would stack. Inside the actions column the row
-   stays on one line (measured: stacked before this rule). */
-.cell-actions .action-row {
-  flex-wrap: nowrap;
+   stays on one line (measured: stacked before this rule) - from 600px up.
+   Below 600px the row wraps again, as it did before the polish pass: kept
+   on one line at 390px, the red-team Resolve sat 200px further right in
+   its scrolling table and import's Approve/Reject 76px further (measured
+   against the pre-polish rules), the red team's own design being to wrap
+   its note field and Resolve at phone width (RedteamFindings.css). */
+@media (min-width: 600px) {
+  .cell-actions .action-row {
+    flex-wrap: nowrap;
+  }
 }
 
 /* A raw identifier (UUID) in a table cell. It may break anywhere, so a

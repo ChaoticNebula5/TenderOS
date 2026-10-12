@@ -155,8 +155,17 @@ export function TalentLibrary() {
                   </div>
                 </td>
                 <td>{humanize(item.item_type)}</td>
+                {/* Polish pass (decided): only certifications ever carry a
+                    valid_until (db/repositories/knowledge.py:367-379), so the
+                    cell is blank where it does not apply and says "Not set"
+                    only for a certification without one. A date the backend
+                    sends for another type is still shown. */}
                 <td className="talent-library__date">
-                  {item.valid_until === null ? NOT_SET : formatDay(item.valid_until)}
+                  {item.valid_until !== null
+                    ? formatDay(item.valid_until)
+                    : item.item_type === "certification"
+                      ? NOT_SET
+                      : null}
                 </td>
               </tr>
             ))}

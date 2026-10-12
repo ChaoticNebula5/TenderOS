@@ -266,6 +266,36 @@ describe("TalentImportReview (restyle batch 6)", () => {
     }
   });
 
+  // Polish pass (P8): the open batch's row is marked for assistive tech.
+  it("marks the open batch row aria-current, and only that row", async () => {
+    const user = userEvent.setup();
+    listImportBatches.mockResolvedValue([batch(), batch({ id: "b2", import_type: "manual" })]);
+    const { container } = renderScreen();
+    await user.click((await screen.findAllByRole("button", { name: "Review items" }))[0]);
+    await screen.findByText("Rowan Quill");
+    const rows = container.querySelectorAll("table")[0].querySelectorAll("tbody tr");
+    expect(rows[0].getAttribute("aria-current")).toBe("true");
+    expect(rows[1].hasAttribute("aria-current")).toBe(false);
+  });
+
+  // Polish pass (item 18b): "Review items" on the batch already open fetches
+  // its items again (before, re-selecting the same id did nothing).
+  it("refetches the open batch's items when Review items is clicked again", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await openItems(user);
+    expect(listImportItems).toHaveBeenCalledTimes(1);
+
+    listImportItems.mockResolvedValue([{ ...NEEDS_REVIEW, status: "approved" }]);
+    await user.click(screen.getByRole("button", { name: "Review items" }));
+    await waitFor(() => expect(listImportItems).toHaveBeenCalledTimes(2));
+    expect(listImportItems).toHaveBeenLastCalledWith("b1");
+    await waitFor(() =>
+      expect(within(itemsSection()).queryByRole("button", { name: "Approve" })).toBeNull(),
+    );
+    expect(within(itemsSection()).getAllByRole("row")).toHaveLength(2);
+  });
+
   it("names the selected batch above its items", async () => {
     const user = userEvent.setup();
     renderScreen();
