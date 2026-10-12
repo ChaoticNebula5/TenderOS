@@ -111,9 +111,10 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: batches 1 (foundation), 2 (shell and shared components), 3
-> (intake and requirements), 4 (analysis screens) and 5 (proposal,
-> evidence and readiness) are built; everything else is a proposal.**
+> **Status: all six batches are built - 1 (foundation), 2 (shell and
+> shared components), 3 (intake and requirements), 4 (analysis screens), 5
+> (proposal, evidence and readiness) and 6 (talent). A polish pass is
+> next; anything not listed as built is still a proposal.**
 > Batch 1's tokens, `@font-face`
 > rules and base element styles exist (`apps/web/src/styles/tokens.css`,
 > `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
@@ -127,7 +128,9 @@ components:
 > commercial findings and knowledge selections; see "Batch 4: as built".
 > Batch 5 applies them to the proposal workspace, the traceability drawer,
 > red-team findings, the graph explorer and readiness; see "Batch 5: as
-> built".
+> built". Batch 6 applies them to the talent import and review queue, the
+> talent library and the employee profile, and deletes the last
+> transitional colour alias; see "Batch 6: as built".
 > The rest describes what the apps/web
 > restyle *will* do. Every
 > statement about the UI as it is today cites a file and line; everything
@@ -639,6 +642,12 @@ measured by grep). Each component will exist once and be reused.
   and both of that row's buttons are disabled while it runs (no busy
   label: no participle existed). Labels unchanged. 3 bare buttons
   migrated; 2 remain, both on the employee profile (measured).
+- **Built (batch 6, group B):** employee profile - Verify **primary** (the
+  page's one), title Save secondary; each `busy` while its request runs
+  (no busy label). Exactly one button name contains "verify"
+  (`full-flow.spec.ts:497` is a strict substring match). 2 bare buttons
+  migrated; **0 remain** in screen code (measured: the only `<button>` left
+  is `Button.tsx`'s own).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -695,6 +704,16 @@ measured by grep). Each component will exist once and be reused.
   first screen. The batch status cell is read by the spec only as text it
   puts in a failure message (`full-flow.spec.ts:350`), so it takes the
   mapped label.
+- **Built (batch 6, group B):** first callers of three families - knowledge
+  item status in the library (badge beside the override select, as
+  compliance), availability and profile review on the employee profile.
+  **Spec-forced (raw word in the DOM):** Bid eligible is a badge whose DOM
+  text is "yes"/"no", drawn "Yes"/"No" by `.badge-raw-word` - Ready when
+  eligible, Neutral when not (as `describeSelected`'s negative).
+  `full-flow.spec.ts:498` waits for exactly one element inside a `<dl>`
+  whose text is exactly "yes"; measured with the spec's own locator, it
+  lands on the badge `<span>` (0 before Verify, 1 after), and no other
+  `<dl>` value reads "yes".
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -784,6 +803,12 @@ measured by grep). Each component will exist once and be reused.
   red-team helper - sharing it would touch that screen; polish list). The
   open batch's row takes the `surface-raise` tone on every cell, sticky
   ones included, hovered or not (measured).
+- **Built (batch 6, group B):** `TableScroll` on the library, Title sticky
+  (wrapping, 8-16rem). No actions column, so no sticky last column to
+  measure; at 390px the table scrolls inside its region (443px in 358,
+  eight fixture rows) and the page stays 390. Columns: Title (an
+  employee's one link), Status (badge and select), Type (humanised),
+  Valid until (`formatDay`, "Not set" when null).
 
 ### Forms and inputs
 - **Today:** labels wrap inputs (good for accessibility, keep it), no
@@ -808,6 +833,15 @@ measured by grep). Each component will exist once and be reused.
   enabled again, so it stays disabled while an upload is in flight; the
   other two keep their colons so siblings read alike (decided at plan
   review). A hint below says the page does not refresh itself.
+- **Built (batch 6, group B):** library - the capability statement upload
+  is a `Field` ("Capability statement", hint: found items appear once
+  processed, reload to see them); the status select is named "Status of
+  {title}" (it had no name), option values stay the backend words, option
+  text is mapped. Profile - "Correct title" `Field` with Save beside it
+  (the old title input had no accessible name), "Eligible for bid" stays a
+  wrapping label on its checkbox, the resume input is a `Field` reading
+  "Replace resume" when one is on file and "Upload a resume" when none is
+  (so it never claims a file that is not there).
 
 ### Notices (error, warning, info)
 - **Today:** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
@@ -843,6 +877,11 @@ measured by grep). Each component will exist once and be reused.
   notice with `alert`. `--color-danger` readers: 3, all on the library and
   employee profile (measured); the alias goes in group B with its last
   reader.
+- **Built (batch 6, group B):** errors on the library and employee profile
+  are `failed` notices with `alert`. `--color-danger` had **0** readers
+  left in `src` code, then 0 in the built CSS and JS (measured), and is
+  **deleted** from `styles/tokens.css` with its comment. No `--color-*`
+  alias remains; no inline `style={{}}` remains in screen code.
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -886,6 +925,16 @@ measured by grep). Each component will exist once and be reused.
   "loaded"), and an `EmptyState` after the table once the response is
   empty. Selecting another batch clears the previous batch's items first,
   so they never show under the new batch's name (display state only).
+- **Built (batch 6, group B):** the library table always renders,
+  `aria-busy` while loading, no skeleton rows, an `EmptyState` after it
+  once the response is empty. The employee profile has no table: while
+  loading it shows a page title "Employee profile" and "Loading the
+  profile..." under an `aria-busy` `<main>`, and a failed load shows the
+  notice under that title. Its checkbox and Verify button exist only once
+  the profile has loaded (`full-flow.spec.ts:496`: the load sets the box,
+  so one ticked earlier would be reset). Two "Loading..." paragraphs are
+  left, both unchanged: `RequireAuth.tsx`'s app-level one and the
+  knowledge impact preview's (batch 4, no table there).
 
 ### Navigation
 - **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
@@ -1074,7 +1123,10 @@ measured by grep). Each component will exist once and be reused.
   Audit at batch 6 (grep): every existing `formatDate` caller passes a
   timestamp (`GateDecisionPanel.tsx:123`, `:138`; `GraphExplorer.tsx:123`;
   `Readiness.tsx:206`, `:212`); the only date-only value on any screen is
-  the library's raw `valid_until` (`TalentLibrary.tsx:121`, group B).
+  the library's raw `valid_until` (`TalentLibrary.tsx:121` before batch
+  6). Group B gives `formatDay` its screen callers: the library's Valid
+  until and the profile's "Availability as of"; the profile's "Last
+  verified" timestamp goes through `formatDate`.
 
 ## What the app will not do
 
@@ -1248,8 +1300,8 @@ Library setup, **no new dependency**.
 5. **Proposal, evidence and readiness (built).** Proposal workspace,
    traceability drawer, red-team findings, graph explorer, readiness.
    Details under "Batch 5: as built".
-6. **Talent (group A built).** Talent library, import and review queue,
-   employee profile. Details under "Batch 6: as built".
+6. **Talent (built).** Talent library, import and review queue, employee
+   profile. Details under "Batch 6: as built".
 
 ### Batch 2: as built
 
@@ -1552,6 +1604,64 @@ library and employee profile are group B).
 | `formatDay` | `format/date.ts` | batch 6 A (certification dates in the import Detail cell) |
 | `importTypeLabel`, `sourceRefLabel`, `payloadFields`, `formatYears`, `NOT_SET` | `routes/talentImportValues.ts` | batch 6 A (import queue) |
 | `formatInr` | `format/inr.ts` | **still unused** - no money in any talent response |
+
+**Group B - talent library and employee profile** (`TalentLibrary.tsx`,
+`EmployeeProfile.tsx`; `styles/tokens.css`).
+
+- **Spec-forced choices** (`full-flow.spec.ts` unchanged, byte-identical to
+  main):
+  - **One link per employee** (`:476-492` count every
+    `a[href^="/talent/employees/"]` and follow each): an employee row's
+    title is its only link, href shape unchanged; nothing else on the page
+    links there.
+  - **The checkbox and Verify exist only after load** (`:496`) - Empty,
+    loading and error states.
+  - **One "verify" button, one "yes" in a `<dl>`** (`:497`, `:498`) -
+    Buttons and Status badge.
+- **Chosen, not in this file** (marked in code): library count line ("8
+  items, 4 employees"); profile fields beyond the five shown before -
+  employee code, location, experience ("1 year", "7.5 years"),
+  availability as of, last verified - with "Not set" for each null, and
+  not `profile_verified_by` (a user id; a name needs a fetch); the profile
+  hint "Only a verified profile marked eligible is offered as a candidate."
+  (`db/repositories/knowledge.py:314` requires verified and eligible); the
+  resume label by whether one is on file.
+- **Alias deletion:** `--color-danger` deleted (Notices). With it, every
+  `--color-*` alias is gone, and screen code holds no inline style and no
+  bare `<button>` (measured by grep). `JSON.stringify` output reaches the
+  screen only inside `<code>` fallbacks (graph values, import payload
+  values, the knowledge impact `<li>`s - spec-forced, batch 4) and in
+  `api/formatErrorDetail.ts:25`, which stringifies an API error item it
+  does not recognise into the error text (not a restyle surface; left as
+  is).
+- **Measured (fake fixture data, real Vite dev server, page.route):** the
+  spec's own locators on the restyled DOM - 4 employee links for 4
+  employees, hrefs unchanged; 0 checkboxes and 0 Verify buttons while the
+  profile loads; 1 button matching `/verify/i`; `dl getByText("yes",
+  {exact: true})` 0 before Verify and exactly 1 after (the badge
+  `<span>`, drawn "Yes"), Verify sending `eligible_for_bid: true`. Page
+  `scrollWidth` 390 at 390px in nine states (library empty, loading, load
+  error, populated; profile empty, loading, load error, populated,
+  verified). Contrast: 200 text pairs from computed styles, a hovered
+  library row included, 0 below 4.5:1, lowest 5.17:1 (failed badge, an
+  expired item); the field hint (ink-3) 5.47:1. Greyscale, deuteranopia
+  and protanopia: every badge reads by icon and label. Keyboard: library
+  15 stops, profile 5, a ring on each, no `tabIndex` above 0. The title
+  Save measured 14px below its input (Field's own bottom margin) and was
+  aligned in the profile's CSS; now flush at 1280 and 390.
+- **Checks at group B (measured):** vitest 294 (280 at group A), stable
+  over three runs; fake E2E (`scripts/e2e.ps1`, all three app containers
+  `LLM_PROVIDER=fake`, web image rebuilt and checked for the new code
+  before the run) 1 passed. Bare buttons 0, inline styles 0,
+  `--color-danger` 0 in `src` code and in the built CSS and JS.
+  `scripts/check-secrets.ps1` now refuses to run (its tracked-file list,
+  31,146 characters, is over its own 30,000 guard since batch 5's files
+  were committed) and needs batching - a `scripts/` change, not made here;
+  the same `detect-secrets-hook` run in three chunks on a throwaway copy
+  exited 0 on each, and `.secrets.baseline` is unchanged.
+- **New exports:** none. First screen callers: `knowledgeItem`,
+  `availability`, `profileReview` families; `formatDay` (library,
+  profile); `formatYears` and `NOT_SET` (profile, library).
 
 ## Deferred
 

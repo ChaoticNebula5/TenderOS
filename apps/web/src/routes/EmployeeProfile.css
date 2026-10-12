@@ -1,0 +1,72 @@
+/* Employee profile (restyle batch 6): the profile read-out, the title
+   correction, verification and the resume. */
+
+.employee__loading,
+.employee__hint {
+  color: var(--ink-2);
+}
+
+/* The profile: label and value in two columns (the readiness counts'
+   grid), labels in ink-2; stacked below 600px. */
+.employee__profile {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: var(--space-2) var(--space-4);
+  max-width: var(--width-form);
+  margin: 0 0 var(--space-5);
+}
+
+.employee__profile > div {
+  display: contents;
+}
+
+.employee__profile dt {
+  color: var(--ink-2);
+}
+
+.employee__profile dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Title correction: the field and its Save on one line, Save aligned with
+   the input (the label sits above it). */
+.employee__correct {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+  max-width: var(--width-form);
+  margin-bottom: var(--space-4);
+}
+
+/* Field's own bottom margin moves to the row, or Save would align with
+   the bottom of that margin, not of the input (measured: 14px low). */
+.employee__correct .field {
+  flex: 1 1 16rem;
+  margin-bottom: 0;
+}
+
+.employee__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.employee__hint {
+  margin: var(--space-2) 0 var(--space-3);
+  max-width: var(--measure-prose);
+}
+
+@media (max-width: 599.98px) {
+  .employee__profile {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .employee__profile dd {
+    margin-bottom: var(--space-2);
+  }
+}
