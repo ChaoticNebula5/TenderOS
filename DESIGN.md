@@ -1867,9 +1867,10 @@ byte-identical to main.
     greyscale, deuteranopia and protanopia on the ten changed screens;
     the readiness count measured on one line at 1280, 390 and 320; fake
     E2E 1 passed (and again after the count fix).
-  - Secrets: `scripts/check-secrets.ps1` refuses to run (Deferred); the
-    same `detect-secrets-hook` run in three chunks on a throwaway copy of
-    the tracked files exited 0 on each, `.secrets.baseline` unchanged.
+  - Credential scan. `scripts/check-secrets.ps1` refuses to run (see
+    Deferred), so CI's `detect-secrets-hook` ran in three chunks on a
+    throwaway copy of the tracked files instead; each chunk exited 0, and
+    `.secrets.baseline` is unchanged.
 - **Counts after the polish pass (measured):** vitest 311; 0 bare
   `<button>` and 0 inline `style={{}}` in screen code; 0 `--color-*`
   aliases; 2 "Loading..." paragraphs (`RequireAuth.tsx:10`,
