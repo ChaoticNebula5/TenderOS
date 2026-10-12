@@ -1,6 +1,13 @@
 /* Status badge - DESIGN.md frontmatter status-badge-*: status hue on its
    own 14% tint, 2px radius, label type, 2px 8px padding. Neutral has no
-   tint (frontmatter status-badge-neutral sets no background). */
+   tint (frontmatter status-badge-neutral sets no background).
+
+   The tint sits on an opaque --surface base (a one-colour gradient layer
+   over a background colour), so whatever is behind the badge - the raised
+   gate panel, a hovered table row's overlay - cannot show through it and
+   change its contrast. Translucent, a failed badge on a hovered row
+   measured 4.34:1; on the opaque base every tone measures its own-tint
+   ratio everywhere (lowest: failed, 5.17:1). Measured, WCAG 2.x formula. */
 
 .status-badge {
   display: inline-flex;
@@ -23,27 +30,30 @@
 
 .status-badge--ready {
   color: var(--status-ready);
-  background: var(--status-ready-tint);
+  background: linear-gradient(var(--status-ready-tint), var(--status-ready-tint)), var(--surface);
 }
 
 .status-badge--running {
   color: var(--status-running);
-  background: var(--status-running-tint);
+  background:
+    linear-gradient(var(--status-running-tint), var(--status-running-tint)), var(--surface);
 }
 
 .status-badge--warning {
   color: var(--status-warning);
-  background: var(--status-warning-tint);
+  background:
+    linear-gradient(var(--status-warning-tint), var(--status-warning-tint)), var(--surface);
 }
 
 .status-badge--blocked {
   color: var(--status-blocked);
-  background: var(--status-blocked-tint);
+  background:
+    linear-gradient(var(--status-blocked-tint), var(--status-blocked-tint)), var(--surface);
 }
 
 .status-badge--failed {
   color: var(--status-failed);
-  background: var(--status-failed-tint);
+  background: linear-gradient(var(--status-failed-tint), var(--status-failed-tint)), var(--surface);
 }
 
 .status-badge--neutral {

@@ -458,7 +458,9 @@ run fetch to get it. See Decisions, item 9.
 **Built in batch 3** (`apps/web/src/shell/runStatus.ts`,
 `apps/web/src/shell/TenderLayout.tsx`): `TenderLayout` owns the value and
 renders "Run" plus a `StatusBadge` (a `<span>`, outside `<main>`) at the
-right of the tender bar; a screen reports a status it already has with
+right of the tender bar - below 600px, on its own line under the nav, so
+the nav keeps the full width (batch 4 fix: at 390px the badge had left the
+nav 189px, one tab fully visible; now 358px, measured); a screen reports a status it already has with
 `useReportRunStatus(status)`. `null` or no report shows nothing; the hook's
 cleanup withdraws the status when the screen unmounts, so navigating to a
 step that does not report clears it. Wired in batch 3 on the processing
@@ -1230,11 +1232,15 @@ Library setup, **no new dependency**.
   (pre-deselection, ready) is what `Readiness.tsx` shows on mount, and
   `:1451` passes on it before the clicked report replaces it; recorded for
   KNOWN_LIMITATIONS. Page `scrollWidth` 390 at 390px on all four screens in
-  every state. Contrast: 23 new pairs, 22 at or above target; the failed
-  badge on a hovered row measures 4.36:1 (the badge tint is translucent,
-  so the row-hover overlay shows through) - the same pairing already exists
-  on the batch 3 documents table; not fixed here (a `StatusBadge.css`
-  change), recorded for decision. Greyscale, deuteranopia and protanopia
+  every state. Contrast: 23 new pairs, 22 at or above target as first
+  built; the failed badge on a hovered row measured 4.36:1 (the badge tint
+  was translucent, so the row-hover overlay showed through; the same
+  pairing existed on the batch 3 documents table). Fixed in the batch 4
+  fixes: `StatusBadge.css` lays each tint over an opaque `--surface` base,
+  so every tone measures its own-tint ratio on the page, the raised panel
+  and a hovered row alike (lowest: failed, 5.17:1; neutral, which has no
+  tint, 7.56:1 on a hovered row; the rejected-row treatment, 4.69:1
+  hovered - all measured). Greyscale, deuteranopia and protanopia
   passes: every badge reads by icon and label; under deuteranopia Critical
   and Resolved share one hue, and the amber Approve sits close to Major's
   yellow, as Colors predicts. Keyboard: a ring on every stop, no `tabIndex`
