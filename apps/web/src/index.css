@@ -182,6 +182,16 @@ td {
   vertical-align: top;
 }
 
+/* Body cells align on their first line's baseline (polish pass), so a row
+   that mixes plain text, a badge and a 32px control reads as one line:
+   with "top", the text sat 6.9px above the control's label (measured).
+   For text-only cells the first line lands where "top" put it. A screen
+   whose rows are tall blocks sets its own `vertical-align: top` (e.g. the
+   import items table), which outranks this element rule. */
+td {
+  vertical-align: baseline;
+}
+
 th {
   background: var(--surface-sunk);
   color: var(--ink-2);

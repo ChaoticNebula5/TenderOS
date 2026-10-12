@@ -49,9 +49,16 @@
   color: var(--ink);
 }
 
-/* Quiet: text only, for row actions. ink-2 at rest, ink + the ink overlay
-   on hover. Not amber: amber would make every row action read as a link. */
+/* Quiet: for row actions. ink-2 at rest, ink + the ink overlay on hover.
+   Not amber: amber would make every row action read as a link.
+   Polish pass (decided): a 1px --control-border on a transparent fill, so a
+   quiet action reads as a control - before, it was text alone, and on the
+   import review row "Approve" looked like plain text beside the outlined
+   danger "Reject". The border is the same 3:1 boundary as inputs and
+   secondary buttons (WCAG 1.4.11); quiet still has no fill, so it stays
+   lighter than secondary. */
 .btn--quiet {
+  border-color: var(--control-border);
   background-color: transparent;
   color: var(--ink-2);
 }

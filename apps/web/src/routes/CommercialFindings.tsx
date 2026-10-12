@@ -201,7 +201,7 @@ export function CommercialFindings() {
               <tr>
                 <th>Sheet</th>
                 <th>Currency</th>
-                <th>
+                <th className="cell-actions">
                   <span className="visually-hidden">Actions</span>
                 </th>
               </tr>
@@ -211,7 +211,7 @@ export function CommercialFindings() {
                 <tr key={doc.id}>
                   <td>{doc.sheet_name}</td>
                   <td>{doc.currency ?? "Not stated"}</td>
-                  <td>
+                  <td className="cell-actions">
                     <Button
                       variant="quiet"
                       onClick={() => handleValidate(doc.id)}
@@ -254,7 +254,7 @@ export function CommercialFindings() {
                 <th>Type</th>
                 <th>Status</th>
                 <th>Note</th>
-                <th>
+                <th className="cell-actions">
                   <span className="visually-hidden">Actions</span>
                 </th>
               </tr>
@@ -274,7 +274,7 @@ export function CommercialFindings() {
                   <td className="findings__note">
                     <span className="findings__note-text">{finding.note}</span>
                   </td>
-                  <td>
+                  <td className="cell-actions">
                     {!finding.resolved && (
                       <Button variant="quiet" onClick={() => handleResolve(finding.id)}>
                         Resolve

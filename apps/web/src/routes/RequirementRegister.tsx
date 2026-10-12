@@ -152,7 +152,7 @@ export function RequirementRegister() {
       {gateFirst && gateBlock}
 
       {requirements.length > 0 && (
-        <p className="requirements__count">
+        <p className="count-line">
           {requirements.length} {requirements.length === 1 ? "requirement" : "requirements"},{" "}
           {unverifiedMandatory} unverified mandatory
         </p>

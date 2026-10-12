@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   approveImportItem,
@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import type { ImportBatchResponse, ImportItemDetailResponse } from "../api/client";
 import { useAuth } from "../auth/useAuth";
+import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Field } from "../components/ui/Field";
@@ -230,7 +231,7 @@ export function TalentImportReview() {
                 <th className="cell-num">Total</th>
                 <th className="cell-num">Completed</th>
                 <th className="cell-num">Failed</th>
-                <th>
+                <th className="cell-actions">
                   <span className="visually-hidden">Actions</span>
                 </th>
               </tr>
@@ -248,7 +249,7 @@ export function TalentImportReview() {
                   <td className="cell-num">{batch.total_items}</td>
                   <td className="cell-num">{batch.completed_items}</td>
                   <td className="cell-num">{batch.failed_items}</td>
-                  <td>
+                  <td className="cell-actions">
                     <Button variant="quiet" onClick={() => setSelectedBatchId(batch.id)}>
                       Review items
                     </Button>
@@ -284,7 +285,7 @@ export function TalentImportReview() {
                   <th>Source</th>
                   <th>Status</th>
                   <th>Detail</th>
-                  <th>
+                  <th className="cell-actions">
                     <span className="visually-hidden">Actions</span>
                   </th>
                 </tr>
@@ -303,7 +304,7 @@ export function TalentImportReview() {
                       <td className="talent-import__detail">
                         <ItemDetail item={item} />
                       </td>
-                      <td>
+                      <td className="cell-actions">
                         {item.status === "needs_review" && (
                           <div className="action-row">
                             <Button
@@ -379,28 +380,6 @@ function ItemDetail({ item }: { item: ImportItemDetailResponse }) {
           ))}
         </dl>
       )}
-    </>
-  );
-}
-
-// A résumé file name breaks after its underscores at phone width, not mid
-// word; <wbr> adds no text. The same technique as RedteamFindings' category
-// cell - a local copy, since sharing it would touch that screen (noted for
-// the polish pass).
-function BreakAfterUnderscores({ text }: { text: string }) {
-  const parts = text.split("_");
-  return (
-    <>
-      {parts.map((part, i) => (
-        <Fragment key={i}>
-          {part}
-          {i < parts.length - 1 && (
-            <>
-              _<wbr />
-            </>
-          )}
-        </Fragment>
-      ))}
     </>
   );
 }

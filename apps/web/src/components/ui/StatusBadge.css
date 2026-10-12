@@ -56,6 +56,15 @@
   background: linear-gradient(var(--status-failed-tint), var(--status-failed-tint)), var(--surface);
 }
 
+/* Neutral: an ink tint, so a neutral badge has a box like the other tones
+   and its label no longer looks indented by the 8px padding alone (polish
+   pass - amends DESIGN.md's "neutral sets no background"). --rule-2 is the
+   7% ink tint the tokens already define. Translucent on purpose, unlike
+   the hued tints' opaque base: over an opaque surface it would equal a
+   hovered row's own 7% tint and vanish on hover; laid over the row it
+   reads on the page, the raised panel and a hovered row alike. ink-2 text
+   stays far above 4.5:1 on all three (measured in the polish harness). */
 .status-badge--neutral {
   color: var(--ink-2);
+  background: var(--rule-2);
 }

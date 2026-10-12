@@ -136,6 +136,9 @@ describe("TalentImportReview (restyle batch 6)", () => {
     ]);
     // A row header (<th>) would not be a "td" and would shift every index.
     expect(rows[0].firstElementChild?.tagName).toBe("TD");
+    // Polish pass: the actions cell is the narrow .cell-actions column; the
+    // class changes no cell's text or index.
+    expect(cells[5].classList.contains("cell-actions")).toBe(true);
   });
 
   it("keeps the batches table the first <table> with the items open", async () => {
@@ -245,6 +248,11 @@ describe("TalentImportReview (restyle batch 6)", () => {
     expect(within(row).getByText("Needs review")).toBeInTheDocument();
     // The failed sentinel: its reason, no fields, and a named source.
     expect(screen.getByText("Whole file")).toBeInTheDocument();
+    // The résumé file name breaks after its underscores (the shared
+    // BreakAfterUnderscores) with its text unchanged.
+    const source = row.querySelector("td")!;
+    expect(source.textContent).toBe("resume_rowan_quill.docx");
+    expect(source.querySelectorAll("wbr")).toHaveLength(2);
     expect(screen.getByText("Could not read the uploaded file.")).toBeInTheDocument();
 
     // No JSON dump and no raw enum anywhere.

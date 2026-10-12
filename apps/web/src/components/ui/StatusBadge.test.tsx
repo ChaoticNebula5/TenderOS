@@ -1,8 +1,16 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { describeFinding, describeReadiness, describeStatus } from "../../status/statusMap";
 import type { StatusDescriptor } from "../../status/statusMap";
 import { StatusBadge } from "./StatusBadge";
+
+// The stylesheet's own text: vitest does not hand CSS to tests (a ?raw
+// import comes back empty), so the rule is read from the file itself -
+// resolved from apps/web, where vitest runs (under jsdom import.meta.url
+// is not a file: URL).
+const badgeCss = readFileSync(resolve("src/components/ui/StatusBadge.css"), "utf8");
 
 // One render test per tone with fixture props (DESIGN.md Restyle batches,
 // "Every status gets a render test"): no tender in the live data reaches
@@ -46,5 +54,14 @@ describe("StatusBadge", () => {
     // Not a <strong>: full-flow.spec.ts:1451 needs the readiness verdict to
     // be the page's only <strong>.
     expect(container.querySelector("strong")).toBeNull();
+  });
+
+  // Polish pass: neutral has a box like every other tone - the ink tint, laid
+  // over whatever is behind it (no opaque base, so it still shows on a
+  // hovered row). jsdom applies no stylesheet, so this pins the rule itself.
+  it("gives the neutral tone the ink tint", () => {
+    const rule = /\.status-badge--neutral\s*\{([^}]*)\}/.exec(badgeCss)?.[1] ?? "";
+    expect(rule).toMatch(/background:\s*var\(--rule-2\)/);
+    expect(rule).toMatch(/color:\s*var\(--ink-2\)/);
   });
 });

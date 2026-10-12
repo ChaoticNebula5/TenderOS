@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -7,6 +7,7 @@ import {
   triggerRedTeam,
 } from "../api/client";
 import type { RedteamFindingResponse } from "../api/client";
+import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
@@ -111,7 +112,7 @@ export function RedteamFindings() {
               <th>Severity</th>
               <th>Finding</th>
               <th>Resolved</th>
-              <th>
+              <th className="cell-actions">
                 <span className="visually-hidden">Actions</span>
               </th>
             </tr>
@@ -136,7 +137,7 @@ export function RedteamFindings() {
                     <span className="redteam__text-inner">{finding.finding_text}</span>
                   </td>
                   <td>{finding.resolved ? "yes" : "no"}</td>
-                  <td>
+                  <td className="cell-actions">
                     {!finding.resolved && (
                       <div className="action-row redteam__resolve">
                         <input
@@ -171,27 +172,5 @@ export function RedteamFindings() {
         </EmptyState>
       )}
     </main>
-  );
-}
-
-// The raw category with a line-break opportunity after each underscore
-// ("deselected_ / fact_ / in_use" at phone width, not a break mid-word).
-// <wbr> adds no text, so the cell's textContent stays exactly the backend
-// word that full-flow.spec.ts:1380 and :1409 compare.
-function BreakAfterUnderscores({ text }: { text: string }) {
-  const parts = text.split("_");
-  return (
-    <>
-      {parts.map((part, i) => (
-        <Fragment key={i}>
-          {part}
-          {i < parts.length - 1 && (
-            <>
-              _<wbr />
-            </>
-          )}
-        </Fragment>
-      ))}
-    </>
   );
 }

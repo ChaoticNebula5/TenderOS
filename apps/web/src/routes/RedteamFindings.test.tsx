@@ -95,6 +95,15 @@ describe("RedteamFindings (restyle batch 5)", () => {
     // Line-break hints after underscores add no text.
     expect(rows[0].querySelector("td")!.querySelectorAll("wbr")).toHaveLength(3);
     expect(rows[0].querySelector("td")!.textContent).toBe("deselected_fact_in_use");
+    // Polish pass: only the actions column (td index 4, which the spec does
+    // not read) is the narrow .cell-actions column; td 0-3 keep their place.
+    const tds = rows[0].querySelectorAll("td");
+    expect(tds).toHaveLength(5);
+    expect(tds[4].classList.contains("cell-actions")).toBe(true);
+    expect(Array.from(tds).filter((td) => td.classList.contains("cell-actions"))).toHaveLength(1);
+    expect(container.querySelector("thead th:last-child")!.classList.contains("cell-actions")).toBe(
+      true,
+    );
   });
 
   it("offers Resolve only on open rows and removes it once resolved, with no other 'Resolve…' button on the page (full-flow.spec.ts:1083-1101)", async () => {

@@ -1,13 +1,6 @@
-/* Requirement register - count line, rejected rows, row actions. The table
-   itself takes the shared base styles (index.css) and TableScroll. */
-
-/* "N requirements, M unverified mandatory" from data already loaded
-   (DESIGN.md Screen patterns, "Register tables"). */
-.requirements__count {
-  margin: var(--space-3) 0 var(--space-2);
-  color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-}
+/* Requirement register - rejected rows, row actions. The table itself takes
+   the shared base styles (index.css) and TableScroll; the count line is the
+   shared .count-line (styles/layout.css, polish pass). */
 
 /* Prose column: let long requirement text wrap at a readable width. */
 .requirements td:nth-child(2) {

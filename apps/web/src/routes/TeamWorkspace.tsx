@@ -187,7 +187,7 @@ export function TeamWorkspace() {
             <tr>
               <th>Role</th>
               <th className="cell-num">Min experience</th>
-              <th>
+              <th className="cell-actions">
                 <span className="visually-hidden">Actions</span>
               </th>
             </tr>
@@ -197,7 +197,7 @@ export function TeamWorkspace() {
               <tr key={role.id}>
                 <td>{role.role_name}</td>
                 <td className="cell-num">{formatYears(role.min_experience_years)}</td>
-                <td>
+                <td className="cell-actions">
                   <Button variant="quiet" onClick={() => handleSelectRole(role.id)}>
                     View candidates
                   </Button>
@@ -242,7 +242,7 @@ export function TeamWorkspace() {
                     <th>Candidate</th>
                     <th className="cell-num">Score</th>
                     <th>Selected</th>
-                    <th>
+                    <th className="cell-actions">
                       <span className="visually-hidden">Actions</span>
                     </th>
                   </tr>
@@ -258,7 +258,7 @@ export function TeamWorkspace() {
                       <td>
                         <StatusBadge {...describeSelected(match.human_selected)} />
                       </td>
-                      <td>
+                      <td className="cell-actions">
                         <Button
                           variant="quiet"
                           onClick={() => handleSelectCandidate(match, !match.human_selected)}

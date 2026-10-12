@@ -91,12 +91,30 @@
 
 /* A count line above a register table ("94 entries, 12 approved"), from
    data already in the response (DESIGN.md Screen patterns, "Register
-   tables"). RequirementRegister still has its own .requirements__count with
-   the same rules; unifying them is on the polish list. */
+   tables"). Every register uses this one class (the polish pass folded
+   RequirementRegister's own copy in). 12px below it, not 8: at 8px the
+   line sat tight against the table's header band (measured). */
 .count-line {
-  margin: var(--space-3) 0 var(--space-2);
+  margin: var(--space-3) 0;
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
+}
+
+/* A row-actions column (header and cells): as narrow as its controls, so a
+   table's spare width goes to the prose column instead of opening gaps
+   between every column at 1280px (polish pass). The compliance matrix
+   already does this with its own rule. */
+.cell-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* A 1%-wide cell sizes to its min-content width, which for a wrapping
+   .action-row is its widest single control - so Approve and Reject (or a
+   note field and Resolve) would stack. Inside the actions column the row
+   stays on one line (measured: stacked before this rule). */
+.cell-actions .action-row {
+  flex-wrap: nowrap;
 }
 
 /* A raw identifier (UUID) in a table cell. It may break anywhere, so a
