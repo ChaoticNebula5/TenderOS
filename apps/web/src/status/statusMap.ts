@@ -21,7 +21,16 @@ export interface StatusDescriptor {
 }
 
 export type StatusFamily =
-  "gate" | "run" | "task" | "parse" | "severity" | "grounding" | "compliance" | "importItem";
+  | "gate"
+  | "run"
+  | "task"
+  | "parse"
+  | "severity"
+  | "grounding"
+  | "compliance"
+  | "importItem"
+  | "proposalSection"
+  | "validity";
 
 type FamilyMap = Readonly<Record<string, StatusDescriptor>>;
 
@@ -142,6 +151,34 @@ const importItem: FamilyMap = {
   failed: { tone: "failed", label: "Failed" },
 };
 
+// Proposal section - db/models/proposal.py:23. DESIGN.md has no row for
+// this family (batch 5, decided at plan review).
+const proposalSection: FamilyMap = {
+  // chosen, not in DESIGN: a draft is nobody's to act on yet - Neutral
+  draft: { tone: "neutral", label: "Draft" },
+  // chosen, not in DESIGN: waiting on a reviewer - Blocked (DESIGN.md:287's meaning)
+  review: { tone: "blocked", label: "In review" },
+  // chosen, not in DESIGN: the gate family's word for approval (DESIGN.md:311)
+  approved: { tone: "ready", label: "Approved" },
+};
+
+// Evidence validity - db/models/compliance.py:22. DESIGN.md has no row
+// for this family (batch 5, decided at plan review).
+const validity: FamilyMap = {
+  // chosen, not in DESIGN
+  valid: { tone: "ready", label: "Valid" },
+  // chosen, not in DESIGN
+  invalid: { tone: "failed", label: "Invalid" },
+  // chosen, not in DESIGN: Failed, not Warning, because the backend treats
+  // expired exactly like invalid - only verified AND 'valid' evidence can
+  // ground a claim (domain/services/proposal_service.py:154, :279) or count
+  // as valid evidence for readiness (domain/services/readiness_service.py:219,
+  // a blocker when none is left).
+  expired: { tone: "failed", label: "Expired" },
+  // chosen, not in DESIGN
+  unknown: { tone: "neutral", label: "Unknown" },
+};
+
 export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
   gate,
   run,
@@ -151,6 +188,8 @@ export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
   grounding,
   compliance,
   importItem,
+  proposalSection,
+  validity,
 };
 
 // chosen, not in DESIGN: a value the backend adds later that this map does
@@ -219,4 +258,29 @@ export function describeFinding(resolved: boolean, findingSeverity: string): Sta
   return resolved
     ? { tone: "ready", label: "Resolved" }
     : describeStatus("severity", findingSeverity);
+}
+
+// For a spec that reads a badge's text exactly (full-flow.spec.ts:971 reads
+// "/ unsupported]", :1410 reads "critical"): when the mapped label is just
+// the backend word capitalised, the badge can keep the raw word as its DOM
+// text and let CSS draw it capitalised - the operator reads the label, the
+// DOM keeps the word (the batch 3 parse-badge technique). keepsRawWord says
+// whether that holds; when it does not (needs_review -> "Needs review"),
+// the label is the mapped one and nothing is capitalised. An unknown value
+// already falls back to its raw word, so it keeps it too.
+export function describeStatusKeepingRawWord(
+  family: StatusFamily,
+  value: string,
+): StatusDescriptor & { keepsRawWord: boolean } {
+  const descriptor = describeStatus(family, value);
+  const keepsRawWord = descriptor.label.toLowerCase() === value.toLowerCase();
+  return { ...descriptor, label: keepsRawWord ? value : descriptor.label, keepsRawWord };
+}
+
+// Graph projection freshness (GraphExplorer). DESIGN.md:289 puts "graph
+// stale" in Warning; chosen, not in DESIGN: fresh is Ready-toned "Fresh",
+// shown only when the response says fresh (DESIGN.md Copy rules). Never
+// "Ready" (reserved).
+export function describeGraphFreshness(fresh: boolean): StatusDescriptor {
+  return fresh ? { tone: "ready", label: "Fresh" } : { tone: "warning", label: "Stale" };
 }

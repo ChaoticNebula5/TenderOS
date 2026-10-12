@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -9,15 +9,33 @@ import {
 } from "../api/client";
 import type { ProposalClaimResponse, ProposalSectionResponse } from "../api/client";
 import { TraceabilityDrawer } from "../components/TraceabilityDrawer";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Field } from "../components/ui/Field";
+import { Notice } from "../components/ui/Notice";
+import { StatusBadge } from "../components/ui/StatusBadge";
+import { humanize } from "../format/humanize";
+import { describeStatus, describeStatusKeepingRawWord } from "../status/statusMap";
+import "./ProposalWorkspace.css";
 
 // Screen 13 (Part J). One row per drafted section, each with its own
 // claim list (listProposalClaims - a B13 addition, KNOWN_LIMITATIONS.md:
 // no route ever exposed this before this block) so a human can click a
 // claim into screen 16's drawer, rendered inline below via
 // selectedClaimId rather than as its own route.
+//
+// E2E contract (full-flow.spec.ts): every proposal section is a <section>
+// that is a DIRECT child of <main> (:952 counts `main > section`), so the
+// empty state is not a <section> and nothing wraps the sections; each
+// claim is an <li> whose text holds "[type / grounding]" (:971, :974 find
+// unsupported claims by "/ unsupported]"), with its "Inspect trace" button
+// inside it (:972).
 export function ProposalWorkspace() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [sections, setSections] = useState<ProposalSectionResponse[]>([]);
+  // Set once listProposalSections answers, so the empty state only claims
+  // "nothing drafted" after the response says so (DESIGN.md Copy rules).
+  const [sectionsLoaded, setSectionsLoaded] = useState(false);
   const [claimsBySection, setClaimsBySection] = useState<Record<string, ProposalClaimResponse[]>>(
     {},
   );
@@ -25,11 +43,15 @@ export function ProposalWorkspace() {
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  // The "Inspect trace" button that opened the drawer, so focus can return
+  // to it on close (DESIGN.md Accessibility, "Keyboard order").
+  const drawerOpener = useRef<HTMLElement | null>(null);
 
   async function refreshSections() {
     if (!tenderId) return;
     const result = await listProposalSections(tenderId);
     setSections(result);
+    setSectionsLoaded(true);
     for (const section of result) {
       const claims = await listProposalClaims(section.id);
       setClaimsBySection((prev) => ({ ...prev, [section.id]: claims }));
@@ -37,6 +59,7 @@ export function ProposalWorkspace() {
   }
 
   useEffect(() => {
+    setSectionsLoaded(false);
     refreshSections().catch(() => setError("Failed to load proposal sections"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
@@ -76,58 +99,113 @@ export function ProposalWorkspace() {
       <h1>Proposal workspace</h1>
 
       {error && (
-        <p role="alert" style={{ color: "var(--color-danger)" }}>
+        <Notice variant="failed" alert>
           {error}
-        </p>
+        </Notice>
       )}
 
-      <button type="button" onClick={handleGenerate} disabled={generating}>
-        {generating ? "Generating..." : "Generate proposal"}
-      </button>
+      <div className="action-row proposal__actions">
+        <Button
+          variant="primary"
+          onClick={handleGenerate}
+          busy={generating}
+          busyLabel="Generating..."
+        >
+          Generate proposal
+        </Button>
+      </div>
 
-      {sections.length === 0 && <p>No proposal sections drafted yet.</p>}
+      {sectionsLoaded && sections.length === 0 && (
+        <EmptyState title="No proposal sections drafted yet">
+          Generate proposal drafts one section per template from this tender's approved analysis.
+        </EmptyState>
+      )}
 
-      {sections.map((section) => (
-        <section key={section.id} style={{ marginTop: "var(--space-5)" }}>
-          <h2>
-            {section.section_name} (v{section.version}, {section.status})
-          </h2>
-          <textarea
-            rows={6}
-            style={{ width: "100%" }}
-            value={editingContent[section.id] ?? section.content}
-            onChange={(e) =>
-              setEditingContent((prev) => ({ ...prev, [section.id]: e.target.value }))
-            }
-          />
-          <button
-            type="button"
-            onClick={() => handleSaveContent(section.id)}
-            disabled={editingContent[section.id] === undefined}
-          >
-            Save edits
-          </button>
+      {sections.map((section) => {
+        // undefined until this section's listProposalClaims answers: the
+        // "No claims" row only appears once the response says so.
+        const loadedClaims = claimsBySection[section.id];
+        const claims = loadedClaims ?? [];
+        return (
+          <section key={section.id} className="proposal-section">
+            <h2>{section.section_name}</h2>
+            <p className="proposal-section__meta">
+              <span>Version {section.version}</span>
+              <StatusBadge {...describeStatus("proposalSection", section.status)} />
+            </p>
+            <Field label="Section text">
+              <textarea
+                className="proposal-section__text"
+                rows={6}
+                value={editingContent[section.id] ?? section.content}
+                onChange={(e) =>
+                  setEditingContent((prev) => ({ ...prev, [section.id]: e.target.value }))
+                }
+              />
+            </Field>
+            <div className="action-row">
+              <Button
+                variant="secondary"
+                onClick={() => handleSaveContent(section.id)}
+                disabled={editingContent[section.id] === undefined}
+              >
+                Save edits
+              </Button>
+            </div>
 
-          <h3>Claims</h3>
-          <ul>
-            {(claimsBySection[section.id] ?? []).map((claim) => (
-              <li key={claim.id}>
-                [{claim.claim_type} / {claim.grounding_status}] {claim.claim_text}{" "}
-                <button type="button" onClick={() => setSelectedClaimId(claim.id)}>
-                  Inspect trace
-                </button>
-              </li>
-            ))}
-            {(claimsBySection[section.id] ?? []).length === 0 && (
-              <li>No claims in this section.</li>
-            )}
-          </ul>
-        </section>
-      ))}
+            <h3>Claims</h3>
+            <ul className="claims">
+              {claims.map((claim) => (
+                <li key={claim.id} className="claim">
+                  <ClaimTag claim={claim} /> <span className="claim__text">{claim.claim_text}</span>{" "}
+                  <Button
+                    variant="quiet"
+                    onClick={(e) => {
+                      drawerOpener.current = e.currentTarget;
+                      setSelectedClaimId(claim.id);
+                    }}
+                  >
+                    Inspect trace
+                  </Button>
+                </li>
+              ))}
+              {loadedClaims !== undefined && loadedClaims.length === 0 && (
+                <li className="claims__none">No claims in this section.</li>
+              )}
+            </ul>
+          </section>
+        );
+      })}
 
       {selectedClaimId && (
-        <TraceabilityDrawer claimId={selectedClaimId} onClose={() => setSelectedClaimId(null)} />
+        <TraceabilityDrawer
+          claimId={selectedClaimId}
+          onClose={() => setSelectedClaimId(null)}
+          returnFocusTo={drawerOpener.current}
+        />
       )}
     </main>
+  );
+}
+
+// "[Capability / unsupported]" - the claim's type and grounding. The spec
+// finds unsupported claims by the text "/ unsupported]" (full-flow.spec.ts:
+// 971, :974), so the grounding badge sits inside the brackets with no space
+// before "]", and where its label is just the backend word capitalised
+// (grounded, unsupported) its DOM text is that word, drawn capitalised by
+// CSS (.badge-raw-word); needs_review and not_required show their mapped
+// labels. Brackets and slash are ink-3 punctuation.
+function ClaimTag({ claim }: { claim: ProposalClaimResponse }) {
+  const grounding = describeStatusKeepingRawWord("grounding", claim.grounding_status);
+  return (
+    <span className="claim__tag">
+      <span className="claim__punct">[</span>
+      {humanize(claim.claim_type)}
+      <span className="claim__punct"> / </span>
+      <span className={grounding.keepsRawWord ? "badge-raw-word" : undefined}>
+        <StatusBadge tone={grounding.tone} label={grounding.label} />
+      </span>
+      <span className="claim__punct">]</span>
+    </span>
   );
 }

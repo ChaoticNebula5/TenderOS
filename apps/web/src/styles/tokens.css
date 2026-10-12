@@ -171,13 +171,12 @@
   --dur-base: 180ms;
   --dur-panel: 240ms;
 
-  /* Transitional aliases. Screens still read these three names from inline
-     styles. Code readers after restyle batch 3 (measured by grep, comment
-     mentions excluded): 15x --color-danger, 2x --color-warning,
-     1x --color-border. The old light-theme values measure 3.51:1 and
-     3.86:1 on --surface, below 4.5:1. Delete each alias in the batch that
+  /* Transitional alias. Screens still read this name from inline styles.
+     Code readers after restyle batch 5 group A (measured by grep, comment
+     mentions excluded): 8x --color-danger. --color-warning and
+     --color-border were deleted in batch 5 when the traceability drawer,
+     their last reader, moved to classes. The old light-theme value
+     measures 3.51:1 on --surface, below 4.5:1. Delete it in the batch that
      removes its last reader. */
   --color-danger: var(--status-failed);
-  --color-warning: var(--status-warning);
-  --color-border: var(--rule);
 }

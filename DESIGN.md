@@ -589,6 +589,11 @@ measured by grep). Each component will exist once and be reused.
   Preview impact and Confirm carry `aria-busy` on the one in flight (no busy
   label: no participle existed). 7 bare buttons migrated; 14 remain
   (measured after batch 4).
+- **Built (batch 5, group A):** Generate proposal and Run red team primary
+  with their existing participles ("Generating...", "Running..."); Save
+  edits secondary; Inspect trace, Resolve and the drawer's Close quiet.
+  Labels unchanged. 6 bare buttons migrated; 8 remain (measured after
+  group A).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -622,6 +627,24 @@ measured by grep). Each component will exist once and be reused.
   (`status/statusMap.ts`): `describeApproved` (Ready "Approved" / Neutral
   "Not approved") and `describeSelected` (Ready "Selected" / Neutral "Not
   selected"); neither can return "Ready" (`statusMap.test.ts`).
+- **Built (batch 5, group A):** proposal section status, claim grounding,
+  evidence verified and validity, red-team severity. New families, chosen,
+  not in this file (`status/statusMap.ts`): `proposalSection` (draft
+  Neutral "Draft", review Blocked "In review", approved Ready "Approved")
+  and `validity` (valid Ready, invalid Failed, expired **Failed** - the
+  backend treats expired exactly like invalid: only verified and `valid`
+  evidence grounds a claim, `domain/services/proposal_service.py:154`,
+  `:279`, or counts for readiness, `readiness_service.py:219` - unknown
+  Neutral). **Spec-forced (raw word in the DOM):** where a label is just
+  the backend word capitalised, a badge the spec reads as text keeps that
+  word and CSS capitalises it (`describeStatusKeepingRawWord`,
+  `.badge-raw-word` in `styles/layout.css`) - the proposal claim tag
+  (`full-flow.spec.ts:971`, `:974` find "/ unsupported]") and the red-team
+  severity cell (`:1410`, `:1416` read "critical"). grounded, unsupported
+  and every severity qualify; needs_review and not_required show their
+  mapped labels. **Spec-forced deviation:** the red-team Resolved column
+  stays the plain word "yes"/"no" (`:1382`, `:1395` wait for "no" in td
+  index 3), alongside the requirement register's Reviewed column.
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -736,6 +759,11 @@ measured by grep). Each component will exist once and be reused.
   selections (`failed`, `alert`, as each had `role="alert"`). Remaining
   inline readers after batch 4 (measured, same method): `--color-danger`
   11, `--color-warning` 2, `--color-border` 1 - still none deletable.
+- **Built (batch 5, group A):** errors on proposal, red team and the
+  traceability drawer. The drawer's two bordered boxes became classes, so
+  `--color-warning` and `--color-border` lost their last readers and are
+  **deleted** from `styles/tokens.css` (0 references in `src` or the built
+  CSS, measured). `--color-danger` has 8 code readers left (measured).
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -789,11 +817,21 @@ measured by grep). Each component will exist once and be reused.
 - **Today:** a bordered `<aside>` appended at the bottom of the proposal
   page (`TraceabilityDrawer.tsx:47-54`), so on a long proposal it opens
   off-screen.
-- **Will be:** a right-side panel on wide screens and a full-height sheet at
-  390px, focus moved into it on open and back to the "Inspect trace" button
-  on close, Escape closes. Cited evidence and "in scope but not cited"
-  evidence as two labelled lists; source, excerpt, verified badge and
-  validity badge per entry.
+- **Built (batch 5, group A):** `apps/web/src/components/TraceabilityDrawer.tsx`
+  is a **modal** side panel - `role="dialog"`, `aria-modal="true"`,
+  labelled "Claim trace", over a scrim; right edge, `min(32rem, 100vw)`
+  wide, so full screen at 390px. Focus moves to Close on open, Tab and
+  Shift+Tab stay inside, Escape closes, and focus returns to the "Inspect
+  trace" button that opened it. Modal is safe for the E2E: after the drawer
+  opens, every locator in `full-flow.spec.ts:980-991` is scoped to its
+  `<aside>`, and the next action on that page is a navigation (`:1029`).
+  Cited and "in scope but not cited" evidence are two lists; each entry
+  shows the excerpt in a sunk well, the source (humanised kind and title)
+  and verified and validity badges. Kept for the spec: the only `<aside>`
+  (`:980`), the "Claim trace" heading only once the trace has loaded
+  (`:981` waits for it and `:985-987` read the result straight after), the
+  uncited panel `role="alert"` containing "not cited" (`:982`), and "No
+  additional in-scope evidence." verbatim (`:983`).
 
 ## Do's and Don'ts
 
@@ -830,6 +868,12 @@ measured by grep). Each component will exist once and be reused.
   raw `source_kind:` prefix (`TraceabilityDrawer.tsx:132`).
 - **Findings lists** (commercial, red team): severity badge, finding text,
   resolution control in one row; resolved rows collapse to one line.
+  **Red team deviation (batch 5, spec-forced):** its columns and cell text
+  are fixed by `full-flow.spec.ts` - raw category first (`:1380`, `:1409`),
+  raw severity second (`:1410`), plain "yes"/"no" fourth (`:1382`) - so it
+  does not use `describeFinding`'s "Resolved" badge. A resolved row is
+  carried by its treatment instead: ink-2 text, the severity badge without
+  hue or tint, the finding collapsed to one line.
 - **Impact list** (knowledge selections): each affected fact as a row with
   its node type and the requirement or claim it feeds, replacing
   `JSON.stringify(row)` (`KnowledgeSelections.tsx:165`); the confirm action
@@ -1133,7 +1177,7 @@ Library setup, **no new dependency**.
 | `StatusBadge` | `components/ui/StatusBadge.tsx` | batch 3 - **wired** (tender bar, gate panel, processing, requirements) |
 | `describeStatus`, `STATUS_MAP` | `status/statusMap.ts` | batch 3 - **wired** (gate, run, task, parse badges; `STATUS_MAP` read by the parse-label test) |
 | `describeReadiness` | `status/statusMap.ts` | batch 3 - **wired** (gate panel's final-readiness summary) |
-| `describeFinding` | `status/statusMap.ts` | batch 4 - **wired** (commercial findings); batch 5 (red team) |
+| `describeFinding` | `status/statusMap.ts` | batch 4 - **wired** (commercial findings); **not** used on red team (batch 5: the spec fixes that table's cell text, see Screen patterns, "Findings lists") |
 | `StatusTone`, `StatusDescriptor`, `StatusFamily` (types) | `status/statusMap.ts` | batch 2 (StatusBadge, icons) |
 | `formatDate` | `format/date.ts` | batch 3 - **wired** (gate panel: request and decided dates) |
 | `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | **still unused after batch 4** - no INR amount on any screen (Copy rules, "Money"); waits for the INR demo data (decision 8, Phase 4) |

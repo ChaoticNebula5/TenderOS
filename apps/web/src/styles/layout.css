@@ -117,3 +117,13 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* A status badge whose DOM text is the backend word, drawn capitalised
+   (batch 5: the proposal claim tag and the red-team severity cell, which
+   full-flow.spec.ts reads as text - :971, :1410). Applied only where the
+   mapped label IS that word capitalised (describeStatusKeepingRawWord);
+   text-transform changes what is drawn, never textContent. The batch 3
+   parse badge does the same with its own .parse-status rule. */
+.badge-raw-word .status-badge {
+  text-transform: capitalize;
+}

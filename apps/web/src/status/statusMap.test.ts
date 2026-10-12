@@ -3,7 +3,9 @@ import {
   STATUS_MAP,
   describeApproved,
   describeFinding,
+  describeGraphFreshness,
   describeSelected,
+  describeStatusKeepingRawWord,
   describeReadiness,
   describeStatus,
   describeVerified,
@@ -46,7 +48,66 @@ describe("statusMap", () => {
       for (const severity of Object.keys(STATUS_MAP.severity)) {
         expect(describeFinding(flag, severity).label).not.toBe("Ready");
       }
+      // Batch 5: graph freshness. (The proposalSection and validity families
+      // are covered by the STATUS_MAP loop above.)
+      expect(describeGraphFreshness(flag).label).not.toBe("Ready");
     }
+  });
+
+  it("maps proposal sections and evidence validity as decided at batch 5 plan review", () => {
+    expect(describeStatus("proposalSection", "draft")).toEqual({ tone: "neutral", label: "Draft" });
+    expect(describeStatus("proposalSection", "review")).toEqual({
+      tone: "blocked",
+      label: "In review",
+    });
+    expect(describeStatus("proposalSection", "approved")).toEqual({
+      tone: "ready",
+      label: "Approved",
+    });
+    expect(describeStatus("validity", "valid")).toEqual({ tone: "ready", label: "Valid" });
+    expect(describeStatus("validity", "invalid")).toEqual({ tone: "failed", label: "Invalid" });
+    // Failed, not Warning: the backend treats expired exactly like invalid.
+    expect(describeStatus("validity", "expired")).toEqual({ tone: "failed", label: "Expired" });
+    expect(describeStatus("validity", "unknown")).toEqual({ tone: "neutral", label: "Unknown" });
+    expect(describeGraphFreshness(true)).toEqual({ tone: "ready", label: "Fresh" });
+    expect(describeGraphFreshness(false)).toEqual({ tone: "warning", label: "Stale" });
+  });
+
+  // The proposal claim tag and the red-team severity cell are read as text by
+  // full-flow.spec.ts (:971 "/ unsupported]", :1410 "critical"), so their
+  // badges keep the raw word where the label is just that word capitalised.
+  it("keeps the raw word only where the label is that word capitalised", () => {
+    expect(describeStatusKeepingRawWord("grounding", "grounded")).toEqual({
+      tone: "ready",
+      label: "grounded",
+      keepsRawWord: true,
+    });
+    expect(describeStatusKeepingRawWord("grounding", "unsupported")).toEqual({
+      tone: "failed",
+      label: "unsupported",
+      keepsRawWord: true,
+    });
+    expect(describeStatusKeepingRawWord("grounding", "needs_review")).toEqual({
+      tone: "blocked",
+      label: "Needs review",
+      keepsRawWord: false,
+    });
+    expect(describeStatusKeepingRawWord("grounding", "not_required")).toEqual({
+      tone: "neutral",
+      label: "Not required",
+      keepsRawWord: false,
+    });
+    for (const severity of ["critical", "major", "minor"]) {
+      const d = describeStatusKeepingRawWord("severity", severity);
+      expect(d.label).toBe(severity);
+      expect(d.keepsRawWord).toBe(true);
+    }
+    // Not a backend value (only a test fixture uses it): falls back to the raw word.
+    expect(describeStatusKeepingRawWord("severity", "high")).toEqual({
+      tone: "neutral",
+      label: "high",
+      keepsRawWord: true,
+    });
   });
 
   it("describes approval and selection: Approved/Selected as Ready-toned, the negatives Neutral", () => {
