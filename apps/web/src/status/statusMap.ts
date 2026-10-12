@@ -30,7 +30,11 @@ export type StatusFamily =
   | "compliance"
   | "importItem"
   | "proposalSection"
-  | "validity";
+  | "validity"
+  | "importBatch"
+  | "knowledgeItem"
+  | "availability"
+  | "profileReview";
 
 type FamilyMap = Readonly<Record<string, StatusDescriptor>>;
 
@@ -179,6 +183,71 @@ const validity: FamilyMap = {
   unknown: { tone: "neutral", label: "Unknown" },
 };
 
+// Knowledge import batch - the status the API RETURNS, which is computed
+// from the batch's items (domain/services/knowledge_service.py:1211-1240),
+// not the stored column (db/models/knowledge.py:34). Batch 6, decided at
+// plan review; DESIGN.md has no row for this family. A completed batch is
+// shown through describeImportBatch, which splits off "Done with failures".
+const importBatch: FamilyMap = {
+  // chosen, not in DESIGN: no items yet - the run family's word for waiting to start
+  queued: { tone: "running", label: "Queued" },
+  // chosen, not in DESIGN: some items still pending or extracted
+  processing: { tone: "running", label: "Processing" },
+  // chosen, not in DESIGN: the import item family's word and tone
+  needs_review: { tone: "blocked", label: "Needs review" },
+  // chosen, not in DESIGN: the run family's word for completed (DESIGN.md:320)
+  completed: { tone: "ready", label: "Done" },
+  // chosen, not in DESIGN: every item failed (knowledge_service.py:1225-1226)
+  failed: { tone: "failed", label: "Failed" },
+};
+
+// Knowledge item - db/models/knowledge.py:103. Batch 6, decided at plan
+// review; DESIGN.md has no row for this family. Only `active` counts as
+// verified evidence (domain/services/compliance_service.py:79).
+const knowledgeItem: FamilyMap = {
+  // chosen, not in DESIGN
+  active: { tone: "ready", label: "Active" },
+  // chosen, not in DESIGN: Failed, as the validity family's expired
+  expired: { tone: "failed", label: "Expired" },
+  // chosen, not in DESIGN: Warning - usable data that compliance does not
+  // count as verified, not a workflow step waiting on a person
+  unverified: { tone: "warning", label: "Unverified" },
+  // chosen, not in DESIGN
+  archived: { tone: "neutral", label: "Archived" },
+};
+
+// Employee availability - db/models/knowledge.py:174. Batch 6, decided at
+// plan review; DESIGN.md has no row for this family.
+const availability: FamilyMap = {
+  // chosen, not in DESIGN
+  available: { tone: "ready", label: "Available" },
+  // chosen, not in DESIGN
+  partially_available: { tone: "warning", label: "Partly available" },
+  // chosen, not in DESIGN: Blocked, not Neutral - partly available is
+  // Warning, so a Neutral "Unavailable" would read as less severe than it
+  unavailable: { tone: "blocked", label: "Unavailable" },
+  // chosen, not in DESIGN
+  unknown: { tone: "neutral", label: "Unknown" },
+};
+
+// Employee profile review - db/models/knowledge.py:178. Batch 6, decided at
+// plan review; DESIGN.md has no row for this family. Only needs_review
+// (the default, :217) and verified (knowledge_service.py:1156) have a
+// writer today; stale, rejected and archived are read
+// (talent_service.py:236, db/repositories/knowledge.py:340) but never set.
+const profileReview: FamilyMap = {
+  // chosen, not in DESIGN: the import item and grounding families' word and tone
+  needs_review: { tone: "blocked", label: "Needs review" },
+  // chosen, not in DESIGN: describeVerified's word and tone
+  verified: { tone: "ready", label: "Verified" },
+  // chosen, not in DESIGN: the graph's "Stale" (Warning, DESIGN.md:295)
+  stale: { tone: "warning", label: "Stale" },
+  // chosen, not in DESIGN
+  rejected: { tone: "failed", label: "Rejected" },
+  // chosen, not in DESIGN
+  archived: { tone: "neutral", label: "Archived" },
+};
+
 export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
   gate,
   run,
@@ -190,6 +259,10 @@ export const STATUS_MAP: Readonly<Record<StatusFamily, FamilyMap>> = {
   importItem,
   proposalSection,
   validity,
+  importBatch,
+  knowledgeItem,
+  availability,
+  profileReview,
 };
 
 // chosen, not in DESIGN: a value the backend adds later that this map does
@@ -283,4 +356,17 @@ export function describeStatusKeepingRawWord(
 // "Ready" (reserved).
 export function describeGraphFreshness(fresh: boolean): StatusDescriptor {
   return fresh ? { tone: "ready", label: "Fresh" } : { tone: "warning", label: "Stale" };
+}
+
+// Import batch status (TalentImportReview's Batches table). The backend
+// calls a batch "completed" once no item is still in progress, even when
+// some items failed (knowledge_service.py:1227-1228: only an all-failed
+// batch is "failed"). Decided at batch 6 plan review: "Done" only when
+// failed_items is 0; otherwise Warning "Done with failures", derived from
+// the same response. Every other status goes through the family map.
+export function describeImportBatch(status: string, failedItems: number): StatusDescriptor {
+  if (status === "completed" && failedItems > 0) {
+    return { tone: "warning", label: "Done with failures" };
+  }
+  return describeStatus("importBatch", status);
 }

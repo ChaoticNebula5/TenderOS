@@ -4,6 +4,7 @@ import {
   describeApproved,
   describeFinding,
   describeGraphFreshness,
+  describeImportBatch,
   describeSelected,
   describeStatusKeepingRawWord,
   describeReadiness,
@@ -52,6 +53,84 @@ describe("statusMap", () => {
       // are covered by the STATUS_MAP loop above.)
       expect(describeGraphFreshness(flag).label).not.toBe("Ready");
     }
+    // Batch 6: the derived batch describer, over every batch status, with
+    // and without failed items.
+    for (const status of Object.keys(STATUS_MAP.importBatch)) {
+      for (const failed of [0, 1]) {
+        expect(describeImportBatch(status, failed).label).not.toBe("Ready");
+      }
+    }
+  });
+
+  // Batch 6, decided at plan review. Fake values only.
+  it("maps import batches, with Done only when no item failed", () => {
+    expect(describeImportBatch("completed", 0)).toEqual({ tone: "ready", label: "Done" });
+    expect(describeImportBatch("completed", 1)).toEqual({
+      tone: "warning",
+      label: "Done with failures",
+    });
+    // An all-failed batch is "failed" from the backend, not "completed".
+    expect(describeImportBatch("failed", 4)).toEqual({ tone: "failed", label: "Failed" });
+    expect(describeImportBatch("queued", 0)).toEqual({ tone: "running", label: "Queued" });
+    expect(describeImportBatch("processing", 1)).toEqual({ tone: "running", label: "Processing" });
+    expect(describeImportBatch("needs_review", 1)).toEqual({
+      tone: "blocked",
+      label: "Needs review",
+    });
+    expect(describeImportBatch("some_new_status", 0)).toEqual({
+      tone: "neutral",
+      label: "some_new_status",
+    });
+  });
+
+  it("maps knowledge items, availability and profile review as decided at batch 6 plan review", () => {
+    expect(describeStatus("knowledgeItem", "active")).toEqual({ tone: "ready", label: "Active" });
+    expect(describeStatus("knowledgeItem", "expired")).toEqual({
+      tone: "failed",
+      label: "Expired",
+    });
+    expect(describeStatus("knowledgeItem", "unverified")).toEqual({
+      tone: "warning",
+      label: "Unverified",
+    });
+    expect(describeStatus("knowledgeItem", "archived")).toEqual({
+      tone: "neutral",
+      label: "Archived",
+    });
+    expect(describeStatus("availability", "available")).toEqual({
+      tone: "ready",
+      label: "Available",
+    });
+    expect(describeStatus("availability", "partially_available")).toEqual({
+      tone: "warning",
+      label: "Partly available",
+    });
+    // Blocked, not Neutral: never milder than partly available.
+    expect(describeStatus("availability", "unavailable")).toEqual({
+      tone: "blocked",
+      label: "Unavailable",
+    });
+    expect(describeStatus("availability", "unknown")).toEqual({
+      tone: "neutral",
+      label: "Unknown",
+    });
+    expect(describeStatus("profileReview", "needs_review")).toEqual({
+      tone: "blocked",
+      label: "Needs review",
+    });
+    expect(describeStatus("profileReview", "verified")).toEqual({
+      tone: "ready",
+      label: "Verified",
+    });
+    expect(describeStatus("profileReview", "stale")).toEqual({ tone: "warning", label: "Stale" });
+    expect(describeStatus("profileReview", "rejected")).toEqual({
+      tone: "failed",
+      label: "Rejected",
+    });
+    expect(describeStatus("profileReview", "archived")).toEqual({
+      tone: "neutral",
+      label: "Archived",
+    });
   });
 
   it("maps proposal sections and evidence validity as decided at batch 5 plan review", () => {

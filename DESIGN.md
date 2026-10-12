@@ -285,6 +285,16 @@ Sources:
 - Compliance entry: `db/models/compliance.py:53-56` - `fully_compliant, partially_compliant, non_compliant, clarification_required, evidence_unavailable, not_reviewed`
 - Finding resolved flag: `db/models/redteam.py:46` and `db/models/commercial.py:93` (boolean)
 - Import item: `db/models/knowledge.py:61` - `pending, extracted, needs_review, approved, rejected, failed`
+- Import batch (batch 6): the status the API **returns** is computed from
+  the batch's items, `domain/services/knowledge_service.py:1211-1240` -
+  `queued, processing, needs_review, completed, failed` - not the stored
+  column (`db/models/knowledge.py:34`). "completed" includes batches with
+  some failed items; only an all-failed batch is "failed".
+- Knowledge item (batch 6): `db/models/knowledge.py:103` - `active, expired, archived, unverified`
+  (only `active` counts as verified evidence, `domain/services/compliance_service.py:79`)
+- Employee availability (batch 6): `db/models/knowledge.py:174` - `available, partially_available, unavailable, unknown`
+- Employee profile review (batch 6): `db/models/knowledge.py:178` - `needs_review, verified, stale, rejected, archived`
+  (only `needs_review`, the default, and `verified`, `knowledge_service.py:1156`, have a writer)
 
 | Display state | Gate | Run | Task | Parse | Severity | Grounding | Compliance | Other |
 |---|---|---|---|---|---|---|---|---|
@@ -336,6 +346,23 @@ into words:
   "Unsupported", "Needs review", "Not required". Compliance: "Compliant",
   "Partly compliant", "Not compliant", "Clarification needed", "No
   evidence", "Not reviewed". Finding resolved: "Resolved" / "Open".
+- **Batch 6 families (chosen at plan review, `status/statusMap.ts`):**
+  - Import batch: queued Running "Queued", processing Running
+    "Processing", needs_review Blocked "Needs review", failed Failed
+    "Failed"; completed is Ready **"Done" only when `failed_items` is 0**,
+    otherwise Warning **"Done with failures"** (`describeImportBatch`,
+    derived from the same response).
+  - Knowledge item: active Ready "Active", expired Failed "Expired" (as
+    validity's expired), unverified **Warning** "Unverified" (data
+    compliance does not count as verified, not a step waiting on a
+    person), archived Neutral "Archived".
+  - Availability: available Ready "Available", partially_available
+    Warning "Partly available", unavailable **Blocked** "Unavailable"
+    (Neutral would read milder than partly available), unknown Neutral
+    "Unknown".
+  - Profile review: needs_review Blocked "Needs review", verified Ready
+    "Verified", stale Warning "Stale", rejected Failed "Rejected",
+    archived Neutral "Archived".
 
 ### Named Rules
 
@@ -607,6 +634,11 @@ measured by grep). Each component will exist once and be reused.
   Load primary, Generate with its existing "Generating..."; Explore quiet.
   3 bare buttons migrated; 5 remain (measured after batch 5), all in the
   talent screens (batch 6).
+- **Built (batch 6, group A):** import queue - Review items and Approve
+  quiet, Reject danger; the clicked Approve or Reject carries `aria-busy`
+  and both of that row's buttons are disabled while it runs (no busy
+  label: no participle existed). Labels unchanged. 3 bare buttons
+  migrated; 2 remain, both on the employee profile (measured).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -658,6 +690,11 @@ measured by grep). Each component will exist once and be reused.
   mapped labels. **Spec-forced deviation:** the red-team Resolved column
   stays the plain word "yes"/"no" (`:1382`, `:1395` wait for "no" in td
   index 3), alongside the requirement register's Reviewed column.
+- **Built (batch 6, group A):** import batch status (`describeImportBatch`)
+  and import item status on the import queue - the import item family's
+  first screen. The batch status cell is read by the spec only as text it
+  puts in a failure message (`full-flow.spec.ts:350`), so it takes the
+  mapped label.
 
 ### Gate panel
 - **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
@@ -736,6 +773,17 @@ measured by grep). Each component will exist once and be reused.
   findings Note 256 into 175, and 253 even with every finding resolved), so
   that column could never be seen whole. Those three tables' row actions
   scroll with the table instead.
+- **Built (batch 6, group A):** `TableScroll` on the import batches and
+  items tables. **No sticky last column on either** (measured at 390px):
+  batches left 126px for a 152px column with Review items pinned; items
+  159px for the 224px Detail column (239 for 224 with every row's actions
+  empty, but the column then pins nothing). Both scroll their actions with
+  the table. Batch counts through `.cell-num`. The items' Detail cell is a
+  labelled grid (stacked below 600px); a résumé file name in the sticky
+  Source column breaks after its underscores (`<wbr>`, a local copy of the
+  red-team helper - sharing it would touch that screen; polish list). The
+  open batch's row takes the `surface-raise` tone on every cell, sticky
+  ones included, hovered or not (measured).
 
 ### Forms and inputs
 - **Today:** labels wrap inputs (good for accessibility, keep it), no
@@ -753,6 +801,13 @@ measured by grep). Each component will exist once and be reused.
 - **Built (batch 3):** `Field` labels the gate notes ("Notes (optional)",
   replacing a placeholder) and the processing screen's file input ("Upload
   a document"); the input stays a native file input.
+- **Built (batch 6, group A):** the import queue's three uploads are stacked
+  `Field`s (no `<br />`), native file inputs, **labels verbatim, colons
+  included**: `full-flow.spec.ts:317` finds the résumé input by the
+  substring "Resumes (multiple files):" and `:329` waits for it to be
+  enabled again, so it stays disabled while an upload is in flight; the
+  other two keep their colons so siblings read alike (decided at plan
+  review). A hint below says the page does not refresh itself.
 
 ### Notices (error, warning, info)
 - **Today:** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
@@ -784,6 +839,10 @@ measured by grep). Each component will exist once and be reused.
   the graph's contradictions box became a warning panel class. Remaining
   inline readers after batch 5 (measured): `--color-danger` 4, all in the
   talent screens - it can be deleted in batch 6.
+- **Built (batch 6, group A):** the import queue's error is a `failed`
+  notice with `alert`. `--color-danger` readers: 3, all on the library and
+  employee profile (measured); the alias goes in group B with its last
+  reader.
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -820,6 +879,13 @@ measured by grep). Each component will exist once and be reused.
   "Loading candidates..." while its fetch is in flight instead of claiming
   "no candidates" before the response says so (display state only). The
   knowledge preview's "Loading..." stays a paragraph (no table there).
+- **Built (batch 6, group A):** the import queue's two "Loading..."
+  paragraphs are gone: both tables always render once shown, `aria-busy`
+  while their fetch is in flight, **no skeleton rows** (`full-flow.spec.ts`
+  `:344` expects exactly one batch row and `:397` counts item rows as
+  "loaded"), and an `EmptyState` after the table once the response is
+  empty. Selecting another batch clears the previous batch's items first,
+  so they never show under the new batch's name (display state only).
 
 ### Navigation
 - **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
@@ -990,6 +1056,9 @@ measured by grep). Each component will exist once and be reused.
     graph or readiness screens shows a structured amount: readiness counts
     are counts, and amounts appear only inside backend prose (proposal
     text, red-team findings), which stays as written.
+  - **Batch 6: still no caller.** No talent model has a rate, salary,
+    cost or currency (`db/models/knowledge.py`); `years_experience` is a
+    count of years and an import payload's `confidence` a 0-1 score.
   - Note: the landing's copy spells the unit out ("₹68.4 crore",
     `apps/landing/src/data/tender.ts:11`) as hand-written strings. The app's
     compact mode uses "Cr" as decided. Not changed here; flagged so the
@@ -998,6 +1067,14 @@ measured by grep). Each component will exist once and be reused.
   panel's raw ISO decided date was replaced in batch 3 (`formatDate`,
   viewer's local zone). en-IN abbreviates September as "Sept" (measured in
   Node and Chromium).
+  **Date-only values (batch 6):** `formatDay` (`format/date.ts`) shows a
+  backend `date` as `31 Mar 2025`, no clock time. It reads the three
+  numbers and formats in UTC: `formatDate("2025-03-31")` treats the value
+  as midnight UTC and shows the 30th in any zone west of UTC (tested).
+  Audit at batch 6 (grep): every existing `formatDate` caller passes a
+  timestamp (`GateDecisionPanel.tsx:123`, `:138`; `GraphExplorer.tsx:123`;
+  `Readiness.tsx:206`, `:212`); the only date-only value on any screen is
+  the library's raw `valid_until` (`TalentLibrary.tsx:121`, group B).
 
 ## What the app will not do
 
@@ -1171,7 +1248,8 @@ Library setup, **no new dependency**.
 5. **Proposal, evidence and readiness (built).** Proposal workspace,
    traceability drawer, red-team findings, graph explorer, readiness.
    Details under "Batch 5: as built".
-6. **Talent.** Talent library, import and review queue, employee profile.
+6. **Talent (group A built).** Talent library, import and review queue,
+   employee profile. Details under "Batch 6: as built".
 
 ### Batch 2: as built
 
@@ -1410,6 +1488,70 @@ Library setup, **no new dependency**.
 | `.badge-raw-word` (class) | `styles/layout.css` | batch 5 (proposal, red team) |
 | `describeFinding` | `status/statusMap.ts` | unchanged: commercial only; **not** on red team (spec-forced) |
 | `formatInr` | `format/inr.ts` | **still unused** - no INR amount on any screen |
+
+### Batch 6: as built
+
+**Group A - import and review queue** (`TalentImportReview.tsx`; the
+library and employee profile are group B).
+
+- **Spec-forced choices** (`apps/web/e2e/full-flow.spec.ts` unchanged,
+  byte-identical to main):
+  - **Upload labels verbatim, colons included** (`:317` substring match,
+    `:329` waits for the input to be enabled) - Forms and inputs.
+  - **The batches table is the page's first `<table>`; its row's `<td>`s
+    are read by index** (`:344-353`): Type, Status, Total, Completed,
+    Failed in that order, the Type cell a `<td>` (a `<th>` shifts every
+    index), and the three number cells hold only digits (`Number()`).
+  - **The Items `<section>` is a direct child of `<main>`** (`:388-390`):
+    "`section` that has a heading 'Items'" also matches any ancestor
+    section, so a wrapper would add the batches' rows to the `:402` count.
+    A vitest pins one such section, not nested.
+  - **One row per item, Approve inside it, labels unchanged** (`:402-424`).
+  - **No skeleton rows** in either table (`:344`, `:397`).
+- **Chosen, not in this file** (marked in code): the batch 6 status
+  families (Label map); import type labels - `manual` reads "Capability
+  statement", its only writer being that upload
+  (`apps/api/src/tenderos_api/routes/knowledge.py:222`); source labels -
+  `row_N` "Row N" (the real sheet row), `project_N` / `capability_N`
+  counted from 1, `_batch_parse_failure` "Whole file", file names as
+  written; the Detail cell shows the backend's reason **and** the parsed
+  fields (before, the reason replaced them), in a fixed key order because
+  JSONB does not keep one, null as "Not set", an empty mention list as
+  "None", `confidence` as "Extraction confidence" through `formatPercent`,
+  years as "1 year" / "12.5 years", unknown keys humanised with a `<code>`
+  JSON fallback (`routes/talentImportValues.ts`); count lines ("5
+  batches, 1 needs review").
+- **Recorded, not fixed (pre-existing):** "Review items" on the batch that
+  is already open does not refetch its items - the effect is keyed on the
+  selected id, which does not change - although the screen's own comment
+  says re-selecting shows progress. The hint and the empty state therefore
+  say "reload". Behaviour fix for a later block.
+- **Measured (fake fixture data, real Vite dev server, page.route):** page
+  `scrollWidth` 390 at 390px in eight states (empty, loading, load error,
+  populated, items open, items loading, items empty, items with no row
+  actions). The spec's own locators run in strict mode on the restyled DOM
+  with a spec-like fixture: one résumé input, disabled during upload and
+  enabled after; one batch row whose cells parse as integers; four item
+  rows; Approve clicked and hidden. Contrast: 557 text pairs from computed
+  styles with exact compositing (rows, hovered rows, the selected row,
+  the Detail grid, notice, badges), 0 below 4.5:1, lowest 5.17:1 (failed
+  badge); the ink-3 chunk id 5.47:1 at rest, 4.69:1 on a hovered row.
+  Greyscale, deuteranopia and protanopia: every badge reads by icon and
+  label. Keyboard: 12 stops, a ring on each, no `tabIndex` above 0.
+- **Checks at group A (measured):** vitest 280 (238 at batch 5), stable
+  over three runs; fake E2E (`scripts/e2e.ps1`, all three app containers
+  `LLM_PROVIDER=fake`, web image rebuilt and checked for the new code
+  before the run) 1 passed. Bare buttons 2 remain, inline styles 3,
+  `--color-danger` readers 3 (library and employee profile).
+- **New exports and their first caller:**
+
+| Export | File (under `apps/web/src/`) | First caller |
+|---|---|---|
+| `importBatch`, `knowledgeItem`, `availability`, `profileReview` families | `status/statusMap.ts` | batch 6 A (import queue: `importBatch`); the other three in group B |
+| `describeImportBatch` | `status/statusMap.ts` | batch 6 A (import queue) |
+| `formatDay` | `format/date.ts` | batch 6 A (certification dates in the import Detail cell) |
+| `importTypeLabel`, `sourceRefLabel`, `payloadFields`, `formatYears`, `NOT_SET` | `routes/talentImportValues.ts` | batch 6 A (import queue) |
+| `formatInr` | `format/inr.ts` | **still unused** - no money in any talent response |
 
 ## Deferred
 
