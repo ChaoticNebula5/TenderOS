@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "./client";
 import { retryTransient } from "./retryTransient";
 
 // CodeRabbit-caught gap: retryTransient had no dedicated test file at all -
@@ -39,5 +40,45 @@ describe("retryTransient's maxAttempts validation", () => {
     );
     expect(result).toBe("ok");
     expect(calls).toBe(1);
+  });
+});
+
+// Phase 4 blocker 1: a 429 is terminal. The API's limit windows are 60 s, so
+// a retry a second or two later almost never succeeds and only uses up more
+// of the user's attempts; the caller shows the wait instead.
+describe("retryTransient and rate limits", () => {
+  it("never retries a 429, even with attempts to spare", async () => {
+    let calls = 0;
+    const rateLimited = new ApiError(429, { error: { code: "RATE_LIMITED" } }, 30);
+    await expect(
+      retryTransient(
+        async () => {
+          calls++;
+          throw rateLimited;
+        },
+        { maxAttempts: 3 },
+      ),
+    ).rejects.toBe(rateLimited);
+    expect(calls).toBe(1);
+  });
+
+  it("still retries a 503, so the 429 test above is not passing by accident", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const pending = retryTransient(
+        async () => {
+          calls++;
+          if (calls === 1) throw new ApiError(503, {});
+          return "ok";
+        },
+        { maxAttempts: 2 },
+      );
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toBe("ok");
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

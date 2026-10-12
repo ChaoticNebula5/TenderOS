@@ -269,7 +269,7 @@ describe("decision buttons", () => {
 
   it("a 409 response shows the stale-readiness message immediately, with no retry", async () => {
     // retryTransient classifies 409 as terminal (an allowlist of retryable
-    // statuses - 408/429/5xx - not a denylist), for two independent reasons:
+    // statuses - 408/5xx - not a denylist), for two independent reasons:
     // Build Guide line 2707's IDEMPOTENCY_CONFLICT ("same key + different
     // request returns 409") is deterministic and permanent - retrying with
     // the same key this component already reuses can never resolve it - and

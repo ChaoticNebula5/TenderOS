@@ -36,15 +36,29 @@ export function clearTokens(): void {
 export class ApiError extends Error {
   status: number;
   body: unknown;
+  // Seconds from the response's Retry-After header, or null when the header
+  // is absent, unreadable or not a whole number of seconds. Readable at all
+  // only because the API's CORS config exposes Retry-After (Phase 4 blocker
+  // 1); a cross-origin page cannot see a non-safelisted header otherwise.
+  retryAfterSeconds: number | null;
 
-  constructor(status: number, body: unknown) {
+  constructor(status: number, body: unknown, retryAfterSeconds: number | null = null) {
     // tsconfig's erasableSyntaxOnly forbids parameter properties (they
     // require emitting assignment code, not just erasing types) - fields
     // declared and assigned explicitly instead.
     super(`API error ${status}: ${JSON.stringify(body)}`);
     this.status = status;
     this.body = body;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+// Retry-After may also be an HTTP date; this API only ever sends whole
+// seconds (rate_limit.py), so a date, or anything else, reads as null and
+// the UI falls back to a message without a number.
+export function parseRetryAfter(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  return Number(value.trim());
 }
 
 interface RequestOptions {
@@ -63,7 +77,11 @@ async function handleResponse<T>(response: Response): Promise<T> {
       // Non-JSON error body (e.g. a bare 500) - ApiError still carries the
       // status; the caller decides how to render an unparseable error.
     }
-    throw new ApiError(response.status, parsedBody);
+    throw new ApiError(
+      response.status,
+      parsedBody,
+      parseRetryAfter(response.headers.get("Retry-After")),
+    );
   }
   // 204 is the only status this used to special-case, but
   // uploadKnowledgeDocument documents a real 202-with-no-body response

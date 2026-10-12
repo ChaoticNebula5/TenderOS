@@ -10322,3 +10322,68 @@ actually has - three independent failures were reproduced, not inferred:
   outermost, or add the CORS headers to the limiter's own responses. Both
   touch B15's middleware order, so they need their own review.
 - **Test:** none.
+
+## [Phase 4 blocker 1, 2026-10-12, resolved with four accepted limits] CORS on every response, fail-open rate limiter, readable rate-limit errors
+
+Resolves the entry above, "A rate-limited request (429) is shown as
+'Could not reach the server'; the 429 carries no CORS header".
+
+- **Discovered:** Phase 4 backend-hardening review (read-only), then
+  built on `phase4/backend-hardening`.
+- **Behaviour (fixed):** `CORSMiddleware` is now registered last, so it
+  is the outermost user middleware, and it exposes `Retry-After`
+  (`apps/api/src/tenderos_api/main.py:338-351`). The 429, the 413 and a
+  new catch-all 500 (`_catch_unhandled_exceptions`, `main.py:280`,
+  code `INTERNAL_ERROR`, generic message, traceback logged) now carry
+  `Access-Control-Allow-Origin` and the security headers. The web app
+  reads the API's `{"error": {"code", "message"}}` envelope, shows a
+  429 as "Too many attempts" with the wait from `Retry-After`, and no
+  longer auto-retries a 429 (`apps/web/src/api/retryTransient.ts:59`).
+  Observed live on the fake-provider stack (real, 2026-10-12): the 6th
+  `POST /auth/login` with `Origin: http://localhost:5173` returned 429
+  with `access-control-allow-origin: http://localhost:5173`,
+  `access-control-expose-headers: Retry-After` and `retry-after: 60`.
+- **Accepted limits:**
+  1. **The limiter fails open.** On a Redis connection error or timeout
+     (`REDIS_UNAVAILABLE_ERRORS`, `rate_limit.py:52`; timeouts 0.25 s
+     each, `rate_limit.py:61-62`, design numbers, not measured) the
+     request is allowed (`main.py:268`). While Redis is unavailable there
+     is no rate limiting at all, the login limit included, and one
+     WARNING is logged per request: there is no log throttling, so an
+     outage under load produces one log line per request.
+  2. **A 429 on `/auth/me` ends the session view.** `AuthContext.refresh()`
+     no longer retries a 429, so it goes straight to
+     `setMeResponse(null)` and keeps the token
+     (`apps/web/src/auth/AuthContext.tsx:26-37`): the user is shown as
+     logged out until a later refresh succeeds. Before, it retried for
+     about 3 s and in practice ended the same way inside a 60 s window.
+  3. **One bucket per proxy.** The limiter keys on `request.client.host`
+     (`main.py:252`, `rate_limit.py:145`). Behind a reverse proxy or load
+     balancer that is the proxy's IP, so every user would share one
+     bucket (100 requests and 5 logins per 60 s, configured numbers).
+     The fix is planned in Phase 4 with the deployment host.
+  4. **Test session only: Alembic disables existing loggers.**
+     `packages/tenderos_backend/src/tenderos_backend/db/migrations/env.py:14`
+     calls `fileConfig()`, whose default `disable_existing_loggers=True`
+     disables `tenderos_api.main`'s logger for the rest of a pytest
+     session once `tests/integration/test_schema_diff.py` has run Alembic
+     in-process. Found when the new log-asserting tests passed alone and
+     failed in the full suite; reproduced with that one file run first.
+     Worked around with the opt-in `main_logger_enabled` fixture
+     (`tests/route/conftest.py:201`). A real API process never runs
+     Alembic, so production logging is unaffected. The root-cause fix
+     (`disable_existing_loggers=False`) is planned as a separate small
+     commit.
+- **Risk:** limits 1 and 3 matter at deployment: an attacker who can
+  make Redis unavailable also disables brute-force protection on login,
+  and a proxy in front of the API turns per-user limits into one shared
+  limit.
+- **Status:** resolved (the CORS and UI defects); limits 1-3 accepted,
+  limit 4 open until its own commit.
+- **Test:** `tests/route/test_middleware_order.py` (full middleware order,
+  CORS and security headers on 429/413/500, the 500 envelope with no
+  internal detail), fail-open tests in
+  `tests/route/test_rate_limit_middleware.py` (a real unreachable Redis
+  on the global and the login path, and a failure on the login check
+  alone), `apps/web/src/api/formatErrorDetail.test.ts`, and
+  `apps/web/src/api/retryTransient.test.ts` (a 429 is not retried).

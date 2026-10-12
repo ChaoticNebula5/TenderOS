@@ -121,11 +121,34 @@ class GraphStaleAPIError(APIError):
         )
 
 
-async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+class InternalServerError(APIError):
+    # Returned by main.py's catch-all middleware for any exception nothing
+    # else handled. The message is deliberately generic: the real exception
+    # (type, message, traceback) goes to the server log only, never into a
+    # response body a client can read.
+    def __init__(self) -> None:
+        super().__init__(
+            500, "INTERNAL_ERROR", "Something went wrong on our side. Please try again."
+        )
+
+
+def error_response(exc: APIError, headers: dict[str, str] | None = None) -> JSONResponse:
+    """The one place the {"error": {"code", "message"}} envelope is built.
+
+    Shared by the APIError exception handler below and by main.py's
+    middlewares (the 429, the 413 and the catch-all 500), which return
+    before or outside FastAPI's exception handling and so cannot raise an
+    APIError and let the handler build the body.
+    """
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
+        headers=headers,
     )
+
+
+async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+    return error_response(exc)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import uuid
 from collections.abc import AsyncIterator
@@ -9,8 +10,11 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 from neo4j import AsyncGraphDatabase
 from neo4j import AsyncSession as Neo4jSession
+from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+from tenderos_api import main as api_main
+from tenderos_api import rate_limit
 from tenderos_api.main import app
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models import Base
@@ -162,6 +166,59 @@ async def _clean_neo4j(_no_pooling_for_neo4j):
     yield
     async with _get_neo4j_session_no_pooling() as session:
         await session.run("MATCH (n) DETACH DELETE n")
+
+
+@asynccontextmanager
+async def _rate_limit_redis_no_pooling() -> AsyncIterator[AsyncRedis]:
+    # Phase 4 blocker 1: rate_limit.py now shares one Redis client for the
+    # whole process. Its pooled connections bind to the event loop that
+    # opened them, and TestClient runs each request on its own loop (see
+    # _get_neo4j_session_no_pooling above), so the shared client would
+    # fail on the second request of a test. Same fix as Postgres and
+    # Neo4j: a fresh client per request, closed on the way out. Built by
+    # rate_limit.build_client so the timeouts and retry policy under test
+    # are the real ones.
+    redis_client = rate_limit.build_client(api_main.settings.redis_url)
+    try:
+        yield redis_client
+    finally:
+        await redis_client.aclose()
+
+
+@pytest_asyncio.fixture
+async def _cleanup_redis():
+    # Moved here unchanged from test_rate_limit_middleware.py once
+    # test_middleware_order.py also needed it: deletes the ratelimit:* keys
+    # a test that re-enabled the limiter created.
+    yield
+    redis_client = AsyncRedis.from_url(api_main.settings.redis_url)
+    async for key in redis_client.scan_iter(match="ratelimit:*"):
+        await redis_client.delete(key)
+    await redis_client.aclose()
+
+
+@pytest.fixture
+def main_logger_enabled(monkeypatch):
+    # For tests that assert on tenderos_api.main's log records. Found by the
+    # full suite, not assumed: those tests passed alone and failed after
+    # tests/integration/test_schema_diff.py, which runs Alembic in-process.
+    # Alembic's env.py calls logging.config.fileConfig(), whose default
+    # disable_existing_loggers=True sets `disabled = True` on every logger
+    # that already exists, this one included, for the rest of the session.
+    # A test-session artifact only: a real API process never runs Alembic.
+    # monkeypatch restores whatever state the logger had afterwards.
+    monkeypatch.setattr(logging.getLogger("tenderos_api.main"), "disabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_pooling_for_rate_limit_redis(monkeypatch):
+    # main.py does `from tenderos_api.rate_limit import rate_limit_redis`,
+    # binding the function into main's own namespace, so main's name is the
+    # one to patch (the same reason _no_pooling_for_neo4j patches
+    # graph_service, not the driver module). A no-op for every test that
+    # leaves settings.rate_limit_enabled at its test-session default of
+    # False, since the limiter then never asks for a client.
+    monkeypatch.setattr(api_main, "rate_limit_redis", _rate_limit_redis_no_pooling)
 
 
 @pytest.fixture
