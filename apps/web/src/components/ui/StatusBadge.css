@@ -1,0 +1,70 @@
+/* Status badge - DESIGN.md frontmatter status-badge-*: status hue on its
+   own 14% tint, 2px radius, label type, 2px 8px padding. Neutral has no
+   tint (frontmatter status-badge-neutral sets no background).
+
+   The tint sits on an opaque --surface base (a one-colour gradient layer
+   over a background colour), so whatever is behind the badge - the raised
+   gate panel, a hovered table row's overlay - cannot show through it and
+   change its contrast. Translucent, a failed badge on a hovered row
+   measured 4.34:1; on the opaque base every tone measures its own-tint
+   ratio everywhere (lowest: failed, 5.17:1). Measured, WCAG 2.x formula. */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--badge-pad-y) var(--badge-pad-x);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--leading-label);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.status-badge__icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.status-badge--ready {
+  color: var(--status-ready);
+  background: linear-gradient(var(--status-ready-tint), var(--status-ready-tint)), var(--surface);
+}
+
+.status-badge--running {
+  color: var(--status-running);
+  background:
+    linear-gradient(var(--status-running-tint), var(--status-running-tint)), var(--surface);
+}
+
+.status-badge--warning {
+  color: var(--status-warning);
+  background:
+    linear-gradient(var(--status-warning-tint), var(--status-warning-tint)), var(--surface);
+}
+
+.status-badge--blocked {
+  color: var(--status-blocked);
+  background:
+    linear-gradient(var(--status-blocked-tint), var(--status-blocked-tint)), var(--surface);
+}
+
+.status-badge--failed {
+  color: var(--status-failed);
+  background: linear-gradient(var(--status-failed-tint), var(--status-failed-tint)), var(--surface);
+}
+
+/* Neutral: an ink tint, so a neutral badge has a box like the other tones
+   and its label no longer looks indented by the 8px padding alone (polish
+   pass - amends DESIGN.md's "neutral sets no background"). --rule-2 is the
+   7% ink tint the tokens already define. Translucent on purpose, unlike
+   the hued tints' opaque base: over an opaque surface it would equal a
+   hovered row's own 7% tint and vanish on hover; laid over the row it
+   reads on the page, the raised panel and a hovered row alike. ink-2 text
+   stays far above 4.5:1 on all three (measured in the polish harness). */
+.status-badge--neutral {
+  color: var(--ink-2);
+  background: var(--rule-2);
+}

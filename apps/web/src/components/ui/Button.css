@@ -1,0 +1,127 @@
+/* Button variants - DESIGN.md Components "Buttons" and frontmatter
+   button-primary / button-secondary. Builds on the bare-button base in
+   index.css (hover/press overlay, disabled dimming); only what differs per
+   variant is here.
+
+   Specificity note: index.css hovers with button:hover:not(:disabled),
+   (0,2,1). A variant's own hover therefore repeats :hover:not(:disabled) so
+   it wins, rather than reaching for !important. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: var(--control-pad-y) var(--button-pad-x);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.25;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* index.css gives a:focus-visible the 2px badge radius; a link styled as a
+   button keeps the button's own corner. */
+.btn:focus-visible {
+  border-radius: var(--radius-md);
+}
+
+/* Primary: amber fill, one per region. Hover is the precomputed 8% lighter
+   amber, not the ink overlay. */
+.btn--primary {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  background-image: none;
+}
+
+/* Secondary: raised fill with a 3:1 control border (WCAG 1.4.11). */
+.btn--secondary {
+  border-color: var(--control-border);
+  background-color: var(--surface-raise);
+  color: var(--ink);
+}
+
+/* Quiet: for row actions. ink-2 at rest, ink + the ink overlay on hover.
+   Not amber: amber would make every row action read as a link.
+   Polish pass (decided): a 1px --control-border on a transparent fill, so a
+   quiet action reads as a control - before, it was text alone, and on the
+   import review row "Approve" looked like plain text beside the outlined
+   danger "Reject". The border is the same 3:1 boundary as inputs and
+   secondary buttons (WCAG 1.4.11); quiet still has no fill, so it stays
+   lighter than secondary. */
+.btn--quiet {
+  border-color: var(--control-border);
+  background-color: transparent;
+  color: var(--ink-2);
+}
+
+.btn--quiet:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+/* Danger: failed hue for text and border, never a fill; hover adds the
+   failed tint instead of the neutral ink overlay. */
+.btn--danger {
+  border-color: var(--status-failed);
+  background-color: transparent;
+  color: var(--status-failed);
+}
+
+.btn--danger:hover:not(:disabled) {
+  background-color: var(--status-failed-tint);
+  background-image: none;
+}
+
+/* Disabled: ink-3 text, fill unchanged, the whole control at 50%
+   (DESIGN.md Buttons, States). index.css sets this for bare buttons;
+   restated so the variants' colour does not override it. */
+.btn:disabled {
+  color: var(--ink-3);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Disabled PRIMARY only: deviates from DESIGN.md's literal "ink-3 text"
+   (Buttons, States). ink-3 on a 50% amber fill measured 1.10:1, an
+   unreadable label; on-accent at 50% measured 2.49:1, at 60% 3.06:1. So
+   on-accent text and 0.6 opacity. Secondary, quiet and danger keep the
+   rule above. :not([aria-busy]) leaves the busy state's own rule alone. */
+.btn--primary:disabled:not([aria-busy="true"]) {
+  color: var(--on-accent);
+  opacity: 0.6;
+}
+
+/* Busy is its own state in DESIGN.md, not "disabled": the button is
+   disabled for behaviour (Button.tsx explains why), but its label is the
+   one thing the operator reads while waiting ("Creating..."). Dimmed like
+   disabled, a busy primary measured 1.10:1; so busy keeps its variant's
+   colours at full opacity. These selectors (0,3,0) outrank both
+   .btn:disabled and index.css's button:disabled (0,1,1). */
+.btn[aria-busy="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+.btn--primary[aria-busy="true"]:disabled {
+  color: var(--on-accent);
+}
+
+.btn--secondary[aria-busy="true"]:disabled {
+  color: var(--ink);
+}
+
+.btn--quiet[aria-busy="true"]:disabled {
+  color: var(--ink-2);
+}
+
+.btn--danger[aria-busy="true"]:disabled {
+  color: var(--status-failed);
+}

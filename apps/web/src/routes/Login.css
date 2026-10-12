@@ -1,0 +1,32 @@
+/* Login - outside the app shell, so it sets its own column. */
+
+.login {
+  max-width: var(--width-auth);
+  margin: var(--space-8) auto 0;
+}
+
+/* Pulled left by the quiet buttons' own padding so the first mode's text
+   lines up with the wordmark and the fields below. */
+.login__modes {
+  margin: 0 0 var(--space-5) calc(var(--button-pad-x) * -1);
+}
+
+/* That pull leaves the first mode 2px from the viewport edge at 390px, and
+   the normal outset ring (2px offset + 2px width) was clipped there
+   (measured: outer edge at x = -1.2). Drawing the ring inset, as the
+   workflow nav does, keeps it whole without undoing the alignment. */
+.login__mode:focus-visible {
+  outline-offset: calc(var(--focus-ring-width) * -1);
+}
+
+/* The pressed mode looks like a current nav item - amber text, 2px amber
+   underline (DESIGN.md Navigation) - not a filled primary: the form's
+   submit is this region's one primary action. `.btn.` raises specificity
+   above Button.css's quiet hover so the pressed mode stays amber on hover. */
+.btn.login__mode[aria-pressed="true"],
+.btn.login__mode[aria-pressed="true"]:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 6px;
+}

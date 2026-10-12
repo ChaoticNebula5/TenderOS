@@ -1,0 +1,136 @@
+/* Traceability drawer - DESIGN.md Components, "Traceability drawer": a
+   right-side panel on wide screens, a full-height sheet at phone width.
+   The one shadow in the system (--shadow-overlay, DESIGN.md Elevation)
+   belongs here, because the drawer overlays content. */
+
+.trace-drawer__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.trace-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 21;
+  width: min(32rem, 100vw);
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-5) var(--space-6);
+  border-left: 1px solid var(--rule);
+  background: var(--surface-raise);
+  box-shadow: var(--shadow-overlay);
+}
+
+@media (max-width: 599.98px) {
+  .trace-drawer {
+    padding-inline: var(--gutter);
+    border-left: 0;
+  }
+}
+
+/* The heading and Close share one bar (polish pass, P5): heading left,
+   Close right - Close stays at the right while the trace loads and the
+   heading is not there yet. */
+.trace-drawer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.trace-drawer__bar .trace-drawer__close {
+  margin-left: auto;
+}
+
+.trace-drawer h2 {
+  margin: 0;
+}
+
+.trace-drawer h3 {
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+.trace-drawer__loading,
+.trace-drawer__none {
+  color: var(--ink-2);
+}
+
+.trace-drawer__claim {
+  margin: 0 0 var(--space-3);
+}
+
+/* Type / Grounding / Section as a compact definition row. */
+.trace-drawer__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+
+.trace-drawer__meta dt {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+}
+
+.trace-drawer__meta dd {
+  margin: var(--space-1) 0 0;
+}
+
+/* In scope but not cited: the louder of the two lists - a warning-toned
+   panel (tint over the raised surface, warning border), its count first. */
+.trace-drawer__uncited {
+  margin-top: var(--space-5);
+  padding: var(--space-3);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(var(--status-warning-tint), var(--status-warning-tint)), var(--surface-raise);
+}
+
+.trace-drawer__uncited h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--status-warning);
+}
+
+.trace-drawer__uncited-icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+/* Evidence entries (DESIGN.md Screen patterns, "Evidence view"). */
+.evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence + .evidence {
+  margin-top: var(--space-3);
+}
+
+.evidence__excerpt {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunk);
+  overflow-wrap: anywhere;
+}
+
+.evidence__source {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-label);
+}
+
+.evidence__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+}

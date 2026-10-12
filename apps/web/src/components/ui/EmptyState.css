@@ -1,0 +1,23 @@
+/* Empty state - Newsreader heading (One Serif Rule allows it here, DESIGN.md
+   Typography), one body sentence in ink-2, optional action. */
+
+.empty-state {
+  margin: var(--space-6) 0;
+}
+
+.empty-state__title {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-display);
+  font-size: var(--text-section);
+  font-weight: 300;
+  line-height: var(--leading-section);
+}
+
+.empty-state__body {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.empty-state__action {
+  margin-top: var(--space-4);
+}

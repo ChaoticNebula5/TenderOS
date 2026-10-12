@@ -1,0 +1,101 @@
+/* Readiness - the verdict (only for a report generated this visit), the
+   stored-report line, blockers and counts. */
+
+.readiness__actions {
+  margin-bottom: var(--space-4);
+}
+
+/* The verdict: icon + the <strong> word in its status hue (Three Signals
+   Rule: hue, icon, words). Readiness `ready: true` is the Ready state,
+   `false` the Blocked state (DESIGN.md Status mapping). */
+.readiness__verdict-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-section);
+}
+
+.readiness__verdict-line--ready {
+  color: var(--status-ready);
+}
+
+.readiness__verdict-line--blocked {
+  color: var(--status-blocked);
+}
+
+.readiness__verdict-icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
+.readiness__meta,
+.readiness__stored,
+.readiness__none {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.readiness__meta {
+  margin: var(--space-1) 0 0;
+}
+
+.readiness__blockers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: var(--measure-prose);
+}
+
+.readiness__blockers li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.readiness__blocker-icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--status-blocked);
+  transform: translateY(1px);
+}
+
+.readiness__blocker-category {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+}
+
+/* "(3 blockers)" after a grouped blocker's message (polish pass): kept on
+   one line - it wrapped as "(3" / "blockers)". The space before it is
+   outside this span, so the line can still break before the count. */
+.readiness__blocker-count {
+  white-space: nowrap;
+}
+
+/* Counts: label and number in a two-column grid, numbers right-aligned and
+   tabular (DESIGN.md "The Tabular Rule"). */
+.readiness__counts {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  gap: var(--space-1) var(--space-5);
+  margin: 0;
+  max-width: 32rem;
+}
+
+.readiness__counts > div {
+  display: contents;
+}
+
+.readiness__counts dt {
+  color: var(--ink-2);
+}
+
+.readiness__counts dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

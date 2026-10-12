@@ -1,0 +1,83 @@
+/* Red-team findings - the finding text, resolved rows, the resolve control.
+   The table takes the shared base styles (index.css) and TableScroll. */
+
+.redteam__actions {
+  margin-bottom: var(--space-3);
+}
+
+/* Prose column: wraps at a readable width. */
+.redteam__text {
+  min-width: 16rem;
+  max-width: var(--measure-prose);
+}
+
+/* The raw category (spec-forced, e.g. "deselected_fact_in_use") is the
+   sticky first column. It breaks after its underscores (<wbr>, see
+   RedteamFindings.tsx; its text is unchanged), so it cannot take most of a
+   390px screen. At phone width the finding column also narrows: measured
+   at 390, the 159px unbroken category left 199px, less than the finding's
+   256px minimum, so the finding could never be seen whole. */
+.redteam td:first-child {
+  max-width: 8rem;
+}
+
+@media (max-width: 599.98px) {
+  .redteam__text {
+    min-width: 12rem;
+  }
+}
+
+/* Resolved rows (DESIGN.md Screen patterns, "Findings lists"): the spec
+   fixes this table's cell text (see RedteamFindings.tsx), so "resolved" is
+   carried by the row's treatment instead of describeFinding's badge - text
+   in ink-2, the severity badge without its hue or tint (as the batch 3
+   rejected requirement rows), and the finding collapsed to one line. The
+   Resolved column still says "yes". */
+.redteam__row--resolved td {
+  color: var(--ink-2);
+}
+
+.redteam__row--resolved .status-badge {
+  background: none;
+  color: var(--ink-2);
+}
+
+.redteam__row--resolved .redteam__text-inner {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
+/* Note field and Resolve on one line from 600px up; they wrap at phone
+   width. */
+.redteam__resolve input {
+  width: 12rem;
+}
+
+@media (min-width: 600px) {
+  .redteam__resolve {
+    flex-wrap: nowrap;
+  }
+}
+
+/* A resolved row's resolution note (polish pass), in the actions column -
+   a .cell-actions cell, which is nowrap and 1% wide. The note wraps
+   normally and has its own width, so a long note neither widens the column
+   past the open rows' note field + Resolve nor, in an all-resolved table,
+   shrinks the column to a word per line. 16rem is about the open rows'
+   control width (12rem field + Resolve); 12rem at phone width. */
+.redteam__note {
+  width: 16rem;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  font-size: var(--text-label);
+}
+
+@media (max-width: 599.98px) {
+  .redteam__note {
+    width: 12rem;
+  }
+}

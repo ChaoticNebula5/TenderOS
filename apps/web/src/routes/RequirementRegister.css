@@ -1,0 +1,38 @@
+/* Requirement register - rejected rows, row actions. The table itself takes
+   the shared base styles (index.css) and TableScroll; the count line is the
+   shared .count-line (styles/layout.css, polish pass). */
+
+/* Prose column: let long requirement text wrap at a readable width. */
+.requirements td:nth-child(2) {
+  min-width: 16rem;
+  max-width: var(--measure-prose);
+}
+
+/* Rejected rows are dimmed (DESIGN.md Tables) - by colour, not by the 0.5
+   opacity the old inline style used (RequirementRegister.tsx:120). With a
+   badge in the row, opacity measured 2.62:1 for the badge text, below
+   4.5:1; ink-3 measures 5.47:1. A rejected requirement's badge keeps its
+   icon and words but loses its hue and tint, so it no longer reads as a
+   live state. */
+.requirements__row--rejected td {
+  color: var(--ink-3);
+}
+
+.requirements__row--rejected .status-badge {
+  background: none;
+  color: var(--ink-3);
+}
+
+/* The actions column shrinks to its content. From 600px up the three
+   actions stay on one line (without this, the 1% width lets .action-row
+   wrap them into a stack even on a wide screen); at phone width they wrap
+   inside the sticky last column so it stays narrow. */
+.requirements td:last-child {
+  width: 1%;
+}
+
+@media (min-width: 600px) {
+  .requirements .action-row {
+    flex-wrap: nowrap;
+  }
+}

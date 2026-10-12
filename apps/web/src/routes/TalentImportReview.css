@@ -1,0 +1,109 @@
+/* Talent import and review queue (restyle batch 6): the three uploads,
+   the batches table and the selected batch's items. */
+
+/* The three upload fields, stacked (they sat inline, split by <br />). */
+.talent-import__fields {
+  display: grid;
+  gap: var(--space-3);
+  max-width: var(--width-form);
+}
+
+.talent-import__hint,
+.talent-import__batch-meta {
+  max-width: var(--measure-prose);
+  color: var(--ink-2);
+}
+
+.talent-import__hint {
+  margin: var(--space-3) 0 0;
+}
+
+.talent-import__batch-meta {
+  margin: 0 0 var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The batch whose items are open below: the raised tone, on every cell -
+   the sticky first and last cells included, whose own opaque backgrounds
+   (TableScroll.css) would otherwise cover it. Three classes and three
+   elements, so it also holds on a hovered row; this file loads after
+   TableScroll.css. A tint, not a stripe or amber: selection here is not a
+   state and not navigation (DESIGN.md Reserved Amber Rule). */
+.table-scroll .talent-import__batches tbody tr.is-selected > td {
+  background: var(--surface-raise);
+}
+
+/* Items: each row can be tall (the parsed fields), so cells sit at the top. */
+.talent-import__item-table td {
+  vertical-align: top;
+}
+
+/* Source: a résumé file name breaks after its underscores (<wbr>, see
+   TalentImportReview.tsx), so the sticky first column stays narrow. */
+.talent-import__source {
+  max-width: 10rem;
+}
+
+/* Detail: the reason and the parsed fields, at a readable width. */
+.talent-import__detail {
+  min-width: 18rem;
+  max-width: var(--measure-prose);
+}
+
+.talent-import__reason {
+  margin: 0 0 var(--space-2);
+}
+
+/* The parsed fields: label and value in two columns, labels in ink-2. A
+   fixed label column (wide enough for "Certifications mentioned" at label
+   size), so the values line up from one item row to the next; a longer,
+   unknown label wraps. */
+.talent-import__fields-list {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.talent-import__fields-list > div {
+  display: contents;
+}
+
+.talent-import__fields-list dt {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  line-height: inherit;
+}
+
+.talent-import__fields-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.talent-import__fields-list code {
+  overflow-wrap: anywhere;
+}
+
+/* A raw id (the source chunk): tertiary ink, may break anywhere. */
+.talent-import__id {
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 599.98px) {
+  .talent-import__detail {
+    min-width: 14rem;
+  }
+
+  /* At phone width a label column as wide as "Certifications mentioned"
+     would leave the value little room; stack label over value instead. */
+  .talent-import__fields-list {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .talent-import__fields-list dd {
+    margin-bottom: var(--space-1);
+  }
+}

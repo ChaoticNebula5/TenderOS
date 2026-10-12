@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listWorkflowRuns: vi.fn(),
     listGates: vi.fn(),
     validatePricingDocument: vi.fn(),
+    resolvePricingFinding: vi.fn(),
   };
 });
 
@@ -33,6 +34,7 @@ const listPricingFindings = vi.mocked(apiClient.listPricingFindings);
 const listWorkflowRuns = vi.mocked(apiClient.listWorkflowRuns);
 const listGates = vi.mocked(apiClient.listGates);
 const validatePricingDocument = vi.mocked(apiClient.validatePricingDocument);
+const resolvePricingFinding = vi.mocked(apiClient.resolvePricingFinding);
 
 afterEach(() => {
   cleanup();
@@ -176,5 +178,98 @@ describe("handleValidate's stale-write guard", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("tender B finding")).toBeInTheDocument();
+  });
+});
+
+// Restyle batch 4. Pins the DOM contract full-flow.spec.ts reads on this
+// screen, and the finding badges (DESIGN.md:296-299). Fake fixture values.
+describe("CommercialFindings (restyle batch 4)", () => {
+  function renderSingle() {
+    return render(
+      <MemoryRouter initialEntries={["/tenders/tender-a/commercial"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId/commercial" element={<CommercialFindings />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  function typed(id: string, overrides: Partial<PricingFindingResponse>): PricingFindingResponse {
+    return { ...finding("tender-a", `note ${id}`), id, ...overrides };
+  }
+
+  it("keeps the findings table at index 1 even with no pricing documents (full-flow.spec.ts:922, :1058)", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([]);
+    listPricingFindings.mockResolvedValue([typed("f1", { finding_type: "wrong_total" })]);
+    const { container } = renderSingle();
+
+    await screen.findByText("note f1");
+    const tables = container.querySelectorAll("table");
+    expect(tables).toHaveLength(2);
+    expect(tables[0].querySelectorAll("tbody tr")).toHaveLength(0);
+    expect(tables[1].querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(screen.getByText("No pricing documents").closest("table")).toBeNull();
+    expect(within(tables[1]).getByText("Wrong total")).toBeInTheDocument();
+  });
+
+  it("shows open findings by severity and resolved ones as Resolved, with Resolve only on open rows, removed once resolved (full-flow.spec.ts:1059-1076)", async () => {
+    const user = userEvent.setup();
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([doc("tender-a")]);
+    listPricingFindings.mockResolvedValue([
+      typed("f1", { severity: "critical" }),
+      typed("f2", { severity: "major" }),
+      typed("f3", { severity: "minor", resolved: true }),
+    ]);
+    resolvePricingFinding.mockResolvedValue(typed("f1", { severity: "critical", resolved: true }));
+    const { container } = renderSingle();
+
+    await screen.findByText("note f1");
+    const findingsTable = container.querySelectorAll("table")[1] as HTMLElement;
+    const rows = findingsTable.querySelectorAll("tbody tr");
+    expect(within(rows[0] as HTMLElement).getByText("Critical")).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByText("Major")).toBeInTheDocument();
+    expect(within(rows[2] as HTMLElement).getByText("Resolved")).toBeInTheDocument();
+    expect(within(findingsTable).getAllByRole("button", { name: "Resolve" })).toHaveLength(2);
+    expect(screen.getByText("3 findings, 2 open")).toBeInTheDocument();
+
+    await user.click(within(rows[0] as HTMLElement).getByRole("button", { name: "Resolve" }));
+    await waitFor(() =>
+      expect(within(findingsTable).getAllByRole("button", { name: "Resolve" })).toHaveLength(1),
+    );
+    expect(within(rows[0] as HTMLElement).getByText("Resolved")).toBeInTheDocument();
+  });
+
+  it("shows no money: delta is not rendered and nothing carries a rupee sign", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([{ ...doc("tender-a"), currency: null }]);
+    listPricingFindings.mockResolvedValue([typed("f1", { delta: 12175.5 })]);
+    const { container } = renderSingle();
+
+    await screen.findByText("note f1");
+    expect(container.textContent).not.toContain("12175");
+    expect(container.textContent).not.toContain("₹");
+    expect(screen.getByText("Not stated")).toBeInTheDocument();
+  });
+
+  it("marks only the clicked Re-validate aria-busy and disables them all while it runs", async () => {
+    const user = userEvent.setup();
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([doc("tender-a"), { ...doc("tender-a"), id: "doc-2" }]);
+    listPricingFindings.mockResolvedValue([]);
+    let resolveValidate!: () => void;
+    validatePricingDocument.mockReturnValue(new Promise<void>((r) => (resolveValidate = r)));
+    renderSingle();
+
+    const buttons = await screen.findAllByRole("button", { name: "Re-validate" });
+    await user.click(buttons[0]);
+    expect(buttons[0]).toHaveAttribute("aria-busy", "true");
+    expect(buttons[1]).not.toHaveAttribute("aria-busy");
+    expect(buttons[0]).toBeDisabled();
+    expect(buttons[1]).toBeDisabled();
+    resolveValidate();
+    await waitFor(() => expect(buttons[0]).toBeEnabled());
+    expect(buttons[0]).not.toHaveAttribute("aria-busy");
   });
 });

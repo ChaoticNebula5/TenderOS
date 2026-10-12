@@ -1,0 +1,31 @@
+/* Talent and knowledge library (restyle batch 6): the link to the import
+   queue, the capability statement upload and the library table. */
+
+.talent-library__links {
+  margin: 0 0 var(--space-4);
+}
+
+.talent-library__upload {
+  max-width: var(--width-form);
+}
+
+/* Title is the sticky first column (TableScroll): long titles wrap rather
+   than set its width at 390px. */
+.talent-library__title {
+  min-width: 8rem;
+  max-width: 16rem;
+}
+
+/* Badge and override select side by side, wrapping under each other when
+   the column is narrow - the compliance matrix's status cell. */
+.talent-library__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.talent-library__date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

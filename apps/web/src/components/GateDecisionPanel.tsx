@@ -2,11 +2,31 @@ import { useState } from "react";
 import type { GateResponse } from "../api/client";
 import { ApiError, decideGate } from "../api/client";
 import { retryTransient } from "../api/retryTransient";
+import { formatDate } from "../format/date";
+import { describeReadiness, describeStatus } from "../status/statusMap";
+import { Button } from "./ui/Button";
+import type { ButtonVariant } from "./ui/buttonClassName";
+import { Field } from "./ui/Field";
+import { Notice } from "./ui/Notice";
+import { StatusBadge } from "./ui/StatusBadge";
+import { StatusIcon } from "./ui/icons";
+import "./GateDecisionPanel.css";
 
 interface GateDecisionPanelProps {
   gate: GateResponse;
   onDecided: (updated: GateResponse) => void;
 }
+
+type Decision = "approve" | "reject" | "request_changes";
+
+// Restyle batch 3 (DESIGN.md Components, "Gate panel"): one action
+// vocabulary for every gate. Approve is the region's primary action,
+// Request changes secondary, Reject danger (a rejected gate fails the run).
+const DECISIONS: readonly (readonly [Decision, string, ButtonVariant])[] = [
+  ["approve", "Approve", "primary"],
+  ["request_changes", "Request changes", "secondary"],
+  ["reject", "Reject", "danger"],
+];
 
 // The "shared" part of the shared gate-control component (B13 §7 step 5,
 // TODO(human) 1) is deliberately narrow: deciding the gate as a whole
@@ -43,12 +63,17 @@ interface GateDecisionPanelProps {
 export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   const [notes, setNotes] = useState("");
   const [waive, setWaive] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // The decision in flight, or null. All three buttons are disabled while
+  // one is submitting (as before); only the clicked one is aria-busy. No
+  // "Approving..." participle: none existed before, and a restyle does not
+  // invent copy (DESIGN.md Buttons, busy state).
+  const [pendingDecision, setPendingDecision] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const submitting = pendingDecision !== null;
 
-  async function handleDecide(decision: "approve" | "reject" | "request_changes") {
+  async function handleDecide(decision: Decision) {
     setError(null);
-    setSubmitting(true);
+    setPendingDecision(decision);
     // Generated once, outside retryTransient's own loop, and reused across
     // every retry of THIS decision - the backend's idempotency middleware
     // (apps/api/src/tenderos_api/idempotency.py) keys a stored response on
@@ -78,18 +103,40 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
         setError("Failed to record the decision.");
       }
     } finally {
-      setSubmitting(false);
+      setPendingDecision(null);
     }
   }
 
+  // The panel's root stays a <section>: every gate screen renders its <h2>
+  // and then this <section> as siblings, and full-flow.spec.ts:56 finds the
+  // panel that way (following-sibling::section[1]). Nothing may wrap it.
+  //
+  // Header: the gate's own status as a badge, decided or not, then the
+  // summary labelled as the snapshot it is - the counts are fixed when the
+  // gate is requested and do not follow later edits (DESIGN.md Gate panel,
+  // "Summary honesty").
+  const header = (
+    <>
+      <div className="gate-panel__header">
+        <StatusBadge {...describeStatus("gate", gate.status)} />
+      </div>
+      <p className="gate-panel__asof">At request time · {formatDate(gate.requested_at)}</p>
+      <GateSummary gate={gate} />
+    </>
+  );
+
   if (gate.status !== "pending") {
+    // Decided: the badge above plus when, in the shared date format. No
+    // <strong> (full-flow.spec.ts:1451 is a strict-mode check on the
+    // readiness page's only <strong>, and this panel renders there too),
+    // no raw ISO string, and no "who": decided_by is a user id, and a name
+    // would need a fetch a restyle does not add.
     return (
-      <section>
-        <GateSummary gate={gate} />
-        <p>
-          Decision: <strong>{gate.status}</strong>
-          {gate.decided_at && ` on ${gate.decided_at}`}
-        </p>
+      <section className="gate-panel">
+        {header}
+        {gate.decided_at && (
+          <p className="gate-panel__decided">Decided {formatDate(gate.decided_at)}</p>
+        )}
       </section>
     );
   }
@@ -97,32 +144,24 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   const needsWaiver = gate.gate_type === "final_readiness" && !gate.summary.ready;
 
   return (
-    <section>
-      <GateSummary gate={gate} />
+    <section className="gate-panel">
+      {header}
       {error && (
-        <p role="alert" style={{ color: "var(--color-danger)" }}>
+        <Notice variant="failed" alert>
           {error}
-        </p>
+        </Notice>
       )}
       {needsWaiver && (
-        <label>
+        <label className="gate-panel__waive">
           <input type="checkbox" checked={waive} onChange={(e) => setWaive(e.target.checked)} />
           Waive outstanding blockers
         </label>
       )}
-      <textarea
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        placeholder="Notes (optional)"
-      />
-      <div>
-        {(
-          [
-            ["approve", "Approve"],
-            ["request_changes", "Request changes"],
-            ["reject", "Reject"],
-          ] as const
-        )
+      <Field label="Notes (optional)">
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} />
+      </Field>
+      <div className="action-row">
+        {DECISIONS
           // gate.allowed_decisions is always all three today -
           // orchestration/gates.py's ALLOWED_DECISIONS is one fixed
           // tuple for every gate_type, not yet varied per type - but the
@@ -130,15 +169,16 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
           // and rendering a decision the backend would reject is a
           // silent dead end for whoever clicks it.
           .filter(([decision]) => gate.allowed_decisions.includes(decision))
-          .map(([decision, label]) => (
-            <button
+          .map(([decision, label, variant]) => (
+            <Button
               key={decision}
-              type="button"
+              variant={variant}
               onClick={() => handleDecide(decision)}
               disabled={submitting}
+              busy={pendingDecision === decision}
             >
               {label}
-            </button>
+            </Button>
           ))}
       </div>
     </section>
@@ -152,61 +192,98 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
 // iterating Object.entries(gate.summary) generically, since a reader
 // benefits from seeing "unverified_mandatory_count" as a real label, not
 // a formatted-from-a-key guess.
+//
+// A definition grid (DESIGN.md Gate panel), not a <ul>: each count is a
+// term and a value, and the values are tabular. No E2E locator reads these
+// counts, and the pages whose spec lines count <li> page-wide (proposal
+// :971/:974, knowledge selections :1253/:1258) render no gate panel
+// (measured before this change: 0 panels on either page).
 function GateSummary({ gate }: { gate: GateResponse }) {
   switch (gate.gate_type) {
     case "requirement_review":
       return (
-        <ul>
-          <li>Requirements: {gate.summary.requirement_count}</li>
-          <li>Mandatory: {gate.summary.mandatory_count}</li>
-          <li>Unverified mandatory: {gate.summary.unverified_mandatory_count}</li>
-          <li>Submission items: {gate.summary.submission_item_count}</li>
-          <li>Clarifications: {gate.summary.clarification_count}</li>
-        </ul>
+        <SummaryGrid
+          items={[
+            ["Requirements", gate.summary.requirement_count],
+            ["Mandatory", gate.summary.mandatory_count],
+            ["Unverified mandatory", gate.summary.unverified_mandatory_count],
+            ["Submission items", gate.summary.submission_item_count],
+            ["Clarifications", gate.summary.clarification_count],
+          ]}
+        />
       );
     case "compliance_review":
       return (
-        <ul>
-          <li>Compliance entries: {gate.summary.compliance_entry_count}</li>
-          <li>Pending approval: {gate.summary.pending_count}</li>
-          <li>High risk: {gate.summary.high_risk_count}</li>
-        </ul>
+        <SummaryGrid
+          items={[
+            ["Compliance entries", gate.summary.compliance_entry_count],
+            ["Pending approval", gate.summary.pending_count],
+            ["High risk", gate.summary.high_risk_count],
+          ]}
+        />
       );
     case "resource_selection":
       return (
-        <ul>
-          <li>Roles: {gate.summary.role_count}</li>
-          <li>Candidates: {gate.summary.candidate_count}</li>
-          <li>Unselected roles: {gate.summary.unselected_count}</li>
-        </ul>
+        <SummaryGrid
+          items={[
+            ["Roles", gate.summary.role_count],
+            ["Candidates", gate.summary.candidate_count],
+            ["Unselected roles", gate.summary.unselected_count],
+          ]}
+        />
       );
     case "commercial_approval":
       return (
-        <ul>
-          <li>Findings: {gate.summary.finding_count}</li>
-          <li>Pending: {gate.summary.pending_count}</li>
-          <li>Critical: {gate.summary.critical_count}</li>
-        </ul>
+        <SummaryGrid
+          items={[
+            ["Findings", gate.summary.finding_count],
+            ["Pending", gate.summary.pending_count],
+            ["Critical", gate.summary.critical_count],
+          ]}
+        />
       );
     case "finding_resolution":
       return (
-        <ul>
-          <li>Open findings: {gate.summary.open_finding_count}</li>
-          <li>Critical: {gate.summary.critical_count}</li>
-        </ul>
+        <SummaryGrid
+          items={[
+            ["Open findings", gate.summary.open_finding_count],
+            ["Critical", gate.summary.critical_count],
+          ]}
+        />
       );
     case "final_readiness":
+      // The readiness verdict - the one place "Ready" may appear
+      // (describeReadiness). Blockers stay a list, each with the blocked
+      // icon. This <ul> sits inside the panel's <section>, so it is never
+      // the "Blockers" <h2>'s following sibling that full-flow.spec.ts:1455
+      // reads on the readiness page (that <ul> is Readiness.tsx's own).
       return (
-        <div>
-          <p>Ready: {gate.summary.ready ? "yes" : "no"}</p>
+        <div className="gate-summary__readiness">
+          <StatusBadge {...describeReadiness(gate.summary.ready)} />
           {gate.summary.blockers.length > 0 && (
-            <ul>
+            <ul className="gate-blockers">
               {gate.summary.blockers.map((blocker, i) => (
-                <li key={i}>{blocker.message}</li>
+                <li key={i}>
+                  <StatusIcon tone="blocked" className="gate-blockers__icon" />
+                  {blocker.message}
+                </li>
               ))}
             </ul>
           )}
         </div>
       );
   }
+}
+
+function SummaryGrid({ items }: { items: [string, number][] }) {
+  return (
+    <dl className="gate-summary">
+      {items.map(([term, value]) => (
+        <div key={term} className="gate-summary__item">
+          <dt>{term}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }

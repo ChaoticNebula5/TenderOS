@@ -1,0 +1,96 @@
+/* Gate panel - DESIGN.md Components "Gate panel": a surface-raise panel,
+   header row with the gate's status badge, the summary as a definition
+   grid with tabular counts, notes, then the action row. Flat: tone, not
+   shadow, separates it from the page (Tone-Not-Shadow Rule). */
+
+.gate-panel {
+  max-width: var(--width-form);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-raise);
+}
+
+.gate-panel__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The summary is a snapshot from when the gate was requested; this line
+   says so (DESIGN.md "Summary honesty"). */
+.gate-panel__asof {
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Term over value, flowing into as many columns as fit: one column at
+   390px, several on a wide screen (the panel stacks, DESIGN.md Layout). */
+.gate-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-3) var(--space-4);
+  margin: 0 0 var(--space-4);
+}
+
+.gate-summary__item {
+  margin: 0;
+}
+
+.gate-summary dt {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  font-weight: 500;
+  line-height: var(--leading-label);
+}
+
+.gate-summary dd {
+  margin: 0;
+  font-size: var(--text-section);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gate-summary__readiness {
+  margin: 0 0 var(--space-4);
+}
+
+.gate-blockers {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gate-blockers li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.gate-blockers__icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  margin-top: calc((var(--text-body) * var(--leading-body) - var(--icon-size)) / 2);
+  color: var(--status-blocked);
+}
+
+.gate-panel__waive {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.gate-panel textarea {
+  resize: vertical;
+}
+
+.gate-panel__decided {
+  margin: 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}

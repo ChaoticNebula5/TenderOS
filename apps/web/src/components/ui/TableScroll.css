@@ -1,0 +1,55 @@
+/* Table scroll region - full width up to --width-table, scrolls on its own
+   axis; the first column is sticky so a row stays identifiable while
+   scrolling. The sticky cell needs an opaque background or scrolled cells
+   show through it. */
+
+.table-scroll {
+  /* position: relative makes the region the containing block for anything
+     absolutely positioned inside the table (e.g. a .visually-hidden header
+     label), so overflow-x clips it. Without it such an element is placed
+     against the page and widens it: the documents table measured 417px
+     at a 390px viewport. */
+  position: relative;
+  max-width: var(--width-table);
+  overflow-x: auto;
+}
+
+.table-scroll > table {
+  width: 100%;
+}
+
+.table-scroll th:first-child,
+.table-scroll td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.table-scroll td:first-child {
+  background: var(--surface);
+}
+
+/* Keep the row-hover tint (index.css, tbody tr:hover) visible on the
+   sticky cell too: the tint layered over the opaque surface. */
+.table-scroll tbody tr:hover td:first-child {
+  background: linear-gradient(var(--rule-2), var(--rule-2)), var(--surface);
+}
+
+/* Optional sticky last column (row actions). Same opaque background and
+   hover treatment as the first column; a rule on its left edge separates
+   it from the cells scrolling underneath. */
+.table-scroll--sticky-last th:last-child,
+.table-scroll--sticky-last td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  border-left: 1px solid var(--rule);
+}
+
+.table-scroll--sticky-last td:last-child {
+  background: var(--surface);
+}
+
+.table-scroll--sticky-last tbody tr:hover td:last-child {
+  background: linear-gradient(var(--rule-2), var(--rule-2)), var(--surface);
+}

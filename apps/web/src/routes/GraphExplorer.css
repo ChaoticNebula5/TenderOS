@@ -1,0 +1,126 @@
+/* Graph explorer - status line, contradictions, the look-up form, the
+   node's properties and its neighbours table. */
+
+.graph__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Contradictions: a failed-tone panel (tint over the page, failed border),
+   stated with its count first. Failed since the polish pass (decided), not
+   Warning: a contradiction is the defect the red team reports as critical
+   (deselected_fact_in_use), so the two screens give it one hue. */
+.graph__contradictions {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--status-failed);
+  border-radius: var(--radius-md);
+  background: linear-gradient(var(--status-failed-tint), var(--status-failed-tint)), var(--surface);
+}
+
+.graph__contradictions h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--status-failed);
+}
+
+.graph__contradictions-icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.graph__contradiction-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.graph__contradiction-list li + li {
+  margin-top: var(--space-2);
+}
+
+.graph__contradiction-category {
+  display: block;
+  font-weight: 600;
+}
+
+.graph__contradiction-part {
+  display: inline-block;
+  margin-right: var(--space-3);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* Look-up form: type, id and Load on one row from 600px up, stacked at
+   phone width. */
+.graph__lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+/* Polish pass (P6): Field's own 16px bottom margin moves out of this
+   flex-end row, or Load lines up with the bottom of that margin - 16px
+   below its fields (measured). */
+.graph__lookup .field {
+  margin-bottom: 0;
+}
+
+.graph__id-input {
+  width: min(24rem, 100%);
+}
+
+.graph__path,
+.graph__none {
+  color: var(--ink-2);
+}
+
+.graph__node {
+  margin-top: var(--space-5);
+}
+
+/* Properties: a two-column definition grid, wrapping long values. */
+.graph__props {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+.graph__props > div {
+  display: contents;
+}
+
+.graph__props dt {
+  color: var(--ink-2);
+}
+
+.graph__props dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A raw id (id, tender_id, ...): still shown, in tertiary ink. */
+.graph__id {
+  color: var(--ink-3);
+}
+
+.graph__props code {
+  font-family: inherit;
+  color: var(--ink-2);
+}
+
+.graph__neighbors td:last-child {
+  width: 1%;
+}

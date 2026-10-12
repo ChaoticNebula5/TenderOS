@@ -1,0 +1,91 @@
+/* Proposal workspace - sections, the section text field, the claim list.
+   Sections stay direct children of <main> (full-flow.spec.ts:952), so all
+   spacing is on the section itself. */
+
+.proposal__actions {
+  margin-bottom: var(--space-3);
+}
+
+.proposal-section {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--rule);
+  /* Polish pass (P4): the section, and so its rule, is as wide as the text
+     and claims it holds (72ch), instead of the rule running the full page
+     width above a 72ch column. */
+  max-width: var(--measure-prose);
+}
+
+.proposal-section h2 {
+  margin-top: 0;
+}
+
+.proposal-section__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 var(--space-3);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Full width without overflowing: the old inline width: 100% plus the
+   border made the page 6px wider than the viewport (DESIGN.md "Current
+   state", Proposal). Prose in the body face, not monospace. */
+.proposal-section__text {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--measure-prose);
+  resize: vertical;
+}
+
+.proposal-section h3 {
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.claims {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: var(--measure-prose);
+}
+
+/* Polish pass (P4): tag and claim text read as one block; "Inspect trace"
+   sits on its own line under it, left-aligned, instead of trailing a long
+   claim raggedly. */
+.claim__body {
+  display: block;
+}
+
+.claim > .btn {
+  margin-top: var(--space-1);
+}
+
+/* The grounding badge inside "[Type / grounding]": half the usual side
+   padding, so the closing "]" sits by the word instead of 8px of tint
+   away from it. */
+.claim__tag .status-badge {
+  padding-inline: var(--space-1);
+}
+
+.claim,
+.claims__none {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.claims__none {
+  color: var(--ink-2);
+}
+
+.claim__tag {
+  margin-right: var(--space-1);
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  white-space: nowrap;
+}
+
+.claim__punct {
+  color: var(--ink-3);
+}

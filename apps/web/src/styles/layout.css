@@ -1,0 +1,154 @@
+/* Shared layout classes - restyle batch 2. Used by more than one component
+   or screen, so they live here rather than next to any one of them.
+   main.tsx imports this after index.css (element styles) so a class always
+   wins over the element default it adjusts. */
+
+/* The page gutter batch 1 deliberately left out (index.css zeroes body
+   margin). The shell's #content wrapper and Login both use it, so content
+   never sits flush against the viewport edge. */
+.page {
+  max-width: var(--width-table);
+  margin: 0 auto;
+  padding: 0 var(--gutter) var(--space-7);
+}
+
+@media (min-width: 600px) {
+  .page {
+    padding-inline: var(--gutter-wide);
+  }
+}
+
+/* The skip-link target is focused programmatically; it needs no ring. */
+.page:focus {
+  outline: none;
+}
+
+/* Adjacent actions (carry-over 4): one gap rule for every row of buttons,
+   instead of per-screen margins. Wraps at phone width. */
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Skip link (DESIGN.md Accessibility, "Keyboard order"): first Tab stop,
+   off-screen until focused. */
+.skip-link {
+  position: absolute;
+  left: var(--space-2);
+  top: var(--space-2);
+  z-index: 10;
+  padding: var(--control-pad-y) var(--button-pad-x);
+  border-radius: var(--radius-md);
+  background: var(--surface-raise);
+  color: var(--ink);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus-visible {
+  transform: none;
+}
+
+/* The "TenderOS" wordmark: Archivo 600, never Newsreader (DESIGN.md
+   decision 4 and Layout, "App shell"). 16px in the top bar; Login's h1
+   adds .wordmark--title for page-title size (plan item 7). */
+.wordmark {
+  font-family: var(--font-ui);
+  font-size: var(--text-subsection);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.wordmark--title {
+  font-size: var(--text-page-title);
+  line-height: var(--leading-page-title);
+}
+
+/* Form screens cap at --width-form (DESIGN.md Layout, "Content width":
+   forms and prose 640px). */
+.form-column {
+  max-width: var(--width-form);
+}
+
+/* Text for assistive tech only (e.g. a table header whose column holds
+   row actions): kept in the accessibility tree, removed from view. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Batch 4 shared table and register classes (compliance, team,
+   commercial, knowledge selections). */
+
+/* A count line above a register table ("94 entries, 12 approved"), from
+   data already in the response (DESIGN.md Screen patterns, "Register
+   tables"). Every register uses this one class (the polish pass folded
+   RequirementRegister's own copy in). 12px below it, not 8: at 8px the
+   line sat tight against the table's header band (measured). */
+.count-line {
+  margin: var(--space-3) 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row-actions column (header and cells): as narrow as its controls, so a
+   table's spare width goes to the prose column instead of opening gaps
+   between every column at 1280px (polish pass). The compliance matrix
+   already does this with its own rule. */
+.cell-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* A 1%-wide cell sizes to its min-content width, which for a wrapping
+   .action-row is its widest single control - so Approve and Reject (or a
+   note field and Resolve) would stack. Inside the actions column the row
+   stays on one line (measured: stacked before this rule) - from 600px up.
+   Below 600px the row wraps again, as it did before the polish pass: kept
+   on one line at 390px, the red-team Resolve sat 200px further right in
+   its scrolling table and import's Approve/Reject 76px further (measured
+   against the pre-polish rules), the red team's own design being to wrap
+   its note field and Resolve at phone width (RedteamFindings.css). */
+@media (min-width: 600px) {
+  .cell-actions .action-row {
+    flex-wrap: nowrap;
+  }
+}
+
+/* A raw identifier (UUID) in a table cell. It may break anywhere, so a
+   36-character id does not set the width of a sticky first column at
+   390px; the text itself is unchanged (the E2E reads it exactly,
+   full-flow.spec.ts:855). */
+.cell-id {
+  min-width: 8rem;
+  max-width: 12rem;
+  overflow-wrap: anywhere;
+}
+
+/* A number column: right-aligned, tabular (DESIGN.md Typography, "The
+   Tabular Rule"; tables already set tabular-nums, kept here for a cell
+   used outside one). */
+.cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A status badge whose DOM text is the backend word, drawn capitalised
+   (batch 5: the proposal claim tag and the red-team severity cell, which
+   full-flow.spec.ts reads as text - :971, :1410). Applied only where the
+   mapped label IS that word capitalised (describeStatusKeepingRawWord);
+   text-transform changes what is drawn, never textContent. The batch 3
+   parse badge does the same with its own .parse-status rule. */
+.badge-raw-word .status-badge {
+  text-transform: capitalize;
+}

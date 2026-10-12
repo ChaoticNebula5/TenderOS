@@ -79,14 +79,23 @@
      state (Reserved Amber Rule). */
   --accent: #c98a47;
   --on-accent: #15110d;
+  /* Primary button hover: accent mixed 8% toward white (DESIGN.md Buttons,
+     "8% lighter amber"), precomputed so no component does colour maths. */
+  --accent-hover: #cd9356;
 
   /* Status hues. Always paired with an icon and a text label (Three
-     Signals Rule); badges and tints arrive with the badge component. */
+     Signals Rule). Each -tint is its hue at 14% opacity, the badge and
+     notice background (DESIGN.md frontmatter, status-badge-*). */
   --status-ready: #7db88a;
   --status-running: #7fa5aa;
   --status-warning: #d4cc63;
   --status-blocked: #b79be0;
   --status-failed: #ec6b73;
+  --status-ready-tint: rgba(125, 184, 138, 0.14);
+  --status-running-tint: rgba(127, 165, 170, 0.14);
+  --status-warning-tint: rgba(212, 204, 99, 0.14);
+  --status-blocked-tint: rgba(183, 155, 224, 0.14);
+  --status-failed-tint: rgba(236, 107, 115, 0.14);
 
   /* Rules and boundaries. --rule is decorative only (1.43:1); anything
      interactive is bounded by --control-border (3:1 for WCAG 1.4.11). */
@@ -133,12 +142,25 @@
 
   /* Density and widths */
   --control-height: 32px;
+  --control-pad-y: 6px;
+  --button-pad-x: 14px;
+  --input-pad-x: 10px;
+  --badge-pad-y: 2px;
+  --badge-pad-x: 8px;
+  --icon-size: 12px;
   --row-height: 36px;
   --cell-pad-y: 8px;
   --cell-pad-x: 12px;
   --width-form: 640px;
+  --width-auth: 360px;
   --width-table: 1440px;
   --measure-prose: 72ch;
+
+  /* App shell (DESIGN.md Layout): 48px top bar; page gutter 16px at phone
+     width (DESIGN.md "Responsive (390px)"), 24px from 600px up. */
+  --topbar-height: 48px;
+  --gutter: 16px;
+  --gutter-wide: 24px;
 
   /* Focus ring: 2px amber, 2px offset (DESIGN.md Accessibility). */
   --focus-ring-width: 2px;
@@ -149,12 +171,8 @@
   --dur-base: 180ms;
   --dur-panel: 240ms;
 
-  /* Transitional aliases. Screens still read these three names from inline
-     styles (22x --color-danger, 4x --color-warning, 1x --color-border);
-     the old light-theme values measure 3.51:1 and 3.86:1 on --surface,
-     below 4.5:1. Delete each alias in the batch that removes its last
-     reader. */
-  --color-danger: var(--status-failed);
-  --color-warning: var(--status-warning);
-  --color-border: var(--rule);
+  /* The transitional --color-* aliases are gone: --color-warning and
+     --color-border were deleted in restyle batch 5, --color-danger in
+     batch 6 when the talent screens' inline error styles became Notice.
+     Read the semantic names above (e.g. --status-failed). */
 }
