@@ -112,8 +112,8 @@ components:
 # Design System: TenderOS operator app
 
 > **Status: batches 1 (foundation), 2 (shell and shared components), 3
-> (intake and requirements) and 4 (analysis screens) are built; everything
-> else is a proposal.**
+> (intake and requirements), 4 (analysis screens) and 5 (proposal,
+> evidence and readiness) are built; everything else is a proposal.**
 > Batch 1's tokens, `@font-face`
 > rules and base element styles exist (`apps/web/src/styles/tokens.css`,
 > `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
@@ -125,6 +125,9 @@ components:
 > register and the shared gate panel, and adds the tender bar's run status
 > badge; see "Batch 3: as built". Batch 4 applies them to compliance, team,
 > commercial findings and knowledge selections; see "Batch 4: as built".
+> Batch 5 applies them to the proposal workspace, the traceability drawer,
+> red-team findings, the graph explorer and readiness; see "Batch 5: as
+> built".
 > The rest describes what the apps/web
 > restyle *will* do. Every
 > statement about the UI as it is today cites a file and line; everything
@@ -322,7 +325,13 @@ into words:
   "Ready", `false` -> "Not ready"). Nothing else on any screen says
   "Ready", so the word always means the one thing an approver signs off on.
   (The readiness page's E2E reads that exact `<strong>` text,
-  `apps/web/e2e/full-flow.spec.ts:1452`.)
+  `apps/web/e2e/full-flow.spec.ts:1452`.) **Since batch 5 the verdict
+  shows only for a report generated in this visit**: a stored report
+  loaded on mount may predate later changes to the tender, so it is shown
+  as "Last stored report: state version N, generated {date}, ..." with no
+  `<strong>` and never the word "Ready" (`Readiness.tsx`; see "Batch 5: as
+  built"). The final-readiness gate panel's request-time badge is left as
+  is, labelled "At request time".
 - Severity: "Critical", "Major", "Minor". Grounding: "Grounded",
   "Unsupported", "Needs review", "Not required". Compliance: "Compliant",
   "Partly compliant", "Not compliant", "Clarification needed", "No
@@ -468,7 +477,7 @@ screen (the streamed run's status, else the last run's) and the
 requirement register (the first caller: `runs[0].status` from the
 `listWorkflowRuns` call it already made for the gate). Batch 4 wires
 compliance, team and commercial the same way (each clears its badge after a
-gate decision); readiness is wired in batch 5. The bar updates
+gate decision); batch 5 wires readiness the same way. The bar updates
 from an effect, one React commit after the screen. After a gate decision
 the requirement register clears its badge (blank until the next load)
 rather than keep a status the decision made stale.
@@ -594,6 +603,10 @@ measured by grep). Each component will exist once and be reused.
   edits secondary; Inspect trace, Resolve and the drawer's Close quiet.
   Labels unchanged. 6 bare buttons migrated; 8 remain (measured after
   group A).
+- **Built (batch 5, group B):** Generate readiness report and the graph's
+  Load primary, Generate with its existing "Generating..."; Explore quiet.
+  3 bare buttons migrated; 5 remain (measured after batch 5), all in the
+  talent screens (batch 6).
 
 ### Status badge
 - **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
@@ -675,7 +688,10 @@ measured by grep). Each component will exist once and be reused.
   unchanged on compliance, team, commercial (batch 4) and readiness. On the
   requirement register, and since batch 4 on compliance, team and
   commercial, the heading and panel move together above the table while
-  the gate is pending (Screen patterns, "Gates").
+  the gate is pending (Screen patterns, "Gates"). **Readiness deviation
+  (batch 5):** its gate stays below the report even while pending - the
+  panel's request-time snapshot must not sit above the report being read.
+  Heading and panel remain adjacent siblings (`full-flow.spec.ts:56`).
 
 ### Tables
 - **Today:** 14 bare `<table>`s in 11 files (measured), no header styling,
@@ -764,6 +780,10 @@ measured by grep). Each component will exist once and be reused.
   `--color-warning` and `--color-border` lost their last readers and are
   **deleted** from `styles/tokens.css` (0 references in `src` or the built
   CSS, measured). `--color-danger` has 8 code readers left (measured).
+- **Built (batch 5, group B):** errors on the graph explorer and readiness;
+  the graph's contradictions box became a warning panel class. Remaining
+  inline readers after batch 5 (measured): `--color-danger` 4, all in the
+  talent screens - it can be deleted in batch 6.
 
 ### Empty, loading and error states
 - **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
@@ -863,6 +883,7 @@ measured by grep). Each component will exist once and be reused.
   pending (today it is at the bottom of every screen, e.g.
   `RequirementRegister.tsx:147-152`), so the decision an operator came for
   is the first thing they see; it moves below the table once decided.
+  (Not on readiness - see Gate panel, batch 5.)
 - **Evidence view:** excerpt in a `surface-sunk` well, source title and
   page/sheet as metadata in ink-2, verified and validity as badges. Never a
   raw `source_kind:` prefix (`TraceabilityDrawer.tsx:132`).
@@ -965,6 +986,10 @@ measured by grep). Each component will exist once and be reused.
     money". So `delta` stays unshown, and the commercial screen's Currency
     column shows the stored code or "Not stated". The first caller waits for
     the INR demo data (decision 8, Phase 4 note).
+  - **Batch 5: still no caller.** None of the proposal, drawer, red team,
+    graph or readiness screens shows a structured amount: readiness counts
+    are counts, and amounts appear only inside backend prose (proposal
+    text, red-team findings), which stays as written.
   - Note: the landing's copy spells the unit out ("₹68.4 crore",
     `apps/landing/src/data/tender.ts:11`) as hand-written strings. The app's
     compact mode uses "Cr" as decided. Not changed here; flagged so the
@@ -1143,8 +1168,9 @@ Library setup, **no new dependency**.
 4. **Analysis gates (built).** Compliance matrix, team workspace,
    commercial findings, knowledge selections with the impact summary. No
    INR use (no INR amount to show). Details under "Batch 4: as built".
-5. **Proposal, evidence and readiness.** Proposal workspace, traceability
-   drawer, red-team findings, graph explorer, readiness.
+5. **Proposal, evidence and readiness (built).** Proposal workspace,
+   traceability drawer, red-team findings, graph explorer, readiness.
+   Details under "Batch 5: as built".
 6. **Talent.** Talent library, import and review queue, employee profile.
 
 ### Batch 2: as built
@@ -1180,7 +1206,7 @@ Library setup, **no new dependency**.
 | `describeFinding` | `status/statusMap.ts` | batch 4 - **wired** (commercial findings); **not** used on red team (batch 5: the spec fixes that table's cell text, see Screen patterns, "Findings lists") |
 | `StatusTone`, `StatusDescriptor`, `StatusFamily` (types) | `status/statusMap.ts` | batch 2 (StatusBadge, icons) |
 | `formatDate` | `format/date.ts` | batch 3 - **wired** (gate panel: request and decided dates) |
-| `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | **still unused after batch 4** - no INR amount on any screen (Copy rules, "Money"); waits for the INR demo data (decision 8, Phase 4) |
+| `formatInr`, `pickCompactUnit`, `LAKH`, `CRORE`, `InrMode`, `CompactUnit` | `format/inr.ts` | **still unused after batch 5** - no INR amount on any screen (Copy rules, "Money"); waits for the INR demo data (decision 8, Phase 4) |
 | `AppShell`, `PageContent` | `shell/AppShell.tsx` | batch 2 (App.tsx) |
 | `TenderLayout` | `shell/TenderLayout.tsx` | batch 2 (App.tsx) |
 | `AppRoutes` | `App.tsx` | batch 2 (App, AppRoutes.test.tsx) |
@@ -1298,6 +1324,92 @@ Library setup, **no new dependency**.
 | `describeApproved` | `status/statusMap.ts` | batch 4 (compliance) |
 | `describeSelected` | `status/statusMap.ts` | batch 4 (team candidates, knowledge selections) |
 | `.count-line`, `.cell-id`, `.cell-num` (classes) | `styles/layout.css` | batch 4 (the four screens); `RequirementRegister`'s own `.requirements__count` is the same rule, left for the polish pass |
+
+### Batch 5: as built
+
+- **Screens:** `ProposalWorkspace.tsx`, `TraceabilityDrawer.tsx`,
+  `RedteamFindings.tsx` (group A); `GraphExplorer.tsx`, `Readiness.tsx`
+  (group B). Run status badge wired on readiness from the run it already
+  fetched; none on proposal, red team or graph (no run fetch).
+- **Spec-forced choices** (`apps/web/e2e/full-flow.spec.ts` unchanged,
+  byte-identical to main):
+  - **Proposal sections stay direct children of `<main>`** (`:952`); the
+    empty state is not a `<section>`.
+  - **Claim tag keeps "/ unsupported]"** (`:971`, `:974`) - the raw-word
+    badge (Status badge, batch 5).
+  - **Drawer:** the only `<aside>`; heading only once the trace has loaded;
+    uncited panel `role="alert"` with "not cited"; empty sentence verbatim
+    (`:980-987`). Modal, because nothing outside the `<aside>` is touched
+    while it is open (Traceability drawer).
+  - **Red team cells fixed** (Screen patterns, "Findings lists"): raw
+    category with `<wbr>` after each underscore (no added text), raw
+    severity, plain "yes"/"no".
+  - **Readiness verdict only for a report generated in this visit** (Label
+    map): the `<strong>` text is unchanged ("Ready"/"Not ready", `:1452`,
+    `:1466`), and the "Blockers" `<h2>` keeps its sibling `<ul>` of `<li>`
+    holding each message (`:1454-1456`, `:1479`). No locator on /readiness
+    reads a table or the counts (grep of `:1436-1494`), so the counts are a
+    `<dl>`.
+- **Readiness: stored vs current (follow-up, not built).** `GET /readiness`
+  returns the latest stored report (`readiness_service.py:450-459`), and
+  no response this screen fetches carries the tender's current state
+  version, so the screen cannot tell a stored report is current. A mount
+  `GET` that answers after Generate is dropped, so a stored report never
+  replaces the one just generated. The
+  follow-up is a **backend change**: `GET /readiness` adds
+  `current_state_version` (or `is_current`), so the comparison is one
+  atomic request. Rejected: comparing against `getTender` (two requests,
+  which can race a state change between them) and generating on mount
+  (writes a report on every visit).
+- **Chosen, not in this file** (marked in code): `proposalSection` and
+  `validity` families, `describeStatusKeepingRawWord`,
+  `describeGraphFreshness` (Status badge); readiness count labels - a
+  hand-written map of the 11 keys (`Readiness.tsx`, `COUNT_LABELS`; e.g.
+  `critical_major_redteam_findings` -> "Open critical or major red-team
+  findings", since it counts both, `readiness_service.py:45`, `:248`),
+  `humanize` for unknown keys; graph values (`routes/graphExplorerValues.ts`)
+  - plain values as text, booleans "Yes"/"No", null "Not set", arrays
+  joined, objects as their JSON in `<code>` (never "[object Object]"),
+  backend words in summaries humanised; graph status "Fresh"/"Stale".
+  Node names come from the properties `graph_projection/projector.py`
+  actually writes: ProposalClaim (`:376-381`, no `claim_text` projected)
+  and Evidence (`:319-324`, no title) carry no name, so they read "{claim
+  type} claim" and "{source kind} evidence" rather than a raw UUID; every
+  other label has a name or title.
+- **Tables (measured at 390px, actions populated and empty):** red team -
+  no sticky last column (it would leave 38px for a 192px column); graph
+  neighbours - sticky last column kept (166px for 128 with Explore, 241
+  for 138 without).
+- **`<li>` / `<strong>` / `<table>` audit** (fixture data, measured in the
+  browser): proposal 4 `li` (3 claims + "No claims"), 1 matching "/
+  unsupported]", 0 `strong`; red team 1 table, 0 `li`; readiness 0
+  `strong` for no report or a stored one, exactly 1 ("Not ready") after
+  Generate, blockers `<ul>` 3 `li`, 0 tables; graph 0 `strong`, 1 table.
+- **Checks at batch 5 (measured):** vitest 238 (183 at batch 4), stable
+  over three runs; fake E2E (`scripts/e2e.ps1`) passed on group A's build
+  and on group B's final build. The group B run hit the batch 4 failure
+  condition - a stored version-8 "Ready" report with no blockers existed
+  before step 14 - and passed: the stored report showed no `<strong>`, so
+  `:1451` waited for the generated version-13 "Not ready" report. Page
+  `scrollWidth` 390 at 390px on all five screens in every state. Contrast:
+  27 new pairs in group A and 25 in group B, all at or above target
+  (lowest 5.17:1, failed badge). Greyscale, deuteranopia and protanopia
+  passes on proposal, drawer, red team, readiness and graph. Keyboard: a
+  ring on every stop, no `tabIndex` above 0; the drawer moves focus to
+  Close, keeps Tab and Shift+Tab inside, closes on Escape or a scrim click,
+  and returns focus to the exact "Inspect trace" button. Bare buttons 5
+  remain, inline styles 4, `--color-danger` readers 4 (all talent screens).
+- **New exports and their first caller:**
+
+| Export | File (under `apps/web/src/`) | First caller |
+|---|---|---|
+| `describeStatusKeepingRawWord` | `status/statusMap.ts` | batch 5 (proposal claim tag, red-team severity) |
+| `describeGraphFreshness` | `status/statusMap.ts` | batch 5 (graph explorer) |
+| `proposalSection`, `validity` families | `status/statusMap.ts` | batch 5 (proposal, traceability drawer) |
+| `graphValue`, `nodeSummary`, `contradictionParts` | `routes/graphExplorerValues.ts` | batch 5 (graph explorer) |
+| `.badge-raw-word` (class) | `styles/layout.css` | batch 5 (proposal, red team) |
+| `describeFinding` | `status/statusMap.ts` | unchanged: commercial only; **not** on red team (spec-forced) |
+| `formatInr` | `format/inr.ts` | **still unused** - no INR amount on any screen |
 
 ## Deferred
 

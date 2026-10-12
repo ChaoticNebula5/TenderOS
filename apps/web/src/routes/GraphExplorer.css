@@ -1,0 +1,114 @@
+/* Graph explorer - status line, contradictions, the look-up form, the
+   node's properties and its neighbours table. */
+
+.graph__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Contradictions: a warning panel (tint over the page, warning border), as
+   the drawer's uncited-evidence panel - a signal to review, stated with
+   its count first. */
+.graph__contradictions {
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(var(--status-warning-tint), var(--status-warning-tint)), var(--surface);
+}
+
+.graph__contradictions h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--status-warning);
+}
+
+.graph__contradictions-icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.graph__contradiction-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.graph__contradiction-list li + li {
+  margin-top: var(--space-2);
+}
+
+.graph__contradiction-category {
+  display: block;
+  font-weight: 600;
+}
+
+.graph__contradiction-part {
+  display: inline-block;
+  margin-right: var(--space-3);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* Look-up form: type, id and Load on one row from 600px up, stacked at
+   phone width. */
+.graph__lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.graph__id-input {
+  width: min(24rem, 100%);
+}
+
+.graph__path,
+.graph__none {
+  color: var(--ink-2);
+}
+
+.graph__node {
+  margin-top: var(--space-5);
+}
+
+/* Properties: a two-column definition grid, wrapping long values. */
+.graph__props {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+.graph__props > div {
+  display: contents;
+}
+
+.graph__props dt {
+  color: var(--ink-2);
+}
+
+.graph__props dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph__props code {
+  font-family: inherit;
+  color: var(--ink-2);
+}
+
+.graph__neighbors td:last-child {
+  width: 1%;
+}
