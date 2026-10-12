@@ -103,7 +103,11 @@ components:
     textColor: "{colors.status-failed}"
     rounded: "{rounded.sm}"
     padding: "2px 8px"
+  # Polish pass: neutral has a tint too - --rule-2 (ink at 7%), laid
+  # translucent over whatever is behind it (amends "neutral sets no
+  # background"). The hex is that tint over `surface`.
   status-badge-neutral:
+    backgroundColor: "#25201C"
     textColor: "{colors.ink-2}"
     rounded: "{rounded.sm}"
     padding: "2px 8px"
@@ -111,10 +115,12 @@ components:
 
 # Design System: TenderOS operator app
 
-> **Status: all six batches are built - 1 (foundation), 2 (shell and
-> shared components), 3 (intake and requirements), 4 (analysis screens), 5
-> (proposal, evidence and readiness) and 6 (talent). A polish pass is
-> next; anything not listed as built is still a proposal.**
+> **Status: polish pass done. All six batches are built - 1 (foundation),
+> 2 (shell and shared components), 3 (intake and requirements), 4
+> (analysis screens), 5 (proposal, evidence and readiness) and 6 (talent) -
+> and the polish pass after them (shared fixes, screen fixes, this
+> consistency pass; see "Polish pass: as built"). What is left is listed
+> under Deferred; anything not listed as built is still a proposal.**
 > Batch 1's tokens, `@font-face`
 > rules and base element styles exist (`apps/web/src/styles/tokens.css`,
 > `apps/web/src/index.css`, woff2 files in `apps/web/public/fonts/`).
@@ -130,13 +136,15 @@ components:
 > red-team findings, the graph explorer and readiness; see "Batch 5: as
 > built". Batch 6 applies them to the talent import and review queue, the
 > talent library and the employee profile, and deletes the last
-> transitional colour alias; see "Batch 6: as built".
-> The rest describes what the apps/web
-> restyle *will* do. Every
-> statement about the UI as it is today cites a file and line; everything
-> else is future tense. When a batch lands, its section moves from "will"
-> to "does", in the same commit as the code - never ahead of it (see Copy
-> rules).
+> transitional colour alias; see "Batch 6: as built". The polish pass then
+> changes shared components on every screen and fixes eight screens; see
+> "Polish pass: as built".
+> Lines marked "**Before the restyle (historical):**" describe the app as
+> surveyed before batch 1, with that survey's line numbers; they are kept so
+> each "Built" entry has its starting point. Every other statement about
+> the UI cites a file and line as it is now. A batch's section moved from
+> "will" to "does" in the same commit as its code - never ahead of it (see
+> Copy rules).
 >
 > Numbers are labelled **measured** (computed or counted this session, method
 > stated) or **fake-provider** (screens rendered from `LLM_PROVIDER=fake`
@@ -171,7 +179,7 @@ Newsreader page title - not in decoration.
 3. **Density is a feature.** 32px controls, 13px tabular data, real tables
    with many rows. No cards standing in for rows.
 4. **Show the evidence, not a summary of it.** Raw `JSON.stringify` dumps
-   (today: `KnowledgeSelections.tsx:165`, `GraphExplorer.tsx:112`,
+   (before the restyle: `KnowledgeSelections.tsx:165`, `GraphExplorer.tsx:112`,
    `GraphExplorer.tsx:151`, `GraphExplorer.tsx:164`,
    `TalentImportReview.tsx:216`) become labelled fields; nothing is hidden
    that was shown before.
@@ -304,9 +312,9 @@ Sources:
 | Ready (green) | `approved` | `completed` | `completed` | `parsed` | - | `grounded` | `fully_compliant` | finding resolved = true; readiness `ready: true`; import item `approved` |
 | Running (slate) | - | `queued`, `running` | `pending`, `running` | `uploaded`, `queued`, `parsing` | - | - | - | graph projection `running`; import item `pending`, `extracted` |
 | Blocked (violet) | `pending`, `changes_requested` | `waiting_for_human` | `blocked` | - | - | `needs_review` | `clarification_required` | readiness `ready: false`; import item `needs_review` |
-| Failed (red) | `rejected` | `failed` | `failed` | `failed` | `critical` | `unsupported` | `non_compliant` | import item `failed`, `rejected` |
+| Failed (red) | `rejected` | `failed` | `failed` | `failed` | `critical` | `unsupported` | `non_compliant` | import item `failed`, `rejected`; graph contradiction (polish pass) |
 | Warning (yellow) | - | - | - | - | `major` | - | `partially_compliant`, `evidence_unavailable` | graph stale; live updates unavailable; in-scope evidence not cited |
-| Neutral (ink-2, no hue) | - | `cancelled` | `skipped` | - | `minor` | `not_required` | `not_reviewed` | - |
+| Neutral (ink-2, no hue; ink tint since the polish pass) | - | `cancelled` | `skipped` | - | `minor` | `not_required` | `not_reviewed` | - |
 
 - **Gates - DECIDED (was TODO(human) 1, option a):** `rejected` = Failed,
   `changes_requested` = Blocked. This mirrors the run's own coarse mapping
@@ -366,6 +374,21 @@ into words:
   - Profile review: needs_review Blocked "Needs review", verified Ready
     "Verified", stale Warning "Stale", rejected Failed "Rejected",
     archived Neutral "Archived".
+- **Polish pass (chosen, not in this file before; in code):**
+  - Readiness blocker categories (`domain/services/readiness_service.py:33-40`)
+    through a hand-written map in `Readiness.tsx`, `humanize` for one the
+    backend adds later: e.g. `critical_redteam_finding` "Critical red-team
+    finding" (as the nav says "Red team", not "redteam"),
+    `role_with_no_selected_candidate` "Role without a selected candidate".
+  - Graph node property values through the families above
+    (`routes/graphExplorerValues.ts`): `validity_status`,
+    `grounding_status`, `availability_status`, `profile_review_status` by
+    key; a bare `status` by node label - Compliance (`projector.py:339`),
+    ProposalSection (`:366`), and Employee, Certification, Project and
+    Capability, whose `status` is the knowledge item's (`:194-201`); any
+    other status humanised. The labels match the ones the projector writes
+    (`graph_projection/cypher/nodes.py:71`, `:98`, `:108`, `:117`, `:126`,
+    `:135`).
 
 ### Named Rules
 
@@ -574,12 +597,14 @@ for count chips. Borders 1px. No colored side-stripes on cards or alerts
 
 ## Components
 
-Inventory from the survey (all in `apps/web/src`, all unstyled browser
-defaults today; 0 `className` uses, 30 inline `style={{}}` objects,
-measured by grep). Each component will exist once and be reused.
+Inventory from the pre-restyle survey (historical: all in `apps/web/src`,
+all unstyled browser defaults then; 0 `className` uses, 30 inline
+`style={{}}` objects, measured by grep). Each component now exists once
+and is reused; after the polish pass, screen code has 0 inline
+`style={{}}` and 0 bare `<button>` (measured).
 
 ### Buttons
-- **Today:** bare `<button>`, 31 in source across 16 files (measured;
+- **Before the restyle (historical):** bare `<button>`, 31 in source across 16 files (measured;
   some render once per row), no variants. Primary and
   destructive actions look identical (e.g. Approve / Request changes / Reject,
   `GateDecisionPanel.tsx:134-141`; Confirm / Reject / Re-verify per row,
@@ -648,9 +673,18 @@ measured by grep). Each component will exist once and be reused.
   (`full-flow.spec.ts:497` is a strict substring match). 2 bare buttons
   migrated; **0 remain** in screen code (measured: the only `<button>` left
   is `Button.tsx`'s own).
+- **Built (polish pass):** **quiet buttons carry a 1px `--control-border`
+  on a transparent fill** (`components/ui/Button.css`), amending "quiet
+  (text only)" above. Before, a quiet row action read as plain text - on
+  the import review row, "Approve" beside the outlined danger "Reject".
+  The border is the control boundary inputs and secondary buttons use;
+  quiet still has no fill, so it stays lighter than secondary. Border
+  contrast (WCAG 1.4.11, 3:1), measured from computed styles on every
+  screen: 3.44:1 on the page, 3.41:1 raised, 3.37:1 on a hovered row,
+  3.41:1 on a sunk well (computed - no quiet button sits on one).
 
 ### Status badge
-- **Today:** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
+- **Before the restyle (historical):** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,
   `UploadAndProcessingStatus.tsx:218`, `TalentImportReview.tsx:180`),
   "yes"/"no" (`RequirementRegister.tsx:124-126`), or a `[type / status]`
   prefix (`ProposalWorkspace.tsx:115`, `Readiness.tsx:105`).
@@ -714,9 +748,20 @@ measured by grep). Each component will exist once and be reused.
   whose text is exactly "yes"; measured with the spec's own locator, it
   lands on the badge `<span>` (0 before Verify, 1 after), and no other
   `<dl>` value reads "yes".
+- **Built (polish pass):** **the neutral badge has a tint** -
+  `background: var(--rule-2)`, ink at 7%, laid **translucent** over
+  whatever is behind it (`components/ui/StatusBadge.css`). This amends
+  "neutral sets no background" (front matter and Status mapping): without
+  a box, a neutral badge's label looked indented by its 8px padding beside
+  tinted ones. 7%, not the 8% first proposed, because `--rule-2` is the
+  existing token; translucent, unlike the hued tints' opaque base, because
+  over an opaque base it would equal a hovered row's own 7% tint and vanish
+  on hover. ink-2 text on it, measured: 7.56:1 on the page, 6.26:1 on a
+  hovered row, 4.78:1 inside the drawer's warning panel (the lowest text
+  pair in the app).
 
 ### Gate panel
-- **Today:** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
+- **Before the restyle (historical):** `GateDecisionPanel.tsx` - a `<ul>` of counts, a textarea, three
   identical buttons, error in danger colour. Decided gates show
   `Decision: <strong>approved</strong> on <ISO timestamp>` (`:89-92`).
 - **Will be:** a `surface-raise` panel with a header row (gate name +
@@ -725,13 +770,15 @@ measured by grep). Each component will exist once and be reused.
   Approve as primary, Request changes as secondary, Reject as danger.
   Decided state shows who/when in human date format.
 - **Summary honesty:** the summary counts are the gate's snapshot from when
-  it was requested, and today nothing says so - an approved compliance gate
+  it was requested, and before batch 3 nothing said so - an approved compliance gate
   reads "Pending approval: 2" next to two rows marked approved, and the
   resource gate reads "Roles: 1 ... Unselected roles: 4" (screenshots 06,
   07, fake-provider data). The panel will label the summary "At request
   time" and show the request date.
-- **States:** not yet opened ("No open ... gate" - today a bare `<p>` on
-  five screens, measured), pending (blocked), approved (ready), rejected, changes
+- **States:** not yet opened ("No open ... gate" - still a bare `<p>` on
+  five screens after the polish pass, measured: `CommercialFindings.tsx:174`,
+  `ComplianceMatrix.tsx:140`, `Readiness.tsx:307`,
+  `RequirementRegister.tsx:136`, `TeamWorkspace.tsx:163`), pending (blocked), approved (ready), rejected, changes
   requested, submitting, error (409 message kept verbatim in meaning).
 - **Built (batch 3):** `apps/web/src/components/GateDecisionPanel.tsx`. Root
   still a `<section>` (the screens' `<h2>` + `<section>` sibling pair that
@@ -750,14 +797,14 @@ measured by grep). Each component will exist once and be reused.
   Heading and panel remain adjacent siblings (`full-flow.spec.ts:56`).
 
 ### Tables
-- **Today:** 14 bare `<table>`s in 11 files (measured), no header styling,
+- **Before the restyle (historical):** 14 bare `<table>`s in 11 files (measured), no header styling,
   no numeric alignment. Raw float output is visible: compliance confidence
   renders as `0.8999999761581421` (`ComplianceMatrix.tsx:118`, fake-provider
   data), and the requirement column shows a UUID instead of the display code
   (`ComplianceMatrix.tsx:104`).
 - **Will be:** `surface-sunk` header band, label type for headers, data type
   for cells, `--rule` row dividers, row hover `--rule-2`, numbers
-  right-aligned and tabular, rejected rows dimmed (today an inline
+  right-aligned and tabular, rejected rows dimmed (before the restyle an inline
   `opacity: 0.5`, `RequirementRegister.tsx:120`).
 
 - **Built (batch 2):** `TableScroll` (`apps/web/src/components/ui/`), a
@@ -799,8 +846,8 @@ measured by grep). Each component will exist once and be reused.
   empty, but the column then pins nothing). Both scroll their actions with
   the table. Batch counts through `.cell-num`. The items' Detail cell is a
   labelled grid (stacked below 600px); a résumé file name in the sticky
-  Source column breaks after its underscores (`<wbr>`, a local copy of the
-  red-team helper - sharing it would touch that screen; polish list). The
+  Source column breaks after its underscores (`<wbr>`; a local copy of the
+  red-team helper at batch 6, shared since the polish pass). The
   open batch's row takes the `surface-raise` tone on every cell, sticky
   ones included, hovered or not (measured).
 - **Built (batch 6, group B):** `TableScroll` on the library, Title sticky
@@ -808,10 +855,39 @@ measured by grep). Each component will exist once and be reused.
   measure; at 390px the table scrolls inside its region (443px in 358,
   eight fixture rows) and the page stays 390. Columns: Title (an
   employee's one link), Status (badge and select), Type (humanised),
-  Valid until (`formatDay`, "Not set" when null).
+  Valid until (`formatDay`, "Not set" when null - since the polish pass,
+  blank where it does not apply; see below).
+- **Built (polish pass):**
+  - **Body cells align on their first line's baseline** (`index.css`,
+    `td { vertical-align: baseline }`); header cells stay `top`; the import
+    items table keeps `top` with its own rule (its rows are tall blocks).
+    Measured spread of first-line baselines in rows mixing text, a badge
+    and a control: 6.9px with `top` on processing, requirements, team,
+    commercial, knowledge and graph, 0.2px or less after (0 on graph);
+    compliance and library about 4px (a `<select>`'s text position can only
+    be estimated); import items unchanged at 6.9px by design.
+  - **Shared `.cell-actions`** (`styles/layout.css`): an actions column
+    (header and cells) at `width: 1%` and `nowrap`, so a table's spare
+    width goes to its prose column instead of gaps between every column;
+    used on red team, commercial (both tables), import (both tables) and
+    team (both tables). Inside it an `.action-row` stays on one line **from
+    600px up only**: kept on one line at 390px, red team's Resolve sat 200px
+    and import's Approve/Reject 76px further right in their scrolling tables
+    than before the polish pass (measured); with the breakpoint both are
+    back exactly where they were (555px and 564px from the table's left
+    edge). Red team's own design already wrapped its note field and Resolve
+    at phone width (`RedteamFindings.css`).
+  - **Shared `BreakAfterUnderscores`** (`components/BreakAfterUnderscores.tsx`)
+    replaces the two local copies (red team, import); `<wbr>` adds no text,
+    so `full-flow.spec.ts:1380` and `:1409` still match the category
+    exactly.
+  - **Library Valid until** is blank where it does not apply and "Not set"
+    only for a certification without a date: only certifications ever carry
+    a `valid_until` (`db/repositories/knowledge.py:367-379`). A date the
+    backend sends for another type is still shown.
 
 ### Forms and inputs
-- **Today:** labels wrap inputs (good for accessibility, keep it), no
+- **Before the restyle (historical):** labels wrap inputs (good for accessibility, keep it), no
   layout, no help text, `<br />` for spacing (`TalentImportReview.tsx:148`,
   `:153`), file inputs unstyled.
 - **Will be:** label above control, `surface-sunk` field with
@@ -842,9 +918,14 @@ measured by grep). Each component will exist once and be reused.
   wrapping label on its checkbox, the resume input is a `Field` reading
   "Replace resume" when one is on file and "Upload a resume" when none is
   (so it never claims a file that is not there).
+- **Built (polish pass):** `Field`'s own 16px bottom margin moves out of
+  any row that aligns its controls to the bottom (`align-items: flex-end`):
+  the graph's Load sat 16px below its fields (measured), as the profile's
+  Save had in batch 6. Fixed per screen (`GraphExplorer.css`,
+  `EmployeeProfile.css`); `Field` itself is unchanged.
 
 ### Notices (error, warning, info)
-- **Today:** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
+- **Before the restyle (historical):** `<p role="alert" style={{ color: "var(--color-danger)" }}>`
   repeated 22 times (measured), plus one warning variant
   (`UploadAndProcessingStatus.tsx:245`) and two bordered boxes
   (`GraphExplorer.tsx:103-115`, `TraceabilityDrawer.tsx:102-121`).
@@ -882,9 +963,14 @@ measured by grep). Each component will exist once and be reused.
   left in `src` code, then 0 in the built CSS and JS (measured), and is
   **deleted** from `styles/tokens.css` with its comment. No `--color-*`
   alias remains; no inline `style={{}}` remains in screen code.
+- **Built (polish pass):** the graph's contradictions panel is now a
+  **failed**-tone panel (failed icon, border and tint), not warning
+  (decided): a contradiction is the defect the red team reports as critical
+  (`deselected_fact_in_use`), so the two screens give it one hue
+  (`GraphExplorer.tsx`, `GraphExplorer.css`).
 
 ### Empty, loading and error states
-- **Today:** a "Loading..." paragraph in 8 places across 7 files (measured:
+- **Before the restyle (historical):** a "Loading..." paragraph in 8 places across 7 files (measured:
   `BidDashboard.tsx:52`, `RequireAuth.tsx:10`, `KnowledgeSelections.tsx:160`,
   `TalentLibrary.tsx:87`, `TalentImportReview.tsx:162`, `:199`,
   `EmployeeProfile.tsx:90`, `TraceabilityDrawer.tsx:65`), some screens
@@ -935,9 +1021,15 @@ measured by grep). Each component will exist once and be reused.
   so one ticked earlier would be reset). Two "Loading..." paragraphs are
   left, both unchanged: `RequireAuth.tsx`'s app-level one and the
   knowledge impact preview's (batch 4, no table there).
+- **Built (polish pass):** the import items `EmptyState` now says "Select
+  Review items again to check." instead of "Reload the page to see them.",
+  because "Review items" on the open batch now refetches its items (a
+  behaviour fix, decided; before, re-selecting the same batch did nothing).
+  After the polish pass the same two "Loading..." paragraphs remain
+  (`RequireAuth.tsx:10`, `KnowledgeSelections.tsx:237`, measured).
 
 ### Navigation
-- **Today:** no `<nav>`, no `<header>` (0 each, measured); dashboard links
+- **Before the restyle (historical):** no `<nav>`, no `<header>` (0 each, measured); dashboard links
   joined with " · " (`BidDashboard.tsx:44`); no route back to the dashboard
   from any screen.
 - **Will be:** the app shell and workflow nav above; current item marked
@@ -949,7 +1041,7 @@ measured by grep). Each component will exist once and be reused.
   `aria-current="page"` (and the 2px underline in the workflow nav).
 
 ### Traceability drawer (signature component)
-- **Today:** a bordered `<aside>` appended at the bottom of the proposal
+- **Before the restyle (historical):** a bordered `<aside>` appended at the bottom of the proposal
   page (`TraceabilityDrawer.tsx:47-54`), so on a long proposal it opens
   off-screen.
 - **Built (batch 5, group A):** `apps/web/src/components/TraceabilityDrawer.tsx`
@@ -967,6 +1059,18 @@ measured by grep). Each component will exist once and be reused.
   (`:981` waits for it and `:985-987` read the result straight after), the
   uncited panel `role="alert"` containing "not cited" (`:982`), and "No
   additional in-scope evidence." verbatim (`:983`).
+- **Built (polish pass):**
+  - **"Claim trace" shares the top bar with Close** - heading left, Close
+    right - instead of sitting under a bar holding Close alone. It still
+    renders only once the trace has loaded (`:981`) and stays inside the
+    `<aside>` (`:980`).
+  - **The page behind does not scroll while the drawer is open**
+    (a behaviour fix, decided): `overflow: hidden` on `<html>` while it is mounted, restored
+    exactly on close, and right padding equal to the page scrollbar's
+    measured width so hiding the scrollbar does not shift the page. Measured
+    with a real 15px scrollbar: 0px shift; a wheel over the scrim moves the
+    page 0px while open and 800px after close. Where nothing is laid out
+    (`clientWidth` 0) no padding is added.
 
 ## Do's and Don'ts
 
@@ -993,9 +1097,13 @@ measured by grep). Each component will exist once and be reused.
 - **Register tables** (requirements, compliance, findings, talent): status
   column first after the identifier; row actions as quiet buttons in the
   last column; a count line above the table ("94 requirements, 12
-  unverified mandatory") from data already in the response.
+  unverified mandatory") from data already in the response. Since the
+  polish pass every register uses the one shared `.count-line`
+  (`styles/layout.css`, 12px below it - at 8px it sat tight on the header
+  band; RequirementRegister's own copy is gone), and actions columns are
+  the shared `.cell-actions` (Tables).
 - **Gates:** the gate panel sits at the top of its screen when the gate is
-  pending (today it is at the bottom of every screen, e.g.
+  pending (before the restyle it was at the bottom of every screen, e.g.
   `RequirementRegister.tsx:147-152`), so the decision an operator came for
   is the first thing they see; it moves below the table once decided.
   (Not on readiness - see Gate panel, batch 5.)
@@ -1009,7 +1117,13 @@ measured by grep). Each component will exist once and be reused.
   raw severity second (`:1410`), plain "yes"/"no" fourth (`:1382`) - so it
   does not use `describeFinding`'s "Resolved" badge. A resolved row is
   carried by its treatment instead: ink-2 text, the severity badge without
-  hue or tint, the finding collapsed to one line.
+  hue or tint, the finding collapsed to one line (kept, decided at the
+  polish plan). **Since the polish pass** a resolved row shows its
+  resolution note (fetched before, never shown) in the actions cell, td 4,
+  which the spec does not read; the note wraps at 16rem (12rem below
+  600px), so a long note does not widen the column and an all-resolved
+  table does not shrink it (measured: 302px and 280px at 1280, 216px at
+  390). The "Resolve" button count is unchanged (`:1083`, `:1088`).
 - **Impact list** (knowledge selections): each affected fact as a row with
   its node type and the requirement or claim it feeds, replacing
   `JSON.stringify(row)` (`KnowledgeSelections.tsx:165`); the confirm action
@@ -1023,6 +1137,9 @@ measured by grep). Each component will exist once and be reused.
   downstream facts affected: Compliance 1, Proposal claim 1, Requirement
   1", `format/impactSummary.ts`). The confirm label stays exactly "Confirm
   select" / "Confirm deselect" (`:1323` regex, `:1325` exact text).
+  **Since the polish pass** the previewed item is named under the heading
+  ("For Dana Whitfield") in a `<p>` - the heading's text, every `<li>`
+  count and the `ul li` parse are untouched.
 - **Processing:** task list as a vertical sequence with running/ready/failed
   badges, and the existing "Live updates are currently unavailable" notice
   (`UploadAndProcessingStatus.tsx:245-248`) as a warning notice.
@@ -1037,18 +1154,24 @@ measured by grep). Each component will exist once and be reused.
 - **Focus ring:** 2px solid amber, 2px offset, on `:focus-visible` only;
   the landing's own rule (`apps/landing/src/styles/tokens.css:37`) except
   the offset, which is 3px there. 6.45:1 on
-  `surface`, 5.84:1 on `surface-raise` (measured). Today apps/web has no
-  focus styling at all (0 `:focus`/`outline` rules, measured).
+  `surface`, 5.84:1 on `surface-raise` (measured). Before the restyle
+  apps/web had no focus styling at all (0 `:focus`/`outline` rules); after
+  the polish pass it has 8 `:focus-visible` rules (measured).
 - **Keyboard order:** DOM order equals visual order; skip link to main
   content; workflow nav reachable by Tab, arrow keys not required; the
   drawer traps focus while open and returns it on close; no `tabIndex`
-  above 0. Today there are 0 `tabIndex` and 0 `div` click handlers
-  (measured) - everything clickable is already a native button or link, and
-  that stays true.
+  above 0. Before the restyle there were 0 `tabIndex` and 0 `div` click
+  handlers (measured) - everything clickable a native button or link - and
+  that stayed true. Two `tabIndex` values were added: 0 on the
+  `TableScroll` region (`TableScroll.tsx:33`, so a keyboard user can scroll
+  it) and -1 on the skip-link target (`AppShell.tsx:59`, focusable without
+  being a Tab stop); each batch's keyboard pass and the polish pass
+  measured no `tabIndex` above 0.
 - **Reduced motion:** all transitions sit behind
   `@media (prefers-reduced-motion: no-preference)`; under `reduce`, state
-  changes are instant. Today there is no motion and no media query (0,
-  measured).
+  changes are instant. Before the restyle there was no motion and no media
+  query (0, measured); now 2 `prefers-reduced-motion` blocks guard every
+  transition (measured).
 - **Motion durations:** `--dur-fast` 120ms (hover, press), `--dur-base`
   180ms (badge/notice appear, row expand), `--dur-panel` 240ms (drawer).
   Ease-out only. No page-load sequences.
@@ -1079,8 +1202,10 @@ measured by grep). Each component will exist once and be reused.
     the full figure.
   - `full` for detail views and anywhere an exact amount matters:
     `₹1,20,00,000` (Indian digit grouping).
-  - **Today apps/web formats no money itself** (measured: no `Intl`,
-    `toLocaleString`, `₹`, `INR`, `crore` or `lakh` in `src`).
+  - **Before the restyle apps/web formatted no money itself** (measured:
+    no `Intl`, `toLocaleString`, `₹`, `INR`, `crore` or `lakh` in `src`).
+    After the polish pass `Intl` is used for dates, years and the unused
+    `formatInr` only - still no amount is formatted on any screen.
     `PricingFindingResponse.delta` is fetched but never shown
     (`api/client.ts:805`), and the only currency column is the raw
     `currency` string (`CommercialFindings.tsx:141`, rendering "-" for both
@@ -1108,6 +1233,8 @@ measured by grep). Each component will exist once and be reused.
   - **Batch 6: still no caller.** No talent model has a rate, salary,
     cost or currency (`db/models/knowledge.py`); `years_experience` is a
     count of years and an import payload's `confidence` a 0-1 score.
+  - **Polish pass: still no caller.** No screen shows a structured amount;
+    graph `confidence` is a percent, readiness counts are counts.
   - Note: the landing's copy spells the unit out ("₹68.4 crore",
     `apps/landing/src/data/tender.ts:11`) as hand-written strings. The app's
     compact mode uses "Cr" as decided. Not changed here; flagged so the
@@ -1126,7 +1253,17 @@ measured by grep). Each component will exist once and be reused.
   the library's raw `valid_until` (`TalentLibrary.tsx:121` before batch
   6). Group B gives `formatDay` its screen callers: the library's Valid
   until and the profile's "Availability as of"; the profile's "Last
-  verified" timestamp goes through `formatDate`.
+  verified" timestamp goes through `formatDate`. (Line numbers above are as
+  at batch 6.)
+  **Polish pass:** graph node properties in words go through them too -
+  date-only values through `formatDay`, `*_at` timestamps through
+  `formatDate` (`routes/graphExplorerValues.ts`). `formatDate` callers after
+  the polish pass (measured): `GateDecisionPanel.tsx:123`, `:138`;
+  `GraphExplorer.tsx:128`; `Readiness.tsx:249`, `:255`;
+  `EmployeeProfile.tsx:189`; `TalentImportReview.tsx:290`;
+  `graphExplorerValues.ts:164`. `formatDay` callers: `TalentLibrary.tsx:165`,
+  `EmployeeProfile.tsx:175`, `talentImportValues.ts:106`,
+  `graphExplorerValues.ts:162`.
 
 ## What the app will not do
 
@@ -1142,7 +1279,7 @@ measured by grep). Each component will exist once and be reused.
   bug, it is recorded, not fixed in the same diff.
 - No orchestrated page-load animation, no decorative motion.
 
-## Current state: what the screenshots show
+## Current state before the restyle: what the screenshots showed (historical)
 
 Captured 2026-10-10 from the fake-provider stack (`scripts/fake-stack.ps1`,
 all three app containers confirmed `LLM_PROVIDER=fake`; live graph intact at
@@ -1302,6 +1439,13 @@ Library setup, **no new dependency**.
    Details under "Batch 5: as built".
 6. **Talent (built).** Talent library, import and review queue, employee
    profile. Details under "Batch 6: as built".
+7. **Polish pass (built).** Three groups after batch 6: shared fixes
+   (buttons, badges, cell alignment, count line, actions column, a shared
+   underscore-break helper), screen fixes (eight screens, two of the
+   changes behaviour fixes: "Review items" refetches the open import
+   batch, and the drawer locks page scroll while open), and this file's
+   consistency pass. Details under
+   "Polish pass: as built".
 
 ### Batch 2: as built
 
@@ -1663,6 +1807,79 @@ library and employee profile are group B).
   `availability`, `profileReview` families; `formatDay` (library,
   profile); `formatYears` and `NOT_SET` (profile, library).
 
+### Polish pass: as built
+
+Three groups after batch 6, each verified and approved before the next:
+**1/3 shared fixes**, **2/3 screen fixes**, **3/3 this consistency pass**
+(DESIGN.md only). `apps/web/e2e/full-flow.spec.ts` unchanged throughout,
+byte-identical to main.
+
+- **Group 1 - shared** (`Button.css`, `StatusBadge.css`, `index.css`,
+  `styles/layout.css`, new `components/BreakAfterUnderscores.tsx`; the
+  screens that take `.cell-actions`): quiet-button border (Buttons),
+  neutral badge tint (Status badge), baseline cell alignment, shared
+  `.count-line`, shared `.cell-actions`, shared `BreakAfterUnderscores`
+  (Tables, Screen patterns). Two CSS-source tests pin the button and badge
+  rules (vitest applies no stylesheet).
+- **Group 2 - screens:**
+  - Team: a "Roles" heading above the roles table - a plain `<h2>` in
+    `<main>`, so the spec's "section with heading Candidates" (`:827`) and
+    the gate's heading-then-section pair (`:56`) are unaffected.
+  - Knowledge selections: the previewed item named (Screen patterns).
+  - Red team: resolution notes on resolved rows (Screen patterns).
+  - Proposal: tag and claim text as one block with "Inspect trace" on its
+    own line below (the `<li>` still holds "/ unsupported]" and the button,
+    `:971-974`); half the badge's side padding inside the claim tag, so "]"
+    sits by the word; **"Save edits" only while a section's draft differs
+    from its stored text** (the spec never reads it - 0 matches) and gone
+    again after a save; each section capped at the text width (72ch), so
+    its rule no longer runs past the text.
+  - Drawer: heading in the bar; **page scroll locked while open**
+    (behaviour fix, decided; Traceability drawer).
+  - Graph: Load aligned (Forms); **properties in words, ids last** -
+    status-like values through their family, date-only values through
+    `formatDay`, `*_at` through `formatDate`, `confidence` as a percent,
+    and `id` / `*_id` still shown (nothing that was shown is hidden) in
+    ink-3 after everything else; contradictions in the failed tone
+    (Notices).
+  - Readiness: **blockers grouped** - identical category and message as
+    one `<li>` with "(3 blockers)" after the verbatim message (`:1459`
+    needs at least one `<li>`, `:1464` the D6 message inside one); the
+    count never splits across lines (`.readiness__blocker-count`,
+    `nowrap`, the space before it outside it); category labels by hand
+    (Label map). The stored-report line still counts every blocker.
+  - Import queue: `aria-current="true"` on the open batch's row; **"Review
+    items" on the open batch refetches its items** (behaviour fix,
+    decided), and the items empty state says so (Empty states).
+  - Library: Valid until blank where it does not apply (Tables).
+- **Checks (measured; fake fixture data in the browser harness, fake
+  provider in the E2E):**
+  - Group 1: vitest 299 (294 at batch 6), three runs; the spec's own
+    locators on 14 screens identical before and after; 1,233 text pairs
+    on 17 screens and a hovered row each, 0 below 4.5:1 (lowest 4.78:1);
+    quiet borders 3.37:1 or better; page `scrollWidth` equal to the
+    viewport at 390 and 1280 on every screen; keyboard pass on 17 screens;
+    fake E2E 1 passed.
+  - Group 2: vitest 311, three runs; spec locators identical before and
+    after except readiness, which is the intended grouping and still meets
+    `:1459` and `:1464`; 1,326 text pairs, 0 below 4.5:1 (lowest 4.78:1);
+    36 screen states fit at 390 and 1280; keyboard pass on 18 states;
+    greyscale, deuteranopia and protanopia on the ten changed screens;
+    the readiness count measured on one line at 1280, 390 and 320; fake
+    E2E 1 passed (and again after the count fix).
+  - Secrets: `scripts/check-secrets.ps1` refuses to run (Deferred); the
+    same `detect-secrets-hook` run in three chunks on a throwaway copy of
+    the tracked files exited 0 on each, `.secrets.baseline` unchanged.
+- **Counts after the polish pass (measured):** vitest 311; 0 bare
+  `<button>` and 0 inline `style={{}}` in screen code; 0 `--color-*`
+  aliases; 2 "Loading..." paragraphs (`RequireAuth.tsx:10`,
+  `KnowledgeSelections.tsx:237`); 19 `<table>`s in 13 files, 11 of them
+  using `TableScroll`; `formatInr` still unused.
+- **New exports:** `BreakAfterUnderscores`
+  (`components/BreakAfterUnderscores.tsx`; red team, import),
+  `propertyValue`, `propertyEntries`, `isIdKey`, `PropertyValue`
+  (`routes/graphExplorerValues.ts`; graph explorer).
+
 ## Deferred
 
 - **Light theme.** Tokens are hooked for it; values, contrast and testing
@@ -1674,6 +1891,38 @@ library and employee profile are group B).
   DESIGN.md only).
 - **PRODUCT.md.** Impeccable's context loader reported none; offered, not
   created.
+
+**From the polish pass** (decided at the polish plan, or found during it):
+
+- **S2, a scroll hint on `TableScroll`.** At 390px the import items
+  table's Approve/Reject and red team's Resolve sit in the part of a
+  scrolling table that needs a sideways scroll to reach, with nothing on
+  screen saying the table scrolls. A shared edge fade on `TableScroll` (a
+  small scroll/resize listener and CSS) would cover every table; it changes
+  every table screen, so it waits.
+- **Badge-plus-select restyle** (compliance status, library status): the
+  badge and the select say the same word in one cell. Left as is
+  (decided); the compliance select must keep showing the current value
+  (`full-flow.spec.ts:714` reads it, `:736` selects by value).
+- **Width policy beyond `.cell-actions`:** narrow tables still stretch to
+  full width at 1280 (DESIGN's own "tables run full width"); the 640px gate
+  panel and profile grid follow "forms 640px".
+- **Graph neighbours hint:** neighbour names scroll under the pinned
+  Explore column at 390 - the S2 hint would cover it.
+- **Duplicate `formatYears`:** `TeamWorkspace.tsx:25` (null-aware) and
+  `routes/talentImportValues.ts:55`; one shared formatter belongs in
+  `format/`.
+- **"Save edits" layout jump:** the button appears on the first typed
+  character, pushing the claims below it down one row.
+- **Tall resolved red-team row at 390:** with the note in the actions cell,
+  a resolved row can be taller than its one-line clamped finding text
+  suggests.
+- **Red-team "Actions" header:** the visually hidden header says "Actions"
+  while a resolved row's cell holds a note, not an action.
+- **`scripts/check-secrets.ps1` batching:** its tracked-file list (31,146
+  characters, measured) is over its own 30,000 guard since batch 5's files
+  were committed, so it refuses to run. The fix belongs on main, not in
+  this restyle branch.
 
 ## Decisions (recorded)
 
