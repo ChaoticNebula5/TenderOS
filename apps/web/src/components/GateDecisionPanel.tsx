@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { GateResponse } from "../api/client";
 import { ApiError, decideGate } from "../api/client";
+import { formatErrorDetail } from "../api/formatErrorDetail";
 import { retryTransient } from "../api/retryTransient";
 import { formatDate } from "../format/date";
 import { describeReadiness, describeStatus } from "../status/statusMap";
@@ -18,6 +19,17 @@ interface GateDecisionPanelProps {
 }
 
 type Decision = "approve" | "reject" | "request_changes";
+
+// The `code` from the API's {"error": {"code", "message"}} envelope, or null
+// for any other body shape.
+function errorCode(err: ApiError): string | null {
+  const body = err.body;
+  if (typeof body !== "object" || body === null || !("error" in body)) return null;
+  const error = (body as { error: unknown }).error;
+  if (typeof error !== "object" || error === null || !("code" in error)) return null;
+  const code = (error as { code: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
 
 // Restyle batch 3 (DESIGN.md Components, "Gate panel"): one action
 // vocabulary for every gate. Approve is the region's primary action,
@@ -98,7 +110,18 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
       onDecided(updated);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setError("This gate's readiness is stale or unresolved blockers block approval.");
+        // Phase 4 blocker 2: a 409 from this route is not always about
+        // readiness. Only READINESS_NOT_WAIVED is (errors.py's
+        // ReadinessNotWaivedError, raised by routes/gates.py's decide_gate
+        // for a final_readiness approval with unresolved or stale blockers
+        // and no waiver). The others - IDEMPOTENCY_IN_PROGRESS,
+        // IDEMPOTENCY_CONFLICT, GATE_ALREADY_DECIDED - carry their own
+        // message in the API's error envelope, shown as is.
+        setError(
+          errorCode(err) === "READINESS_NOT_WAIVED"
+            ? "This gate's readiness is stale or unresolved blockers block approval."
+            : formatErrorDetail(err),
+        );
       } else {
         setError("Failed to record the decision.");
       }

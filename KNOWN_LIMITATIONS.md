@@ -10387,3 +10387,74 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   on the global and the login path, and a failure on the login check
   alone), `apps/web/src/api/formatErrorDetail.test.ts`, and
   `apps/web/src/api/retryTransient.test.ts` (a 429 is not retried).
+
+## [Phase 4 blocker 2, 2026-10-13, open, accepted] Idempotency leases: what a lease cannot make safe
+
+- **Discovered:** Phase 4 backend-hardening review, then built on
+  `phase4/backend-hardening` (migration `019_idempotency_lease`).
+- **Behaviour (fixed):** an `in_progress` idempotency record used to stay
+  `in_progress` forever if its request died or raised before `finalize()`,
+  so every retry with that key got 409 for good. Records now carry a lease
+  (`locked_until`, `claim_token`): a live lease answers a retry with 409
+  `IDEMPOTENCY_IN_PROGRESS` and `Retry-After`; a lapsed lease (or a NULL
+  one, from before migration 019) is taken over by one conditional UPDATE
+  (`IdempotencyRepository.take_over_expired`); any exception from the
+  route releases the record (`apps/api/src/tenderos_api/idempotency.py:134-153`);
+  `finalize` and `release` act only while the caller still holds the
+  claim. The lease is 60 s (`idempotency.py:30`), a design number, not
+  measured, and every time value is on the database clock.
+- **Accepted limits:**
+  1. **Window 2: work committed, then the process dies before
+     `finalize()`.** The record stays `in_progress` with a lease that
+     lapses; the next retry takes it over and runs the work again. The
+     route's work and `finalize()` are separate transactions, so nothing
+     ties "done" to "recorded". Gate decisions are naturally idempotent
+     (`gate_service.record_decision` replays an identical decision,
+     `domain/services/gate_service.py:37-43`); `create_tender` is not, so
+     this window can create a second tender.
+  2. **An exception after the work committed releases the key.** The yield
+     dependency cannot tell "failed before the work" from "failed after it"
+     (for example `finalize()` itself failing, or an error building the
+     response). It releases either way, and a retry repeats committed work,
+     with the same consequence as limit 1.
+  3. **Proposal generation outlasts the lease.** `POST
+     /tenders/{id}/proposal/generate` still calls the LLM inline
+     (`apps/api/src/tenderos_api/routes/proposal.py:69-72`): 6 section
+     templates, each a draft call plus a possible repair call, with the
+     Gemini adapter's own rate-limit backoff of 5, 10 and 20 s per call
+     (configured numbers). With a real provider that can exceed 60 s
+     (estimate, not measured), the lease lapses mid-request, and a retry
+     with the same key takes the record over and starts a second, concurrent
+     generation, repeating the LLM spend. Closed when generation moves to
+     the outbox and worker, planned after Phase 4 blocker 3 (it needs that
+     block's consumer guard).
+  4. **Replay ignores the stored status code.** Every route unpacks
+     `replay_response` as `_, cached_body` (e.g.
+     `apps/api/src/tenderos_api/routes/organizations.py:24`) and returns
+     the body with its own fixed status code (201, 202 or 200). That equals
+     the stored code today only because each route has exactly one success
+     code; a route that could succeed with two different codes would replay
+     the wrong one.
+  5. **Expired rows are not yet removed.** `IdempotencyRepository.
+     delete_expired` exists and is tested, but nothing calls it yet; Phase 4
+     blocker 3 runs it from the outbox dispatcher's loop.
+  6. **A cancelled request does not release its key.** When a client
+     disconnects, the request is cancelled with `asyncio.CancelledError`,
+     which is not an `Exception`, so the dependency's release-on-error path
+     (`apps/api/src/tenderos_api/idempotency.py:134-153`) does not run. The
+     record stays `in_progress` until its lease runs out; a retry with the
+     same key gets `IDEMPOTENCY_IN_PROGRESS` for up to 60 s (the lease, a
+     design number) and then takes the record over.
+- **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
+  late failure in a narrow window; limit 3 can duplicate a real-provider
+  proposal generation whenever it runs longer than 60 s and the client
+  retries.
+- **Status:** accepted until proposal generation moves to the worker
+  (limit 3) and the cleanup is scheduled (limit 5); limits 1, 2, 4 and 6
+  accepted.
+- **Test:** `tests/integration/test_idempotency.py` (lease on the database
+  clock, release on APIError and on a 500, live lease with Retry-After,
+  takeover of an expired and of a NULL lease, exactly one winner between
+  concurrent takers, an overtaken original can neither release nor
+  finalize, bounded cleanup). No test covers limits 1-4 or 6: each needs a
+  crash, a slow provider or a client disconnect at a precise point.
