@@ -10458,3 +10458,118 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   concurrent takers, an overtaken original can neither release nor
   finalize, bounded cleanup). No test covers limits 1-4 or 6: each needs a
   crash, a slow provider or a client disconnect at a precise point.
+
+## [Phase 4 blocker 3, 2026-10-13, open, accepted] Outbox delivery is at-least-once; the consumer guard is the fix, not the dispatcher
+
+- **Discovered:** Phase 4 backend-hardening review, then built on
+  `phase4/backend-hardening` (no migration).
+- **Behaviour (fixed):** the dispatcher compares and writes every time on
+  the database clock (`now()`: eligibility, retry `available_at`,
+  `dispatched_at`; `packages/tenderos_backend/src/tenderos_backend/db/repositories/outbox.py`),
+  which removes by construction the clock-skew mechanism recorded above
+  for the `test_outbox_dispatcher.py` flake (not re-measured over 20 runs
+  in this block). It uses one Redis connection per process with 2 s
+  socket and connect timeouts and no client retries
+  (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:71-72`, design
+  numbers), enqueues off the event loop through `asyncio.to_thread` with
+  RQ's `unique=True` (`:315`), treats an already-existing job as dispatched
+  (`:317`), bounds the claiming transaction with `SET LOCAL lock_timeout`
+  and `idle_in_transaction_session_timeout` of 30 s (`:82-83`), survives a
+  failing tick with a logged, growing backoff (`:398`), and runs one
+  bounded idempotency cleanup batch every 12 ticks (`:95`). api, worker
+  and outbox_dispatcher restart unless stopped (`docker-compose.yml`).
+  `run_workflow` invokes the graph only after claiming its run from
+  `queued` to `running` in one conditional UPDATE
+  (`apps/worker/src/tenderos_worker/jobs/workflow.py:146`,
+  `db/repositories/workflow.py:119`).
+- **Accepted limits:**
+  1. **Delivery is at-least-once, by design.** The enqueue and the row's
+     `dispatched` mark are in different systems, Redis and Postgres, with
+     no shared transaction. `unique=True` turns a redelivery into a no-op
+     only while the job's hash is still in Redis (a finished job's for
+     500 s, RQ 2.10.0's default result TTL); after that, a redelivery
+     enqueues the job again. What makes a duplicate harmless is each
+     consumer's own guard.
+  2. **Option A is designed, not built.** Claim the row (move it out of
+     `pending` with a lease), commit, then enqueue with no transaction
+     open, then mark it dispatched. That stops the row lock from being
+     held across the network call, but it does not remove duplicates (a
+     crash between the enqueue and the mark still redelivers), so the
+     consumer guard is still the real fix, and it needs a new status or
+     column. Not built in this block.
+  3. **The row lock is still held across the enqueue.** One event's row
+     lock and one pooled connection stay held while Redis answers,
+     bounded by the 2 s socket timeouts (a worst case of roughly 12 s for
+     one enqueue, an estimate) and backstopped by the 30 s
+     `SET LOCAL` timeouts. Only the dispatcher touches outbox rows, so
+     the lock blocks no request path.
+  4. **Consumers that still repeat work on a duplicate.** Only
+     `run_workflow` is guarded. `parse_and_embed_document` re-parses and
+     re-embeds the document (local SentenceTransformer, CPU time, no
+     money; chunk rows converge on their unique key). `verify_requirement_job`
+     repeats its LLM verification call, which costs one real-provider call
+     per duplicate. `process_knowledge_document_import`,
+     `reanalyze_knowledge_selection_change` and `resume_workflow` have
+     proposed guards, not built: the resume case is the dangerous one, since
+     a duplicate `Command(resume=...)` can be consumed by a later gate's
+     interrupt (see the blocker 3 report).
+  5. **Fixed in this block: a Redis outage no longer strands events.**
+     Observed live first (real, 2026-10-13, fake-provider stack): Redis
+     stopped for about 22 s, and a TenderCreated event written during the
+     outage failed its enqueue at 06:10:12, 06:10:20 and 06:10:28 UTC,
+     used up the old 3 attempts (1, 2 and 4 s apart) and was never
+     delivered, although Redis was back a second later. Now Redis being
+     unreachable (redis-py `ConnectionError` and its subclasses, and
+     `TimeoutError`; `INFRASTRUCTURE_ERRORS`,
+     `apps/worker/src/tenderos_worker/outbox_dispatcher.py:79`) does not
+     consume an attempt: the claim is rolled back, the event stays pending
+     with `available_at` unchanged, the rest of the tick's batch is skipped
+     (`RedisUnavailableError`, `:137`, raised at `:369`), and the tick
+     backoff (5 s doubling, capped at 60 s) paces the retries. Any other
+     enqueue error consumes an attempt: `MAX_ATTEMPTS = 8` (`:62`), waits of
+     min(300 s, 30 s x 2^(n-1)) scaled by a jitter factor in [0.75, 1.0]
+     (`_retry_delay_seconds`, `:144`), about 17 to 22.5 minutes in all
+     (design numbers). Events marked `failed` under the old policy with
+     fewer than 8 attempts become eligible again once this is deployed, a
+     one-time redelivery of old failures.
+  6. **A dead-lettered event needs a manual re-drive.** After its 8th
+     counted failure an event is marked `failed` (`mark_failed`,
+     `packages/tenderos_backend/src/tenderos_backend/db/repositories/outbox.py:127`)
+     and logged at ERROR with its id and event type (`outbox_dispatcher.py:385`),
+     the hook for Phase 3 alerting. Nothing re-drives it automatically. A
+     re-drive tool (reset `status` to `pending`, `attempt_count` to 0 and
+     `available_at` to `now()` for chosen event ids, logged, with a
+     dry-run) is designed, not built.
+  7. **A worker that dies mid-run leaves the run in `running`.** The run
+     is claimed `queued` -> `running` before the graph is invoked
+     (`apps/worker/src/tenderos_worker/jobs/workflow.py:146`). If the
+     worker process is killed (OOM, host restart) while the graph runs,
+     nothing moves the run on: a redelivery of WorkflowRunCreated is now a
+     no-op by design, RQ's own job timeout path
+     (`mark_run_failed_on_timeout`,
+     `packages/tenderos_backend/src/tenderos_backend/domain/services/workflow_service.py:123`)
+     only runs when the worker survives to handle the timeout, and the
+     in-job retry (`retry_workflow_run`, `jobs/workflow.py:246`) only runs
+     when a failure is caught. A reaper for runs stuck in `running`
+     (no task progress for longer than the workflow queue's 1800 s job
+     timeout: mark failed or schedule a retry) is designed, not built.
+- **Risk:** limit 4's unguarded consumers can repeat paid LLM calls on a
+  redelivery, and a duplicate resume could answer the wrong gate. Limit 6
+  leaves a dead-lettered event undelivered until someone re-drives it.
+  Limit 7 leaves a run shown as running forever after a worker crash.
+- **Status:** limits 1-3 accepted; limit 4 open (guards being built
+  separately); limit 5 fixed; limits 6 and 7 accepted, tools designed,
+  not built.
+- **Test:** `tests/integration/test_outbox_dispatcher.py` (eligibility on
+  the database clock with the host clock 30 s behind, a hung Redis times
+  out and the loop keeps running, an existing job id is treated as
+  dispatched after a crash between enqueue and mark, the loop survives a
+  database error and a cleanup failure) and
+  `tests/integration/test_run_workflow_claim.py` (a duplicate and two
+  concurrent `run_workflow` deliveries start the graph once; a failed
+  first attempt is retried and invokes the graph again). Limit 5:
+  `test_outbox_dispatcher.py` (an event written during a long outage is
+  dispatched when Redis returns with attempt_count unchanged, a connection
+  error stops the tick after that row, other errors consume attempts with
+  growing, capped delays and end failed with an ERROR log) and
+  `tests/unit/test_outbox_backoff.py`.

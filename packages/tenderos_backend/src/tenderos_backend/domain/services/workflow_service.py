@@ -82,6 +82,17 @@ async def list_events(run_id: uuid.UUID) -> list[AuditEvent]:
         return await uow.audit.list_for_workflow_run(run_id)
 
 
+async def claim_run_for_start(run_id: uuid.UUID) -> bool:
+    """Claim a queued run for its first graph invocation (queued -> running,
+    WorkflowRepository.claim_queued_run). Returns False when the run is
+    already running or past it, cancelled, or gone: the caller must not
+    invoke the graph then."""
+    async with UnitOfWork() as uow:
+        claimed = await uow.workflow.claim_queued_run(run_id)
+        await uow.commit()
+    return claimed
+
+
 async def is_cancelled(run_id: uuid.UUID) -> bool:
     """I6 enforcement: checked at every point a paused/idle run is about to
     make forward progress again - the two job-queue entry points

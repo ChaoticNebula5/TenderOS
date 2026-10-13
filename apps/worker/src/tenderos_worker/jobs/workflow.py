@@ -13,6 +13,7 @@ from rq.timeouts import JobTimeoutException
 from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import (
+    claim_run_for_start,
     is_cancelled,
     mark_run_failed_on_timeout,
     sync_run_status,
@@ -135,11 +136,22 @@ async def run_workflow(workflow_run_id: str) -> None:
         if tender is None:
             raise ValueError(f"Tender {run.tender_id} not found")
 
-    if run.status == "cancelled":
-        # I6: both queue entry points are the only places that ever call
-        # graph.ainvoke() - checking here means a cancelled run never even
-        # starts, no LangGraph execution at all.
-        logger.info("workflow run %s is cancelled, skipping", run_id)
+    # Phase 4 blocker 3: the outbox delivers WorkflowRunCreated at least
+    # once, so this job can run twice for one run, even at the same time. A
+    # second graph.ainvoke(initial_state) on the same thread would start the
+    # whole workflow again. Only the delivery that moves the run from
+    # 'queued' to 'running' (one conditional UPDATE,
+    # WorkflowRepository.claim_queued_run) invokes the graph. This also
+    # covers I6: a cancelled run is not 'queued', so it never starts.
+    if not await claim_run_for_start(run_id):
+        async with UnitOfWork() as uow:
+            current = await uow.workflow.get_run(run_id)
+        logger.info(
+            "workflow run %s not started: no longer queued (status %s); "
+            "duplicate or concurrent delivery, or cancelled",
+            run_id,
+            current.status if current is not None else "missing",
+        )
         return
 
     initial_state: TenderState = {

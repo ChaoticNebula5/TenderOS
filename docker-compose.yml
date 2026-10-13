@@ -67,6 +67,9 @@ services:
       retries: 10
 
   api:
+    # Phase 4 blocker 3: come back after a crash or a host restart, but
+    # stay down after an explicit `docker compose stop`.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -96,6 +99,7 @@ services:
       retries: 10
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -107,6 +111,7 @@ services:
         condition: service_healthy
 
   outbox_dispatcher:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
