@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
@@ -93,6 +93,24 @@ class DocumentRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def reopen_completed_ingestion_runs(self, document_id: uuid.UUID) -> int:
+        """Phase 4: an explicit reprocess sets a document's completed
+        ingestion runs back to 'queued', so parse_and_embed_document's
+        consumer guard (skip a run that already completed) lets this
+        deliberate re-run through while still skipping a duplicate delivery
+        of the original upload. Returns how many runs were reopened."""
+        result = await self._session.execute(
+            update(DocumentIngestionRun)
+            .where(
+                DocumentIngestionRun.document_id == document_id,
+                DocumentIngestionRun.status == "completed",
+            )
+            .values(status="queued")
+            .returning(DocumentIngestionRun.id)
+            .execution_options(synchronize_session=False)
+        )
+        return len(result.scalars().all())
 
     async def create_ingestion_run(
         self, document_id: uuid.UUID, parser_version: str

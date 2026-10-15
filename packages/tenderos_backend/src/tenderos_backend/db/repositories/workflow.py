@@ -143,14 +143,39 @@ class WorkflowRepository:
         )
         claimed = result.scalar_one_or_none() is not None
         if claimed:
-            await self._outbox.create(
-                aggregate_type=AGGREGATE_WORKFLOW_RUN,
-                aggregate_id=run_id,
-                event_type=EVENT_WORKFLOW_RUN_STATUS_CHANGED,
-                payload=workflow_run_status_changed_payload(run_id, "running"),
-                idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
-            )
+            await self._announce_running(run_id)
         return claimed
+
+    async def claim_waiting_run(self, run_id: uuid.UUID) -> bool:
+        """Consumer guard for resume_workflow: move a run from
+        'waiting_for_human' to 'running' if, and only if, it is still
+        waiting. Same compare-and-set shape as claim_queued_run, so of two
+        concurrent resumes only one matches. resume_workflow calls this only
+        after confirming the thread is paused at the interrupt for the
+        decided gate, so a run waiting at a different gate is never flipped
+        to running by a stale resume."""
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(WorkflowRun.id == run_id, WorkflowRun.status == "waiting_for_human")
+            .values(status="running")
+            .returning(WorkflowRun.id)
+            .execution_options(synchronize_session=False)
+        )
+        claimed = result.scalar_one_or_none() is not None
+        if claimed:
+            await self._announce_running(run_id)
+        return claimed
+
+    async def _announce_running(self, run_id: uuid.UUID) -> None:
+        # The same WorkflowRunStatusChanged event update_run_status writes,
+        # so the progress stream sees a claim's move to running.
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_RUN,
+            aggregate_id=run_id,
+            event_type=EVENT_WORKFLOW_RUN_STATUS_CHANGED,
+            payload=workflow_run_status_changed_payload(run_id, "running"),
+            idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
+        )
 
     async def update_plan_version(self, run_id: uuid.UUID, plan_version: int) -> None:
         # B16: workflow_runs.plan_version stayed 0 forever while the

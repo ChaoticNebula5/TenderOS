@@ -19,6 +19,7 @@ from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import document_service
+from tenderos_worker.jobs import ingestion as ingestion_job
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 
 pytestmark = pytest.mark.asyncio
@@ -255,6 +256,10 @@ async def test_reingestion_does_not_duplicate_chunks():
         first = await uow.documents.list_chunks_for_document(document.id)
         first_hashes = [c.content_hash for c in first]
 
+    # Phase 4: a second pass now needs a real reprocess (which reopens the
+    # completed ingestion run); a bare second delivery is skipped by the
+    # job's consumer guard. This keeps the test exercising a re-parse.
+    await document_service.reprocess_document(document.id, org_id, uuid.uuid4())
     await parse_and_embed_document(str(document.id))
     async with UnitOfWork() as uow:
         second = await uow.documents.list_chunks_for_document(document.id)
@@ -279,6 +284,10 @@ async def test_reprocess_reuses_the_existing_ingestion_run_row():
     )
 
     await parse_and_embed_document(str(document.id))
+    # Phase 4: a second pass now needs a real reprocess (which reopens the
+    # completed ingestion run); a bare second delivery is skipped by the
+    # job's consumer guard. This keeps the test exercising a re-parse.
+    await document_service.reprocess_document(document.id, org_id, uuid.uuid4())
     await parse_and_embed_document(str(document.id))
 
     async with get_session() as session:
@@ -349,6 +358,10 @@ async def test_reingestion_reuses_chunk_ids_for_unchanged_content():
     async with UnitOfWork() as uow:
         first_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
 
+    # Phase 4: a second pass now needs a real reprocess (which reopens the
+    # completed ingestion run); a bare second delivery is skipped by the
+    # job's consumer guard. This keeps the test exercising a re-parse.
+    await document_service.reprocess_document(document.id, org_id, uuid.uuid4())
     await parse_and_embed_document(str(document.id))
     async with UnitOfWork() as uow:
         second_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
@@ -402,6 +415,10 @@ async def test_reprocessing_a_document_with_a_real_requirement_citation_no_longe
     # Before this fix: a real asyncpg.exceptions.ForeignKeyViolationError
     # here, from the blanket delete_chunks_for_document call - the same
     # document content, reprocessed, with a real citation in place.
+    # Phase 4: a second pass now needs a real reprocess (which reopens the
+    # completed ingestion run); a bare second delivery is skipped by the
+    # job's consumer guard. This keeps the test exercising a re-parse.
+    await document_service.reprocess_document(document.id, org_id, uuid.uuid4())
     await parse_and_embed_document(str(document.id))
 
     async with UnitOfWork() as uow:
@@ -417,3 +434,68 @@ async def test_reprocessing_a_document_with_a_real_requirement_citation_no_longe
         "the requirement's own citation must still point at a real, valid chunk "
         "after reprocessing unchanged content - not nulled, not dangling"
     )
+
+
+async def test_a_duplicate_delivery_does_not_re_embed(monkeypatch):
+    """Phase 4 consumer guard: a second delivery of the same DocumentUploaded
+    event finds the ingestion run for (document, PARSER_VERSION) completed
+    and stops before parsing or embedding anything."""
+    org_id, tender_id = await _make_tender()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="eligibility.docx",
+        content=_docx_bytes(),
+        mime_type=None,
+    )
+    embed_calls: list[int] = []
+    real_embed = ingestion_job.embed_texts
+
+    async def counting_embed(texts):
+        embed_calls.append(len(texts))
+        return await real_embed(texts)
+
+    monkeypatch.setattr(ingestion_job, "embed_texts", counting_embed)
+
+    await parse_and_embed_document(str(document.id))
+    async with UnitOfWork() as uow:
+        first_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
+    assert len(embed_calls) == 1
+
+    await parse_and_embed_document(str(document.id))
+
+    assert len(embed_calls) == 1, "a duplicate delivery must not re-embed"
+    async with UnitOfWork() as uow:
+        refreshed = await uow.documents.get(document.id)
+        second_ids = [c.id for c in await uow.documents.list_chunks_for_document(document.id)]
+    assert refreshed is not None and refreshed.parse_status == "parsed"
+    assert second_ids == first_ids
+
+
+async def test_an_explicit_reprocess_still_re_embeds(monkeypatch):
+    """The guard must not swallow a deliberate reprocess: reprocess_document
+    reopens the completed run, so the next job does parse and embed again."""
+    org_id, tender_id = await _make_tender()
+    document, _ = await document_service.create_document(
+        tender_id=tender_id,
+        organization_id=org_id,
+        actor_user_id=uuid.uuid4(),
+        filename="eligibility.docx",
+        content=_docx_bytes(),
+        mime_type=None,
+    )
+    embed_calls: list[int] = []
+    real_embed = ingestion_job.embed_texts
+
+    async def counting_embed(texts):
+        embed_calls.append(len(texts))
+        return await real_embed(texts)
+
+    monkeypatch.setattr(ingestion_job, "embed_texts", counting_embed)
+
+    await parse_and_embed_document(str(document.id))
+    await document_service.reprocess_document(document.id, org_id, uuid.uuid4())
+    await parse_and_embed_document(str(document.id))
+
+    assert len(embed_calls) == 2

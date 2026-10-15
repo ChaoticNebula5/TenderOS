@@ -10,6 +10,15 @@ from tenderos_backend.domain.services.requirement_service import RequirementNotF
 _AGENT_NAME = "requirement_verification"
 
 
+def _input_refs(requirement_id: uuid.UUID | None, event_id: uuid.UUID | None) -> dict | None:
+    refs = {}
+    if requirement_id is not None:
+        refs["requirement_id"] = str(requirement_id)
+    if event_id is not None:
+        refs["event_id"] = str(event_id)
+    return refs or None
+
+
 async def _write_trace(
     *,
     tender_id: uuid.UUID,
@@ -19,6 +28,8 @@ async def _write_trace(
     status: str,
     result: LLMResult[VerificationOutput] | None = None,
     error_code: str | None = None,
+    requirement_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> None:
     async with UnitOfWork() as uow:
         await uow.agent_traces.create(
@@ -35,6 +46,11 @@ async def _write_trace(
             estimated_cost_usd=result.estimated_cost_usd if result else None,
             status=status,
             error_code=error_code,
+            # Phase 4: which requirement this verification was for and, for
+            # an on-demand verification, which outbox event asked for it, so
+            # verify_requirement_job can skip a redelivery of that exact
+            # event (consumer guard, jobs/verification.py).
+            input_refs=_input_refs(requirement_id, event_id),
         )
         await uow.commit()
 
@@ -47,6 +63,8 @@ async def verify_requirement(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    requirement_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> VerificationOutput:
     """The narrow extract-then-verify call (Build Guide 10.4) - one
     requirement, one source chunk, one call. Never asked to echo
@@ -76,6 +94,8 @@ async def verify_requirement(
             model=model,
             status="failed",
             error_code=type(exc).__name__,
+            requirement_id=requirement_id,
+            event_id=event_id,
         )
         raise
 
@@ -86,6 +106,8 @@ async def verify_requirement(
         model=model,
         status="completed",
         result=llm_result,
+        requirement_id=requirement_id,
+        event_id=event_id,
     )
     return llm_result.parsed
 
@@ -97,6 +119,7 @@ async def verify_and_persist(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> VerificationOutput:
     """Shared by two callers: the extraction node's automatic pass over
     every mandatory requirement, and apps/worker/jobs/verification.py's
@@ -122,6 +145,8 @@ async def verify_and_persist(
         tender_id,
         workflow_run_id,
         task_id,
+        requirement_id=requirement_id,
+        event_id=event_id,
     )
 
     verified = output.supported_by_source and output.mandatory_language_supported

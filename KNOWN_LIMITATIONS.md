@@ -10573,3 +10573,83 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   error stops the tick after that row, other errors consume attempts with
   growing, capped delays and end failed with an ERROR log) and
   `tests/unit/test_outbox_backoff.py`.
+
+## [Phase 4 consumer guards, 2026-10-13, open, accepted] What each outbox consumer does with a duplicate delivery
+
+- **Discovered:** Phase 4 blocker 3 (delivery is at-least-once, see the
+  blocker 3 entry above); guards built on `phase4/backend-hardening`.
+- **Behaviour (fixed):**
+  1. `resume_workflow` first reads the thread state and resumes only if the
+     thread is paused at the interrupt for the decided gate
+     (`apps/worker/src/tenderos_worker/jobs/workflow.py:246`), then claims
+     the run `waiting_for_human` -> `running` in one conditional UPDATE
+     (`:266`), then resumes that interrupt by id. A duplicate resume for an
+     earlier gate no longer answers a later gate's interrupt with the
+     earlier gate's payload.
+  2. `process_knowledge_document_import` (capability statements) stops
+     before the LLM call when the batch's `completed_at` is set
+     (`jobs/knowledge_import.py:176`; stamped when the import finishes),
+     and `import_past_project`/`import_capability` claim or resume their
+     rows instead of failing on `uq_knowledge_import_item_source_ref`.
+  3. `verify_requirement_job` skips only when a completed verification of
+     the requirement already carries this exact outbox event's id
+     (`jobs/verification.py:41`; the verification trace now records
+     `requirement_id` and `event_id` in `input_refs`). Deduplicating on the
+     event, not on "any verification since the event was created", keeps a
+     second request made while an earlier verification is still running
+     from being skipped when that earlier one finishes after it.
+  4. `parse_and_embed_document` skips when the ingestion run for
+     `(document, PARSER_VERSION)` already completed
+     (`jobs/ingestion.py:139`). An explicit reprocess reopens that run
+     (`document_service.reprocess_document`), so it still re-runs. The
+     ingest job id now includes the event id: with blocker 3's
+     `unique=True` and an id shared across events, a reprocess within RQ's
+     500 s result TTL of the previous ingest was treated as already
+     dispatched and never ran (a bug introduced in blocker 3, fixed here).
+  5. Every outbox route's job id now identifies exactly one event. Audited
+     in `apps/worker/src/tenderos_worker/outbox_dispatcher.py`: `outbox-`,
+     `verify_` and `ingest_` contain the event id; `workflow-{run}`,
+     `resume_{run}_{gate}` and `reanalyze_{tender}_{state_version}` are one
+     event each because the event's outbox idempotency key (unique) is
+     built from the same ids. `knowledge_import_{document}` was shared:
+     `replace_employee_resume` re-queues an existing document under a
+     fresh request id, and with `unique=True` that second import was
+     silently "already dispatched". It now includes the event id.
+- **Accepted limits:**
+  1. **Not built: `reanalyze_knowledge_selection_change`.** A second
+     delivery repeats the compliance re-evaluation (LLM calls) and the
+     compliance step's unconditional `state_version` bump, which can make
+     the graph projection stale. Proposed design: a small table
+     `reanalysis_claims(tender_id, knowledge_item_id, state_version)` with
+     a unique key, a `status` and a lease, claimed at the start of the job
+     with one `INSERT ... ON CONFLICT DO NOTHING RETURNING` (no row
+     returned: a duplicate, log and return; a lapsed `running` lease: take
+     over with the same conditional UPDATE as
+     `IdempotencyRepository.take_over_expired`), marked `completed` at the
+     end. Needs a migration, so it is a separate change.
+  2. **Two concurrent resumes for the same gate have a narrow window.**
+     Resuming re-runs the gate node from its start, and gate nodes set the
+     run back to `waiting_for_human` before their `interrupt()` returns,
+     while the interrupt is still pending in the checkpoint. A second
+     resume arriving inside that window can pass both checks and resume the
+     same interrupt again. Not reproduced; the outbox claim and RQ's
+     `unique=True` make a concurrent duplicate of one event unlikely.
+  3. **A capability-statement import that crashed part-way still repeats
+     its LLM extraction on redelivery** (it has not stamped
+     `completed_at`); the rows it already wrote are resumed, not
+     duplicated.
+- **Risk:** limit 1 can repeat paid LLM calls and re-stale the graph on a
+  duplicate reanalysis delivery.
+- **Status:** guards 1-5 built; limit 1 open (designed, not built);
+  limits 2 and 3 accepted.
+- **Test:** `tests/integration/test_graph_execution.py` (a duplicate
+  resume for an earlier gate leaves the next gate pending and the run
+  waiting; the genuine resume still works),
+  `tests/integration/test_knowledge_import_worker_job.py` (a duplicate
+  capability-statement delivery makes no LLM call and no rows),
+  `tests/integration/test_consumer_guards.py` (a duplicate verification
+  makes no LLM call; a request made while another is in flight still runs;
+  a job without an event id still runs),
+  `tests/integration/test_outbox_dispatcher.py` (two DocumentUploaded and
+  two KnowledgeDocumentUploaded events for one document enqueue two jobs each), `tests/integration/test_document_ingestion.py` (a duplicate
+  does not re-embed; an explicit reprocess still does).

@@ -630,20 +630,30 @@ async def import_past_project(
     matching people. project.chunk_id/document_id are already resolved real
     IDs (agents/knowledge/extract.py's job), not something this function
     looks up.
+
+    Phase 4 consumer guard: the row is claimed through
+    _claim_or_resume_import_item, like its siblings, instead of a bare
+    insert. A second delivery of the same import used to hit
+    uq_knowledge_import_item_source_ref and fail the job; now a row a
+    previous attempt already finished is returned as is, and a row it left
+    pending is resolved again (safe: the knowledge item converges on its
+    content_fingerprint).
     """
+    import_item, needs_resolution = await _claim_or_resume_import_item(
+        batch_id,
+        source_ref,
+        {
+            "name": project.name,
+            "client": project.client,
+            "year": project.year,
+            "description": project.description,
+            "source_ref": project.source_ref,
+            "chunk_id": str(project.chunk_id),
+        },
+    )
+    if not needs_resolution:
+        return import_item
     async with UnitOfWork() as uow:
-        import_item = await uow.knowledge.create_import_item(
-            batch_id=batch_id,
-            source_ref=source_ref,
-            extracted_payload={
-                "name": project.name,
-                "client": project.client,
-                "year": project.year,
-                "description": project.description,
-                "source_ref": project.source_ref,
-                "chunk_id": str(project.chunk_id),
-            },
-        )
         fingerprint = _fingerprint(
             str(organization_id), project.name, project.client or "", project.year or ""
         )
@@ -677,18 +687,21 @@ async def import_capability(
     organization_id: uuid.UUID, batch_id: uuid.UUID, source_ref: str, capability: ResolvedCapability
 ) -> KnowledgeImportItem:
     """Same fingerprint-idempotent, non-dedup-adjudicated, chunk-resolved
-    shape as import_past_project above."""
+    shape as import_past_project above, with the same Phase 4 claim-or-resume
+    guard."""
+    import_item, needs_resolution = await _claim_or_resume_import_item(
+        batch_id,
+        source_ref,
+        {
+            "name": capability.name,
+            "description": capability.description,
+            "source_ref": capability.source_ref,
+            "chunk_id": str(capability.chunk_id),
+        },
+    )
+    if not needs_resolution:
+        return import_item
     async with UnitOfWork() as uow:
-        import_item = await uow.knowledge.create_import_item(
-            batch_id=batch_id,
-            source_ref=source_ref,
-            extracted_payload={
-                "name": capability.name,
-                "description": capability.description,
-                "source_ref": capability.source_ref,
-                "chunk_id": str(capability.chunk_id),
-            },
-        )
         fingerprint = _fingerprint(str(organization_id), capability.name)
         existing = await uow.knowledge.get_knowledge_item_by_fingerprint(
             organization_id, "capability", fingerprint

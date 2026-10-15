@@ -3,6 +3,7 @@ import contextlib
 import logging
 import socket
 import threading
+import uuid
 from datetime import datetime, timedelta
 
 import pytest
@@ -17,10 +18,13 @@ from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import (
     auth_service,
+    document_service,
+    knowledge_service,
     tender_service,
     workflow_service,
 )
 from tenderos_worker import outbox_dispatcher
+from tenderos_worker.jobs.ingestion import PARSER_VERSION
 from tenderos_worker.outbox_dispatcher import MAX_ATTEMPTS, _dispatch_once
 from tenderos_worker.settings import settings
 
@@ -553,3 +557,84 @@ async def test_other_enqueue_errors_consume_attempts_with_growing_capped_delays(
     await _dispatch_once()
     final = await _event(event.id)
     assert (final.status, final.attempt_count) == ("failed", outbox_dispatcher.MAX_ATTEMPTS)
+
+
+# ---------------------------------------------------------------------------
+# Job ids identify exactly one event. With unique=True, a job id shared by
+# two events made the second one "already dispatched" while the first job's
+# hash still existed in Redis (500 s after it finished, a year after it
+# failed), so the second event's work never ran.
+# ---------------------------------------------------------------------------
+
+
+def _job_ids(queue_name: str, needle: str) -> list[str]:
+    connection = Redis.from_url(settings.redis_url)
+    try:
+        return [j for j in Queue(queue_name, connection=connection).job_ids if needle in j]
+    finally:
+        connection.close()
+
+
+async def test_two_document_uploaded_events_for_one_document_enqueue_two_jobs():
+    """An upload and a later explicit reprocess of the same document are two
+    DocumentUploaded events; each must get its own ingest job."""
+    registered = await auth_service.register(
+        email="two-ingests@example.com", password="hunter2", organization_name="Two Ingests Org"
+    )
+    tender = await tender_service.create_tender(
+        organization_id=registered.organization.id,
+        name="Two Ingests Tender",
+        created_by=registered.user.id,
+    )
+    document, _ = await document_service.create_document(
+        tender_id=tender.id,
+        organization_id=registered.organization.id,
+        actor_user_id=registered.user.id,
+        filename="two-ingests.docx",
+        content=b"not parsed in this test",
+        mime_type=None,
+    )
+    await _dispatch_once()
+    await document_service.reprocess_document(
+        document.id, registered.organization.id, registered.user.id
+    )
+    await _dispatch_once()
+
+    jobs = _job_ids("ingestion", str(document.id))
+    assert len(jobs) == 2, jobs
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == document.id,
+                OutboxEvent.event_type == "DocumentUploaded",
+            )
+        )
+        events = result.scalars().all()
+    assert len(events) == 2
+    assert all(e.status == "dispatched" for e in events)
+    assert {f"ingest_{document.id}_{PARSER_VERSION}_{e.id}" for e in events} == set(jobs)
+
+
+async def test_two_knowledge_imports_for_one_document_enqueue_two_jobs():
+    """replace_employee_resume can re-queue an existing document (content
+    dedup reused its row) under a fresh request id: a second
+    KnowledgeDocumentUploaded event for the same document, with its own
+    batch. Each must get its own import job."""
+    document_id = uuid.uuid4()
+    await knowledge_service.queue_knowledge_document_import(document_id, uuid.uuid4())
+    await _dispatch_once()
+    await knowledge_service.queue_knowledge_document_import(
+        document_id, uuid.uuid4(), request_id=uuid.uuid4()
+    )
+    await _dispatch_once()
+
+    jobs = _job_ids("workflow", f"knowledge_import_{document_id}")
+    assert len(jobs) == 2, jobs
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == document_id)
+        )
+        events = result.scalars().all()
+    assert len(events) == 2
+    assert all(e.status == "dispatched" for e in events)
+    assert {f"knowledge_import_{document_id}_{e.id}" for e in events} == set(jobs)

@@ -11,6 +11,8 @@ from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_service, workflow_service
+from tenderos_backend.orchestration.checkpoint import get_checkpointer
+from tenderos_backend.orchestration.graph import build_graph
 from tenderos_backend.orchestration.nodes import (
     commercial,
     compliance,
@@ -539,3 +541,84 @@ async def test_over_budget_run_opens_a_gate_and_approving_it_unblocks_specialist
         "(compliance_review), not stay stuck on the cost_budget gate's own "
         "'running_specialists' write forever"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 consumer guard: resume_workflow only resumes the interrupt for the
+# decided gate, and only while the run is waiting for it.
+# ---------------------------------------------------------------------------
+
+
+async def _pending_gate_ids(run) -> list[str]:
+    async with get_checkpointer() as checkpointer:
+        snapshot = await build_graph(checkpointer).aget_state(
+            {"configurable": {"thread_id": run.langgraph_thread_id}}
+        )
+    return [i.value["gate_id"] for i in snapshot.interrupts if isinstance(i.value, dict)]
+
+
+async def _run_to_the_second_gate():
+    """requirement_review (gate A) approved and resumed; the thread then
+    pauses at compliance_review (gate B)."""
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gate_a = (await uow.gates.list_for_run(run.id))[0]
+    assert gate_a.gate_type == "requirement_review"
+    await _approve(registered, gate_a)
+    await resume_workflow(str(run.id), str(gate_a.id))
+
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        after = await uow.workflow.get_run(run.id)
+    gate_b = next(g for g in gates if g.gate_type == "compliance_review")
+    assert after is not None and after.status == "waiting_for_human"
+    assert await _pending_gate_ids(run) == [str(gate_b.id)]
+    return registered, run, gate_a, gate_b
+
+
+async def test_a_duplicate_resume_for_an_earlier_gate_does_not_decide_the_next_one():
+    """Before the guard, gate A's duplicate Command(resume=payload) carried
+    no interrupt id, so gate B's interrupt() took it as its own answer: gate
+    B was decided with gate A's payload and the run moved on to
+    resource_selection. Now the duplicate finds no pending interrupt for
+    gate A and does nothing: gate B stays pending, the run stays
+    waiting_for_human, no new gate appears."""
+    registered, run, gate_a, gate_b = await _run_to_the_second_gate()
+    async with UnitOfWork() as uow:
+        gate_types_before = sorted(g.gate_type for g in await uow.gates.list_for_run(run.id))
+
+    await resume_workflow(str(run.id), str(gate_a.id))
+
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        after = await uow.workflow.get_run(run.id)
+        gate_b_after = await uow.gates.get(gate_b.id)
+    assert sorted(g.gate_type for g in gates) == gate_types_before
+    assert gate_b_after is not None
+    assert gate_b_after.decision_payload is None
+    assert after is not None and after.status == "waiting_for_human"
+    assert await _pending_gate_ids(run) == [str(gate_b.id)]
+
+
+async def test_the_genuine_resume_for_the_waiting_gate_still_works():
+    """The guard must not block the real resume: after the duplicate above
+    is ignored, deciding gate B and resuming it moves the run on to the
+    next gate, as before."""
+    registered, run, gate_a, gate_b = await _run_to_the_second_gate()
+    await resume_workflow(str(run.id), str(gate_a.id))  # the ignored duplicate
+
+    await _approve(registered, gate_b)
+    await resume_workflow(str(run.id), str(gate_b.id))
+
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+        after = await uow.workflow.get_run(run.id)
+    assert {g.gate_type for g in gates} == {
+        "requirement_review",
+        "compliance_review",
+        "resource_selection",
+    }
+    resource_gate = next(g for g in gates if g.gate_type == "resource_selection")
+    assert after is not None and after.status == "waiting_for_human"
+    assert await _pending_gate_ids(run) == [str(resource_gate.id)]

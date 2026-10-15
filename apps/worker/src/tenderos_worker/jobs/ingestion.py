@@ -132,6 +132,19 @@ async def parse_and_embed_document(document_id: str) -> None:
             raise ValueError(f"Document {doc_id} not found or not scoped to a tender/organization")
 
         run = await uow.documents.get_ingestion_run(doc_id, PARSER_VERSION)
+        # Phase 4 consumer guard. The outbox delivers DocumentUploaded at
+        # least once (and the knowledge-import job calls this too). A run
+        # for this document and parser version that already completed means
+        # the chunks and embeddings exist: a second pass would only flip the
+        # status back to "parsing" and re-embed every chunk for nothing. A
+        # failed or interrupted run is not "completed", so it still re-runs.
+        if run is not None and run.status == "completed":
+            logger.info(
+                "document %s already ingested with parser %s; duplicate delivery, skipping",
+                doc_id,
+                PARSER_VERSION,
+            )
+            return
         if run is None:
             run = await uow.documents.create_ingestion_run(doc_id, PARSER_VERSION)
         await uow.documents.mark_ingestion_run_status(run.id, "running")

@@ -6,6 +6,9 @@ from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.agents.requirements.verify import verify_and_persist
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services.requirement_service import (
+    verification_recorded_for_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,7 @@ def _build_llm_client() -> LLMClient:
     return build_llm_client()
 
 
-async def verify_requirement_job(requirement_id: str) -> None:
+async def verify_requirement_job(requirement_id: str, event_id: str | None = None) -> None:
     """Enqueued on RequirementVerificationRequested (see
     outbox_dispatcher.py's routing table) - G5's on-demand
     POST /requirements/{id}/verify, run here rather than inside the API
@@ -28,6 +31,20 @@ async def verify_requirement_job(requirement_id: str) -> None:
     sharing a module-level singleton across jobs.
     """
     req_id = uuid.UUID(requirement_id)
+
+    # Phase 4 consumer guard. The outbox delivers
+    # RequirementVerificationRequested at least once; a second delivery
+    # of the same event would repeat the LLM call. Skip only when a
+    # completed verification already carries this exact event id: a
+    # different, later request still runs. event_id is optional so a job
+    # queued before this change (requirement id only) still runs.
+    if event_id is not None and await verification_recorded_for_event(req_id, uuid.UUID(event_id)):
+        logger.info(
+            "requirement %s already verified for event %s; duplicate delivery, skipping",
+            req_id,
+            event_id,
+        )
+        return
 
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.get(req_id)
@@ -42,6 +59,7 @@ async def verify_requirement_job(requirement_id: str) -> None:
         settings.verifier_model,
         req_id,
         tender_id,
+        event_id=uuid.UUID(event_id) if event_id is not None else None,
     )
     logger.info(
         "verification completed for requirement %s (supported=%s, mandatory_ok=%s)",

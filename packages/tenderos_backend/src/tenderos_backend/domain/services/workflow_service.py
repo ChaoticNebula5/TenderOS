@@ -93,6 +93,16 @@ async def claim_run_for_start(run_id: uuid.UUID) -> bool:
     return claimed
 
 
+async def claim_run_for_resume(run_id: uuid.UUID) -> bool:
+    """Claim a run waiting at a gate for its resume (waiting_for_human ->
+    running, WorkflowRepository.claim_waiting_run). Returns False when the
+    run is no longer waiting: the caller must not resume then."""
+    async with UnitOfWork() as uow:
+        claimed = await uow.workflow.claim_waiting_run(run_id)
+        await uow.commit()
+    return claimed
+
+
 async def is_cancelled(run_id: uuid.UUID) -> bool:
     """I6 enforcement: checked at every point a paused/idle run is about to
     make forward progress again - the two job-queue entry points

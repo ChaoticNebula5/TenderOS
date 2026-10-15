@@ -201,7 +201,9 @@ def _requirement_verification_requested_dispatch(
         # job type. Flagged here for the record.
         "workflow",
         verify_requirement_job,
-        (requirement_id,),
+        # The event id lets the job skip a duplicate delivery (Phase 4
+        # consumer guard, jobs/verification.py).
+        (requirement_id, str(event.id)),
         f"verify_{requirement_id}_{event.id}",
     )
 
@@ -216,7 +218,13 @@ def _document_uploaded_dispatch(
         (document_id,),
         # I3's example is ingest:{document_id}:{parser_version}; underscores
         # for the same reason as resume_ above (RQ rejects colons in job_ids).
-        f"ingest_{document_id}_{PARSER_VERSION}",
+        # Phase 4: the event id is part of the job id. A deliberate
+        # reprocess emits a new DocumentUploaded for the same document;
+        # with unique=True and an id shared across events, a reprocess
+        # within RQ's 500 s result TTL of the last ingest was treated as
+        # already dispatched and never ran. Redeliveries of one event still
+        # share an id; re-runs across events are the consumer guard's job.
+        f"ingest_{document_id}_{PARSER_VERSION}_{event.id}",
     )
 
 
@@ -233,7 +241,14 @@ def _knowledge_document_uploaded_dispatch(
         "workflow",
         process_knowledge_document_import,
         (document_id, batch_id),
-        f"knowledge_import_{document_id}",
+        # The event id is part of the job id: one document can have several
+        # KnowledgeDocumentUploaded events (replace_employee_resume re-queues
+        # an existing document under a fresh request id,
+        # knowledge_service.py), and with unique=True a shared id made every
+        # later import silently "already dispatched" while the earlier
+        # job's hash existed (500 s after it finished, a year after it
+        # failed).
+        f"knowledge_import_{document_id}_{event.id}",
     )
 
 
