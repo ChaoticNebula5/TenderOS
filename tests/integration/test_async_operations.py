@@ -1,0 +1,362 @@
+"""Phase 4: async operations (operation_service, AsyncOperationRepository,
+the worker's run_operation) against real Postgres.
+
+The outbox delivers OperationRequested at least once, so run_operation can
+be called twice for one operation, one after the other or at the same
+moment. Only the call that moves the operation from 'queued' to 'running'
+may do the work, and only the holder of that claim may finish it. Most
+tests here replace the kind's handler with a stand-in that counts calls:
+the question is how many times the work would run, not what it does. The
+last tests run the real red team (FakeLLMClient, real Neo4j) end to end.
+"""
+
+import asyncio
+import uuid
+from datetime import timedelta
+
+import pytest
+import pytest_asyncio
+from _helpers import register_org_and_tender
+from sqlalchemy import func, select, update
+from tenderos_backend.agents.llm.client import LLMTimeoutError
+from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.redteam import RedteamCritique
+from tenderos_backend.db.models.async_operation import AsyncOperation
+from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.repositories.async_operations import (
+    DISPATCH_FAILED,
+    WORKER_LOST,
+    AsyncOperationRepository,
+)
+from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.events.outbox_events import (
+    EVENT_OPERATION_REQUESTED,
+    EVENT_OPERATION_STATUS_CHANGED,
+)
+from tenderos_backend.domain.services import operation_service
+from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
+from tenderos_worker.jobs import operations as operation_jobs
+from tenderos_worker.jobs.operations import run_operation
+
+pytestmark = pytest.mark.asyncio
+
+_WAIT_SECONDS = 10
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_neo4j():
+    # The real red-team run (last tests) reads the graph; same cleanup as
+    # test_redteam_service.py.
+    yield
+    async with get_neo4j_session() as session:
+        await session.run("MATCH (n) DETACH DELETE n")
+
+
+class _CountingHandler:
+    def __init__(self) -> None:
+        self.calls: list[uuid.UUID] = []
+
+    async def __call__(self, operation: AsyncOperation) -> None:
+        self.calls.append(operation.id)
+
+
+def _replace_redteam_handler(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    monkeypatch.setitem(operation_jobs._HANDLERS, "redteam_run", handler)
+
+
+async def _request(email: str) -> operation_service.OperationRequest:
+    registered, tender = await register_org_and_tender(email, f"{email} org", f"{email} tender")
+    return await operation_service.request_operation(
+        registered.organization.id, tender.id, "redteam_run", registered.user.id
+    )
+
+
+async def _reload(operation_id: uuid.UUID) -> AsyncOperation:
+    operation = await operation_service.get_operation(operation_id)
+    assert operation is not None
+    return operation
+
+
+async def _statuses_announced(operation_id: uuid.UUID) -> list[str]:
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(OutboxEvent)
+            .where(
+                OutboxEvent.aggregate_id == operation_id,
+                OutboxEvent.event_type == EVENT_OPERATION_STATUS_CHANGED,
+            )
+            .order_by(OutboxEvent.created_at, OutboxEvent.id)
+        )
+        return [e.payload["status"] for e in result.scalars().all()]
+
+
+async def test_a_request_records_a_queued_operation_and_its_events():
+    requested = await _request("op-request@example.com")
+
+    assert requested.created is True
+    assert requested.operation.status == "queued"
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == requested.operation.id,
+                OutboxEvent.event_type == EVENT_OPERATION_REQUESTED,
+            )
+        )
+        events = list(result.scalars().all())
+    assert len(events) == 1
+    assert events[0].payload == {
+        "operation_id": str(requested.operation.id),
+        "kind": "redteam_run",
+    }
+    assert await _statuses_announced(requested.operation.id) == ["queued"]
+
+
+async def test_a_second_request_while_active_returns_the_same_operation():
+    first = await _request("op-second@example.com")
+    op = first.operation
+
+    again = await operation_service.request_operation(
+        op.organization_id, op.tender_id, "redteam_run", op.requested_by
+    )
+    assert again.created is False
+    assert again.operation.id == op.id
+
+    # Still the same one once it is running.
+    claimed = await operation_service.claim_operation(op.id, operation_service.lease_for(op.kind))
+    assert claimed is not None and claimed.claim_token is not None
+    while_running = await operation_service.request_operation(
+        op.organization_id, op.tender_id, "redteam_run", op.requested_by
+    )
+    assert while_running.operation.id == op.id
+
+    # Finished: the next request is a new operation.
+    assert await operation_service.finish_operation(op.id, claimed.claim_token, "succeeded")
+    after = await operation_service.request_operation(
+        op.organization_id, op.tender_id, "redteam_run", op.requested_by
+    )
+    assert after.created is True
+    assert after.operation.id != op.id
+
+
+async def test_a_duplicate_delivery_does_not_run_the_work_twice(monkeypatch):
+    handler = _CountingHandler()
+    _replace_redteam_handler(monkeypatch, handler)
+    requested = await _request("op-dup@example.com")
+    op_id = requested.operation.id
+
+    await run_operation(str(op_id))
+    await run_operation(str(op_id))
+
+    assert handler.calls == [op_id]
+    finished = await _reload(op_id)
+    assert finished.status == "succeeded"
+    assert finished.started_at is not None and finished.finished_at is not None
+    assert await _statuses_announced(op_id) == ["queued", "running", "succeeded"]
+
+
+async def test_two_concurrent_deliveries_claim_exactly_once(monkeypatch):
+    """A barrier holds both deliveries until each is about to run its claim,
+    so the two conditional UPDATEs really are concurrent (the same shape as
+    test_run_workflow_claim.py). Postgres makes the second wait on the row
+    lock, then re-checks status = 'queued' against the row the first wrote."""
+    handler = _CountingHandler()
+    _replace_redteam_handler(monkeypatch, handler)
+    requested = await _request("op-race@example.com")
+    op_id = requested.operation.id
+
+    barrier = asyncio.Barrier(2)
+    original_claim = AsyncOperationRepository.claim
+    claims: list[bool] = []
+
+    async def claim_together(self, operation_id, lease):
+        await asyncio.wait_for(barrier.wait(), timeout=_WAIT_SECONDS)
+        claimed = await original_claim(self, operation_id, lease)
+        claims.append(claimed is not None)
+        return claimed
+
+    monkeypatch.setattr(AsyncOperationRepository, "claim", claim_together)
+
+    await asyncio.wait_for(
+        asyncio.gather(run_operation(str(op_id)), run_operation(str(op_id))),
+        timeout=_WAIT_SECONDS,
+    )
+
+    assert sorted(claims) == [False, True]
+    assert handler.calls == [op_id]
+    assert (await _reload(op_id)).status == "succeeded"
+
+
+async def test_the_claim_sets_a_lease_of_job_timeout_plus_margin():
+    requested = await _request("op-lease@example.com")
+    op_id = requested.operation.id
+
+    claimed = await operation_service.claim_operation(
+        op_id, operation_service.lease_for("redteam_run")
+    )
+
+    assert claimed is not None
+    assert claimed.status == "running"
+    assert claimed.claim_token is not None
+    assert claimed.started_at is not None and claimed.locked_until is not None
+    # Both are the database clock's now() in one statement, so the lease is
+    # exact: 600 s job timeout + 60 s margin.
+    assert (claimed.locked_until - claimed.started_at).total_seconds() == 660
+
+
+async def test_finish_needs_the_claim_token_and_a_running_operation():
+    requested = await _request("op-finish@example.com")
+    op_id = requested.operation.id
+
+    # Not claimed yet: nothing to finish.
+    assert not await operation_service.finish_operation(op_id, uuid.uuid4(), "succeeded")
+    assert (await _reload(op_id)).status == "queued"
+
+    claimed = await operation_service.claim_operation(
+        op_id, operation_service.lease_for("redteam_run")
+    )
+    assert claimed is not None and claimed.claim_token is not None
+
+    # Someone else's token: refused, nothing written.
+    assert not await operation_service.finish_operation(op_id, uuid.uuid4(), "succeeded")
+    assert (await _reload(op_id)).status == "running"
+
+    assert await operation_service.finish_operation(
+        op_id, claimed.claim_token, "failed", "LLM_TIMEOUT", "fake message"
+    )
+    # Already finished: the same token cannot finish it again.
+    assert not await operation_service.finish_operation(op_id, claimed.claim_token, "succeeded")
+
+    final = await _reload(op_id)
+    assert (final.status, final.error_code, final.error_message) == (
+        "failed",
+        "LLM_TIMEOUT",
+        "fake message",
+    )
+    assert await _statuses_announced(op_id) == ["queued", "running", "failed"]
+
+
+async def test_the_reaper_fails_a_lapsed_operation_and_leaves_a_live_one_alone():
+    lapsed_req = await _request("op-reap-lapsed@example.com")
+    live_req = await _request("op-reap-live@example.com")
+    lapsed_id, live_id = lapsed_req.operation.id, live_req.operation.id
+    lease = operation_service.lease_for("redteam_run")
+    lapsed_claim = await operation_service.claim_operation(lapsed_id, lease)
+    live_claim = await operation_service.claim_operation(live_id, lease)
+    assert lapsed_claim is not None and live_claim is not None
+    assert lapsed_claim.claim_token is not None
+
+    # The worker holding lapsed_id died: its lease ran out a minute ago.
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(AsyncOperation)
+            .where(AsyncOperation.id == lapsed_id)
+            .values(locked_until=AsyncOperation.started_at - operation_service.LEASE_MARGIN)
+        )
+        await uow.commit()
+
+    reaped = await operation_service.reap_lapsed_operations(batch_size=100)
+
+    assert reaped == [lapsed_id]
+    failed = await _reload(lapsed_id)
+    assert failed.status == "failed"
+    assert failed.error_code == WORKER_LOST
+    assert failed.finished_at is not None
+    assert await _statuses_announced(lapsed_id) == ["queued", "running", "failed"]
+    assert (await _reload(live_id)).status == "running"
+
+    # Reaped, never taken over: the lost worker's late finish is refused.
+    assert not await operation_service.finish_operation(
+        lapsed_id, lapsed_claim.claim_token, "succeeded"
+    )
+    assert (await _reload(lapsed_id)).status == "failed"
+    # A second pass finds nothing more.
+    assert await operation_service.reap_lapsed_operations(batch_size=100) == []
+
+
+async def test_the_reaper_fails_an_operation_queued_past_the_window_and_leaves_a_recent_one(
+    monkeypatch,
+):
+    stale_req = await _request("op-reap-stale@example.com")
+    recent_req = await _request("op-reap-recent@example.com")
+    stale_id, recent_id = stale_req.operation.id, recent_req.operation.id
+
+    # stale_id was requested a minute past the window ago and never claimed.
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(AsyncOperation)
+            .where(AsyncOperation.id == stale_id)
+            .values(
+                created_at=func.now() - operation_service.MAX_DISPATCH_WINDOW - timedelta(minutes=1)
+            )
+        )
+        await uow.commit()
+
+    reaped = await operation_service.reap_stale_queued_operations(batch_size=100)
+
+    assert reaped == [stale_id]
+    failed = await _reload(stale_id)
+    assert failed.status == "failed"
+    assert failed.error_code == DISPATCH_FAILED
+    assert failed.finished_at is not None
+    assert await _statuses_announced(stale_id) == ["queued", "failed"]
+    assert (await _reload(recent_id)).status == "queued"
+
+    # A late delivery of the failed operation does nothing.
+    handler = _CountingHandler()
+    _replace_redteam_handler(monkeypatch, handler)
+    await run_operation(str(stale_id))
+    assert handler.calls == []
+    assert (await _reload(stale_id)).status == "failed"
+    # The tender can request a red team again.
+    again = await operation_service.request_operation(
+        failed.organization_id, failed.tender_id, "redteam_run", failed.requested_by
+    )
+    assert again.created is True
+    assert again.operation.id != stale_id
+    assert await operation_service.reap_stale_queued_operations(batch_size=100) == []
+
+
+async def test_an_llm_timeout_ends_the_operation_failed_with_llm_timeout(monkeypatch):
+    async def times_out(operation: AsyncOperation) -> None:
+        raise LLMTimeoutError("fake: provider request timed out after 60 s")
+
+    _replace_redteam_handler(monkeypatch, times_out)
+    requested = await _request("op-timeout@example.com")
+
+    await run_operation(str(requested.operation.id))
+
+    final = await _reload(requested.operation.id)
+    assert final.status == "failed"
+    assert final.error_code == "LLM_TIMEOUT"
+    # The safe message, not the exception text.
+    assert final.error_message == operation_jobs._FAILURES["LLM_TIMEOUT"]
+    assert "60 s" not in (final.error_message or "")
+
+
+async def test_an_unexpected_error_ends_failed_with_a_generic_message(monkeypatch):
+    async def breaks(operation: AsyncOperation) -> None:
+        raise RuntimeError("fake internal detail that must not reach the web app")
+
+    _replace_redteam_handler(monkeypatch, breaks)
+    requested = await _request("op-internal@example.com")
+
+    await run_operation(str(requested.operation.id))
+
+    final = await _reload(requested.operation.id)
+    assert (final.status, final.error_code) == ("failed", "INTERNAL_ERROR")
+    assert "fake internal detail" not in (final.error_message or "")
+
+
+async def test_a_real_red_team_run_succeeds_through_the_worker(monkeypatch):
+    """The real handler (redteam_service.run_red_team) with a scripted
+    FakeLLMClient: a fresh tender has nothing to flag, so the run succeeds
+    with no findings, and the critique agent was called once."""
+    fake_client = FakeLLMClient()
+    fake_client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    requested = await _request("op-real@example.com")
+
+    await run_operation(str(requested.operation.id))
+
+    assert (await _reload(requested.operation.id)).status == "succeeded"
+    assert [c["agent_name"] for c in fake_client.calls] == ["redteam_critique"]

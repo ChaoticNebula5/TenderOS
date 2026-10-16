@@ -37,6 +37,11 @@ dependencies = [
     # the B5 plan/commit message). Part P: verify this resolves to the SDK
     # surface agents/llm/gemini_adapter.py was written against.
     "google-genai>=0.3",
+    # Phase 4: agents/llm/gemini_adapter.py catches httpx.TimeoutException
+    # (google-genai's transport raises it on a request timeout), so it is a
+    # direct dependency here, not only a transitive one. Same floor as
+    # apps/api's.
+    "httpx>=0.27",
     "pyyaml>=6.0",
     # B10: official Neo4j driver for graph_projection/. Same version pin
     # already used by apps/api's own health-check driver instance (verified

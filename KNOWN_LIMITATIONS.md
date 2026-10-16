@@ -10653,3 +10653,118 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   `tests/integration/test_outbox_dispatcher.py` (two DocumentUploaded and
   two KnowledgeDocumentUploaded events for one document enqueue two jobs each), `tests/integration/test_document_ingestion.py` (a duplicate
   does not re-embed; an explicit reprocess still does).
+
+## [Phase 4 async operations, Stage 1, 2026-10-15, open, accepted] Red team runs in the worker as an async operation; what the operation framework does not cover
+
+- **Discovered:** Phase 4 review: `POST /tenders/{id}/redteam/run` ran the
+  whole red team, including its LLM critique, inside the HTTP request, and
+  the Gemini client had no timeout at all (`genai.Client(api_key=...)` with
+  no `http_options`), so a hung provider connection held the request
+  indefinitely.
+- **Behaviour (fixed in Stage 1):**
+  1. A generic `async_operations` table (migration
+     `020_async_operations`): kind, status (`queued`, `running`,
+     `succeeded`, `failed`), error code and message, lease
+     (`locked_until`) and `claim_token`. A partial unique index
+     `uq_async_operation_active` on `(tender_id, kind)` while queued or
+     running decides "one active operation per tender and kind".
+  2. `POST .../redteam/run` now returns 202 with the operation. A second
+     POST while one is queued or running returns that same operation (same
+     id), not a second run.
+  3. The outbox delivers `OperationRequested` to the worker's
+     `run_operation_job` (job id `op_{operation_id}`, job timeout from the
+     kind: red team 600 s, proposal generation and commercial validation
+     1800 s). `run_operation` claims the operation queued to running in
+     one conditional UPDATE, so a duplicate or concurrent delivery does
+     nothing; only the claim's holder can finish it.
+  4. The lease is the job timeout plus 60 s, set at claim on the database
+     clock. The outbox dispatcher's loop reaps running operations whose
+     lease lapsed (every 12 ticks, about 60 s) to `failed` with
+     `WORKER_LOST`. A reaped operation is never taken over or re-run (that
+     would repeat paid LLM calls); the user starts it again, and the lost
+     worker's late finish is refused.
+  5. LLM timeouts (`agents/llm/gemini_adapter.py`, design numbers, not
+     measured): 60 s per provider HTTP request, 180 s per logical call
+     including the adapter's own retries. Both raise `LLMTimeoutError`,
+     which ends an operation `failed` with `LLM_TIMEOUT`; a rate limit
+     ends it `LLM_RATE_LIMITED`, RQ's job timeout `JOB_TIMEOUT`, anything
+     else `INTERNAL_ERROR`. Only the code and a fixed safe message reach
+     the web app; the exception is logged in the worker.
+  6. `GET /operations/{id}` and a per-operation SSE stream
+     (`/operations/{id}/events/ticket`, `/operations/{id}/events/stream`).
+     Another organization's operation answers 404, exactly like a missing
+     one. SSE tickets now carry a scope (`workflow_run` or `operation`), so
+     a ticket minted for one stream is refused on any other.
+  7. The web app's Run red team button stays busy until the operation is
+     finished: `useOperation` follows the SSE stream and polls
+     `GET /operations/{id}` every 3 s while the stream is down, then the
+     findings are re-read; a failed operation shows its own message.
+  8. An operation can no longer stay `queued` for good (found in the
+     Stage 1 review, fixed 2026-10-16). Queued counts as active in
+     `uq_async_operation_active`, so a stuck queued operation made every
+     later POST for that tender and kind return it. Two paths now fail it
+     with `DISPATCH_FAILED` and a generic message, each with its
+     `OperationStatusChanged` event, and only while it is still queued:
+     - when the dispatcher dead-letters its `OperationRequested` event, in
+       the same transaction (`_fail_dead_lettered_operation`,
+       `apps/worker/src/tenderos_worker/outbox_dispatcher.py`);
+     - as a backstop, the reaper fails any operation still queued 60
+       minutes after it was requested
+       (`operation_service.MAX_DISPATCH_WINDOW`, a design number). The
+       outbox's full retry span is 22.5 minutes at most (8 attempts,
+       waits 30 to 300 s), so the window is about 2.7 times that, and it
+       also covers a job waiting in the workflow queue behind one full
+       30-minute workflow job. This catches what the dead-letter path
+       cannot: a Redis outage longer than the window (outages do not use
+       up attempts, so they never dead-letter), or a stopped dispatcher or
+       worker.
+     A job that reaches the worker after its operation was failed finds it
+     no longer queued and does nothing.
+- **Accepted limits:**
+  1. **An operation queued for more than 60 minutes is failed even if its
+     job is still waiting in the RQ queue** (for example behind two or
+     more 30-minute workflow jobs on one worker). The user sees
+     `DISPATCH_FAILED` and clicks again; when the old job runs, its claim
+     fails and it does nothing, so no LLM call is paid twice.
+  2. **Tracking does not survive a page reload.** The screen keeps the
+     operation id in component state only. After a reload the button is
+     enabled while the run continues; clicking it returns the same active
+     operation, so no second run starts.
+  3. **`LLMTimeoutError` inside a workflow node is classified as an
+     unknown error** by `orchestration/retry.py` (it is an `LLMError` but
+     none of the classified subclasses), so it gets the unknown-exception
+     branch: one retry after a fixed delay. Reasonable for a timeout; not
+     a dedicated branch.
+  4. **The SSE stream's starting point moved from the API host's clock to
+     the database's `now()`** (`apps/api/src/tenderos_api/outbox_stream.py`,
+     shared by the workflow stream), for the same clock-gap reason as
+     blocker 3. Events written before a stream opens are not replayed; the
+     web app re-reads the resource when the stream opens, so none is
+     missed.
+  5. **`OperationStatusChanged` events are routed to the generic
+     placeholder consumer** (`jobs/placeholder.py`, logs and returns), like
+     every other event type without a worker consumer. They exist for the
+     SSE stream, which reads them from the outbox table directly.
+  6. **The reaper can fail an operation up to about 60 s after its lease
+     lapses** (it runs every 12 dispatcher ticks), so a red-team run whose
+     worker died shows `failed` after at most about 12 minutes.
+- **Earlier references:** the B13 entry above cites
+  `test_trigger_red_team_runs_clean_on_a_fresh_tender`. That test is now
+  `test_trigger_red_team_queues_an_operation_and_returns_202`; the
+  fresh-tender red-team run it covered is now
+  `tests/integration/test_async_operations.py::test_a_real_red_team_run_succeeds_through_the_worker`.
+- **Status:** Stage 1 (red team) built. Stage 2 (proposal generation,
+  commercial re-validate) not started.
+- **Test:** `tests/integration/test_async_operations.py` (one claim under
+  two concurrent deliveries; a duplicate delivery is a no-op; finish is
+  claim-guarded; the reaper fails a lapsed operation and leaves a live one;
+  `test_the_reaper_fails_an_operation_queued_past_the_window_and_leaves_a_recent_one`;
+  a second request while active returns the same id; LLM timeout ends
+  `LLM_TIMEOUT`), `tests/integration/test_operations_api.py` (202; same id
+  on a second POST;
+  `test_a_dead_lettered_request_fails_its_operation_and_a_new_run_starts`;
+  cross-org 404; ticket scope; the stream's messages),
+  `tests/unit/test_gemini_adapter_timeouts.py`,
+  `tests/integration/test_outbox_dispatcher.py` (route, job id, timeout;
+  reaper failure contained), `apps/web/src/hooks/useOperation.test.ts`,
+  `apps/web/src/routes/RedteamFindings.test.tsx`.

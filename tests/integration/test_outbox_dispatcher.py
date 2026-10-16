@@ -20,6 +20,7 @@ from tenderos_backend.domain.services import (
     auth_service,
     document_service,
     knowledge_service,
+    operation_service,
     tender_service,
     workflow_service,
 )
@@ -638,3 +639,48 @@ async def test_two_knowledge_imports_for_one_document_enqueue_two_jobs():
     assert len(events) == 2
     assert all(e.status == "dispatched" for e in events)
     assert {f"knowledge_import_{document_id}_{e.id}" for e in events} == set(jobs)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: async operations. OperationRequested is routed to the worker's
+# run_operation_job under a job id naming the operation, with the job
+# timeout of the operation's kind; the reaper runs from the loop.
+# ---------------------------------------------------------------------------
+
+
+async def test_operation_requested_routes_to_run_operation_with_its_kinds_timeout():
+    registered = await auth_service.register(
+        email="dispatch-op@example.com", password="hunter2", organization_name="Dispatch Op Org"
+    )
+    tender = await tender_service.create_tender(
+        organization_id=registered.organization.id,
+        name="Dispatch Op Tender",
+        created_by=registered.user.id,
+    )
+    requested = await operation_service.request_operation(
+        registered.organization.id, tender.id, "redteam_run", registered.user.id
+    )
+
+    await _dispatch_once()
+
+    connection = Redis.from_url(settings.redis_url)
+    try:
+        job = Queue("workflow", connection=connection).fetch_job(f"op_{requested.operation.id}")
+        assert job is not None
+        assert job.func_name.endswith("run_operation_job")
+        assert job.args == (str(requested.operation.id),)
+        assert job.timeout == operation_service.JOB_TIMEOUT_SECONDS["redteam_run"]
+    finally:
+        connection.close()
+
+
+async def test_a_reaper_failure_is_logged_and_does_not_escape(monkeypatch, caplog):
+    async def broken(batch_size: int):
+        raise OperationalError("fake", {}, Exception("fake database outage"))
+
+    monkeypatch.setattr(operation_service, "reap_lapsed_operations", broken)
+
+    with caplog.at_level(logging.WARNING, logger=outbox_dispatcher.logger.name):
+        await outbox_dispatcher._reap_lapsed_operations()
+
+    assert any("reap" in r.getMessage().lower() for r in caplog.records)

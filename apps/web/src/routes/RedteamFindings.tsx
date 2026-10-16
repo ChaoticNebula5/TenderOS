@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
+  isFinishedOperation,
   listRedteamFindings,
   resolveRedteamFinding,
   triggerRedTeam,
@@ -13,6 +14,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
+import { useOperation } from "../hooks/useOperation";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
 
@@ -41,7 +43,14 @@ export function RedteamFindings() {
   // findings" after the response says so (DESIGN.md Copy rules).
   const [findingsLoaded, setFindingsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  // `starting` covers the POST itself; `operationId` is the red-team run
+  // it started (Phase 4: the POST returns 202 and the worker runs it), and
+  // the button stays busy until useOperation reports it finished.
+  const [starting, setStarting] = useState(false);
+  const [operationId, setOperationId] = useState<string | null>(null);
+  const { operation } = useOperation(operationId);
+  const finishedStatus = operation && isFinishedOperation(operation) ? operation.status : null;
+  const running = starting || (operationId !== null && finishedStatus === null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
   async function refresh() {
@@ -56,17 +65,28 @@ export function RedteamFindings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
+  // Once the run finishes: re-read the findings it wrote, and on failure
+  // show the operation's own message (LLM timeout, worker lost, ...).
+  useEffect(() => {
+    if (finishedStatus === null || !operation) return;
+    if (finishedStatus === "failed") {
+      setError(operation.error_message ?? "Run failed");
+    }
+    refresh().catch(() => setError("Failed to load red-team findings"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operationId, finishedStatus]);
+
   async function handleRun() {
     if (!tenderId) return;
     setError(null);
-    setRunning(true);
+    setStarting(true);
     try {
-      await triggerRedTeam(tenderId);
-      await refresh();
+      const started = await triggerRedTeam(tenderId);
+      setOperationId(started.operation_id);
     } catch (err) {
       setError(err instanceof ApiError ? `Run failed (${err.status})` : "Run failed");
     } finally {
-      setRunning(false);
+      setStarting(false);
     }
   }
 

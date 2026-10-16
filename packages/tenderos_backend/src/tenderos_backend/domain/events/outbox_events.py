@@ -305,3 +305,34 @@ def workflow_task_failed_payload(
 
 def workflow_task_failed_idempotency_key(task_id: uuid.UUID) -> str:
     return f"workflow_task_failed:{task_id}:{uuid.uuid4()}"
+
+
+# Phase 4: async operations (db/models/async_operation.py). OperationRequested
+# is routed by the outbox dispatcher to the worker's run_operation job;
+# OperationStatusChanged is what the operation's SSE stream pushes to the web
+# app (routes/operations.py), one per status the operation reaches.
+AGGREGATE_ASYNC_OPERATION = "async_operation"
+EVENT_OPERATION_REQUESTED = "OperationRequested"
+EVENT_OPERATION_STATUS_CHANGED = "OperationStatusChanged"
+
+
+def operation_requested_payload(operation_id: uuid.UUID, kind: str) -> dict:
+    # kind is read by the dispatcher to pick the job timeout for this kind.
+    return {"operation_id": str(operation_id), "kind": kind}
+
+
+def operation_requested_idempotency_key(operation_id: uuid.UUID) -> str:
+    # Exactly one request event per operation.
+    return f"operation_requested:{operation_id}"
+
+
+def operation_status_changed_payload(operation_id: uuid.UUID, status: str) -> dict:
+    # Informational, like workflow_run_status_changed_payload: the stream's
+    # client re-reads the operation for its current status.
+    return {"operation_id": str(operation_id), "status": status}
+
+
+def operation_status_changed_idempotency_key(operation_id: uuid.UUID, status: str) -> str:
+    # An operation reaches each status at most once (queued, running, then
+    # succeeded or failed), so the status completes the key.
+    return f"operation_status_changed:{operation_id}:{status}"

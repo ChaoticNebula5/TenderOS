@@ -1,13 +1,11 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.factory import build_llm_client
-from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.user import User
-from tenderos_backend.domain.services import redteam_service
+from tenderos_backend.domain.services import operation_service, redteam_service, tender_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.schemas.operations import OperationResponse
 from tenderos_api.schemas.redteam import RedteamFindingResponse, ResolveFindingRequest
 
 router = APIRouter(tags=["redteam"])
@@ -37,20 +35,27 @@ _RESOLVE = "resolve_redteam_finding"
 # closest existing precedent for both the RBAC choice and the route shape.
 
 
-def _build_llm_client() -> LLMClient:
-    # B17: delegates to agents/llm/factory.py::build_llm_client - see
-    # commercial.py's identical comment for why.
-    return build_llm_client()
-
-
-@router.post("/tenders/{tender_id}/redteam/run", response_model=list[RedteamFindingResponse])
+@router.post(
+    "/tenders/{tender_id}/redteam/run",
+    response_model=OperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def trigger_red_team(
     tender_id: UUID, current_user: User = Depends(require_permission(_RESOLVE))
-) -> list[RedteamFindingResponse]:
-    client = _build_llm_client()
-    await redteam_service.run_red_team(client, settings.reasoning_model, tender_id)
-    findings = await redteam_service.list_findings_for_tender(tender_id)
-    return [RedteamFindingResponse.model_validate(f, from_attributes=True) for f in findings]
+) -> OperationResponse:
+    """Phase 4: no longer runs the red team (and its LLM critique) inside
+    the request. Records a redteam_run async operation and returns 202 with
+    its id; the worker runs it (jobs/operations.py) and the web app follows
+    GET /operations/{operation_id} (or its SSE stream) until it finishes,
+    then re-reads GET .../redteam-findings. A second request while a run is
+    queued or running for this tender returns that same operation."""
+    tender = await tender_service.get_tender(tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    requested = await operation_service.request_operation(
+        tender.organization_id, tender_id, "redteam_run", current_user.id
+    )
+    return OperationResponse.from_operation(requested.operation)
 
 
 @router.get("/tenders/{tender_id}/redteam-findings", response_model=list[RedteamFindingResponse])

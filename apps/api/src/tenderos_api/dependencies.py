@@ -17,7 +17,11 @@ from tenderos_backend.orchestration.gates import action_for_gate_type
 
 from tenderos_api.errors import OrgAccessDeniedError
 from tenderos_api.schemas.requirements import MergeRequirementsRequest
-from tenderos_api.sse_tickets import consume_sse_ticket
+from tenderos_api.sse_tickets import (
+    SCOPE_OPERATION,
+    SCOPE_WORKFLOW_RUN,
+    consume_sse_ticket_with_scope,
+)
 
 _bearer_scheme = HTTPBearer()
 # auto_error=False: get_current_user_for_sse (below) needs to try the
@@ -58,6 +62,9 @@ async def get_current_user(
     return await _user_from_token(credentials.credentials)
 
 
+_SSE_SCOPE_PATH_PARAMS = {SCOPE_WORKFLOW_RUN: "run_id", SCOPE_OPERATION: "operation_id"}
+
+
 async def get_current_user_for_sse(
     request: Request,
     ticket: str | None = Query(default=None),
@@ -88,18 +95,22 @@ async def get_current_user_for_sse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing bearer token or ticket",
         )
-    resolved = await consume_sse_ticket(ticket)
+    resolved = await consume_sse_ticket_with_scope(ticket)
     if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Ticket is invalid, expired, or already used",
         )
-    user_id, bound_run_id = resolved
-    requested_run_id = request.path_params.get("run_id")
-    if requested_run_id is None or str(bound_run_id) != requested_run_id:
+    user_id, scope, bound_resource_id = resolved
+    # Phase 4: a ticket names its scope; it opens only a stream of that kind
+    # (a workflow run's or an async operation's), for the one resource in
+    # the route's own path parameter.
+    path_param = _SSE_SCOPE_PATH_PARAMS.get(scope)
+    requested_id = request.path_params.get(path_param) if path_param else None
+    if requested_id is None or str(bound_resource_id) != requested_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Ticket is not valid for this run",
+            detail="Ticket is not valid for this stream",
         )
 
     async with UnitOfWork() as uow:

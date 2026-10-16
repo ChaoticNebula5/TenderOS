@@ -1,27 +1,23 @@
-import asyncio
-import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.user import User
-from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import tender_service, workflow_service
 
 from tenderos_api.dependencies import require_permission, require_permission_for_sse
 from tenderos_api.errors import DocumentsNotReadyError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
+from tenderos_api.outbox_stream import outbox_event_stream
 from tenderos_api.schemas.workflow import (
     AuditEventResponse,
     SSETicketResponse,
     WorkflowRunResponse,
     WorkflowTaskResponse,
 )
-from tenderos_api.sse_tickets import TICKET_TTL_SECONDS, mint_sse_ticket
+from tenderos_api.sse_tickets import SCOPE_WORKFLOW_RUN, TICKET_TTL_SECONDS, mint_sse_ticket
 
 router = APIRouter(tags=["workflow"])
 
@@ -49,17 +45,23 @@ _WIRE_EVENT_TYPE = {
     "WorkflowTaskFailed": "task.failed",
 }
 
-_SSE_POLL_INTERVAL_SECONDS = 1.0
+
+def _workflow_message(event: OutboxEvent) -> dict:
+    return {
+        "event_type": _WIRE_EVENT_TYPE[event.event_type],
+        "workflow_run_id": event.payload["workflow_run_id"],
+        "task_id": event.payload.get("task_id"),
+        "task_type": event.payload.get("task_type"),
+        "timestamp": event.created_at.isoformat(),
+    }
 
 
-async def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
-    """Server-side polling of the outbox at ~1s, re-emitted as a client-
-    facing push stream - NOT database-level push. This is the honesty
-    requirement from this block's own SSE-transport decision
-    (KNOWN_LIMITATIONS.md), stated here in the one place a reader would
-    actually be looking to find out what this route does. LISTEN/NOTIFY is
-    the named path to genuine push if 1s ever proves inadequate; the
-    outbox-write half of that decision is unchanged either way.
+def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
+    """The run's progress stream: the four workflow event types for this
+    run, as G13's dotted wire names. The polling loop itself lives in
+    tenderos_api/outbox_stream.py (moved there in Phase 4 so async
+    operations stream the same way); see its docstring for the transport
+    and for why the client re-reads state rather than trusting the payload.
 
     Deliberately bypasses apps/worker/outbox_dispatcher.py's own, separate
     POLL_INTERVAL_SECONDS = 5 tick - that poll decides which events need an
@@ -67,45 +69,13 @@ async def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
     container, not this API process). Routing through it would add a
     second, unnecessary cross-process hop on top of its own 5s floor, real
     latency this stream's "no manual reload" purpose can't absorb.
-
-    Wake-up signal, not payload, per G13's own metadata-only payload text:
-    on seeing a new outbox row for this run_id, re-queries
-    workflow_tasks/workflow_runs (not implemented here - the client does
-    this, via the same fetcher useEventStream already takes) rather than
-    trusting task/run state serialized into the outbox row itself, which
-    would be a second copy of the same fact with its own chance to drift.
     """
-    since = datetime.now(UTC)
-    while True:
-        async with UnitOfWork() as uow:
-            result = await uow.session.execute(
-                select(OutboxEvent)
-                .where(
-                    OutboxEvent.event_type.in_(_WORKFLOW_PROGRESS_EVENT_TYPES),
-                    OutboxEvent.payload["workflow_run_id"].astext == str(run_id),
-                    OutboxEvent.created_at > since,
-                )
-                .order_by(OutboxEvent.created_at)
-            )
-            new_events = list(result.scalars().all())
-
-        if not new_events:
-            # SSE comment line - ignored by EventSource's own message
-            # parsing, but keeps the connection visibly alive against any
-            # idle-connection timeout between here and the browser.
-            yield ": heartbeat\n\n"
-        for event in new_events:
-            since = event.created_at
-            message = {
-                "event_type": _WIRE_EVENT_TYPE[event.event_type],
-                "workflow_run_id": str(run_id),
-                "task_id": event.payload.get("task_id"),
-                "task_type": event.payload.get("task_type"),
-                "timestamp": event.created_at.isoformat(),
-            }
-            yield f"data: {json.dumps(message)}\n\n"
-
-        await asyncio.sleep(_SSE_POLL_INTERVAL_SECONDS)
+    return outbox_event_stream(
+        event_types=_WORKFLOW_PROGRESS_EVENT_TYPES,
+        payload_key="workflow_run_id",
+        resource_id=run_id,
+        to_message=_workflow_message,
+    )
 
 
 @router.get("/workflow-runs/{run_id}/events/stream")
@@ -139,7 +109,7 @@ async def mint_workflow_events_ticket(
     dedicated action would gate that one question under two different
     names for no real distinction.
     """
-    ticket = await mint_sse_ticket(current_user.id, run_id)
+    ticket = await mint_sse_ticket(current_user.id, run_id, SCOPE_WORKFLOW_RUN)
     return SSETicketResponse(ticket=ticket, expires_in_seconds=TICKET_TTL_SECONDS)
 
 

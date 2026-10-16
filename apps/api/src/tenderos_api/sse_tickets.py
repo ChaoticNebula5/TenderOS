@@ -28,23 +28,53 @@ _TICKET_KEY_PREFIX = "sse_ticket:"
 TICKET_TTL_SECONDS = 30
 
 
-async def mint_sse_ticket(user_id: uuid.UUID, run_id: uuid.UUID) -> str:
+# What a ticket opens. Phase 4 added async operations' streams next to the
+# workflow run's; a ticket names its scope so it can only open a stream of
+# that kind, for that one resource. The route parameter each scope is
+# checked against lives in dependencies.get_current_user_for_sse.
+SCOPE_WORKFLOW_RUN = "workflow_run"
+SCOPE_OPERATION = "operation"
+
+
+async def mint_sse_ticket(
+    user_id: uuid.UUID, resource_id: uuid.UUID, scope: str = SCOPE_WORKFLOW_RUN
+) -> str:
     ticket = secrets.token_urlsafe(32)
-    value = json.dumps({"user_id": str(user_id), "run_id": str(run_id)})
+    value = json.dumps({"user_id": str(user_id), "scope": scope, "resource_id": str(resource_id)})
     async with AsyncRedis.from_url(settings.redis_url) as redis_client:
         await redis_client.set(f"{_TICKET_KEY_PREFIX}{ticket}", value, ex=TICKET_TTL_SECONDS)
     return ticket
 
 
-async def consume_sse_ticket(ticket: str) -> tuple[uuid.UUID, uuid.UUID] | None:
-    """Returns (user_id, run_id) the ticket was minted for, or None if it
-    was never issued, already used, or has expired - all three look
-    identical to a caller by design (an attacker probing which is true
-    learns nothing from the response).
+async def consume_sse_ticket_with_scope(
+    ticket: str,
+) -> tuple[uuid.UUID, str, uuid.UUID] | None:
+    """Returns (user_id, scope, resource_id) the ticket was minted for, or
+    None if it was never issued, already used, or has expired - all three
+    look identical to a caller by design (an attacker probing which is true
+    learns nothing from the response). A ticket minted before scopes existed
+    ({"user_id", "run_id"}, live for at most TICKET_TTL_SECONDS) reads as a
+    workflow-run ticket.
     """
     async with AsyncRedis.from_url(settings.redis_url) as redis_client:
         raw = await redis_client.getdel(f"{_TICKET_KEY_PREFIX}{ticket}")
     if raw is None:
         return None
     payload = json.loads(raw)
-    return uuid.UUID(payload["user_id"]), uuid.UUID(payload["run_id"])
+    if "scope" not in payload:
+        return uuid.UUID(payload["user_id"]), SCOPE_WORKFLOW_RUN, uuid.UUID(payload["run_id"])
+    return (
+        uuid.UUID(payload["user_id"]),
+        payload["scope"],
+        uuid.UUID(payload["resource_id"]),
+    )
+
+
+async def consume_sse_ticket(ticket: str) -> tuple[uuid.UUID, uuid.UUID] | None:
+    """(user_id, resource_id) only, for callers that do not need the scope;
+    see consume_sse_ticket_with_scope."""
+    resolved = await consume_sse_ticket_with_scope(ticket)
+    if resolved is None:
+        return None
+    user_id, _scope, resource_id = resolved
+    return user_id, resource_id

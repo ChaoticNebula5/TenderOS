@@ -1022,8 +1022,11 @@ export interface RedteamFindingResponse {
   created_at: string;
 }
 
-export function triggerRedTeam(tenderId: string): Promise<RedteamFindingResponse[]> {
-  return apiFetch<RedteamFindingResponse[]>(`/tenders/${tenderId}/redteam/run`, {
+// Phase 4: starts a red-team run in the background and returns at once with
+// the operation to follow (202). A second call while one is queued or
+// running returns that same operation.
+export function triggerRedTeam(tenderId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/tenders/${tenderId}/redteam/run`, {
     method: "POST",
   });
 }
@@ -1144,4 +1147,39 @@ export function getGraphTrace(
 ): Promise<GraphTraceResponse> {
   const params = new URLSearchParams({ node_label: nodeLabel, node_id: nodeId });
   return apiFetch<GraphTraceResponse>(`/tenders/${tenderId}/graph/trace?${params.toString()}`);
+}
+
+// ----------------------------------------------------------------------
+// Phase 4. Async operations - mirrors apps/api/src/tenderos_api/schemas/
+// operations.py. Long-running work (an LLM call, a red-team run) runs in the
+// worker; the screen follows the operation until it is finished.
+// ----------------------------------------------------------------------
+
+export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export interface OperationResponse {
+  operation_id: string;
+  tender_id: string;
+  kind: string;
+  status: OperationStatus;
+  // Set when status is "failed"; safe to show as is.
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export function isFinishedOperation(operation: OperationResponse): boolean {
+  return operation.status === "succeeded" || operation.status === "failed";
+}
+
+export function getOperation(operationId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/operations/${operationId}`);
+}
+
+export function mintOperationEventsTicket(operationId: string): Promise<SSETicketResponse> {
+  return apiFetch<SSETicketResponse>(`/operations/${operationId}/events/ticket`, {
+    method: "POST",
+  });
 }

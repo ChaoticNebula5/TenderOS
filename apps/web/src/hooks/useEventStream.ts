@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { ApiError, mintWorkflowEventsTicket } from "../api/client";
+import { ApiError, mintOperationEventsTicket, mintWorkflowEventsTicket } from "../api/client";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const _MAX_MINT_RETRIES = 3;
@@ -52,13 +52,45 @@ const _MAX_MINT_RETRIES = 3;
 // delay and no cap, which hammers the mint endpoint in a tight loop
 // whenever the stream itself (not just minting) keeps failing the same
 // way.
+// Phase 4: what a stream follows. A workflow run's progress (B14) and an
+// async operation's status use the same transport; only the ticket route
+// and the stream path differ.
+export type EventStreamTarget = { kind: "workflowRun" | "operation"; id: string };
+
+const STREAM_ROUTES = {
+  workflowRun: {
+    mintTicket: mintWorkflowEventsTicket,
+    path: (id: string) => `/workflow-runs/${id}/events/stream`,
+  },
+  operation: {
+    mintTicket: mintOperationEventsTicket,
+    path: (id: string) => `/operations/${id}/events/stream`,
+  },
+} as const;
+
+// The workflow-run form every existing caller uses; unchanged behaviour.
 export function useEventStream<T>(
   fetcher: () => Promise<T>,
   workflowRunId: string,
   enabled: boolean,
-): { data: T | null; error: unknown } {
+): { data: T | null; error: unknown; streamDown: boolean } {
+  return useEventStreamFor(fetcher, { kind: "workflowRun", id: workflowRunId }, enabled);
+}
+
+export function useEventStreamFor<T>(
+  fetcher: () => Promise<T>,
+  target: EventStreamTarget,
+  enabled: boolean,
+): { data: T | null; error: unknown; streamDown: boolean } {
+  const { kind: targetKind, id: targetId } = target;
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<unknown>(null);
+  // Phase 4: true while there is no live stream (a ticket could not be
+  // minted, or the connection closed and is backing off), false once a
+  // connection opens. `error` only reports the failures this hook gives up
+  // on; a caller that must not wait on a reconnecting stream (useOperation's
+  // polling fallback) reads this instead.
+  const [streamDown, setStreamDown] = useState(false);
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
@@ -95,9 +127,10 @@ export function useEventStream<T>(
 
       let ticket: string;
       try {
-        ticket = (await mintWorkflowEventsTicket(workflowRunId)).ticket;
+        ticket = (await STREAM_ROUTES[targetKind].mintTicket(targetId)).ticket;
       } catch (err) {
         if (cancelled) return;
+        setStreamDown(true);
         if (err instanceof ApiError && err.status === 401) {
           setError(err);
           return;
@@ -116,12 +149,13 @@ export function useEventStream<T>(
 
       void refetch();
 
-      const url = new URL(`${BASE_URL}/workflow-runs/${workflowRunId}/events/stream`);
+      const url = new URL(`${BASE_URL}${STREAM_ROUTES[targetKind].path(targetId)}`);
       url.searchParams.set("ticket", ticket);
       source = new EventSource(url.toString());
 
       source.onopen = () => {
         streamFailures = 0;
+        setStreamDown(false);
       };
       source.onmessage = () => {
         void refetch();
@@ -130,6 +164,7 @@ export function useEventStream<T>(
         if (cancelled || source === null) return;
         if (source.readyState === EventSource.CLOSED) {
           source.close();
+          setStreamDown(true);
           const delay = Math.min(1000 * 2 ** streamFailures, _MAX_STREAM_BACKOFF_MS);
           streamFailures += 1;
           retryTimeout = setTimeout(() => void openStream(0), delay);
@@ -144,7 +179,7 @@ export function useEventStream<T>(
       if (retryTimeout !== null) clearTimeout(retryTimeout);
       source?.close();
     };
-  }, [workflowRunId, enabled]);
+  }, [targetKind, targetId, enabled]);
 
-  return { data, error };
+  return { data, error, streamDown };
 }

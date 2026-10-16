@@ -20,6 +20,7 @@ from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
+    AGGREGATE_ASYNC_OPERATION,
     AGGREGATE_DOCUMENT,
     AGGREGATE_KNOWLEDGE_SELECTION,
     AGGREGATE_REQUIREMENT,
@@ -28,12 +29,15 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_GATE_DECISION_RECORDED,
     EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
     EVENT_KNOWLEDGE_SELECTION_CHANGED,
+    EVENT_OPERATION_REQUESTED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
+from tenderos_backend.domain.services import operation_service
 
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.knowledge_import import process_knowledge_document_import
+from tenderos_worker.jobs.operations import run_operation_job
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
@@ -132,6 +136,12 @@ MAX_ERROR_BACKOFF_SECONDS = 60.0
 # idempotent endpoints produce (an estimate, not measured).
 CLEANUP_EVERY_N_TICKS = 12
 CLEANUP_BATCH_SIZE = 500
+
+# Async operations whose worker lease lapsed are failed as WORKER_LOST on the
+# same cadence (about once a minute), at most this many per pass. Leases are
+# 11 to 31 minutes (operation_service.lease_for), so a minute's delay in
+# noticing one is small next to the lease itself.
+REAPER_BATCH_SIZE = 100
 
 
 class RedisUnavailableError(Exception):
@@ -280,6 +290,33 @@ def _knowledge_selection_changed_dispatch(
     )
 
 
+def _operation_requested_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    # Phase 4 async operations: one job per operation, whose id is part of
+    # the job id (op_{operation_id}); OperationRequested is written exactly
+    # once per operation (operation_requested_idempotency_key). The
+    # "workflow" queue, like the other LLM-calling jobs; its job timeout
+    # comes from the operation's kind (_job_timeout_for).
+    operation_id = event.payload["operation_id"]
+    return "workflow", run_operation_job, (operation_id,), f"op_{operation_id}"
+
+
+def _job_timeout_for(event: OutboxEvent, queue_name: str) -> int | None:
+    """The RQ job timeout for this event's job. An async operation's comes
+    from its kind (operation_service.JOB_TIMEOUT_SECONDS), the same number
+    its lease is built from, so the lease always outlives the job. Every
+    other job keeps its queue's timeout."""
+    if (event.aggregate_type, event.event_type) == (
+        AGGREGATE_ASYNC_OPERATION,
+        EVENT_OPERATION_REQUESTED,
+    ):
+        kind = event.payload.get("kind")
+        if kind in operation_service.JOB_TIMEOUT_SECONDS:
+            return operation_service.JOB_TIMEOUT_SECONDS[kind]
+    return _QUEUE_TIMEOUTS_SECONDS.get(queue_name)
+
+
 # (aggregate_type, event_type) -> a function building (queue_name, job_fn,
 # job_args, job_id) for that event. Anything not listed here falls back to
 # _default_dispatch (maintenance queue, generic process_outbox_event) - same
@@ -302,6 +339,7 @@ _ROUTES: dict[
         AGGREGATE_KNOWLEDGE_SELECTION,
         EVENT_KNOWLEDGE_SELECTION_CHANGED,
     ): _knowledge_selection_changed_dispatch,
+    (AGGREGATE_ASYNC_OPERATION, EVENT_OPERATION_REQUESTED): _operation_requested_dispatch,
 }
 
 
@@ -372,7 +410,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
                 job_fn,
                 *job_args,
                 job_id=job_id,
-                job_timeout=_QUEUE_TIMEOUTS_SECONDS.get(queue_name),
+                job_timeout=_job_timeout_for(event, queue_name),
                 unique=True,
             )
         except DuplicateJobError:
@@ -398,6 +436,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
             failed_attempts = event.attempt_count + 1
             if failed_attempts >= MAX_ATTEMPTS:
                 await uow.outbox.mark_failed(event_id)
+                await _fail_dead_lettered_operation(uow, event)
                 logger.error(
                     "outbox event %s (%s/%s) failed %d attempts; marked failed "
                     "(dead letter, needs a manual re-drive)",
@@ -410,6 +449,36 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
                 delay = timedelta(seconds=_retry_delay_seconds(failed_attempts))
                 await uow.outbox.mark_retry(event_id, delay)
         await uow.commit()
+
+
+async def _fail_dead_lettered_operation(uow: UnitOfWork, event: OutboxEvent) -> None:
+    """A dead-lettered OperationRequested never reaches the worker, so its
+    operation would stay queued, and queued counts as active in
+    uq_async_operation_active: every later request for that kind on that
+    tender would get the stuck operation back. Fail it here, in the
+    dead-letter's own transaction. A payload without a readable
+    operation_id is left to the queued-window reaper rather than raising,
+    which would roll back the dead-letter and retry the event forever."""
+    if (event.aggregate_type, event.event_type) != (
+        AGGREGATE_ASYNC_OPERATION,
+        EVENT_OPERATION_REQUESTED,
+    ):
+        return
+    try:
+        operation_id = uuid.UUID(str(event.payload["operation_id"]))
+    except (KeyError, TypeError, ValueError):
+        logger.error(
+            "outbox event %s: dead-lettered OperationRequested has no readable operation_id; "
+            "the queued-window reaper will fail its operation",
+            event.id,
+        )
+        return
+    if await operation_service.fail_undispatched_operation(uow, operation_id):
+        logger.error(
+            "operation %s failed as DISPATCH_FAILED: its request event %s was dead-lettered",
+            operation_id,
+            event.id,
+        )
 
 
 def _redis_connection(redis_url: str) -> Redis:
@@ -471,6 +540,35 @@ async def _delete_expired_idempotency_records() -> None:
         logger.exception("idempotency record cleanup failed; will retry on a later tick")
 
 
+async def _reap_lapsed_operations() -> None:
+    """Fail async operations whose worker lease lapsed (WORKER_LOST), then
+    those still queued past operation_service.MAX_DISPATCH_WINDOW
+    (DISPATCH_FAILED), one bounded batch of each per call, each in its own
+    transaction. Never re-runs them: that would repeat paid LLM calls; the
+    user starts the work again. A failure in either is logged and
+    swallowed, like the idempotency cleanup, and does not skip the other."""
+    try:
+        reaped = await operation_service.reap_lapsed_operations(batch_size=REAPER_BATCH_SIZE)
+        if reaped:
+            logger.warning(
+                "reaped %d async operation(s) whose worker lease lapsed: %s",
+                len(reaped),
+                ", ".join(str(r) for r in reaped),
+            )
+    except Exception:
+        logger.exception("async operation reaper failed; will retry on a later tick")
+    try:
+        stale = await operation_service.reap_stale_queued_operations(batch_size=REAPER_BATCH_SIZE)
+        if stale:
+            logger.warning(
+                "failed %d async operation(s) still queued past the dispatch window: %s",
+                len(stale),
+                ", ".join(str(s) for s in stale),
+            )
+    except Exception:
+        logger.exception("queued async operation reaper failed; will retry on a later tick")
+
+
 def _error_backoff_seconds(consecutive_failures: int) -> float:
     return min(POLL_INTERVAL_SECONDS * 2 ** (consecutive_failures - 1), MAX_ERROR_BACKOFF_SECONDS)
 
@@ -518,6 +616,7 @@ async def _run_forever() -> None:
             )
         if tick % CLEANUP_EVERY_N_TICKS == 0:
             await _delete_expired_idempotency_records()
+            await _reap_lapsed_operations()
         await asyncio.sleep(delay)
 
 
