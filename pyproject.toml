@@ -45,6 +45,15 @@ extend-immutable-calls = [
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+# Phase 4 item 29. Any SQLAlchemy warning fails its test. A connection the
+# garbage collector finds unreturned warns from inside a GC callback, where
+# the error cannot reach the test: if that happens during a test, pytest
+# reports it as an unraisable exception, which the second line also makes
+# an error; at a test boundary, tests/conftest.py catches it.
+filterwarnings = [
+    "error::sqlalchemy.exc.SAWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

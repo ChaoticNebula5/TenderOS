@@ -11244,7 +11244,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none; the proof is a grouped PR per ecosystem after the next
   scheduled run.
 
-## [found 2026-10-22, open] An intermittent connection-leak warning in CI's backend run
+## [found 2026-10-22, open: guarded in batch 1, cause unknown] An intermittent connection-leak warning in CI's backend run
 
 - **What happened:** CI on `cc74b1a` (run 39775453912) passed 743 tests with
   2 warnings. One was the known test-client deprecation (the entry above on
@@ -11266,3 +11266,40 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** open.
 - **Test:** none yet; item 29's proof is 20 runs of the file with the
   warning as an error.
+- **Phase 4 batch 1 (item 29, 2026-10-22): guard built, leak not found.**
+  - **Not reproduced (observed):** one full local suite with a scratch
+    plugin forcing a collection after every test: 739 passed, 0 leaks. The
+    instrument was checked first: a planted leak was caught and attributed.
+    Two product paths read as candidates, both in `UnitOfWork.__aexit__`
+    (a `rollback()` that raises skips the session's close; a cancellation
+    mid-query), were tried in scratch tests and did not leak: the abandoned
+    `get_session()` generator is closed by asyncio's async-generator
+    finalizer, and a cancelled query rolls back cleanly. No product code
+    was changed. Where CI's connection came from is still unknown.
+  - **Read from the CI log:** the warning was raised in neo4j's
+    `hydration_handler.py:98`, unrelated code, which is how a cyclic-GC
+    collection looks. The test it is attributed to is probably not the one
+    that leaked; `test_proposal_service.py` ran just before it in CI.
+  - **Why `error::SAWarning` alone would not have helped:** the warning is
+    raised inside a GC callback, where an exception cannot reach the test
+    (read in code, `sqlalchemy/pool/base.py:1016-1032`). Observed: with
+    only `error::sqlalchemy.exc.SAWarning` set and no conftest guard, a
+    leak in a plain local and a leak in a cycle both passed ("3 passed,
+    2 warnings"; pytest turned each into a `PytestUnraisableExceptionWarning`).
+  - **Built:** `pyproject.toml` makes `SAWarning` and
+    `PytestUnraisableExceptionWarning` errors; a new `tests/conftest.py`
+    collects after every test (with the objects from before the first test
+    frozen, so it costs nothing measurable: 297.9 s against a 301.9 s
+    baseline) and appends, to SQLAlchemy's own ERROR line, the repo frames
+    that checked the leaked connection out. Decision record 0047 (local).
+  - **Proof (observed):** three planted shapes (a plain local; a reference
+    cycle found at the end of its test; a cycle collected during a later
+    test) each fail, each report naming the exact line that called
+    `engine.connect()`; a clean test passes. The planted file was deleted
+    afterwards.
+  - **Limits:** a connection held by something still alive (a pending
+    task) is reported when it is released, possibly in a later test (the
+    stack still names its origin). Only SQLAlchemy pools are watched;
+    LangGraph's checkpointer has its own psycopg pool.
+- **Status (batch 1):** guarded; cause unknown. The next occurrence fails
+  CI and names its origin.
