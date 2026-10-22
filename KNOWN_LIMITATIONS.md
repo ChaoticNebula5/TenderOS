@@ -11123,3 +11123,33 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   close the torch gap; it is a separate change, as is the image scan.
 - **Status:** open, accepted.
 - **Test:** none; this is a manual release check.
+
+## [deps, recorded deviation from A2 under section 0.1, 2026-10-22] pypdf removed: declared, never imported
+
+- **The deviation:** A2 (Build Guide :154) lists pypdf among the
+  document-parsing libraries. It is no longer a dependency: removed from
+  `packages/tenderos_backend/pyproject.toml`, and only pypdf left
+  `uv.lock` (6.21.2; nothing else moved).
+- **Why:** nothing ever imported it. Searched on 2026-10-22: no import in
+  our code, and none in any installed package (its only dependant in the
+  lock was `tenderos-backend` itself). Uploaded PDFs are parsed by
+  pdfplumber (`ingestion/parse_pdf.py`), which uses pdfminer.six to
+  extract text and pypdfium2 to render pages for OCR. Keeping an unused
+  PDF parser in the runtime images only added advisories to track (11 in
+  October's first audit, more since) with no code path reaching it.
+- **What the docs still say:** A2's table is unchanged (the Build Guide is
+  not edited from here). `scripts/synthetic_common.py:5` cites that table
+  for why fixtures hand-write their PDFs; that stays true and was left as
+  is. The 2026-10-06 audit entry's claim that pypdf parses uploads carries
+  a dated correction.
+- **Verified (local, fake provider):** backend suite 739 passed, 4
+  skipped, via scripts/test-backend.ps1; `uv run pip-audit` "No known
+  vulnerabilities found", exit 0; the fake stack rebuilt with
+  scripts/fake-stack.ps1, every service running (api healthy), and pypdf
+  neither installed nor importable in the api, worker,
+  operations_worker and outbox_dispatcher containers. No E2E: no code
+  path changed.
+- **Reverse if:** a feature needs PDF writing or low-level PDF object
+  access that pdfplumber and pypdfium2 do not give; re-add it then, at a
+  version pip-audit passes.
+- **Status:** recorded, accepted.
