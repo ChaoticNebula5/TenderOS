@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
@@ -354,5 +354,52 @@ describe("ProposalWorkspace (Phase 4 Stage 2, async generation)", () => {
     await waitFor(() => expect(getActiveOperation).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("button", { name: "Generate proposal" })).toBeEnabled();
     expect(FakeEventSource.instances).toHaveLength(0);
+  });
+});
+
+// Stale-tender guard (Stage 2 review): the re-read after a finished
+// generation can answer after the user has moved to another tender. The
+// component stays mounted across the tenderId change, as in App.tsx's own
+// routing, so the late answer would otherwise land on tender B's screen.
+describe("ProposalWorkspace (stale-tender guard)", () => {
+  it("a finished generation's re-read of tender A, still in flight after navigating away, does not land on tender B", async () => {
+    const user = userEvent.setup();
+    let resolveStaleRead!: (sections: ProposalSectionResponse[]) => void;
+    let tenderAReads = 0;
+    listProposalSections.mockImplementation((tenderId) => {
+      if (tenderId === "t2") return Promise.resolve([section("b1")]);
+      tenderAReads += 1;
+      if (tenderAReads === 1) return Promise.resolve([]);
+      return new Promise((r) => (resolveStaleRead = r));
+    });
+    listProposalClaims.mockResolvedValue([]);
+    generateProposal.mockResolvedValue(operation("queued"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    render(
+      <MemoryRouter initialEntries={["/tenders/t1/proposal"]}>
+        <Link to="/tenders/t2/proposal">switch to t2</Link>
+        <Routes>
+          <Route path="/tenders/:tenderId/proposal" element={<ProposalWorkspace />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("No proposal sections drafted yet");
+    await user.click(screen.getByRole("button", { name: "Generate proposal" }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    pushStatus();
+    // The re-read of tender A has started and is held open.
+    await waitFor(() => expect(tenderAReads).toBe(2));
+
+    await user.click(screen.getByText("switch to t2"));
+    expect(await screen.findByRole("heading", { name: "Section b1" })).toBeInTheDocument();
+
+    resolveStaleRead([section("a-stale")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByRole("heading", { name: "Section b1" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Section a-stale" })).toBeNull();
   });
 });

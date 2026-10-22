@@ -231,19 +231,24 @@ async def test_the_active_operation_is_returned_while_running_and_null_when_idle
         assert finished.json() is None
 
 
-async def test_the_active_operation_is_a_404_across_organizations_like_a_missing_tender():
+async def test_the_active_operation_is_a_403_across_organizations_and_a_404_for_a_missing_tender():
+    """Tender-scoped, so it answers a non-member like every other
+    tender-scoped route (require_permission): 403 ORG_ACCESS_DENIED. A
+    tender that does not exist is 404. (The /operations/{id} routes keep
+    their 404 for another organization's operation.)"""
     async with await _client() as client:
         headers, _, org_id = await _register(client, "ops-api-active-owner@example.com")
         tender_id = await _tender(client, headers, org_id)
-        await _start_red_team(client, headers, tender_id)
+        started = await _start_red_team(client, headers, tender_id)
         outsider_headers, _, _ = await _register(client, "ops-api-active-outsider@example.com")
 
         cross_org = await _active(client, outsider_headers, tender_id, "redteam_run")
         missing = await _active(client, outsider_headers, str(uuid.uuid4()), "redteam_run")
 
-        assert cross_org.status_code == 404, cross_org.text
+        assert cross_org.status_code == 403, cross_org.text
+        assert cross_org.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+        assert started["operation_id"] not in cross_org.text
         assert missing.status_code == 404, missing.text
-        assert cross_org.json() == missing.json()
 
 
 async def test_the_active_operation_needs_a_known_kind():

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -44,15 +44,32 @@ export function RedteamFindings() {
   const [error, setError] = useState<string | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
-  async function refresh() {
+  // The tender on screen now, kept fresh on every render, so a read that
+  // answers after the user moved to another tender can tell (the same guard
+  // as CommercialFindings).
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
+
+  // isCancelled: true once this read's result no longer belongs on screen
+  // (the user moved to another tender); a late answer is dropped instead of
+  // painting the previous tender's findings.
+  async function refresh(isCancelled: () => boolean) {
     if (!tenderId) return;
-    setFindings(await listRedteamFindings(tenderId));
+    const result = await listRedteamFindings(tenderId);
+    if (isCancelled()) return;
+    setFindings(result);
     setFindingsLoaded(true);
   }
 
   useEffect(() => {
+    let cancelled = false;
     setFindingsLoaded(false);
-    refresh().catch(() => setError("Failed to load red-team findings"));
+    refresh(() => cancelled).catch(() => {
+      if (!cancelled) setError("Failed to load red-team findings");
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
@@ -62,10 +79,14 @@ export function RedteamFindings() {
   // reload is picked up again on load. On failure, the operation's own
   // message (LLM timeout, worker lost, ...).
   async function handleFinished(operation: OperationResponse) {
+    const finishedForTenderId = tenderId;
+    const isCancelled = () => tenderIdRef.current !== finishedForTenderId;
     if (operation.status === "failed") {
       setError(operation.error_message ?? "Run failed");
     }
-    await refresh().catch(() => setError("Failed to load red-team findings"));
+    await refresh(isCancelled).catch(() => {
+      if (!isCancelled()) setError("Failed to load red-team findings");
+    });
   }
   const { busy: running, start } = useTenderOperation(tenderId, "redteam_run", handleFinished);
 

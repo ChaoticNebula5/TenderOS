@@ -50,21 +50,37 @@ export function ProposalWorkspace() {
   // The "Inspect trace" button that opened the drawer, so focus can return
   // to it on close (DESIGN.md Accessibility, "Keyboard order").
   const drawerOpener = useRef<HTMLElement | null>(null);
+  // The tender on screen now, kept fresh on every render, so a read that
+  // answers after the user moved to another tender can tell (the same guard
+  // as CommercialFindings).
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
 
-  async function refreshSections() {
+  // isCancelled: true once this read's result no longer belongs on screen
+  // (the user moved to another tender); checked after every await, so a late
+  // answer is dropped instead of painting the previous tender's sections.
+  async function refreshSections(isCancelled: () => boolean) {
     if (!tenderId) return;
     const result = await listProposalSections(tenderId);
+    if (isCancelled()) return;
     setSections(result);
     setSectionsLoaded(true);
     for (const section of result) {
       const claims = await listProposalClaims(section.id);
+      if (isCancelled()) return;
       setClaimsBySection((prev) => ({ ...prev, [section.id]: claims }));
     }
   }
 
   useEffect(() => {
+    let cancelled = false;
     setSectionsLoaded(false);
-    refreshSections().catch(() => setError("Failed to load proposal sections"));
+    refreshSections(() => cancelled).catch(() => {
+      if (!cancelled) setError("Failed to load proposal sections");
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
@@ -75,10 +91,14 @@ export function ProposalWorkspace() {
   // counts claim rows at once, without waiting. A generation started before a reload is
   // picked up again on load (useTenderOperation).
   async function handleFinished(operation: OperationResponse) {
+    const finishedForTenderId = tenderId;
+    const isCancelled = () => tenderIdRef.current !== finishedForTenderId;
     if (operation.status === "failed") {
       setError(operation.error_message ?? "Generate failed");
     }
-    await refreshSections().catch(() => setError("Failed to load proposal sections"));
+    await refreshSections(isCancelled).catch(() => {
+      if (!isCancelled()) setError("Failed to load proposal sections");
+    });
   }
   const { busy: generating, start } = useTenderOperation(
     tenderId,

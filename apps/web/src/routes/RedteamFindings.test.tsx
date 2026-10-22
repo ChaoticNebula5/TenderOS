@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
@@ -290,5 +290,51 @@ describe("RedteamFindings (restyle batch 5)", () => {
     act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
     await screen.findByText("Finding f1.");
     expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
+  });
+});
+
+// Stale-tender guard (Stage 2 review): the re-read after a finished run can
+// answer after the user has moved to another tender. The component stays
+// mounted across the tenderId change, as in App.tsx's own routing.
+describe("RedteamFindings (stale-tender guard)", () => {
+  it("a finished run's re-read of tender A, still in flight after navigating away, does not land on tender B", async () => {
+    const user = userEvent.setup();
+    let resolveStaleRead!: (rows: RedteamFindingResponse[]) => void;
+    let tenderAReads = 0;
+    listRedteamFindings.mockImplementation((tenderId) => {
+      if (tenderId === "t2") return Promise.resolve([finding("b1", { tender_id: "t2" })]);
+      tenderAReads += 1;
+      if (tenderAReads === 1) return Promise.resolve([]);
+      return new Promise((r) => (resolveStaleRead = r));
+    });
+    triggerRedTeam.mockResolvedValue(operation("queued"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    render(
+      <MemoryRouter initialEntries={["/tenders/t1/redteam"]}>
+        <Link to="/tenders/t2/redteam">switch to t2</Link>
+        <Routes>
+          <Route path="/tenders/:tenderId/redteam" element={<RedteamFindings />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("No red-team findings yet");
+    await user.click(screen.getByRole("button", { name: "Run red team" }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
+    // The re-read of tender A has started and is held open.
+    await waitFor(() => expect(tenderAReads).toBe(2));
+
+    await user.click(screen.getByText("switch to t2"));
+    expect(await screen.findByText("Finding b1.")).toBeInTheDocument();
+
+    resolveStaleRead([finding("a-stale")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("Finding b1.")).toBeInTheDocument();
+    expect(screen.queryByText("Finding a-stale.")).toBeNull();
   });
 });

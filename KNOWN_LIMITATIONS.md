@@ -10828,12 +10828,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      explanation. This also applies to the workflow's own commercial step,
      which calls the same function.
   5. `GET /tenders/{id}/operations/active?kind=...`
-     (`apps/api/src/tenderos_api/routes/operations.py:80`) returns the
-     tender's queued or running operation of that kind, or `null`. Same
-     organization check as `GET /operations/{id}` (one `_authorize`,
-     `:58`): another organization's tender answers 404 exactly like a
-     missing one; a member whose role may not create that kind gets 403; an
-     unknown kind is 422.
+     (`apps/api/src/tenderos_api/routes/operations.py:90`) returns the
+     tender's queued or running operation of that kind, or `null`. One
+     organization check (`_authorize`, `:63`): another organization's
+     tender answers 403 `ORG_ACCESS_DENIED`, like every other
+     tender-scoped route (changed from 404 on 2026-10-22, review); a tender
+     that does not exist is 404; a member whose role may not create that
+     kind gets 403; an unknown kind is 422. `GET /operations/{id}` keeps
+     its 404 for another organization's operation.
   6. The web app: `useTenderOperation`
      (`apps/web/src/hooks/useTenderOperation.ts`) is used by the red team,
      proposal and commercial screens. The button stays busy from the click
@@ -10891,17 +10893,28 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      Per-job startup, RQ job start to the first line of job code, 3
      samples per kind (measured, fake stack): before 5.8 to 7.3 s red
      team, 5.4 to 5.9 s proposal, 5.6 to 5.7 s commercial; after, 0.000 s
-     in all 9 (below the logs' 1 ms resolution).
-  10. **BLAS is pinned to one thread in the operations worker.** The
-     preload made the parent fork with threads running: numpy's and
-     scipy's bundled OpenBLAS each start a pool when they load (observed:
-     1 -> 16 -> 31 OS threads on 16 CPUs; 0 sockets before and after).
-     `operations_worker` sets `OPENBLAS_NUM_THREADS=1` and
-     `OMP_NUM_THREADS=1` (`docker-compose.yml`), which keeps the import at
-     one thread (observed in the running parent: OS threads 1 -> 1, open
-     sockets 0 -> 0). The worker refuses to start, logging an ERROR that
-     names the thread count and both variables and exiting non-zero, if
-     the import leaves more than one OS thread or opens a socket (Linux).
+     in all 9 (below the logs' 1 ms resolution). The parent forks every
+     job with one thread besides its main thread: RQ's own (item 10).
+  10. **BLAS is pinned to one thread in the operations worker.** Without
+     the pin, the preload would have added 30 threads to the parent that
+     forks the jobs: numpy's and scipy's bundled OpenBLAS each start a
+     pool when they load (observed: 1 -> 16 -> 31 OS threads on 16 CPUs;
+     0 sockets before and after). `operations_worker` sets
+     `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`
+     (`docker-compose.yml`), which keeps the import at one thread
+     (observed in the running parent: OS threads 1 -> 1, open sockets 0 ->
+     0). The worker refuses to start, logging an ERROR that names the
+     thread count and both variables and exiting non-zero, if the import
+     leaves more than one OS thread or opens a socket (Linux). What this
+     guarantees is that the preload adds no thread, not that the parent
+     forks single-threaded: the check runs before the RQ `Worker` exists,
+     and RQ 2.10.0's `Worker.bootstrap` then starts a Redis pubsub listener
+     thread (`rq/worker/base.py`, `subscribe` -> `pubsub.run_in_thread`,
+     daemon) that runs until teardown. Observed 2026-10-22, idle: the
+     parent python process has 2 OS threads and 3 open sockets in both
+     `operations_worker` and the default `worker`. That listener thread is
+     RQ's own design, present in every RQ worker; RQ's scheduler is a
+     separate forked process, not a thread.
   11. With 8 to 10: E2E passed 2 of 2 (2.6 and 2.6 min, fake-provider),
      after failing 3 of 3 before. Run B1 (UTC): the commercial gate's
      resume job ran 06:50:49.925 to 06:50:57.559 and the proposal
@@ -10971,7 +10984,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   `test_a_real_commercial_validation_runs_once_and_explains_only_new_findings`),
   `tests/integration/test_operations_api.py`
   (`test_the_active_operation_is_returned_while_running_and_null_when_idle`,
-  `test_the_active_operation_is_a_404_across_organizations_like_a_missing_tender`,
+  `test_the_active_operation_is_a_403_across_organizations_and_a_404_for_a_missing_tender`,
   `test_the_active_operation_needs_a_known_kind`),
   `tests/route/test_proposal_routes.py`
   (`test_generate_proposal_returns_202_and_the_same_operation_while_active`),
@@ -11000,6 +11013,22 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   test covers the refusal there. On 2026-10-16 all four were run inside
   the `operations_worker` container: 4 passed on 16 CPUs; on one CPU 3
   passed and the pin-missing test skipped.
+  Review fixes (2026-10-22): the three routes that create operations,
+  called by another organization's admin, answer 403 `ORG_ACCESS_DENIED`
+  (as every tender-scoped route does through `require_permission`; so does
+  the active-operation route; only the `/operations/{id}` routes answer
+  404) and write no `async_operations`
+  row and no operation outbox event
+  (`tests/route/test_operation_routes_cross_org.py`, all three kinds; the
+  403 itself was already asserted by
+  `test_trigger_red_team_rejects_a_caller_outside_the_organization`,
+  `test_list_generate_and_patch_reject_a_caller_outside_the_organization`
+  and `test_commercial_routes_reject_a_caller_outside_the_organization`).
+  The proposal and red-team screens guard their re-read after a
+  finished operation, and their load-time read, against the user moving
+  to another tender meanwhile, like the commercial screen: the two new
+  stale-tender tests in `ProposalWorkspace.test.tsx` and
+  `RedteamFindings.test.tsx` fail without the guard.
 
 ## [Phase 4 async operations, Stage 2, 2026-10-16, open, accepted] E2E step 11 depends on the workflow still running when the red team is clicked
 

@@ -51,9 +51,17 @@ def queue_names_from(argv: list[str]) -> list[str]:
 # -> 31 OS threads on 16 CPUs). The operations_worker service therefore sets
 # OPENBLAS_NUM_THREADS=1 and OMP_NUM_THREADS=1 (docker-compose.yml), which
 # keeps the import at one thread (observed), and the worker refuses to start
-# if the import leaves it with more than one thread or any open socket
-# (preload_operations_module). Operations do no numeric work, so a
-# single-threaded BLAS costs them nothing today.
+# if the import adds a thread or opens a socket (preload_operations_module).
+# Operations do no numeric work, so a single-threaded BLAS costs them nothing
+# today.
+#
+# What the check guarantees is that the preload adds no thread. It does not
+# make the parent fork single-threaded: once the check has passed, RQ's own
+# Worker.bootstrap starts a Redis pubsub listener thread (rq 2.10.0,
+# rq/worker/base.py: subscribe -> pubsub.run_in_thread, daemon) that runs
+# until teardown, so every RQ worker, this one included, forks its jobs
+# with that one thread alive (observed idle: 2 OS threads in the parent).
+# That is RQ's own design, the same in the default worker.
 _OPERATIONS_JOB_MODULE = "tenderos_worker.jobs.operations"
 _BLAS_THREAD_VARIABLES = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")
 
@@ -90,7 +98,10 @@ def preload_operations_module() -> None:
     """Import the operations job module in this (parent) process, then fail
     fast, exiting non-zero, if that left more than one OS thread or opened
     a socket: better a worker that will not start at deploy time than a rare
-    hang inside a forked job. Linux only; elsewhere nothing is counted."""
+    hang inside a forked job. Called before the RQ Worker exists, so the one
+    thread it expects is the main thread; RQ's own listener thread starts
+    later (see the comment above). Linux only; elsewhere nothing is
+    counted."""
     threads_before, sockets_before = _os_thread_count(), _open_socket_count()
     importlib.import_module(_OPERATIONS_JOB_MODULE)
     threads_after, sockets_after = _os_thread_count(), _open_socket_count()
@@ -140,8 +151,9 @@ def main() -> None:
     # _handle_graph_failure) schedules retries via Queue.enqueue_in, which
     # only ever lands a job in RQ's own scheduled-jobs registry - nothing
     # promotes it to a real queue for a worker to pick up unless a
-    # scheduler component is running. RQ's own Worker can run one inline
-    # (a background thread) with this flag; without it, every scheduled
+    # scheduler component is running. RQ's own Worker starts one with this
+    # flag (in rq 2.10.0 a separate forked process named "Scheduler", not a
+    # thread: rq/scheduler.py, ForkProcess); without it, every scheduled
     # retry would sit invisibly in Redis forever, never executing.
     worker.work(with_scheduler=True)
 
