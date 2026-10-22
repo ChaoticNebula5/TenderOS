@@ -123,6 +123,14 @@ jobs:
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run python scripts/verify_migrations.py
+      # Phase 4 item 15: tests/unit/test_ocr_path.py skips without the
+      # tesseract binary (the Windows host); here it is installed, and
+      # TENDEROS_REQUIRE_OCR below turns that skip into a failure, so the
+      # OCR path cannot silently go untested in CI.
+      - name: Install Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr
       # Phase 4 item 14: the embedding and reranker models load by name
       # (ingestion/embed.py, agents/knowledge/rerank.py). The images bake
       # them in and run offline (decision 0018); tests run on the runner,
@@ -147,6 +155,7 @@ jobs:
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
+          TENDEROS_REQUIRE_OCR: "1"
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run pytest
