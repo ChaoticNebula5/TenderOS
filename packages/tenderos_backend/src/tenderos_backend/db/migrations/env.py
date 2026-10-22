@@ -11,7 +11,12 @@ from tenderos_backend.db.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the default (True) disables every
+    # logger that already exists. Harmless for the alembic CLI, but
+    # tests/integration/test_schema_diff.py runs migrations inside the pytest
+    # process, and every application logger then stayed disabled for the
+    # rest of the session, so log assertions saw nothing.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

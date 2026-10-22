@@ -130,7 +130,7 @@ def _limiter_raises(monkeypatch) -> None:
 
 @pytest.mark.parametrize("make_it_raise", [_route_raises, _limiter_raises])
 async def test_unhandled_exception_is_a_500_envelope_with_cors(
-    monkeypatch, caplog: pytest.LogCaptureFixture, main_logger_enabled, make_it_raise
+    monkeypatch, caplog: pytest.LogCaptureFixture, make_it_raise
 ):
     """raise_server_exceptions=False so that, before the fix, this fails on
     the assertions (a plain-text 500 with no CORS) rather than on TestClient

@@ -9973,7 +9973,7 @@ actually has - three independent failures were reproduced, not inferred:
 - **Proposal (not applied):** add `S3_BUCKET=tenderos-ci` to
   scripts/test-backend.env, matching CI.
 
-## [found during B17, open, test-process only] Alembic's env.py disables every existing logger when migrations run inside pytest
+## [found during B17, test-process only, RESOLVED in Phase 4 batch 1] Alembic's env.py disables every existing logger when migrations run inside pytest
 
 - `packages/.../db/migrations/env.py` calls `logging.config.fileConfig()`,
   whose default `disable_existing_loggers=True` disables every logger that
@@ -9984,6 +9984,16 @@ actually has - three independent failures were reproduced, not inferred:
 - tests/unit/test_object_storage_readiness.py re-enables that one logger
   per test. **Proposal (not applied):**
   `fileConfig(..., disable_existing_loggers=False)` in env.py.
+- **RESOLVED in Phase 4 batch 1 (item 12, 2026-10-22):** env.py now passes
+  `disable_existing_loggers=False`, and all seven workarounds are gone: the
+  `main_logger_enabled` fixture in `tests/route/conftest.py` and its three
+  uses, two re-enables in `test_idempotency.py`, one in
+  `test_outbox_dispatcher.py`, and the autouse fixture here. Observed:
+  with `test_schema_diff.py` first in one session, the log-asserting tests
+  from those files pass (26 passed); with only the env.py line reverted,
+  10 of them fail; the full suite passes. One of the seven re-enables
+  (`test_original_cannot_release_after_a_takeover`) never asserted on a
+  log, so it was dead code.
 
 ## [found during B17, open, measured 2026-10-10, likely mechanism identified, not fixed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
 
@@ -10392,13 +10402,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      (`tests/route/conftest.py:201`). A real API process never runs
      Alembic, so production logging is unaffected. The root-cause fix
      (`disable_existing_loggers=False`) is planned as a separate small
-     commit.
+     commit. **Resolved in Phase 4 batch 1 (item 12)**; see the Alembic
+     entry above.
 - **Risk:** limits 1 and 3 matter at deployment: an attacker who can
   make Redis unavailable also disables brute-force protection on login,
   and a proxy in front of the API turns per-user limits into one shared
   limit.
 - **Status:** resolved (the CORS and UI defects); limits 1-3 accepted,
-  limit 4 open until its own commit.
+  limit 4 resolved in Phase 4 batch 1 (item 12).
 - **Test:** `tests/route/test_middleware_order.py` (full middleware order,
   CORS and security headers on 429/413/500, the 500 envelope with no
   internal detail), fail-open tests in

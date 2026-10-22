@@ -502,7 +502,6 @@ async def test_other_enqueue_errors_consume_attempts_with_growing_capped_delays(
     logs it at ERROR with its id and event type. Jitter is pinned to its
     upper bound so the delays are exact; the event is made eligible again
     between attempts instead of waiting out each delay."""
-    monkeypatch.setattr(logging.getLogger("tenderos_worker.outbox_dispatcher"), "disabled", False)
     caplog.set_level(logging.ERROR, logger="tenderos_worker.outbox_dispatcher")
     monkeypatch.setattr(outbox_dispatcher.random, "uniform", lambda low, high: high)
 
