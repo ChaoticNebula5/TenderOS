@@ -623,10 +623,9 @@ async def test_concurrent_takeover_has_exactly_one_winner(monkeypatch: pytest.Mo
         assert await _tender_count(client, org_id, token) == 1
 
 
-async def test_original_cannot_release_after_a_takeover(monkeypatch: pytest.MonkeyPatch):
+async def test_original_cannot_release_after_a_takeover():
     """The original request is still alive after losing its lease,
     and then fails. Its release must not delete the new holder's record."""
-    monkeypatch.setattr(logging.getLogger("tenderos_api.idempotency"), "disabled", False)
     async with await _client() as client:
         _, org_id = await _register_admin(client, "idem-rel@example.com", "Idem Release Org")
     seeded = await _seed_in_progress(org_id, "rel-key", _tender_body("Rel"), lease_seconds=-1)
@@ -647,17 +646,10 @@ async def test_original_cannot_release_after_a_takeover(monkeypatch: pytest.Monk
     assert record.claim_token == new_token
 
 
-async def test_original_cannot_finalize_after_a_takeover(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-):
+async def test_original_cannot_finalize_after_a_takeover(caplog: pytest.LogCaptureFixture):
     """The original request finishes after losing its lease. Its
     finalize must not overwrite the new holder's record, and it logs a
-    WARNING instead; the new holder can still complete it.
-
-    The logger is re-enabled first: Alembic's fileConfig disables existing
-    loggers when tests/integration/test_schema_diff.py runs in the same
-    session (KNOWN_LIMITATIONS.md, Phase 4 blocker 1, limit 4)."""
-    monkeypatch.setattr(logging.getLogger("tenderos_api.idempotency"), "disabled", False)
+    WARNING instead; the new holder can still complete it."""
     caplog.set_level(logging.WARNING, logger="tenderos_api.idempotency")
     async with await _client() as client:
         _, org_id = await _register_admin(client, "idem-fin@example.com", "Idem Finalize Org")

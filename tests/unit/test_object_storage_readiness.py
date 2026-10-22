@@ -15,18 +15,6 @@ from tenderos_api import main
 from tenderos_backend.core.config import settings as backend_settings
 
 
-@pytest.fixture(autouse=True)
-def _logger_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Alembic's migrations/env.py calls logging.config.fileConfig(), whose
-    # default disable_existing_loggers=True disables every logger that exists
-    # at that moment. When an earlier test in the same process runs the
-    # migrations (tests/integration/test_schema_diff.py), tenderos_api.main's
-    # logger is left disabled and these log assertions see nothing. Not a
-    # production path (the api never runs Alembic in-process); recorded in
-    # KNOWN_LIMITATIONS.md. Re-enable it for each test here.
-    monkeypatch.setattr(main.logger, "disabled", False)
-
-
 def _client_error(status: int, code: str) -> ClientError:
     return ClientError(
         {"Error": {"Code": code, "Message": ""}, "ResponseMetadata": {"HTTPStatusCode": status}},

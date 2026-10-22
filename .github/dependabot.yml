@@ -1,4 +1,23 @@
 version: 2
+
+# Phase 4 batch 1, item 26. Dependabot opened 8 PRs on the first push
+# (2026-10-07) and none since: the npm entry sat at the default limit of 5
+# open version-update PRs, and every uv job failed (see .python-version).
+# Each entry below now has three groups:
+#   - minor and patch version updates in one PR, so a pile of
+#     single-package PRs cannot reach the open-PR limit again;
+#   - major version updates in a second PR, so a major is a deliberate,
+#     visible change (PR #6 proposed vitest 4 -> 5 when the advisory fix
+#     was 4.1.12) without being hidden;
+#   - security updates in a third (not for Actions). Security updates have
+#     their own fixed limit of 10 and do not count against
+#     open-pull-requests-limit.
+# There is deliberately no `ignore` on majors: GitHub applies ignore
+# conditions to security updates too ("Controlling which dependencies are
+# updated by Dependabot"), and an advisory can be fixed only in a major
+# (pillow 12 -> 13 on 2026-10-22).
+# Security updates also need "Dependabot security updates" turned on in the
+# repository settings; this file cannot do that.
 updates:
   # Root of the uv workspace - apps/api, apps/worker, and
   # packages/tenderos_backend all resolve through the one shared
@@ -8,13 +27,63 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      uv-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+      uv-majors:
+        applies-to: version-updates
+        update-types: ["major"]
+      uv-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/apps/web"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      web-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+      web-majors:
+        applies-to: version-updates
+        update-types: ["major"]
+      web-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
+  # apps/landing has its own package-lock.json and had no entry (its one
+  # high advisory, 2026-10-22, was found by hand).
+  - package-ecosystem: "npm"
+    directory: "/apps/landing"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      landing-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+      landing-majors:
+        applies-to: version-updates
+        update-types: ["major"]
+      landing-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # Pinning the Actions by commit SHA, with Dependabot updating the SHAs, is
+  # plan item 7 (batch 2).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+      actions-majors:
+        applies-to: version-updates
+        update-types: ["major"]

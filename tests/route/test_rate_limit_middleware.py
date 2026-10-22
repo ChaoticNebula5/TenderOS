@@ -206,7 +206,6 @@ async def test_limiter_fails_open_when_redis_is_unreachable(
     client: TestClient,
     monkeypatch,
     caplog: pytest.LogCaptureFixture,
-    main_logger_enabled,
     method: str,
     path: str,
     expected_status: int,
@@ -246,7 +245,6 @@ async def test_login_limit_fails_open_on_its_own(
     client: TestClient,
     monkeypatch,
     caplog: pytest.LogCaptureFixture,
-    main_logger_enabled,
     _cleanup_redis,
 ):
     """The login check has its own Redis call after the global one. Redis

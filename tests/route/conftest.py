@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import sys
 import uuid
 from collections.abc import AsyncIterator
@@ -195,19 +194,6 @@ async def _cleanup_redis():
     async for key in redis_client.scan_iter(match="ratelimit:*"):
         await redis_client.delete(key)
     await redis_client.aclose()
-
-
-@pytest.fixture
-def main_logger_enabled(monkeypatch):
-    # For tests that assert on tenderos_api.main's log records. Found by the
-    # full suite, not assumed: those tests passed alone and failed after
-    # tests/integration/test_schema_diff.py, which runs Alembic in-process.
-    # Alembic's env.py calls logging.config.fileConfig(), whose default
-    # disable_existing_loggers=True sets `disabled = True` on every logger
-    # that already exists, this one included, for the rest of the session.
-    # A test-session artifact only: a real API process never runs Alembic.
-    # monkeypatch restores whatever state the logger had afterwards.
-    monkeypatch.setattr(logging.getLogger("tenderos_api.main"), "disabled", False)
 
 
 @pytest.fixture(autouse=True)

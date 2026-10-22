@@ -5,7 +5,55 @@ writer B4 already wrote (no PDF-writing library is in the locked dependency
 set; A2 lists pdfplumber/pypdf for reading only).
 """
 
+import hashlib
 import io
+import re
+import zipfile
+from pathlib import Path
+
+# A fixed timestamp for everything a .docx or .xlsx would otherwise stamp
+# with the time it was written. 1980-01-01 is the earliest date a zip entry
+# can hold.
+_FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+_FIXED_W3CDTF = b"2026-01-01T00:00:00Z"
+_CORE_DATES = re.compile(rb"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:)")
+
+
+def deterministic_ooxml(content: bytes) -> bytes:
+    """The same .docx/.xlsx with every write-time value fixed, so the same
+    generator code gives the same bytes on every run and every platform.
+
+    What varied between two runs (measured 2026-10-22): every zip entry's
+    timestamp (python-docx and openpyxl both use ZipFile.writestr with the
+    current time), and openpyxl's dcterms:created/modified in
+    docProps/core.xml (it stamps `modified` at save time whatever the
+    workbook says). Entries are rewritten in their original order with a
+    fixed time, fixed attributes, and stored uncompressed: deflate output
+    depends on the zlib build, and the platform-dependent create_system
+    byte is pinned too, so a Windows run and CI's Linux run agree."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(content)) as src, zipfile.ZipFile(out, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "docProps/core.xml":
+                data = _CORE_DATES.sub(rb"\g<1>" + _FIXED_W3CDTF + rb"\g<2>", data)
+            fixed = zipfile.ZipInfo(info.filename, date_time=_FIXED_ZIP_TIME)
+            fixed.compress_type = zipfile.ZIP_STORED
+            fixed.create_system = 3
+            fixed.external_attr = 0o644 << 16
+            dst.writestr(fixed, data)
+    return out.getvalue()
+
+
+def write_manifest(manifest_path: Path, files: list[Path], repo_root: Path) -> None:
+    """A sha256sum-format manifest ("<hex>  <path>", paths relative to the
+    repo root, sorted), so `sha256sum -c <manifest>` run from the repo root
+    checks every listed file. LF line endings on every platform."""
+    lines = []
+    for path in sorted(files, key=lambda p: p.relative_to(repo_root).as_posix()):
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        lines.append(f"{digest}  {path.relative_to(repo_root).as_posix()}\n")
+    manifest_path.write_bytes("".join(lines).encode("ascii"))
 
 
 def native_pdf(pages: list[list[str]]) -> bytes:

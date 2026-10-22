@@ -119,11 +119,51 @@ jobs:
         run: |
           uv run python scripts/make_synthetic_fixtures.py
           uv run python scripts/synthetic_tender_a.py
+      # Phase 4 item 17: synthetic_tender_a.py rewrites the tracked manifest
+      # of the files it generates (SHA-256 each). A generator change that
+      # moves any byte shows up as a manifest diff and fails here; the
+      # sha256sum check then confirms the files on disk are the ones listed.
+      - name: Synthetic manifest matches the generated files
+        run: |
+          git diff --exit-code -- data/synthetic/tender_a/SHA256SUMS data/ground_truth
+          sha256sum -c data/synthetic/tender_a/SHA256SUMS
       - name: Verify migrations apply cleanly (upgrade -> downgrade -> upgrade)
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run python scripts/verify_migrations.py
+      # Phase 4 item 15: tests/unit/test_ocr_path.py skips without the
+      # tesseract binary (the Windows host); here it is installed, and
+      # TENDEROS_REQUIRE_OCR below turns that skip into a failure, so the
+      # OCR path cannot silently go untested in CI.
+      - name: Install Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr
+      # Phase 4 item 14: the embedding and reranker models load by name
+      # (ingestion/embed.py, agents/knowledge/rerank.py). The images bake
+      # them in and run offline (decision 0018); tests run on the runner,
+      # so the models are cached here and the test step runs offline too:
+      # a model missing from the cache fails the run instead of being
+      # downloaded mid-test. The key is built from the names the code
+      # itself uses, so renaming a model cannot reuse a stale cache.
+      - name: Model names for the Hugging Face cache key
+        id: models
+        run: |
+          names=$(uv run python -c "from tenderos_backend.ingestion.embed import _MODEL_NAME as e; from tenderos_backend.agents.knowledge.rerank import _MODEL_NAME as r; print(f'{e}+{r}'.replace('/', '_'))")
+          echo "key=hf-${names}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: hfcache
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ steps.models.outputs.key }}
+      - name: Download the models (cache miss only)
+        if: steps.hfcache.outputs.cache-hit != 'true'
+        run: uv run python -c "from tenderos_backend.ingestion.embed import _get_model as e; from tenderos_backend.agents.knowledge.rerank import _get_model as r; e(); r()"
       - name: Run tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          TENDEROS_REQUIRE_OCR: "1"
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run pytest
@@ -196,7 +236,17 @@ jobs:
           mapfile -d '' -t FILES < <(git ls-files -z | grep -zv -E '\.venv/|apps/web/node_modules/|apps/web/playwright-report/|KNOWN_LIMITATIONS\.md')
           uv run detect-secrets-hook --baseline .secrets.baseline "${FILES[@]}"
       - run: uv run pip-audit
+      # Phase 4 item 8: pip-audit skips torch (the +cpu build is not on
+      # PyPI), so its advisories are queried from OSV directly. Exit 1 on
+      # any advisory, exit 2 if the check could not run.
+      - name: torch advisories (OSV)
+        run: uv run python scripts/check_torch_osv.py
       - run: npm ci
         working-directory: apps/web
       - run: npm audit --audit-level=high
         working-directory: apps/web
+      # Phase 4 item 10: apps/landing has its own lockfile.
+      - run: npm ci
+        working-directory: apps/landing
+      - run: npm audit --audit-level=high
+        working-directory: apps/landing

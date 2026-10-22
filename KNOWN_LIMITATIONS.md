@@ -9793,7 +9793,7 @@ actually has - three independent failures were reproduced, not inferred:
   on its first run, by design of the check - which is the honest state.
 - **Test:** the CI `security` job.
 
-## [found during B17 pre-push audit, open, deployment prerequisite] Phase 4's inspection plan refers to a data/synthetic manifest that does not exist
+## [found during B17 pre-push audit, deployment prerequisite, BUILT in Phase 4 batch 1] Phase 4's inspection plan refers to a data/synthetic manifest that does not exist
 
 - **Observed 2026-10-07** (read-only pre-push audit): `data/synthetic/`
   holds only generated, gitignored files plus a tracked `.gitkeep`. No
@@ -9810,6 +9810,35 @@ actually has - three independent failures were reproduced, not inferred:
   `scripts/synthetic_tender_a.py` itself, so that "this deployment serves
   only synthetic data" can be verified against a file rather than asserted.
 - **Test:** none yet.
+- **Built in Phase 4 batch 1 (item 17):** `scripts/synthetic_tender_a.py`
+  writes `data/synthetic/tender_a/SHA256SUMS` (tracked, `sha256sum`
+  format, paths from the repo root): its 13 documents and both
+  ground-truth JSONL files. CI regenerates the fixtures, fails on any diff
+  in that file or in `data/ground_truth`, and runs `sha256sum -c` on it.
+  - **The generator was not deterministic, which a manifest needs.** Two
+    runs a few seconds apart (measured 2026-10-22) gave identical PDFs and
+    JSONL but different bytes for every .docx and .xlsx: every zip entry
+    carries the time it was written, and openpyxl stamps
+    `dcterms:created`/`modified` at save time. Each .docx and .xlsx is now
+    repacked with a fixed time, fixed attributes and uncompressed entries
+    (`synthetic_common.deterministic_ooxml`); uncompressed because deflate
+    output depends on the zlib build.
+  - **The JSONL differed by platform:** Windows text mode wrote CRLF, while
+    git (`eol=lf`) shows the files as unchanged, so only a hash sees it.
+    Both are now written with LF on every platform.
+  - **Observed:** two Windows runs give a byte-identical manifest; the same
+    generator run in the worker image (Linux, Python 3.12.13; the host has
+    3.12.4, both openpyxl 3.1.5) gives the same manifest byte for byte; the
+    JSONL hashes equal the tracked blobs.
+  - **Not covered:** B4's fixtures from `make_synthetic_fixtures.py`
+    (`data/synthetic/*.pdf|docx|xlsx`, used by ingestion tests, not by the
+    E2E). Its scanned PDF draws text with DejaVuSans when the system has it
+    and Pillow's default font otherwise, so its bytes depend on the host.
+    The E2E and the demo flow use only `tender_a`.
+  - **Fixture bytes changed** (11 of 13 files: the fixed timestamps and
+    stored entries; the two PDFs are unchanged), so the E2E runs on the
+    regenerated files: 1 passed in 2.6 min (fake provider, 2026-10-22,
+    kept awake; `.playwright-mcp/phase4-review/e2e-awake-batch1.log`).
 
 ## [B17 pre-push, documented layout change] data_private/.gitkeep is no longer tracked
 
@@ -9973,7 +10002,7 @@ actually has - three independent failures were reproduced, not inferred:
 - **Proposal (not applied):** add `S3_BUCKET=tenderos-ci` to
   scripts/test-backend.env, matching CI.
 
-## [found during B17, open, test-process only] Alembic's env.py disables every existing logger when migrations run inside pytest
+## [found during B17, test-process only, RESOLVED in Phase 4 batch 1] Alembic's env.py disables every existing logger when migrations run inside pytest
 
 - `packages/.../db/migrations/env.py` calls `logging.config.fileConfig()`,
   whose default `disable_existing_loggers=True` disables every logger that
@@ -9984,8 +10013,18 @@ actually has - three independent failures were reproduced, not inferred:
 - tests/unit/test_object_storage_readiness.py re-enables that one logger
   per test. **Proposal (not applied):**
   `fileConfig(..., disable_existing_loggers=False)` in env.py.
+- **RESOLVED in Phase 4 batch 1 (item 12, 2026-10-22):** env.py now passes
+  `disable_existing_loggers=False`, and all seven workarounds are gone: the
+  `main_logger_enabled` fixture in `tests/route/conftest.py` and its three
+  uses, two re-enables in `test_idempotency.py`, one in
+  `test_outbox_dispatcher.py`, and the autouse fixture here. Observed:
+  with `test_schema_diff.py` first in one session, the log-asserting tests
+  from those files pass (26 passed); with only the env.py line reverted,
+  10 of them fail; the full suite passes. One of the seven re-enables
+  (`test_original_cannot_release_after_a_takeover`) never asserted on a
+  log, so it was dead code.
 
-## [found during B17, open, measured 2026-10-10, likely mechanism identified, not fixed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
+## [found during B17, measured 2026-10-10, re-measured 2026-10-22: 20 of 20 passed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
 
 - Observed during the swap's verification, against a fresh CI-style stack:
   the first full run had 2 failures
@@ -10079,7 +10118,11 @@ actually has - three independent failures were reproduced, not inferred:
 - CI's `npm audit` covers `apps/web` only. `apps/landing` has its own
   lockfile and no audit step (its one high advisory was found by hand and
   fixed above). Adding a landing audit step is deferred, by decision.
-- dependabot.yml has no npm entry for `apps/landing` either.
+  **Resolved in Phase 4 batch 1 (item 10):** the `security` job now runs
+  `npm ci` and `npm audit --audit-level=high` in `apps/landing` too.
+- dependabot.yml has no npm entry for `apps/landing` either. **Resolved in
+  batch 1 (item 26):** it has one now.
+- torch: automated in batch 1 (item 8), see the torch entry below.
 - **Checked, not a gap:** virtualenv and pre-commit (root `dev` group) are
   **not** installed in the api or worker images (measured in `/app/.venv`
   of the running containers). `uv export --package tenderos-api` lists
@@ -10132,7 +10175,7 @@ actually has - three independent failures were reproduced, not inferred:
   sign tokens with a guessable key. Settings does not enforce a minimum
   length.
 
-## [measured 2026-10-10, open, not fixed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
+## [measured 2026-10-10; re-measured 2026-10-22 (Phase 4 batch 1): 20 of 20 passed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
 
 - **Method:** two scratch clones, at df3dd96 and at 8c275e5 (before the
   VersityGW swap), each with its own `uv sync`; the file run 20 times per
@@ -10244,6 +10287,23 @@ actually has - three independent failures were reproduced, not inferred:
      landing, security), so GitHub's default of 360 minutes per job
      applies. A hang like run 1 in CI would hold a runner for up to 6
      hours. Reported only; ci.yml unchanged.
+- **Re-measured in Phase 4 batch 1 (item 16, 2026-10-22): 20 of 20 runs
+  passed.** `13414ed` (blocker 3) moved every outbox time comparison to the
+  database clock, which removes the clock-skew mechanism above by
+  construction; this is the 20-run count that was not repeated then.
+  Method: the file run 20 times one after the other through
+  `scripts/test-backend.ps1` with `--tb=long`, app containers stopped,
+  against the same local postgres, redis and neo4j. Every run: 16 passed,
+  exit 0, 31.1 to 32.1 s; both formerly failing tests
+  (`test_dispatcher_marks_event_dispatched_on_success`,
+  `test_two_concurrent_dispatchers_claim_each_event_exactly_once`) ran in
+  each. Differences from the 2026-10-10 method: the working tree of batch
+  1 (which also carries the new connection-leak guard), not scratch clones
+  at old commits. 20 passing runs bound the failure rate; they do not prove
+  it is zero (2/20 and 3/20 before).
+- **Status (batch 1):** closed as measured; reopen with the failing run's
+  `--tb=long` output if it recurs. The 1,149 s run above stays
+  unexplained; it was not looked into again.
 
 ## [found 2026-10-10 (phase1/design survey), open, docs only] `tenders.status` is never written by the workflow; the dashboard's Status column reads "created" for every tender, and the comment at `BidDashboard.tsx:7-9` is wrong
 
@@ -10392,13 +10452,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      (`tests/route/conftest.py:201`). A real API process never runs
      Alembic, so production logging is unaffected. The root-cause fix
      (`disable_existing_loggers=False`) is planned as a separate small
-     commit.
+     commit. **Resolved in Phase 4 batch 1 (item 12)**; see the Alembic
+     entry above.
 - **Risk:** limits 1 and 3 matter at deployment: an attacker who can
   make Redis unavailable also disables brute-force protection on login,
   and a proxy in front of the API turns per-user limits into one shared
   limit.
 - **Status:** resolved (the CORS and UI defects); limits 1-3 accepted,
-  limit 4 open until its own commit.
+  limit 4 resolved in Phase 4 batch 1 (item 12).
 - **Test:** `tests/route/test_middleware_order.py` (full middleware order,
   CORS and security headers on 429/413/500, the 500 envelope with no
   internal detail), fail-open tests in
@@ -11087,7 +11148,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** open, accepted.
 - **Test:** the E2E itself (2 of 2 green on 2026-10-16 after the fix).
 
-## [deps, 2026-10-22, open, accepted] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
+## [deps, 2026-10-22, open, accepted; torch automated in batch 1] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
 
 - **What happens:** `uv run pip-audit`, locally and in CI's `security`
   job, skips `torch 2.13.0+cpu` with "Dependency not found on PyPI and
@@ -11135,8 +11196,21 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     prep. Nothing in CI does it today.
 - **Not done:** no automated step. A CI step running that query would
   close the torch gap; it is a separate change, as is the image scan.
-- **Status:** open, accepted.
-- **Test:** none; this is a manual release check.
+- **Update (Phase 4 batch 1, item 8):** the torch half is automated.
+  `scripts/check_torch_osv.py` reads every torch version in `uv.lock`
+  (2.13.0 for macOS and 2.13.0+cpu elsewhere, one base version today),
+  drops the local suffix, queries OSV and fails on any advisory; CI's
+  `security` job runs it after pip-audit. Exit codes: 0 none, 1 advisories,
+  2 the check could not run (no torch in the lock, the lock unreadable, OSV
+  unreachable or answering something unexpected), so a network failure
+  never passes as "no advisories". Observed locally 2026-10-22: the locked
+  2.13.0 gives 0 advisories and exit 0; `--version 2.5.1` gives 22 and exit
+  1; an unreachable OSV host gives exit 2. The manual query above stays as
+  the fallback, and reading PyTorch's own GitHub advisories before a
+  release still covers anything OSV has not picked up. Native code in the
+  images is unchanged: still no image scan (plan item 9).
+- **Status:** torch automated (batch 1); native code open, accepted.
+- **Test:** the CI `security` step; the three exit codes observed by hand.
 
 ## [deps, recorded deviation from A2 under section 0.1, 2026-10-22] pypdf removed: declared, never imported
 
@@ -11214,7 +11288,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none yet; item 27's proof is no `node_modules/vite` in the
   image, plus the E2E runs.
 
-## [found 2026-10-22, open] Dependabot is configured but not delivering
+## [found 2026-10-22, open: cause found, config built in batch 1, settings pending] Dependabot is configured but not delivering
 
 - **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
   `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
@@ -11240,11 +11314,50 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - Find why uv gets no PRs, from Dependabot's job log in the
     repository's Insights.
   - Close the 8 stale PRs once `phase4/backend-hardening` is merged.
-- **Status:** open.
-- **Test:** none; the proof is a grouped PR per ecosystem after the next
-  scheduled run.
+- **Why uv never got a PR (observed 2026-10-22, Dependabot job log of
+  run 39558240249, "uv in /."):** every uv job has failed (runs on
+  2026-10-07, 10-14 and 10-21; only the 10-21 log was read). Finding no Python version it
+  reads (no `.python-version`, and the root `pyproject.toml` is a bare
+  workspace root with no `requires-python`), Dependabot ran
+  `pyenv local 3.14.7`, its own default, which writes `.python-version`;
+  then each `uv lock --upgrade-package ...` failed with
+  `dependency_file_not_resolvable`: "The Python request from
+  `.python-version` resolved to Python 3.14.7, which is incompatible with
+  the project's Python requirement: `==3.12.*`". All 24 updates in that
+  job failed the same way, torch included; the CPU index was never the
+  problem. Batch 1 adds a tracked `.python-version` of `3.12`.
+- **Built in batch 1 (item 26), `.github/dependabot.yml`:** `apps/landing`
+  added; per ecosystem, three groups: minor and patch version updates,
+  major version updates, and security updates (none for Actions);
+  `open-pull-requests-limit: 5` set explicitly; no `ignore` at all.
+  Majors get their own group instead of an ignore because GitHub applies
+  ignore conditions to security updates as well (its how-to page
+  "Controlling which dependencies are updated by Dependabot": ignore
+  conditions apply "when it opens pull requests for version updates and
+  security updates"). A `"*"` major ignore could have blocked exactly the
+  2026-10-22 case, where pillow's advisories were fixed only in a major
+  (12 to 13). A majors group cannot block a security update, and skipped
+  majors stay visible as one open PR per ecosystem.
+- **The 8 PRs of 2026-10-07 (checked 2026-10-22 against main after the
+  merge, 4526e7b):** the merge superseded none of them; main still has
+  every "from" version. Five are majors that will come back inside the
+  majors PRs: #1 (setup-node 4 to 7), #2 (setup-uv 3 to 7), #3 (checkout
+  4 to 7) in the Actions majors PR, #4 (globals 15 to 17) and #6 (vitest 4
+  to 5) in the web majors PR. Three are minor or patch updates the grouped
+  web PR will carry: #5 (@playwright/test 1.62.1 to 1.64.1), #7 (react
+  19.2.8 to 19.3.0 with @types/react), #8 (prettier 3.9.6 to 3.9.9). So
+  all 8 can be closed once this merges; closing them is a step in GitHub.
+- **Still a repository setting, not a file:** `security_and_analysis` was
+  still empty and the vulnerability-alerts endpoint still answered 404 on
+  2026-10-22, so security updates stay off until they are turned on in
+  the repository settings.
+- **Status:** cause found; config built, not observed (Dependabot reads it
+  from the default branch, so nothing changes until this merges).
+- **Test:** none in the repo. The proof after merge: the next uv job (or a
+  manual "Check for updates") succeeds, and one grouped PR per ecosystem
+  appears.
 
-## [found 2026-10-22, open] An intermittent connection-leak warning in CI's backend run
+## [found 2026-10-22, open: guarded in batch 1, cause unknown] An intermittent connection-leak warning in CI's backend run
 
 - **What happened:** CI on `cc74b1a` (run 39775453912) passed 743 tests with
   2 warnings. One was the known test-client deprecation (the entry above on
@@ -11266,3 +11379,40 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** open.
 - **Test:** none yet; item 29's proof is 20 runs of the file with the
   warning as an error.
+- **Phase 4 batch 1 (item 29, 2026-10-22): guard built, leak not found.**
+  - **Not reproduced (observed):** one full local suite with a scratch
+    plugin forcing a collection after every test: 739 passed, 0 leaks. The
+    instrument was checked first: a planted leak was caught and attributed.
+    Two product paths read as candidates, both in `UnitOfWork.__aexit__`
+    (a `rollback()` that raises skips the session's close; a cancellation
+    mid-query), were tried in scratch tests and did not leak: the abandoned
+    `get_session()` generator is closed by asyncio's async-generator
+    finalizer, and a cancelled query rolls back cleanly. No product code
+    was changed. Where CI's connection came from is still unknown.
+  - **Read from the CI log:** the warning was raised in neo4j's
+    `hydration_handler.py:98`, unrelated code, which is how a cyclic-GC
+    collection looks. The test it is attributed to is probably not the one
+    that leaked; `test_proposal_service.py` ran just before it in CI.
+  - **Why `error::SAWarning` alone would not have helped:** the warning is
+    raised inside a GC callback, where an exception cannot reach the test
+    (read in code, `sqlalchemy/pool/base.py:1016-1032`). Observed: with
+    only `error::sqlalchemy.exc.SAWarning` set and no conftest guard, a
+    leak in a plain local and a leak in a cycle both passed ("3 passed,
+    2 warnings"; pytest turned each into a `PytestUnraisableExceptionWarning`).
+  - **Built:** `pyproject.toml` makes `SAWarning` and
+    `PytestUnraisableExceptionWarning` errors; a new `tests/conftest.py`
+    collects after every test (with the objects from before the first test
+    frozen, so it costs nothing measurable: 297.9 s against a 301.9 s
+    baseline) and appends, to SQLAlchemy's own ERROR line, the repo frames
+    that checked the leaked connection out. Decision record 0047 (local).
+  - **Proof (observed):** three planted shapes (a plain local; a reference
+    cycle found at the end of its test; a cycle collected during a later
+    test) each fail, each report naming the exact line that called
+    `engine.connect()`; a clean test passes. The planted file was deleted
+    afterwards.
+  - **Limits:** a connection held by something still alive (a pending
+    task) is reported when it is released, possibly in a later test (the
+    stack still names its origin). Only SQLAlchemy pools are watched;
+    LangGraph's checkpointer has its own psycopg pool.
+- **Status (batch 1):** guarded; cause unknown. The next occurrence fails
+  CI and names its origin.
