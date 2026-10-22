@@ -228,6 +228,11 @@ jobs:
           mapfile -d '' -t FILES < <(git ls-files -z | grep -zv -E '\.venv/|apps/web/node_modules/|apps/web/playwright-report/|KNOWN_LIMITATIONS\.md')
           uv run detect-secrets-hook --baseline .secrets.baseline "${FILES[@]}"
       - run: uv run pip-audit
+      # Phase 4 item 8: pip-audit skips torch (the +cpu build is not on
+      # PyPI), so its advisories are queried from OSV directly. Exit 1 on
+      # any advisory, exit 2 if the check could not run.
+      - name: torch advisories (OSV)
+        run: uv run python scripts/check_torch_osv.py
       - run: npm ci
         working-directory: apps/web
       - run: npm audit --audit-level=high

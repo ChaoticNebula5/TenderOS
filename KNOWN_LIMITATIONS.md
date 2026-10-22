@@ -10090,6 +10090,7 @@ actually has - three independent failures were reproduced, not inferred:
   lockfile and no audit step (its one high advisory was found by hand and
   fixed above). Adding a landing audit step is deferred, by decision.
 - dependabot.yml has no npm entry for `apps/landing` either.
+- torch: automated in batch 1 (item 8), see the torch entry below.
 - **Checked, not a gap:** virtualenv and pre-commit (root `dev` group) are
   **not** installed in the api or worker images (measured in `/app/.venv`
   of the running containers). `uv export --package tenderos-api` lists
@@ -11098,7 +11099,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** open, accepted.
 - **Test:** the E2E itself (2 of 2 green on 2026-10-16 after the fix).
 
-## [deps, 2026-10-22, open, accepted] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
+## [deps, 2026-10-22, open, accepted; torch automated in batch 1] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
 
 - **What happens:** `uv run pip-audit`, locally and in CI's `security`
   job, skips `torch 2.13.0+cpu` with "Dependency not found on PyPI and
@@ -11146,8 +11147,21 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     prep. Nothing in CI does it today.
 - **Not done:** no automated step. A CI step running that query would
   close the torch gap; it is a separate change, as is the image scan.
-- **Status:** open, accepted.
-- **Test:** none; this is a manual release check.
+- **Update (Phase 4 batch 1, item 8):** the torch half is automated.
+  `scripts/check_torch_osv.py` reads every torch version in `uv.lock`
+  (2.13.0 for macOS and 2.13.0+cpu elsewhere, one base version today),
+  drops the local suffix, queries OSV and fails on any advisory; CI's
+  `security` job runs it after pip-audit. Exit codes: 0 none, 1 advisories,
+  2 the check could not run (no torch in the lock, the lock unreadable, OSV
+  unreachable or answering something unexpected), so a network failure
+  never passes as "no advisories". Observed locally 2026-10-22: the locked
+  2.13.0 gives 0 advisories and exit 0; `--version 2.5.1` gives 22 and exit
+  1; an unreachable OSV host gives exit 2. The manual query above stays as
+  the fallback, and reading PyTorch's own GitHub advisories before a
+  release still covers anything OSV has not picked up. Native code in the
+  images is unchanged: still no image scan (plan item 9).
+- **Status:** torch automated (batch 1); native code open, accepted.
+- **Test:** the CI `security` step; the three exit codes observed by hand.
 
 ## [deps, recorded deviation from A2 under section 0.1, 2026-10-22] pypdf removed: declared, never imported
 
