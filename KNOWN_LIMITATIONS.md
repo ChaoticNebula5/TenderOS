@@ -3710,7 +3710,7 @@ Each entry:
   before that edit). Full suite 591 passed; mypy 59/12/244 baseline held
   as of this entry's own final state.
 
-## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - four instances, one blind spot in review
+## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - six instances, one blind spot in review
 
 - **Discovered:** named once the count reached three, across two separate
   passes; a fourth turned up B17, in code (not a doc comment). The shape
@@ -3743,6 +3743,19 @@ Each entry:
      cancellation landing in that window is still overwritten. Unlike
      instances 1-3, not a dead/unread field - working code with a
      comment overselling what it actually guarantees.
+  5. **`BidDashboard.tsx:7-9`'s comment** (found 2026-10-10, open, docs
+     only): says the list endpoint returns `tenders.status` through
+     `coarse_status_for`, which maps `workflow_runs.status` instead. See
+     the `tenders.status` entry below.
+  6. **This file's own audit entry** ("[found during B17 Phase 0b ...]
+     Dependency audit", observed 2026-10-06, corrected 2026-10-22 in
+     `ca998a6`): said pypdf "parses uploaded, untrusted tender PDFs".
+     Nothing imports pypdf, in our code or in any installed package;
+     uploaded PDFs go through pdfplumber (pdfminer.six, with pypdfium2
+     for rendering). The dependency was then removed (`9d35b11`). Unlike
+     instances 1-5, not a code comment: a claim in this file, written
+     while triaging an advisory, about which code a library serves.
+     Caught the same way: by searching for the import the claim implied.
 - **Why this is invisible to grep specifically:** a plain dead-config or
   dead-code check (grep for read sites, list unused symbols) catches a
   field or function with zero callers. It does NOT catch a field with
@@ -3756,7 +3769,8 @@ Each entry:
   comment names, or the real downstream consumer it describes) rather
   than trusting the comment's description of it once the symbol itself
   looked properly declared.
-- **Status:** instances 1-3 resolved (deleted or corrected). Instance 4
+- **Status:** instances 1-3 and 6 resolved (deleted or corrected);
+  instance 5 open (docs only). Instance 4
   open by design decision, not oversight - see its own dedicated entry
   below for why B17 audited and reported it rather than fixing it. The
   pattern itself is not closeable by a fix - it's a standing review
@@ -11175,3 +11189,80 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   (one warning).
 - **Status:** open, accepted.
 - **Test:** the backend suite's warnings summary (1 entry expected).
+
+## [found 2026-10-22, open, fix before deployment] The web container serves the Vite dev server, not a production build
+
+- **What happens:** `apps/web/Dockerfile`'s CMD is `npm run dev -- --host
+  0.0.0.0`, the Vite dev server listening on every interface of the
+  container (observed 2026-10-22: the container logs `VITE v8.3.5 ready`).
+  No compose file or overlay changes it, and no production build is
+  served anywhere in the stack.
+- **Consequences:**
+  - Vite's dev-server advisories reach the running stack. The npm
+    advisories fixed in `cc74b1a` were of this kind (cross-origin script
+    execution through custom middleware; files outside `server.fs.allow`
+    served).
+  - The E2E clicks through the dev server's on-demand module transforms,
+    not the build users would get, so a failure that only appears in a
+    production build would not be caught.
+- **Fix before deployment:** plan item 27. A multi-stage image builds the
+  app and serves `dist/` from a small web server, with no Vite in the
+  runtime image. A compose dev override keeps the dev server with hot
+  reload for local work. The E2E runs against the build, with 3 runs,
+  because it changes what the E2E clicks through.
+- **Status:** open.
+- **Test:** none yet; item 27's proof is no `node_modules/vite` in the
+  image, plus the E2E runs.
+
+## [found 2026-10-22, open] Dependabot is configured but not delivering
+
+- **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
+  `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
+  for uv, `apps/web` npm and GitHub Actions.
+  - All 8 Dependabot PRs were opened on 2026-10-07, the first push, and
+    are still open and unreviewed: 5 npm, 3 GitHub Actions. Dependabot
+    stops opening version-update PRs at 5 open per ecosystem by default,
+    so npm updates have been blocked since then.
+  - No uv PR has ever been opened. The cause is not visible from the API.
+  - The repository's `security_and_analysis` came back empty, and the
+    vulnerability-alerts endpoint answered 404. Security updates (PRs
+    opened because of an advisory) appear to be off. This is a repository
+    setting to verify in GitHub, not something this file can confirm.
+  - `apps/landing` has no entry.
+- **Consequence:** two CI security jobs went red on 2026-10-22 (35 Python
+  advisories, then 3 npm) that Dependabot should have raised as PRs first.
+- **Fix:** plan item 26.
+  - Verify the setting, and turn on Dependabot alerts and security
+    updates.
+  - Group minor and patch updates, so one PR per ecosystem can't hit the
+    open-PR limit.
+  - Add `apps/landing`.
+  - Find why uv gets no PRs, from Dependabot's job log in the
+    repository's Insights.
+  - Close the 8 stale PRs once `phase4/backend-hardening` is merged.
+- **Status:** open.
+- **Test:** none; the proof is a grouped PR per ecosystem after the next
+  scheduled run.
+
+## [found 2026-10-22, open] An intermittent connection-leak warning in CI's backend run
+
+- **What happened:** CI on `cc74b1a` (run 39775453912) passed 743 tests with
+  2 warnings. One was the known test-client deprecation (the entry above on
+  Starlette's test client). The other was `SAWarning: The garbage collector
+  is trying to clean up non-checked-in connection`, raised during
+  `tests/integration/test_readiness_service.py::test_clean_tender_is_ready`.
+- **Seen:** once, in CI. Not in CI on `53a9ec8` or `ca998a6`, and never in
+  a local run. It appears only when the garbage collector runs at that
+  point, so its absence from a run proves nothing.
+- **Cause:** not yet known. Some path opens a database connection and drops
+  it without returning it to the pool; it may be in the test's own code or
+  fixtures, or on the readiness path itself.
+- **Fix:** plan item 29, batch 1.
+  - Reproduce with the warning raised as an error and tracemalloc on, to
+    find where the connection was created.
+  - Close it on that path.
+  - Make `SAWarning` an error in the pytest config, so a leak fails CI
+    instead of passing.
+- **Status:** open.
+- **Test:** none yet; item 29's proof is 20 runs of the file with the
+  warning as an error.
