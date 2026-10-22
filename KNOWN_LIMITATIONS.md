@@ -9995,7 +9995,7 @@ actually has - three independent failures were reproduced, not inferred:
   (`test_original_cannot_release_after_a_takeover`) never asserted on a
   log, so it was dead code.
 
-## [found during B17, open, measured 2026-10-10, likely mechanism identified, not fixed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
+## [found during B17, measured 2026-10-10, re-measured 2026-10-22: 20 of 20 passed - see the entries at the end] Intermittent failures in tests/integration/test_outbox_dispatcher.py
 
 - Observed during the swap's verification, against a fresh CI-style stack:
   the first full run had 2 failures
@@ -10146,7 +10146,7 @@ actually has - three independent failures were reproduced, not inferred:
   sign tokens with a guessable key. Settings does not enforce a minimum
   length.
 
-## [measured 2026-10-10, open, not fixed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
+## [measured 2026-10-10; re-measured 2026-10-22 (Phase 4 batch 1): 20 of 20 passed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
 
 - **Method:** two scratch clones, at df3dd96 and at 8c275e5 (before the
   VersityGW swap), each with its own `uv sync`; the file run 20 times per
@@ -10258,6 +10258,23 @@ actually has - three independent failures were reproduced, not inferred:
      landing, security), so GitHub's default of 360 minutes per job
      applies. A hang like run 1 in CI would hold a runner for up to 6
      hours. Reported only; ci.yml unchanged.
+- **Re-measured in Phase 4 batch 1 (item 16, 2026-10-22): 20 of 20 runs
+  passed.** `13414ed` (blocker 3) moved every outbox time comparison to the
+  database clock, which removes the clock-skew mechanism above by
+  construction; this is the 20-run count that was not repeated then.
+  Method: the file run 20 times one after the other through
+  `scripts/test-backend.ps1` with `--tb=long`, app containers stopped,
+  against the same local postgres, redis and neo4j. Every run: 16 passed,
+  exit 0, 31.1 to 32.1 s; both formerly failing tests
+  (`test_dispatcher_marks_event_dispatched_on_success`,
+  `test_two_concurrent_dispatchers_claim_each_event_exactly_once`) ran in
+  each. Differences from the 2026-10-10 method: the working tree of batch
+  1 (which also carries the new connection-leak guard), not scratch clones
+  at old commits. 20 passing runs bound the failure rate; they do not prove
+  it is zero (2/20 and 3/20 before).
+- **Status (batch 1):** closed as measured; reopen with the failing run's
+  `--tb=long` output if it recurs. The 1,149 s run above stays
+  unexplained; it was not looked into again.
 
 ## [found 2026-10-10 (phase1/design survey), open, docs only] `tenders.status` is never written by the workflow; the dashboard's Status column reads "created" for every tender, and the comment at `BidDashboard.tsx:7-9` is wrong
 
