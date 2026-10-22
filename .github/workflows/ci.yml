@@ -237,3 +237,8 @@ jobs:
         working-directory: apps/web
       - run: npm audit --audit-level=high
         working-directory: apps/web
+      # Phase 4 item 10: apps/landing has its own lockfile.
+      - run: npm ci
+        working-directory: apps/landing
+      - run: npm audit --audit-level=high
+        working-directory: apps/landing

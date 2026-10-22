@@ -10089,6 +10089,8 @@ actually has - three independent failures were reproduced, not inferred:
 - CI's `npm audit` covers `apps/web` only. `apps/landing` has its own
   lockfile and no audit step (its one high advisory was found by hand and
   fixed above). Adding a landing audit step is deferred, by decision.
+  **Resolved in Phase 4 batch 1 (item 10):** the `security` job now runs
+  `npm ci` and `npm audit --audit-level=high` in `apps/landing` too.
 - dependabot.yml has no npm entry for `apps/landing` either.
 - torch: automated in batch 1 (item 8), see the torch entry below.
 - **Checked, not a gap:** virtualenv and pre-commit (root `dev` group) are
