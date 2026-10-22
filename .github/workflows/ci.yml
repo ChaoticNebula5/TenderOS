@@ -123,7 +123,30 @@ jobs:
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run python scripts/verify_migrations.py
+      # Phase 4 item 14: the embedding and reranker models load by name
+      # (ingestion/embed.py, agents/knowledge/rerank.py). The images bake
+      # them in and run offline (decision 0018); tests run on the runner,
+      # so the models are cached here and the test step runs offline too:
+      # a model missing from the cache fails the run instead of being
+      # downloaded mid-test. The key is built from the names the code
+      # itself uses, so renaming a model cannot reuse a stale cache.
+      - name: Model names for the Hugging Face cache key
+        id: models
+        run: |
+          names=$(uv run python -c "from tenderos_backend.ingestion.embed import _MODEL_NAME as e; from tenderos_backend.agents.knowledge.rerank import _MODEL_NAME as r; print(f'{e}+{r}'.replace('/', '_'))")
+          echo "key=hf-${names}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: hfcache
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ steps.models.outputs.key }}
+      - name: Download the models (cache miss only)
+        if: steps.hfcache.outputs.cache-hit != 'true'
+        run: uv run python -c "from tenderos_backend.ingestion.embed import _get_model as e; from tenderos_backend.agents.knowledge.rerank import _get_model as r; e(); r()"
       - name: Run tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run pytest
