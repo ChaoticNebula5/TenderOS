@@ -136,7 +136,7 @@ async def _read_bounded(file: UploadFile, max_bytes: int) -> bytes:
         buffer.extend(chunk)
         if len(buffer) > max_bytes:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=f"File exceeds the {settings.max_upload_size_mb} MB limit",
             )
     return bytes(buffer)
@@ -173,19 +173,19 @@ def _sniff_and_check_archive(extension: str, content: bytes) -> None:
                 infos = archive.infolist()
                 if len(infos) > _MAX_ZIP_ENTRIES:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail="Archive contains too many entries",
                     )
                 total_decompressed = sum(i.file_size for i in infos)
                 if total_decompressed > _MAX_ZIP_DECOMPRESSED_BYTES:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail="Archive would decompress to an excessive size",
                     )
                 total_compressed = sum(i.compress_size for i in infos) or 1
                 if total_decompressed / total_compressed > _MAX_ZIP_RATIO:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail="Archive compression ratio exceeds the allowed limit",
                     )
         except zipfile.BadZipFile as exc:

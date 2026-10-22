@@ -11153,3 +11153,25 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   access that pdfplumber and pypdfium2 do not give; re-add it then, at a
   version pip-audit passes.
 - **Status:** recorded, accepted.
+
+## [tests, 2026-10-22, open, accepted] One deprecation warning left in the backend suite: Starlette's test client on httpx
+
+- **What it says:** `StarletteDeprecationWarning: Using httpx with
+  starlette.testclient is deprecated; install httpx2 instead`, raised
+  once per run when `fastapi.testclient` is imported (Starlette 1.3.1,
+  FastAPI 0.140.13, httpx 0.28.1).
+- **Why it stays:** it concerns the test client only; the api does not
+  serve requests through httpx. 17 test files use `TestClient`, and
+  httpx is also a runtime dependency (LLM and HTTP clients), so moving
+  the tests to httpx2 (2.16.0 on PyPI) is a dependency change of its
+  own, with its own test pass.
+- **When it matters:** the release of Starlette that removes httpx
+  support from `starlette.testclient`. The suite then fails at import
+  rather than passing with a warning, so it cannot go unnoticed.
+- **The other four warnings** of CI's 2026-10-22 run are fixed: the
+  deprecated `HTTP_413_REQUEST_ENTITY_TOO_LARGE` constant (three
+  warnings, `routes/documents.py`) is now `HTTP_413_CONTENT_TOO_LARGE`,
+  the same 413 status; and `alembic.ini` sets `path_separator = os`
+  (one warning).
+- **Status:** open, accepted.
+- **Test:** the backend suite's warnings summary (1 entry expected).
