@@ -67,6 +67,9 @@ services:
       retries: 10
 
   api:
+    # Phase 4 blocker 3: come back after a crash or a host restart, but
+    # stay down after an explicit `docker compose stop`.
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -96,6 +99,7 @@ services:
       retries: 10
 
   worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -106,7 +110,34 @@ services:
       redis:
         condition: service_healthy
 
+  # Phase 4 Stage 2: the worker for async operations (red team, proposal
+  # generation, commercial re-validation), listening only to the
+  # "operations" queue, so an operation a person clicked never waits behind
+  # a workflow job on the "worker" service above (which does not listen to
+  # it). Same image and env as worker; like worker, no healthcheck.
+  # It imports the operations job module once before forking jobs
+  # (worker.py, preload_operations_module); BLAS is pinned to one thread so
+  # that import adds no thread, and the worker refuses to start if it does
+  # (numpy's and scipy's OpenBLAS otherwise start 15 threads each). RQ's own
+  # pubsub listener thread, which every RQ worker runs, is separate.
+  operations_worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    command: ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.worker", "operations"]
+    env_file: .env
+    environment:
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   outbox_dispatcher:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/worker/Dockerfile

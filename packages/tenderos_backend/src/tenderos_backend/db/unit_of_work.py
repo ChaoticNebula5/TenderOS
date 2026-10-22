@@ -3,6 +3,7 @@ from types import TracebackType
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.repositories.agent_traces import AgentTraceRepository
+from tenderos_backend.db.repositories.async_operations import AsyncOperationRepository
 from tenderos_backend.db.repositories.audit import AuditRepository
 from tenderos_backend.db.repositories.commercial import CommercialRepository
 from tenderos_backend.db.repositories.compliance import ComplianceRepository
@@ -35,6 +36,7 @@ class UnitOfWork:
         self.tenders: TenderRepository
         self.outbox: OutboxRepository
         self.idempotency: IdempotencyRepository
+        self.operations: AsyncOperationRepository
         self.audit: AuditRepository
         self.workflow: WorkflowRepository
         self.gates: GateRepository
@@ -58,6 +60,7 @@ class UnitOfWork:
         self.tenders = TenderRepository(self.session)
         self.outbox = OutboxRepository(self.session)
         self.idempotency = IdempotencyRepository(self.session)
+        self.operations = AsyncOperationRepository(self.session)
         self.audit = AuditRepository(self.session)
         self.workflow = WorkflowRepository(self.session)
         self.gates = GateRepository(self.session)

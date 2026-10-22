@@ -1,10 +1,10 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
-import type { RedteamFindingResponse } from "../api/client";
+import type { OperationResponse, RedteamFindingResponse } from "../api/client";
 import { RedteamFindings } from "./RedteamFindings";
 
 // Restyle batch 5. Pins the cell contract full-flow.spec.ts reads on
@@ -17,16 +17,63 @@ vi.mock("../api/client", async (importOriginal) => {
     listRedteamFindings: vi.fn(),
     resolveRedteamFinding: vi.fn(),
     triggerRedTeam: vi.fn(),
+    getOperation: vi.fn(),
+    mintOperationEventsTicket: vi.fn(),
+    getActiveOperation: vi.fn(),
   };
 });
 
 const listRedteamFindings = vi.mocked(apiClient.listRedteamFindings);
 const resolveRedteamFinding = vi.mocked(apiClient.resolveRedteamFinding);
+const triggerRedTeam = vi.mocked(apiClient.triggerRedTeam);
+const getOperation = vi.mocked(apiClient.getOperation);
+const mintOperationEventsTicket = vi.mocked(apiClient.mintOperationEventsTicket);
+const getActiveOperation = vi.mocked(apiClient.getActiveOperation);
+
+// Phase 4: Run red team follows an async operation over SSE. jsdom has
+// no EventSource, so a minimal fake records the streams opened.
+class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+  readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+beforeEach(() => {
+  FakeEventSource.instances = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
+  getActiveOperation.mockResolvedValue(null);
+});
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
+
+function operation(status: OperationResponse["status"]): OperationResponse {
+  return {
+    operation_id: "op-1",
+    tender_id: "t1",
+    kind: "redteam_run",
+    status,
+    error_code: status === "failed" ? "LLM_TIMEOUT" : null,
+    error_message: status === "failed" ? "The model did not answer in time." : null,
+    created_at: "2026-01-01T00:00:00Z",
+    started_at: null,
+    finished_at: null,
+  };
+}
 
 function finding(
   id: string,
@@ -178,5 +225,116 @@ describe("RedteamFindings (restyle batch 5)", () => {
     expect(cells(rows[2])[4]).toBe("");
     // Still exactly one Resolve button (the open row), page-wide.
     expect(screen.getAllByRole("button", { name: /resolve/i })).toHaveLength(1);
+  });
+
+  // Phase 4: the POST only starts the run (202), so the button stays busy
+  // until the operation reaches a finished status (full-flow.spec.ts
+  // :1030-1036 waits for it to be enabled again), and then the findings are
+  // re-read.
+  it("keeps Run red team busy until the operation finishes, then re-reads the findings", async () => {
+    const user = userEvent.setup();
+    listRedteamFindings.mockResolvedValueOnce([]).mockResolvedValueOnce([finding("f1")]);
+    triggerRedTeam.mockResolvedValue(operation("queued"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    renderScreen();
+
+    await screen.findByText("No red-team findings yet");
+    await user.click(screen.getByRole("button", { name: "Run red team" }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    // Still running: the button stays busy and the findings are not re-read.
+    expect(screen.getByRole("button", { name: /Running/ })).toBeDisabled();
+    expect(listRedteamFindings).toHaveBeenCalledTimes(1);
+
+    act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
+    await screen.findByText("Finding f1.");
+    expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
+    expect(listRedteamFindings).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a failed operation's own message and frees the button", async () => {
+    const user = userEvent.setup();
+    listRedteamFindings.mockResolvedValue([]);
+    triggerRedTeam.mockResolvedValue(operation("queued"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation.mockResolvedValue(operation("failed"));
+    renderScreen();
+
+    await screen.findByText("No red-team findings yet");
+    await user.click(screen.getByRole("button", { name: "Run red team" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The model did not answer in time.");
+    expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
+  });
+
+  // Phase 4 Stage 2: a run started before a reload is picked up again on
+  // load, exactly as after a click.
+  it("reattaches on load: a red-team run already running shows the button busy, then re-reads the findings", async () => {
+    listRedteamFindings.mockResolvedValueOnce([]).mockResolvedValueOnce([finding("f1")]);
+    getActiveOperation.mockResolvedValue(operation("running"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: /Running/ })).toBeDisabled();
+    expect(getActiveOperation).toHaveBeenCalledWith("t1", "redteam_run");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(mintOperationEventsTicket).toHaveBeenCalledWith("op-1");
+    expect(triggerRedTeam).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
+    await screen.findByText("Finding f1.");
+    expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
+  });
+});
+
+// Stale-tender guard (Stage 2 review): the re-read after a finished run can
+// answer after the user has moved to another tender. The component stays
+// mounted across the tenderId change, as in App.tsx's own routing.
+describe("RedteamFindings (stale-tender guard)", () => {
+  it("a finished run's re-read of tender A, still in flight after navigating away, does not land on tender B", async () => {
+    const user = userEvent.setup();
+    let resolveStaleRead!: (rows: RedteamFindingResponse[]) => void;
+    let tenderAReads = 0;
+    listRedteamFindings.mockImplementation((tenderId) => {
+      if (tenderId === "t2") return Promise.resolve([finding("b1", { tender_id: "t2" })]);
+      tenderAReads += 1;
+      if (tenderAReads === 1) return Promise.resolve([]);
+      return new Promise((r) => (resolveStaleRead = r));
+    });
+    triggerRedTeam.mockResolvedValue(operation("queued"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    render(
+      <MemoryRouter initialEntries={["/tenders/t1/redteam"]}>
+        <Link to="/tenders/t2/redteam">switch to t2</Link>
+        <Routes>
+          <Route path="/tenders/:tenderId/redteam" element={<RedteamFindings />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("No red-team findings yet");
+    await user.click(screen.getByRole("button", { name: "Run red team" }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
+    // The re-read of tender A has started and is held open.
+    await waitFor(() => expect(tenderAReads).toBe(2));
+
+    await user.click(screen.getByText("switch to t2"));
+    expect(await screen.findByText("Finding b1.")).toBeInTheDocument();
+
+    resolveStaleRead([finding("a-stale")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("Finding b1.")).toBeInTheDocument();
+    expect(screen.queryByText("Finding a-stale.")).toBeNull();
   });
 });

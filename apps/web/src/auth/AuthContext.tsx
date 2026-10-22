@@ -14,8 +14,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      // retryTransient absorbs a rate limit, a network blip, or a brief
-      // backend restart before this falls through to "treat as logged
+      // retryTransient absorbs a network blip or a brief backend restart
+      // (not a 429: Phase 4 blocker 1 made rate limits terminal, see
+      // retryTransient.ts) before this falls through to "treat as logged
       // out" below - previously ANY me() failure nulled meResponse on the
       // first try (KNOWN_LIMITATIONS.md, "[B16, owner B17] Login.tsx's
       // 'already logged in' guard drops the user's original destination"),

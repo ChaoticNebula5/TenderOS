@@ -107,15 +107,21 @@ async def test_evaluate_commercial_for_tender_is_idempotent_on_retry():
     org_id, tender_id = await _make_org_and_tender("Commercial Retry Test")
     await _upload_pricing_sheet(org_id, tender_id, "pricing_schedule_1.xlsx")
 
-    # Sheet1 alone: 4 findings, called twice = 8 explanation calls scripted,
-    # even though only 4 distinct findings should ever be persisted.
+    # Sheet1 alone: 4 findings. 8 explanations are scripted so that a retry
+    # that wrongly explained again would still get answers; the call count
+    # below is what proves it does not.
     client = _fake_client_scripted_for(8)
 
     first = await commercial_service.evaluate_commercial_for_tender(client, "fake-model", tender_id)
+    calls_after_first = len(client.calls)
     second = await commercial_service.evaluate_commercial_for_tender(client, "fake-model", tender_id)
 
     assert len(first) == 4
     assert {f.id for f in first} == {f.id for f in second}, "retry must not duplicate findings"
+    # Phase 4 Stage 2: every finding was already stored, so the retry looked
+    # each one up by fingerprint and made no LLM call at all.
+    assert calls_after_first == 4
+    assert len(client.calls) == 4, "an already-stored finding must not be explained again"
     async with UnitOfWork() as uow:
         all_findings = await uow.commercial.list_pricing_findings_for_tender(tender_id)
     assert len(all_findings) == 4

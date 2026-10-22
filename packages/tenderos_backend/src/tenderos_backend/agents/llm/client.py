@@ -30,6 +30,13 @@ class TransientProviderError(LLMError):
     """Network/5xx-class failure - I4: exponential backoff, max 3 attempts."""
 
 
+class LLMTimeoutError(LLMError):
+    """Phase 4: one HTTP request to the provider took longer than its
+    request timeout, or one logical call (with the adapter's own retries and
+    backoff) passed its overall deadline. Not retried by the adapter: the
+    deadline already spans its retries."""
+
+
 class MalformedOutputError(LLMError):
     """The model's response didn't validate against the requested schema.
     I4: 'one repair attempt, then fail task' - the caller is expected to

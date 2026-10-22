@@ -1,7 +1,10 @@
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy import exists, select
+
 from tenderos_backend.core.hashing import sha256_hex
+from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
@@ -520,3 +523,29 @@ async def request_verification(requirement_id: uuid.UUID) -> None:
             ),
         )
         await uow.commit()
+
+
+# The agent_name verify.py records its traces under
+# (agents/requirements/verify.py, _AGENT_NAME).
+_VERIFICATION_AGENT_NAME = "requirement_verification"
+
+
+async def verification_recorded_for_event(requirement_id: uuid.UUID, event_id: uuid.UUID) -> bool:
+    """Phase 4 consumer guard for verify_requirement_job: has a completed
+    verification of this requirement already been recorded for this exact
+    outbox event? Matching the event id, not "any verification since the
+    event", matters: a second request made while an earlier verification is
+    still running must not be skipped just because that earlier one finishes
+    after it."""
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(
+                exists().where(
+                    AgentTrace.agent_name == _VERIFICATION_AGENT_NAME,
+                    AgentTrace.status == "completed",
+                    AgentTrace.input_refs["requirement_id"].astext == str(requirement_id),
+                    AgentTrace.input_refs["event_id"].astext == str(event_id),
+                )
+            )
+        )
+        return bool(result.scalar())

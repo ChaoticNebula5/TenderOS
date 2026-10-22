@@ -6,8 +6,9 @@ import { ApiError } from "./client";
 // Both call sites already detect and report their own failure correctly;
 // neither distinguishes "this session/decision is genuinely rejected" from
 // "one request happened to fail," and neither retries - a real transient
-// blip (a rate limit, a network hiccup, a brief backend restart) strands
-// the user with no way back except a manual retry.
+// blip (a network hiccup, a brief backend restart) strands the user with no
+// way back except a manual retry. (A rate limit was on this list until
+// Phase 4 blocker 1; see RETRYABLE_STATUSES below.)
 //
 // useEventStream.ts (B14/B15) already solved the identical classification
 // problem for its own stream reconnects - the same terminal-vs-transient
@@ -44,12 +45,18 @@ const MAX_BACKOFF_MS = 10_000;
 // about: the next terminal status anyone adds (400, 404, 422, ...) would
 // have silently gotten three rounds of backoff before surfacing an error
 // that was never going to change, and nobody would notice until it shipped.
-// 408/429/5xx are the actual transient set - a timeout, a rate limit, or the
-// server's own overload/unavailability, all real candidates to succeed on a
-// later attempt. Everything else, ApiError or not (a raw network failure -
-// fetch itself throwing - IS retried; anything that reached a real HTTP
-// response with a status outside this set is not), is terminal.
-const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+// 408/5xx are the actual transient set - a timeout, or the server's own
+// overload/unavailability, all real candidates to succeed on a later
+// attempt. Everything else, ApiError or not (a raw network failure - fetch
+// itself throwing - IS retried; anything that reached a real HTTP response
+// with a status outside this set is not), is terminal.
+//
+// Phase 4 blocker 1: 429 is no longer in the set. The API's limit windows
+// are 60 s (rate_limit.py) and this backoff gives up after a few seconds,
+// so an automatic retry almost never succeeds; it only spends more of the
+// user's remaining attempts in the same window. A 429 now goes straight to
+// the caller, which shows the wait from Retry-After (formatErrorDetail).
+const RETRYABLE_STATUSES = new Set([408, 500, 502, 503, 504]);
 
 function isRetryable(err: unknown): boolean {
   if (!(err instanceof ApiError)) return true; // a real network/transport failure

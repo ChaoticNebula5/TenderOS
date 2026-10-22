@@ -10,7 +10,7 @@
 # (with no -f flags beyond the base file) could pick up by accident.
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
-#        up -d --build api web worker outbox_dispatcher
+#        up -d --build api web worker operations_worker outbox_dispatcher
 services:
   api:
     environment:

@@ -36,15 +36,29 @@ export function clearTokens(): void {
 export class ApiError extends Error {
   status: number;
   body: unknown;
+  // Seconds from the response's Retry-After header, or null when the header
+  // is absent, unreadable or not a whole number of seconds. Readable at all
+  // only because the API's CORS config exposes Retry-After (Phase 4 blocker
+  // 1); a cross-origin page cannot see a non-safelisted header otherwise.
+  retryAfterSeconds: number | null;
 
-  constructor(status: number, body: unknown) {
+  constructor(status: number, body: unknown, retryAfterSeconds: number | null = null) {
     // tsconfig's erasableSyntaxOnly forbids parameter properties (they
     // require emitting assignment code, not just erasing types) - fields
     // declared and assigned explicitly instead.
     super(`API error ${status}: ${JSON.stringify(body)}`);
     this.status = status;
     this.body = body;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+// Retry-After may also be an HTTP date; this API only ever sends whole
+// seconds (rate_limit.py), so a date, or anything else, reads as null and
+// the UI falls back to a message without a number.
+export function parseRetryAfter(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value.trim())) return null;
+  return Number(value.trim());
 }
 
 interface RequestOptions {
@@ -63,7 +77,11 @@ async function handleResponse<T>(response: Response): Promise<T> {
       // Non-JSON error body (e.g. a bare 500) - ApiError still carries the
       // status; the caller decides how to render an unparseable error.
     }
-    throw new ApiError(response.status, parsedBody);
+    throw new ApiError(
+      response.status,
+      parsedBody,
+      parseRetryAfter(response.headers.get("Retry-After")),
+    );
   }
   // 204 is the only status this used to special-case, but
   // uploadKnowledgeDocument documents a real 202-with-no-body response
@@ -813,10 +831,12 @@ export function listPricingDocuments(tenderId: string): Promise<PricingDocumentR
   return apiFetch<PricingDocumentResponse[]>(`/tenders/${tenderId}/pricing-documents`);
 }
 
-export function validatePricingDocument(
-  pricingDocumentId: string,
-): Promise<PricingFindingResponse[]> {
-  return apiFetch<PricingFindingResponse[]>(`/pricing-documents/${pricingDocumentId}/validate`, {
+// Phase 4 Stage 2: starts a re-validation of the document's whole tender in
+// the background and returns at once with the operation to follow (202). One
+// operation per tender: a call from any of its documents while one is queued
+// or running returns that same operation.
+export function validatePricingDocument(pricingDocumentId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/pricing-documents/${pricingDocumentId}/validate`, {
     method: "POST",
   });
 }
@@ -954,11 +974,15 @@ export function listProposalSections(tenderId: string): Promise<ProposalSectionR
   return apiFetch<ProposalSectionResponse[]>(`/tenders/${tenderId}/proposal/sections`);
 }
 
+// Phase 4 Stage 2: starts proposal generation in the background and returns
+// at once with the operation to follow (202); the sections are re-read once
+// it has finished. A second call while one is queued or running returns that
+// same operation; a retry with the same key replays the first 202.
 export function generateProposal(
   tenderId: string,
   idempotencyKey: string,
-): Promise<ProposalSectionResponse[]> {
-  return apiFetch<ProposalSectionResponse[]>(`/tenders/${tenderId}/proposal/generate`, {
+): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/tenders/${tenderId}/proposal/generate`, {
     method: "POST",
     idempotencyKey,
   });
@@ -1004,8 +1028,11 @@ export interface RedteamFindingResponse {
   created_at: string;
 }
 
-export function triggerRedTeam(tenderId: string): Promise<RedteamFindingResponse[]> {
-  return apiFetch<RedteamFindingResponse[]>(`/tenders/${tenderId}/redteam/run`, {
+// Phase 4: starts a red-team run in the background and returns at once with
+// the operation to follow (202). A second call while one is queued or
+// running returns that same operation.
+export function triggerRedTeam(tenderId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/tenders/${tenderId}/redteam/run`, {
     method: "POST",
   });
 }
@@ -1126,4 +1153,53 @@ export function getGraphTrace(
 ): Promise<GraphTraceResponse> {
   const params = new URLSearchParams({ node_label: nodeLabel, node_id: nodeId });
   return apiFetch<GraphTraceResponse>(`/tenders/${tenderId}/graph/trace?${params.toString()}`);
+}
+
+// ----------------------------------------------------------------------
+// Phase 4. Async operations - mirrors apps/api/src/tenderos_api/schemas/
+// operations.py. Long-running work (an LLM call, a red-team run) runs in the
+// worker; the screen follows the operation until it is finished.
+// ----------------------------------------------------------------------
+
+export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type OperationKind = "redteam_run" | "proposal_generation" | "commercial_validation";
+
+export interface OperationResponse {
+  operation_id: string;
+  tender_id: string;
+  kind: OperationKind;
+  status: OperationStatus;
+  // Set when status is "failed"; safe to show as is.
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export function isFinishedOperation(operation: OperationResponse): boolean {
+  return operation.status === "succeeded" || operation.status === "failed";
+}
+
+export function getOperation(operationId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/operations/${operationId}`);
+}
+
+// Stage 2: the tender's queued or running operation of this kind, or null.
+// A screen asks on load, so after a reload it can show its button busy and
+// follow the run it started before.
+export function getActiveOperation(
+  tenderId: string,
+  kind: OperationKind,
+): Promise<OperationResponse | null> {
+  return apiFetch<OperationResponse | null>(
+    `/tenders/${tenderId}/operations/active?kind=${encodeURIComponent(kind)}`,
+  );
+}
+
+export function mintOperationEventsTicket(operationId: string): Promise<SSETicketResponse> {
+  return apiFetch<SSETicketResponse>(`/operations/${operationId}/events/ticket`, {
+    method: "POST",
+  });
 }

@@ -210,6 +210,9 @@ async def reprocess_document(
             return None
 
         await uow.documents.update_parse_status(document_id, "queued")
+        # Phase 4: without this, the ingestion job's consumer guard would
+        # see the previous run "completed" and skip this deliberate re-run.
+        await uow.documents.reopen_completed_ingestion_runs(document_id)
         await uow.outbox.create(
             aggregate_type=AGGREGATE_DOCUMENT,
             aggregate_id=document.id,

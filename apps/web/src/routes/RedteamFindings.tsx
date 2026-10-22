@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -6,13 +6,14 @@ import {
   resolveRedteamFinding,
   triggerRedTeam,
 } from "../api/client";
-import type { RedteamFindingResponse } from "../api/client";
+import type { OperationResponse, RedteamFindingResponse } from "../api/client";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
+import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
 
@@ -41,32 +42,61 @@ export function RedteamFindings() {
   // findings" after the response says so (DESIGN.md Copy rules).
   const [findingsLoaded, setFindingsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
-  async function refresh() {
+  // The tender on screen now, kept fresh on every render, so a read that
+  // answers after the user moved to another tender can tell (the same guard
+  // as CommercialFindings).
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
+
+  // isCancelled: true once this read's result no longer belongs on screen
+  // (the user moved to another tender); a late answer is dropped instead of
+  // painting the previous tender's findings.
+  async function refresh(isCancelled: () => boolean) {
     if (!tenderId) return;
-    setFindings(await listRedteamFindings(tenderId));
+    const result = await listRedteamFindings(tenderId);
+    if (isCancelled()) return;
+    setFindings(result);
     setFindingsLoaded(true);
   }
 
   useEffect(() => {
+    let cancelled = false;
     setFindingsLoaded(false);
-    refresh().catch(() => setError("Failed to load red-team findings"));
+    refresh(() => cancelled).catch(() => {
+      if (!cancelled) setError("Failed to load red-team findings");
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
+
+  // Phase 4: the POST returns 202 and the worker runs the red team. The
+  // button stays busy until the run is finished and the findings it wrote
+  // have been re-read (useTenderOperation), and a run started before a
+  // reload is picked up again on load. On failure, the operation's own
+  // message (LLM timeout, worker lost, ...).
+  async function handleFinished(operation: OperationResponse) {
+    const finishedForTenderId = tenderId;
+    const isCancelled = () => tenderIdRef.current !== finishedForTenderId;
+    if (operation.status === "failed") {
+      setError(operation.error_message ?? "Run failed");
+    }
+    await refresh(isCancelled).catch(() => {
+      if (!isCancelled()) setError("Failed to load red-team findings");
+    });
+  }
+  const { busy: running, start } = useTenderOperation(tenderId, "redteam_run", handleFinished);
 
   async function handleRun() {
     if (!tenderId) return;
     setError(null);
-    setRunning(true);
     try {
-      await triggerRedTeam(tenderId);
-      await refresh();
+      await start(() => triggerRedTeam(tenderId));
     } catch (err) {
       setError(err instanceof ApiError ? `Run failed (${err.status})` : "Run failed");
-    } finally {
-      setRunning(false);
     }
   }
 

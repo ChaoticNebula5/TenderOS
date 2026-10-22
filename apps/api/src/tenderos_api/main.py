@@ -13,19 +13,28 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
+from redis.asyncio import Redis as AsyncRedis
+from starlette.middleware.base import BaseHTTPMiddleware
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
 
 from tenderos_api.config import settings
-from tenderos_api.errors import register_exception_handlers
+from tenderos_api.errors import (
+    APIError,
+    InternalServerError,
+    error_response,
+    register_exception_handlers,
+)
 from tenderos_api.rate_limit import (
     GLOBAL_LIMIT,
     GLOBAL_WINDOW_SECONDS,
     LOGIN_LIMIT,
     LOGIN_WINDOW_SECONDS,
+    REDIS_UNAVAILABLE_ERRORS,
     check_rate_limit,
     client_key,
+    rate_limit_redis,
 )
 from tenderos_api.routes import (
     auth,
@@ -35,6 +44,7 @@ from tenderos_api.routes import (
     gates,
     graph,
     knowledge,
+    operations,
     organizations,
     proposal,
     readiness,
@@ -63,16 +73,9 @@ install_fake_fallback_responses()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TenderOS API")
-# The web app is a separate origin in every configuration this project has
-# (settings.web_base_url) - without this, every browser request's CORS
-# preflight fails before auth (Authorization header) is even considered.
-# allow_credentials is not needed - auth is a Bearer header, not cookies.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[settings.web_base_url],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Every middleware is registered in ONE block further down ("Middleware
+# order"), after all of them are defined, so the order is read in one
+# place instead of being implied by where each definition sits.
 
 # B15: secure headers - nothing set these before. This is a pure JSON API
 # (no HTML views of its own) except for FastAPI's auto-generated /docs and
@@ -84,7 +87,6 @@ app.add_middleware(
 _CSP_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
 
 
-@app.middleware("http")
 async def _security_headers(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
@@ -139,7 +141,6 @@ async def _security_headers(
 _MAX_BODY_BYTES = backend_settings.max_upload_size_mb * 1024 * 1024
 
 
-@app.middleware("http")
 async def _max_body_size(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
@@ -150,27 +151,16 @@ async def _max_body_size(
         except ValueError:
             declared_bytes = None
         if declared_bytes is not None and declared_bytes > _MAX_BODY_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={
-                    "error": {
-                        "code": "PAYLOAD_TOO_LARGE",
-                        "message": (
-                            f"Request body exceeds the "
-                            f"{backend_settings.max_upload_size_mb} MB limit"
-                        ),
-                    }
-                },
+            return error_response(
+                APIError(
+                    413,
+                    "PAYLOAD_TOO_LARGE",
+                    f"Request body exceeds the {backend_settings.max_upload_size_mb} MB limit",
+                )
             )
     return await call_next(request)
 
 
-# B15: registered after _security_headers (Starlette wraps middleware in
-# the reverse of add order - the first one added is outermost), so an
-# early 429 returned here without ever calling call_next still passes
-# back out through _security_headers and picks up the same header set
-# every other response gets, rather than skipping it.
-#
 # B16: header name/value are not secrets - Settings.e2e_rate_limit_
 # bypass_enabled is the only real gate (see its own comment), so these
 # don't need to be guessable-but-safe, just unambiguous and self-
@@ -179,7 +169,36 @@ _E2E_BYPASS_HEADER = "x-tenderos-e2e-bypass"
 _E2E_BYPASS_VALUE = "playwright"
 
 
-@app.middleware("http")
+async def _limit_rejection(redis_client: AsyncRedis, ip: str, path: str) -> Response | None:
+    """The 429 to return, or None if the request is within both limits.
+
+    Split out of _rate_limit so every Redis call sits inside one try block
+    there, and so call_next is never inside that block.
+    """
+    allowed, retry_after = await check_rate_limit(
+        redis_client, f"ratelimit:global:{ip}", GLOBAL_LIMIT, GLOBAL_WINDOW_SECONDS
+    )
+    if not allowed:
+        return error_response(
+            APIError(429, "RATE_LIMITED", "Too many requests."),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # A tighter, dedicated limit on the one route a credential-stuffing/
+    # brute-force attempt would actually hit - checked in addition to,
+    # not instead of, the global limit above.
+    if path == "/auth/login":
+        allowed, retry_after = await check_rate_limit(
+            redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
+        )
+        if not allowed:
+            return error_response(
+                APIError(429, "RATE_LIMITED", "Too many login attempts."),
+                headers={"Retry-After": str(retry_after)},
+            )
+    return None
+
+
 async def _rate_limit(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
@@ -205,6 +224,14 @@ async def _rate_limit(
     # counting it toward a limit meant to protect against abusive real
     # traffic was arguably wrong before B16 ever touched this file, not
     # only under test.
+    #
+    # Phase 4 blocker 1: point (1) above was true only because this
+    # middleware used to sit OUTSIDE CORSMiddleware. With CORS now
+    # outermost (see "Middleware order" below), CORSMiddleware answers a
+    # real preflight itself and this middleware never sees it. The
+    # exemption stays for OPTIONS requests that are not preflights (no
+    # Origin or no Access-Control-Request-Method), which CORSMiddleware
+    # passes through.
     if request.method == "OPTIONS":
         return await call_next(request)
     # B16: E2E harness only, for everything else. This spec drives real,
@@ -225,39 +252,105 @@ async def _rate_limit(
 
     ip = client_key(request.client.host if request.client else None)
 
-    # Every request through this middleware previously opened a brand-new
-    # connection pool via redis.from_url() and never closed it - the same
-    # leak CodeRabbit flagged in sse_tickets.py, but here it fires on
-    # every single API call rather than once per SSE stream, so it's the
-    # higher-impact instance of the same bug.
-    async with redis.from_url(settings.redis_url) as redis_client:
-        allowed, retry_after = await check_rate_limit(
-            redis_client, f"ratelimit:global:{ip}", GLOBAL_LIMIT, GLOBAL_WINDOW_SECONDS
+    # Phase 4 blocker 1: one shared client (rate_limit.py) instead of a new
+    # pool per request, and fail open. If Redis cannot be reached or does
+    # not answer within rate_limit.py's timeouts, the request is allowed
+    # and a WARNING is logged, for the global and the login limit alike: a
+    # failure on the global check skips the login check too, since both
+    # use the same unavailable Redis. Only the exception TYPE is logged.
+    #
+    # call_next stays outside the try on purpose. A route that itself uses
+    # Redis (sse_tickets.py) can raise the same ConnectionError; inside the
+    # try, that would be caught here, logged as a limiter problem, and the
+    # route would be called a second time.
+    try:
+        async with rate_limit_redis() as redis_client:
+            rejection = await _limit_rejection(redis_client, ip, request.url.path)
+    except REDIS_UNAVAILABLE_ERRORS as exc:
+        logger.warning(
+            "rate limiter skipped, Redis unavailable (%s); allowing the request",
+            type(exc).__name__,
         )
-        if not allowed:
-            return JSONResponse(
-                status_code=429,
-                content={"error": {"code": "RATE_LIMITED", "message": "Too many requests."}},
-                headers={"Retry-After": str(retry_after)},
-            )
+        rejection = None
 
-        # A tighter, dedicated limit on the one route a credential-stuffing/
-        # brute-force attempt would actually hit - checked in addition to,
-        # not instead of, the global limit above.
-        if request.url.path == "/auth/login":
-            allowed, retry_after = await check_rate_limit(
-                redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
-            )
-            if not allowed:
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "error": {"code": "RATE_LIMITED", "message": "Too many login attempts."}
-                    },
-                    headers={"Retry-After": str(retry_after)},
-                )
-
+    if rejection is not None:
+        return rejection
     return await call_next(request)
+
+
+async def _catch_unhandled_exceptions(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Phase 4 blocker 1: turn any exception nothing else handled into the
+    same JSON envelope every APIError uses, as a 500 INTERNAL_ERROR.
+
+    Without this, an unhandled exception reaches Starlette's own
+    ServerErrorMiddleware, which is always the outermost layer, OUTSIDE
+    CORSMiddleware: its plain-text 500 carries no CORS headers, so the
+    browser hides it and the web app sees a generic network failure. This
+    middleware sits inside CORS (see "Middleware order"), so its 500 gets
+    the CORS and security headers like any other response.
+
+    The traceback goes to the log; the body carries no internal detail.
+    Only the method and path are logged, not the full URL: the SSE route
+    carries a live token in its query string.
+    """
+    try:
+        return await call_next(request)
+    except Exception:
+        logger.exception("unhandled error on %s %s", request.method, request.url.path)
+        return error_response(InternalServerError())
+
+
+# Middleware order. Outermost first, this is what a request passes through:
+#
+#   ServerErrorMiddleware        Starlette's own, always outermost
+#   CORSMiddleware
+#   _security_headers
+#   _catch_unhandled_exceptions
+#   _rate_limit
+#   _max_body_size
+#   ExceptionMiddleware          Starlette's own, always innermost; runs the
+#                                APIError / HTTPException / 422 handlers
+#   router
+#
+# add_middleware() INSERTS AT INDEX 0 of app.user_middleware (Starlette's
+# applications.py), and the stack is built from that list with index 0 as
+# the outermost layer. So the LAST middleware added is the OUTERMOST, and
+# the calls below run in the reverse of the list above. (B15's comment
+# here said the opposite, "the first one added is outermost"; that is why
+# the 429 used to skip CORS and the security headers entirely.)
+#
+# Why this order:
+# - CORS outermost: every response that reaches the browser, including a
+#   429, a 413 and a 500 from the catch-all, carries
+#   Access-Control-Allow-Origin. Otherwise the browser hides the response
+#   and the web app cannot tell a rate limit from an outage.
+# - expose_headers=["Retry-After"]: Retry-After is not a CORS-safelisted
+#   response header, so without this page JS cannot read it, even on a 429
+#   that does carry Access-Control-Allow-Origin.
+# - _security_headers next, so those responses get the security headers too.
+# - The catch-all inside both, so its 500 gets both header sets, and
+#   outside the limiter and the size check, so an exception raised by
+#   either of them is caught too.
+# - _rate_limit before _max_body_size: an oversized request still counts
+#   toward the limit.
+# tests/route/test_middleware_order.py pins this exact list.
+app.add_middleware(BaseHTTPMiddleware, dispatch=_max_body_size)
+app.add_middleware(BaseHTTPMiddleware, dispatch=_rate_limit)
+app.add_middleware(BaseHTTPMiddleware, dispatch=_catch_unhandled_exceptions)
+app.add_middleware(BaseHTTPMiddleware, dispatch=_security_headers)
+# The web app is a separate origin in every configuration this project has
+# (settings.web_base_url) - without this, every browser request's CORS
+# preflight fails before auth (Authorization header) is even considered.
+# allow_credentials is not needed - auth is a Bearer header, not cookies.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.web_base_url],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Retry-After"],
+)
 
 
 register_exception_handlers(app)
@@ -276,6 +369,7 @@ app.include_router(proposal.router)
 app.include_router(graph.router)
 app.include_router(redteam.router)
 app.include_router(readiness.router)
+app.include_router(operations.router)
 
 
 @app.get("/health/live")

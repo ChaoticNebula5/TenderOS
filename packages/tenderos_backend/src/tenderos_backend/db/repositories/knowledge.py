@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,23 @@ class KnowledgeRepository:
 
     async def get_import_batch(self, batch_id: uuid.UUID) -> KnowledgeImportBatch | None:
         return await self._session.get(KnowledgeImportBatch, batch_id)
+
+    async def mark_import_batch_completed(self, batch_id: uuid.UUID) -> bool:
+        """Phase 4 consumer guard: stamp completed_at (database clock) the
+        first time a batch's document import finishes. Returns False if it
+        was already stamped. Only the capability-statement path uses it so
+        far; nothing else writes this column."""
+        result = await self._session.execute(
+            update(KnowledgeImportBatch)
+            .where(
+                KnowledgeImportBatch.id == batch_id,
+                KnowledgeImportBatch.completed_at.is_(None),
+            )
+            .values(completed_at=func.now())
+            .returning(KnowledgeImportBatch.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def list_import_batches_for_org(
         self, organization_id: uuid.UUID

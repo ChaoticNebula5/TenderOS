@@ -12,8 +12,8 @@
     - POSTGRES_DSN must end in _test (tests/integration/conftest.py checks
       this too; failing here is earlier and louder).
     - REDIS_URL must be database 1 (the running stack's RQ uses 0).
-    - The stack's api, worker and outbox_dispatcher containers must be
-      stopped: six fixtures run `MATCH (n) DETACH DELETE n` against the one
+    - The stack's api, worker, operations_worker and outbox_dispatcher
+      containers must be stopped: six fixtures run `MATCH (n) DETACH DELETE n` against the one
       shared Neo4j (KNOWN_LIMITATIONS.md). -AllowRunningStack overrides it.
 
   Any further arguments are passed straight to pytest, e.g.
@@ -57,11 +57,11 @@ if (-not $AllowRunningStack) {
     } finally {
         Pop-Location
     }
-    $apps = @($running | Where-Object { $_ -in @("api", "worker", "outbox_dispatcher") })
+    $apps = @($running | Where-Object { $_ -in @("api", "worker", "operations_worker", "outbox_dispatcher") })
     if ($apps.Count -gt 0) {
         throw ("refusing: stack app containers are running ($($apps -join ', ')). pytest wipes " +
             "the shared Neo4j and must not race a live worker. Stop them first, e.g. " +
-            "docker compose stop api worker outbox_dispatcher web, or pass -AllowRunningStack.")
+            "docker compose stop api worker operations_worker outbox_dispatcher web, or pass -AllowRunningStack.")
     }
 }
 

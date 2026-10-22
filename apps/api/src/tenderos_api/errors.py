@@ -3,16 +3,41 @@ from fastapi.responses import JSONResponse
 
 
 class APIError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.code = code
         self.message = message
+        # Response headers for this error, e.g. Retry-After. Sent by the
+        # exception handler below; None for almost every error.
+        self.headers = headers
 
 
 class IdempotencyConflictError(APIError):
     def __init__(self) -> None:
         super().__init__(
             409, "IDEMPOTENCY_CONFLICT", "Idempotency-Key reused with a different request body."
+        )
+
+
+class IdempotencyInProgressError(APIError):
+    # Phase 4 blocker 2: same key, same request, and the first attempt still
+    # holds a live lease on it. Not a conflict: waiting and retrying with the
+    # same key is exactly right, so Retry-After carries the seconds left on
+    # that lease (computed in SQL, IdempotencyRepository.
+    # lease_seconds_remaining).
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(
+            409,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "This request is already being processed. Please wait a moment and try again.",
+            headers={"Retry-After": str(retry_after_seconds)},
         )
 
 
@@ -121,11 +146,34 @@ class GraphStaleAPIError(APIError):
         )
 
 
-async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+class InternalServerError(APIError):
+    # Returned by main.py's catch-all middleware for any exception nothing
+    # else handled. The message is deliberately generic: the real exception
+    # (type, message, traceback) goes to the server log only, never into a
+    # response body a client can read.
+    def __init__(self) -> None:
+        super().__init__(
+            500, "INTERNAL_ERROR", "Something went wrong on our side. Please try again."
+        )
+
+
+def error_response(exc: APIError, headers: dict[str, str] | None = None) -> JSONResponse:
+    """The one place the {"error": {"code", "message"}} envelope is built.
+
+    Shared by the APIError exception handler below and by main.py's
+    middlewares (the 429, the 413 and the catch-all 500), which return
+    before or outside FastAPI's exception handling and so cannot raise an
+    APIError and let the handler build the body.
+    """
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
+        headers=headers,
     )
+
+
+async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+    return error_response(exc, headers=exc.headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -3710,7 +3710,7 @@ Each entry:
   before that edit). Full suite 591 passed; mypy 59/12/244 baseline held
   as of this entry's own final state.
 
-## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - four instances, one blind spot in review
+## Standing pattern: a comment asserting a wiring that doesn't exist is invisible to grep - six instances, one blind spot in review
 
 - **Discovered:** named once the count reached three, across two separate
   passes; a fourth turned up B17, in code (not a doc comment). The shape
@@ -3743,6 +3743,19 @@ Each entry:
      cancellation landing in that window is still overwritten. Unlike
      instances 1-3, not a dead/unread field - working code with a
      comment overselling what it actually guarantees.
+  5. **`BidDashboard.tsx:7-9`'s comment** (found 2026-10-10, open, docs
+     only): says the list endpoint returns `tenders.status` through
+     `coarse_status_for`, which maps `workflow_runs.status` instead. See
+     the `tenders.status` entry below.
+  6. **This file's own audit entry** ("[found during B17 Phase 0b ...]
+     Dependency audit", observed 2026-10-06, corrected 2026-10-22 in
+     `ca998a6`): said pypdf "parses uploaded, untrusted tender PDFs".
+     Nothing imports pypdf, in our code or in any installed package;
+     uploaded PDFs go through pdfplumber (pdfminer.six, with pypdfium2
+     for rendering). The dependency was then removed (`9d35b11`). Unlike
+     instances 1-5, not a code comment: a claim in this file, written
+     while triaging an advisory, about which code a library serves.
+     Caught the same way: by searching for the import the claim implied.
 - **Why this is invisible to grep specifically:** a plain dead-config or
   dead-code check (grep for read sites, list unused symbols) catches a
   field or function with zero callers. It does NOT catch a field with
@@ -3756,7 +3769,8 @@ Each entry:
   comment names, or the real downstream consumer it describes) rather
   than trusting the comment's description of it once the symbol itself
   looked properly declared.
-- **Status:** instances 1-3 resolved (deleted or corrected). Instance 4
+- **Status:** instances 1-3 and 6 resolved (deleted or corrected);
+  instance 5 open (docs only). Instance 4
   open by design decision, not oversight - see its own dedicated entry
   below for why B17 audited and reported it rather than fixing it. The
   pattern itself is not closeable by a fix - it's a standing review
@@ -9763,6 +9777,11 @@ actually has - three independent failures were reproduced, not inferred:
     the library that signs and verifies the app's auth tokens.**
   - `pypdf` 6.15.0: 11 (fixes 6.16.0 / 6.16.1) - **parses uploaded,
     untrusted tender PDFs.**
+    **Correction (2026-10-22): that is wrong.** pypdf is declared in
+    `packages/tenderos_backend/pyproject.toml` but never imported, by our
+    code or by any installed package (searched). Uploaded PDFs go through
+    pdfplumber (`ingestion/parse_pdf.py`), which parses with pdfminer.six
+    and renders pages for OCR with pypdfium2.
   - `virtualenv` 21.7.0: 8 (dev tooling); `urllib3` 2.7.0: 3;
     `langgraph-sdk` 0.4.2: 1 (fix 0.4.4).
   - npm: `apps/web` 4 high (transitive: brace-expansion, js-yaml,
@@ -10322,3 +10341,928 @@ actually has - three independent failures were reproduced, not inferred:
   outermost, or add the CORS headers to the limiter's own responses. Both
   touch B15's middleware order, so they need their own review.
 - **Test:** none.
+
+## [Phase 4 blocker 1, 2026-10-12, resolved with four accepted limits] CORS on every response, fail-open rate limiter, readable rate-limit errors
+
+Resolves the entry above, "A rate-limited request (429) is shown as
+'Could not reach the server'; the 429 carries no CORS header".
+
+- **Discovered:** Phase 4 backend-hardening review (read-only), then
+  built on `phase4/backend-hardening`.
+- **Behaviour (fixed):** `CORSMiddleware` is now registered last, so it
+  is the outermost user middleware, and it exposes `Retry-After`
+  (`apps/api/src/tenderos_api/main.py:338-351`). The 429, the 413 and a
+  new catch-all 500 (`_catch_unhandled_exceptions`, `main.py:280`,
+  code `INTERNAL_ERROR`, generic message, traceback logged) now carry
+  `Access-Control-Allow-Origin` and the security headers. The web app
+  reads the API's `{"error": {"code", "message"}}` envelope, shows a
+  429 as "Too many attempts" with the wait from `Retry-After`, and no
+  longer auto-retries a 429 (`apps/web/src/api/retryTransient.ts:59`).
+  Observed live on the fake-provider stack (real, 2026-10-12): the 6th
+  `POST /auth/login` with `Origin: http://localhost:5173` returned 429
+  with `access-control-allow-origin: http://localhost:5173`,
+  `access-control-expose-headers: Retry-After` and `retry-after: 60`.
+- **Accepted limits:**
+  1. **The limiter fails open.** On a Redis connection error or timeout
+     (`REDIS_UNAVAILABLE_ERRORS`, `rate_limit.py:52`; timeouts 0.25 s
+     each, `rate_limit.py:61-62`, design numbers, not measured) the
+     request is allowed (`main.py:268`). While Redis is unavailable there
+     is no rate limiting at all, the login limit included, and one
+     WARNING is logged per request: there is no log throttling, so an
+     outage under load produces one log line per request.
+  2. **A 429 on `/auth/me` ends the session view.** `AuthContext.refresh()`
+     no longer retries a 429, so it goes straight to
+     `setMeResponse(null)` and keeps the token
+     (`apps/web/src/auth/AuthContext.tsx:26-37`): the user is shown as
+     logged out until a later refresh succeeds. Before, it retried for
+     about 3 s and in practice ended the same way inside a 60 s window.
+  3. **One bucket per proxy.** The limiter keys on `request.client.host`
+     (`main.py:252`, `rate_limit.py:145`). Behind a reverse proxy or load
+     balancer that is the proxy's IP, so every user would share one
+     bucket (100 requests and 5 logins per 60 s, configured numbers).
+     The fix is planned in Phase 4 with the deployment host.
+  4. **Test session only: Alembic disables existing loggers.**
+     `packages/tenderos_backend/src/tenderos_backend/db/migrations/env.py:14`
+     calls `fileConfig()`, whose default `disable_existing_loggers=True`
+     disables `tenderos_api.main`'s logger for the rest of a pytest
+     session once `tests/integration/test_schema_diff.py` has run Alembic
+     in-process. Found when the new log-asserting tests passed alone and
+     failed in the full suite; reproduced with that one file run first.
+     Worked around with the opt-in `main_logger_enabled` fixture
+     (`tests/route/conftest.py:201`). A real API process never runs
+     Alembic, so production logging is unaffected. The root-cause fix
+     (`disable_existing_loggers=False`) is planned as a separate small
+     commit.
+- **Risk:** limits 1 and 3 matter at deployment: an attacker who can
+  make Redis unavailable also disables brute-force protection on login,
+  and a proxy in front of the API turns per-user limits into one shared
+  limit.
+- **Status:** resolved (the CORS and UI defects); limits 1-3 accepted,
+  limit 4 open until its own commit.
+- **Test:** `tests/route/test_middleware_order.py` (full middleware order,
+  CORS and security headers on 429/413/500, the 500 envelope with no
+  internal detail), fail-open tests in
+  `tests/route/test_rate_limit_middleware.py` (a real unreachable Redis
+  on the global and the login path, and a failure on the login check
+  alone), `apps/web/src/api/formatErrorDetail.test.ts`, and
+  `apps/web/src/api/retryTransient.test.ts` (a 429 is not retried).
+
+## [Phase 4 blocker 2, 2026-10-13, open, accepted] Idempotency leases: what a lease cannot make safe
+
+- **Discovered:** Phase 4 backend-hardening review, then built on
+  `phase4/backend-hardening` (migration `019_idempotency_lease`).
+- **Behaviour (fixed):** an `in_progress` idempotency record used to stay
+  `in_progress` forever if its request died or raised before `finalize()`,
+  so every retry with that key got 409 for good. Records now carry a lease
+  (`locked_until`, `claim_token`): a live lease answers a retry with 409
+  `IDEMPOTENCY_IN_PROGRESS` and `Retry-After`; a lapsed lease (or a NULL
+  one, from before migration 019) is taken over by one conditional UPDATE
+  (`IdempotencyRepository.take_over_expired`); any exception from the
+  route releases the record (`apps/api/src/tenderos_api/idempotency.py:134-153`);
+  `finalize` and `release` act only while the caller still holds the
+  claim. The lease is 60 s (`idempotency.py:30`), a design number, not
+  measured, and every time value is on the database clock.
+- **Accepted limits:**
+  1. **Window 2: work committed, then the process dies before
+     `finalize()`.** The record stays `in_progress` with a lease that
+     lapses; the next retry takes it over and runs the work again. The
+     route's work and `finalize()` are separate transactions, so nothing
+     ties "done" to "recorded". Gate decisions are naturally idempotent
+     (`gate_service.record_decision` replays an identical decision,
+     `domain/services/gate_service.py:37-43`); `create_tender` is not, so
+     this window can create a second tender.
+  2. **An exception after the work committed releases the key.** The yield
+     dependency cannot tell "failed before the work" from "failed after it"
+     (for example `finalize()` itself failing, or an error building the
+     response). It releases either way, and a retry repeats committed work,
+     with the same consequence as limit 1.
+  3. **RESOLVED 2026-10-16 (Phase 4 async operations, Stage 2): proposal
+     generation outlasted the lease.** `POST
+     /tenders/{id}/proposal/generate` called the LLM inline: 6 section
+     templates, each a draft call plus a possible repair call, with the
+     Gemini adapter's own rate-limit backoff of 5, 10 and 20 s per call
+     (configured numbers). With a real provider that could exceed 60 s
+     (estimate, not measured), the lease lapsed mid-request, and a retry
+     with the same key took the record over and started a second,
+     concurrent generation, repeating the LLM spend. The route now records
+     a `proposal_generation` async operation and returns 202
+     (`apps/api/src/tenderos_api/routes/proposal.py`), so the key records
+     and replays that fast response, well inside the lease; the drafting
+     runs in the worker under the operation's own claim, and a second
+     request while one is active returns the same operation. See the
+     Stage 2 entry at the end.
+  4. **Replay ignores the stored status code.** Every route unpacks
+     `replay_response` as `_, cached_body` (e.g.
+     `apps/api/src/tenderos_api/routes/organizations.py:24`) and returns
+     the body with its own fixed status code (201, 202 or 200). That equals
+     the stored code today only because each route has exactly one success
+     code; a route that could succeed with two different codes would replay
+     the wrong one.
+  5. **Expired rows are not yet removed.** `IdempotencyRepository.
+     delete_expired` exists and is tested, but nothing calls it yet; Phase 4
+     blocker 3 runs it from the outbox dispatcher's loop.
+  6. **A cancelled request does not release its key.** When a client
+     disconnects, the request is cancelled with `asyncio.CancelledError`,
+     which is not an `Exception`, so the dependency's release-on-error path
+     (`apps/api/src/tenderos_api/idempotency.py:134-153`) does not run. The
+     record stays `in_progress` until its lease runs out; a retry with the
+     same key gets `IDEMPOTENCY_IN_PROGRESS` for up to 60 s (the lease, a
+     design number) and then takes the record over.
+- **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
+  late failure in a narrow window. (Limit 3's duplicate real-provider
+  proposal generation was closed in Stage 2.)
+- **Status:** limit 3 resolved (2026-10-16, Stage 2); accepted until the
+  cleanup is scheduled (limit 5); limits 1, 2, 4 and 6 accepted.
+- **Test:** `tests/integration/test_idempotency.py` (lease on the database
+  clock, release on APIError and on a 500, live lease with Retry-After,
+  takeover of an expired and of a NULL lease, exactly one winner between
+  concurrent takers, an overtaken original can neither release nor
+  finalize, bounded cleanup). No test covers limits 1, 2, 4 or 6: each
+  needs a crash or a client disconnect at a precise point. Limit 3's fix:
+  `tests/route/test_proposal_routes.py::test_generate_proposal_returns_202_and_the_same_operation_while_active`
+  (a same-key retry replays the 202; a second click joins the operation).
+
+## [Phase 4 blocker 3, 2026-10-13, open, accepted] Outbox delivery is at-least-once; the consumer guard is the fix, not the dispatcher
+
+- **Discovered:** Phase 4 backend-hardening review, then built on
+  `phase4/backend-hardening` (no migration).
+- **Behaviour (fixed):** the dispatcher compares and writes every time on
+  the database clock (`now()`: eligibility, retry `available_at`,
+  `dispatched_at`; `packages/tenderos_backend/src/tenderos_backend/db/repositories/outbox.py`),
+  which removes by construction the clock-skew mechanism recorded above
+  for the `test_outbox_dispatcher.py` flake (not re-measured over 20 runs
+  in this block). It uses one Redis connection per process with 2 s
+  socket and connect timeouts and no client retries
+  (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:71-72`, design
+  numbers), enqueues off the event loop through `asyncio.to_thread` with
+  RQ's `unique=True` (`:315`), treats an already-existing job as dispatched
+  (`:317`), bounds the claiming transaction with `SET LOCAL lock_timeout`
+  and `idle_in_transaction_session_timeout` of 30 s (`:82-83`), survives a
+  failing tick with a logged, growing backoff (`:398`), and runs one
+  bounded idempotency cleanup batch every 12 ticks (`:95`). api, worker
+  and outbox_dispatcher restart unless stopped (`docker-compose.yml`).
+  `run_workflow` invokes the graph only after claiming its run from
+  `queued` to `running` in one conditional UPDATE
+  (`apps/worker/src/tenderos_worker/jobs/workflow.py:146`,
+  `db/repositories/workflow.py:119`).
+- **Accepted limits:**
+  1. **Delivery is at-least-once, by design.** The enqueue and the row's
+     `dispatched` mark are in different systems, Redis and Postgres, with
+     no shared transaction. `unique=True` turns a redelivery into a no-op
+     only while the job's hash is still in Redis (a finished job's for
+     500 s, RQ 2.10.0's default result TTL); after that, a redelivery
+     enqueues the job again. What makes a duplicate harmless is each
+     consumer's own guard.
+  2. **Option A is designed, not built.** Claim the row (move it out of
+     `pending` with a lease), commit, then enqueue with no transaction
+     open, then mark it dispatched. That stops the row lock from being
+     held across the network call, but it does not remove duplicates (a
+     crash between the enqueue and the mark still redelivers), so the
+     consumer guard is still the real fix, and it needs a new status or
+     column. Not built in this block.
+  3. **The row lock is still held across the enqueue.** One event's row
+     lock and one pooled connection stay held while Redis answers,
+     bounded by the 2 s socket timeouts (a worst case of roughly 12 s for
+     one enqueue, an estimate) and backstopped by the 30 s
+     `SET LOCAL` timeouts. Only the dispatcher touches outbox rows, so
+     the lock blocks no request path.
+  4. **Consumers that still repeat work on a duplicate.** Only
+     `run_workflow` is guarded. `parse_and_embed_document` re-parses and
+     re-embeds the document (local SentenceTransformer, CPU time, no
+     money; chunk rows converge on their unique key). `verify_requirement_job`
+     repeats its LLM verification call, which costs one real-provider call
+     per duplicate. `process_knowledge_document_import`,
+     `reanalyze_knowledge_selection_change` and `resume_workflow` have
+     proposed guards, not built: the resume case is the dangerous one, since
+     a duplicate `Command(resume=...)` can be consumed by a later gate's
+     interrupt (see the blocker 3 report).
+  5. **Fixed in this block: a Redis outage no longer strands events.**
+     Observed live first (real, 2026-10-13, fake-provider stack): Redis
+     stopped for about 22 s, and a TenderCreated event written during the
+     outage failed its enqueue at 06:10:12, 06:10:20 and 06:10:28 UTC,
+     used up the old 3 attempts (1, 2 and 4 s apart) and was never
+     delivered, although Redis was back a second later. Now Redis being
+     unreachable (redis-py `ConnectionError` and its subclasses, and
+     `TimeoutError`; `INFRASTRUCTURE_ERRORS`,
+     `apps/worker/src/tenderos_worker/outbox_dispatcher.py:79`) does not
+     consume an attempt: the claim is rolled back, the event stays pending
+     with `available_at` unchanged, the rest of the tick's batch is skipped
+     (`RedisUnavailableError`, `:137`, raised at `:369`), and the tick
+     backoff (5 s doubling, capped at 60 s) paces the retries. Any other
+     enqueue error consumes an attempt: `MAX_ATTEMPTS = 8` (`:62`), waits of
+     min(300 s, 30 s x 2^(n-1)) scaled by a jitter factor in [0.75, 1.0]
+     (`_retry_delay_seconds`, `:144`), about 17 to 22.5 minutes in all
+     (design numbers). Events marked `failed` under the old policy with
+     fewer than 8 attempts become eligible again once this is deployed, a
+     one-time redelivery of old failures.
+  6. **A dead-lettered event needs a manual re-drive.** After its 8th
+     counted failure an event is marked `failed` (`mark_failed`,
+     `packages/tenderos_backend/src/tenderos_backend/db/repositories/outbox.py:127`)
+     and logged at ERROR with its id and event type (`outbox_dispatcher.py:385`),
+     the hook for Phase 3 alerting. Nothing re-drives it automatically. A
+     re-drive tool (reset `status` to `pending`, `attempt_count` to 0 and
+     `available_at` to `now()` for chosen event ids, logged, with a
+     dry-run) is designed, not built.
+  7. **A worker that dies mid-run leaves the run in `running`.** The run
+     is claimed `queued` -> `running` before the graph is invoked
+     (`apps/worker/src/tenderos_worker/jobs/workflow.py:146`). If the
+     worker process is killed (OOM, host restart) while the graph runs,
+     nothing moves the run on: a redelivery of WorkflowRunCreated is now a
+     no-op by design, RQ's own job timeout path
+     (`mark_run_failed_on_timeout`,
+     `packages/tenderos_backend/src/tenderos_backend/domain/services/workflow_service.py:123`)
+     only runs when the worker survives to handle the timeout, and the
+     in-job retry (`retry_workflow_run`, `jobs/workflow.py:246`) only runs
+     when a failure is caught. A reaper for runs stuck in `running`
+     (no task progress for longer than the workflow queue's 1800 s job
+     timeout: mark failed or schedule a retry) is designed, not built.
+- **Risk:** limit 4's unguarded consumers can repeat paid LLM calls on a
+  redelivery, and a duplicate resume could answer the wrong gate. Limit 6
+  leaves a dead-lettered event undelivered until someone re-drives it.
+  Limit 7 leaves a run shown as running forever after a worker crash.
+- **Status:** limits 1-3 accepted; limit 4 open (guards being built
+  separately); limit 5 fixed; limits 6 and 7 accepted, tools designed,
+  not built.
+- **Test:** `tests/integration/test_outbox_dispatcher.py` (eligibility on
+  the database clock with the host clock 30 s behind, a hung Redis times
+  out and the loop keeps running, an existing job id is treated as
+  dispatched after a crash between enqueue and mark, the loop survives a
+  database error and a cleanup failure) and
+  `tests/integration/test_run_workflow_claim.py` (a duplicate and two
+  concurrent `run_workflow` deliveries start the graph once; a failed
+  first attempt is retried and invokes the graph again). Limit 5:
+  `test_outbox_dispatcher.py` (an event written during a long outage is
+  dispatched when Redis returns with attempt_count unchanged, a connection
+  error stops the tick after that row, other errors consume attempts with
+  growing, capped delays and end failed with an ERROR log) and
+  `tests/unit/test_outbox_backoff.py`.
+
+## [Phase 4 consumer guards, 2026-10-13, open, accepted] What each outbox consumer does with a duplicate delivery
+
+- **Discovered:** Phase 4 blocker 3 (delivery is at-least-once, see the
+  blocker 3 entry above); guards built on `phase4/backend-hardening`.
+- **Behaviour (fixed):**
+  1. `resume_workflow` first reads the thread state and resumes only if the
+     thread is paused at the interrupt for the decided gate
+     (`apps/worker/src/tenderos_worker/jobs/workflow.py:246`), then claims
+     the run `waiting_for_human` -> `running` in one conditional UPDATE
+     (`:266`), then resumes that interrupt by id. A duplicate resume for an
+     earlier gate no longer answers a later gate's interrupt with the
+     earlier gate's payload.
+  2. `process_knowledge_document_import` (capability statements) stops
+     before the LLM call when the batch's `completed_at` is set
+     (`jobs/knowledge_import.py:176`; stamped when the import finishes),
+     and `import_past_project`/`import_capability` claim or resume their
+     rows instead of failing on `uq_knowledge_import_item_source_ref`.
+  3. `verify_requirement_job` skips only when a completed verification of
+     the requirement already carries this exact outbox event's id
+     (`jobs/verification.py:41`; the verification trace now records
+     `requirement_id` and `event_id` in `input_refs`). Deduplicating on the
+     event, not on "any verification since the event was created", keeps a
+     second request made while an earlier verification is still running
+     from being skipped when that earlier one finishes after it.
+  4. `parse_and_embed_document` skips when the ingestion run for
+     `(document, PARSER_VERSION)` already completed
+     (`jobs/ingestion.py:139`). An explicit reprocess reopens that run
+     (`document_service.reprocess_document`), so it still re-runs. The
+     ingest job id now includes the event id: with blocker 3's
+     `unique=True` and an id shared across events, a reprocess within RQ's
+     500 s result TTL of the previous ingest was treated as already
+     dispatched and never ran (a bug introduced in blocker 3, fixed here).
+  5. Every outbox route's job id now identifies exactly one event. Audited
+     in `apps/worker/src/tenderos_worker/outbox_dispatcher.py`: `outbox-`,
+     `verify_` and `ingest_` contain the event id; `workflow-{run}`,
+     `resume_{run}_{gate}` and `reanalyze_{tender}_{state_version}` are one
+     event each because the event's outbox idempotency key (unique) is
+     built from the same ids. `knowledge_import_{document}` was shared:
+     `replace_employee_resume` re-queues an existing document under a
+     fresh request id, and with `unique=True` that second import was
+     silently "already dispatched". It now includes the event id.
+- **Accepted limits:**
+  1. **Not built: `reanalyze_knowledge_selection_change`.** A second
+     delivery repeats the compliance re-evaluation (LLM calls) and the
+     compliance step's unconditional `state_version` bump, which can make
+     the graph projection stale. Proposed design: a small table
+     `reanalysis_claims(tender_id, knowledge_item_id, state_version)` with
+     a unique key, a `status` and a lease, claimed at the start of the job
+     with one `INSERT ... ON CONFLICT DO NOTHING RETURNING` (no row
+     returned: a duplicate, log and return; a lapsed `running` lease: take
+     over with the same conditional UPDATE as
+     `IdempotencyRepository.take_over_expired`), marked `completed` at the
+     end. Needs a migration, so it is a separate change.
+  2. **Two concurrent resumes for the same gate have a narrow window.**
+     Resuming re-runs the gate node from its start, and gate nodes set the
+     run back to `waiting_for_human` before their `interrupt()` returns,
+     while the interrupt is still pending in the checkpoint. A second
+     resume arriving inside that window can pass both checks and resume the
+     same interrupt again. Not reproduced; the outbox claim and RQ's
+     `unique=True` make a concurrent duplicate of one event unlikely.
+  3. **A capability-statement import that crashed part-way still repeats
+     its LLM extraction on redelivery** (it has not stamped
+     `completed_at`); the rows it already wrote are resumed, not
+     duplicated.
+- **Risk:** limit 1 can repeat paid LLM calls and re-stale the graph on a
+  duplicate reanalysis delivery.
+- **Status:** guards 1-5 built; limit 1 open (designed, not built);
+  limits 2 and 3 accepted.
+- **Test:** `tests/integration/test_graph_execution.py` (a duplicate
+  resume for an earlier gate leaves the next gate pending and the run
+  waiting; the genuine resume still works),
+  `tests/integration/test_knowledge_import_worker_job.py` (a duplicate
+  capability-statement delivery makes no LLM call and no rows),
+  `tests/integration/test_consumer_guards.py` (a duplicate verification
+  makes no LLM call; a request made while another is in flight still runs;
+  a job without an event id still runs),
+  `tests/integration/test_outbox_dispatcher.py` (two DocumentUploaded and
+  two KnowledgeDocumentUploaded events for one document enqueue two jobs each), `tests/integration/test_document_ingestion.py` (a duplicate
+  does not re-embed; an explicit reprocess still does).
+
+## [Phase 4 async operations, Stage 1, 2026-10-15, open, accepted] Red team runs in the worker as an async operation; what the operation framework does not cover
+
+- **Discovered:** Phase 4 review: `POST /tenders/{id}/redteam/run` ran the
+  whole red team, including its LLM critique, inside the HTTP request, and
+  the Gemini client had no timeout at all (`genai.Client(api_key=...)` with
+  no `http_options`), so a hung provider connection held the request
+  indefinitely.
+- **Behaviour (fixed in Stage 1):**
+  1. A generic `async_operations` table (migration
+     `020_async_operations`): kind, status (`queued`, `running`,
+     `succeeded`, `failed`), error code and message, lease
+     (`locked_until`) and `claim_token`. A partial unique index
+     `uq_async_operation_active` on `(tender_id, kind)` while queued or
+     running decides "one active operation per tender and kind".
+  2. `POST .../redteam/run` now returns 202 with the operation. A second
+     POST while one is queued or running returns that same operation (same
+     id), not a second run.
+  3. The outbox delivers `OperationRequested` to the worker's
+     `run_operation_job` (job id `op_{operation_id}`, job timeout from the
+     kind: red team 600 s, proposal generation and commercial validation
+     1800 s). `run_operation` claims the operation queued to running in
+     one conditional UPDATE, so a duplicate or concurrent delivery does
+     nothing; only the claim's holder can finish it.
+  4. The lease is the job timeout plus 60 s, set at claim on the database
+     clock. The outbox dispatcher's loop reaps running operations whose
+     lease lapsed (every 12 ticks, about 60 s) to `failed` with
+     `WORKER_LOST`. A reaped operation is never taken over or re-run (that
+     would repeat paid LLM calls); the user starts it again, and the lost
+     worker's late finish is refused.
+  5. LLM timeouts (`agents/llm/gemini_adapter.py`, design numbers, not
+     measured): 60 s per provider HTTP request, 180 s per logical call
+     including the adapter's own retries. Both raise `LLMTimeoutError`,
+     which ends an operation `failed` with `LLM_TIMEOUT`; a rate limit
+     ends it `LLM_RATE_LIMITED`, RQ's job timeout `JOB_TIMEOUT`, anything
+     else `INTERNAL_ERROR`. Only the code and a fixed safe message reach
+     the web app; the exception is logged in the worker.
+  6. `GET /operations/{id}` and a per-operation SSE stream
+     (`/operations/{id}/events/ticket`, `/operations/{id}/events/stream`).
+     Another organization's operation answers 404, exactly like a missing
+     one. SSE tickets now carry a scope (`workflow_run` or `operation`), so
+     a ticket minted for one stream is refused on any other.
+  7. The web app's Run red team button stays busy until the operation is
+     finished: `useOperation` follows the SSE stream and polls
+     `GET /operations/{id}` every 3 s while the stream is down, then the
+     findings are re-read; a failed operation shows its own message.
+  8. An operation can no longer stay `queued` for good (found in the
+     Stage 1 review, fixed 2026-10-16). Queued counts as active in
+     `uq_async_operation_active`, so a stuck queued operation made every
+     later POST for that tender and kind return it. Two paths now fail it
+     with `DISPATCH_FAILED` and a generic message, each with its
+     `OperationStatusChanged` event, and only while it is still queued:
+     - when the dispatcher dead-letters its `OperationRequested` event, in
+       the same transaction (`_fail_dead_lettered_operation`,
+       `apps/worker/src/tenderos_worker/outbox_dispatcher.py`);
+     - as a backstop, the reaper fails any operation still queued 60
+       minutes after it was requested
+       (`operation_service.MAX_DISPATCH_WINDOW`, a design number). The
+       outbox's full retry span is 22.5 minutes at most (8 attempts,
+       waits 30 to 300 s), so the window is about 2.7 times that, and it
+       also covers a job waiting behind one full 30-minute job ahead of it
+       (in Stage 1 a workflow job on the shared queue; since Stage 2 an
+       operation on the operations queue, re-checked 2026-10-16, the number
+       stands). This catches what the dead-letter path
+       cannot: a Redis outage longer than the window (outages do not use
+       up attempts, so they never dead-letter), or a stopped dispatcher or
+       worker.
+     A job that reaches the worker after its operation was failed finds it
+     no longer queued and does nothing.
+- **Accepted limits:**
+  1. **An operation queued for more than 60 minutes is failed even if its
+     job is still waiting in the RQ queue.** The user sees
+     `DISPATCH_FAILED` and clicks again; when the old job runs, its claim
+     fails and it does nothing, so no LLM call is paid twice. Updated
+     2026-10-16 (Stage 2): operations now have their own `operations`
+     queue and `operations_worker` service, so workflow jobs no longer
+     delay them. Operations still run one at a time on that worker: a
+     30-minute proposal generation (its job timeout) can delay a red team
+     queued behind it, and two or more such jobs ahead can push a third
+     past the window. The fix at scale is more `operations_worker`
+     replicas (each RQ worker runs one job at a time; the claim already
+     makes concurrent workers safe).
+  2. **RESOLVED 2026-10-16 (Stage 2): tracking did not survive a page
+     reload.** The screen kept the operation id in component state only, so
+     after a reload the button was enabled while the run continued. Each
+     screen now asks `GET /tenders/{id}/operations/active?kind=...` on load
+     and follows an active operation exactly as after a click (see the
+     Stage 2 entry below).
+  3. **`LLMTimeoutError` inside a workflow node is classified as an
+     unknown error** by `orchestration/retry.py` (it is an `LLMError` but
+     none of the classified subclasses), so it gets the unknown-exception
+     branch: one retry after a fixed delay. Reasonable for a timeout; not
+     a dedicated branch.
+  4. **The SSE stream's starting point moved from the API host's clock to
+     the database's `now()`** (`apps/api/src/tenderos_api/outbox_stream.py`,
+     shared by the workflow stream), for the same clock-gap reason as
+     blocker 3. Events written before a stream opens are not replayed; the
+     web app re-reads the resource when the stream opens, so none is
+     missed.
+  5. **`OperationStatusChanged` events are routed to the generic
+     placeholder consumer** (`jobs/placeholder.py`, logs and returns), like
+     every other event type without a worker consumer. They exist for the
+     SSE stream, which reads them from the outbox table directly.
+  6. **The reaper can fail an operation up to about 60 s after its lease
+     lapses** (it runs every 12 dispatcher ticks), so a red-team run whose
+     worker died shows `failed` after at most about 12 minutes.
+- **Earlier references:** the B13 entry above cites
+  `test_trigger_red_team_runs_clean_on_a_fresh_tender`. That test is now
+  `test_trigger_red_team_queues_an_operation_and_returns_202`; the
+  fresh-tender red-team run it covered is now
+  `tests/integration/test_async_operations.py::test_a_real_red_team_run_succeeds_through_the_worker`.
+- **Status:** Stage 1 (red team) built. Stage 2 (proposal generation,
+  commercial re-validate, reattach after a reload) built 2026-10-16; see
+  the entry below. Limit 2 resolved there; the others stand.
+- **Test:** `tests/integration/test_async_operations.py` (one claim under
+  two concurrent deliveries; a duplicate delivery is a no-op; finish is
+  claim-guarded; the reaper fails a lapsed operation and leaves a live one;
+  `test_the_reaper_fails_an_operation_queued_past_the_window_and_leaves_a_recent_one`;
+  a second request while active returns the same id; LLM timeout ends
+  `LLM_TIMEOUT`), `tests/integration/test_operations_api.py` (202; same id
+  on a second POST;
+  `test_a_dead_lettered_request_fails_its_operation_and_a_new_run_starts`;
+  cross-org 404; ticket scope; the stream's messages),
+  `tests/unit/test_gemini_adapter_timeouts.py`,
+  `tests/integration/test_outbox_dispatcher.py` (route, job id, timeout;
+  reaper failure contained), `apps/web/src/hooks/useOperation.test.ts`,
+  `apps/web/src/routes/RedteamFindings.test.tsx`.
+
+## [Phase 4 async operations, Stage 2, 2026-10-16, open, accepted] Proposal generation and commercial re-validation run in the worker; every screen reattaches after a reload
+
+- **Discovered:** the same Phase 4 review as Stage 1. `POST
+  /tenders/{id}/proposal/generate` drafted the proposal inside the request
+  (up to 12 LLM calls, configured), and `POST
+  /pricing-documents/{id}/validate` ran the commercial checks and one
+  explanation LLM call per finding inside the request, explaining every
+  finding again on each re-validation, even one already stored.
+- **Behaviour (fixed in Stage 2):**
+  1. Both routes now follow Stage 1's pattern: they record an async
+     operation (`proposal_generation`, `commercial_validation`) and return
+     202 with it (`apps/api/src/tenderos_api/routes/proposal.py:40`,
+     `routes/commercial.py:35`); the worker runs the work in
+     `run_operation` (`apps/worker/src/tenderos_worker/jobs/operations.py:52`,
+     `:61`). Job timeout 1800 s each, lease 1860 s (configured in Stage 1,
+     `operation_service.JOB_TIMEOUT_SECONDS`). A second POST while one is
+     queued or running returns the same operation; failures end with their
+     safe message, as for the red team.
+  2. Commercial validation is one operation per tender, by design, as the
+     work always was: `evaluate_commercial_for_tender` re-checks every
+     pricing document of the tender together (cross-document checks need
+     every sheet), whichever row's Re-validate started it, and a request
+     from any of the tender's documents while one is active joins it.
+     Observed on the fake stack (2026-10-16, fake data: a fresh tender with
+     two pricing documents and no findings, `operations_worker` stopped):
+     Re-validate on document A (a browser click) and document B (the same
+     POST sent to the API, since the screen disables B while A runs) both
+     answered 202 with the same operation; once the worker started, that
+     one run (07:34:38.966 to 07:34:39.177 UTC) wrote 4 findings on A, 3 on
+     B and 1 cross-document finding on both. No request is dropped, so the
+     screen shows every row busy while it runs (behaviour 6).
+  3. Proposal generation keeps its required Idempotency-Key, which now
+     records and replays the fast 202. This closes blocker 2's limit 3
+     (generation outlasting the 60 s lease), marked resolved above.
+  4. Commercial validation explains only new findings. Each finding is
+     looked up by its fingerprint first, in its own short transaction, and
+     `explain_finding` is called only when it is not stored yet, then the
+     lookup is repeated before the insert
+     (`packages/tenderos_backend/src/tenderos_backend/domain/services/commercial_service.py:218`).
+     The fingerprint depends only on the deterministic draft, never on the
+     explanation. This also applies to the workflow's own commercial step,
+     which calls the same function.
+  5. `GET /tenders/{id}/operations/active?kind=...`
+     (`apps/api/src/tenderos_api/routes/operations.py:90`) returns the
+     tender's queued or running operation of that kind, or `null`. One
+     organization check (`_authorize`, `:63`): another organization's
+     tender answers 403 `ORG_ACCESS_DENIED`, like every other
+     tender-scoped route (changed from 404 on 2026-10-22, review); a tender
+     that does not exist is 404; a member whose role may not create that
+     kind gets 403; an unknown kind is 422. `GET /operations/{id}` keeps
+     its 404 for another organization's operation.
+  6. The web app: `useTenderOperation`
+     (`apps/web/src/hooks/useTenderOperation.ts`) is used by the red team,
+     proposal and commercial screens. The button stays busy from the click
+     until the operation is finished and the screen has re-read its
+     results; on load each screen asks the active-operation endpoint and,
+     if one is queued or running, shows its button busy and follows it
+     exactly as after a click. The proposal screen re-reads the sections
+     and every section's claims before releasing Generate
+     (`full-flow.spec.ts:949-953` waits for the button, then expects a
+     section at once; `:974` counts claim rows without waiting). Commercial
+     shows every Re-validate busy while its tender-wide operation runs,
+     after a click and after a reload alike (behaviour 2), labelled
+     "Re-validating..." (the quiet button has no other visible busy look;
+     before, only `aria-busy` marked it).
+  7. Observed live (fake provider, 2026-10-16, final build): with
+     `operations_worker` stopped and the workflow worker running, Generate
+     proposal answered 202 (queued); after a page reload the button still
+     read "Generating..." and was disabled, and the page made
+     `GET .../operations/active`, minted a ticket and opened
+     `/operations/{id}/events/stream` for that operation; 10 s later it was
+     still queued. Once `operations_worker` was started, the operation
+     succeeded and the Company Overview section appeared 10.6 s later
+     (measured, fake-provider; it includes the worker's own 7 to 8 s preload
+     at startup) with no second click. The same check for the other two
+     screens (2026-10-16, one tender seeded with two pricing documents, fake
+     data): with `operations_worker` stopped, Run red team and Re-validate
+     (on document A) each answered 202 (queued); after reloading both tabs,
+     Run red team read "Running..." and both Re-validate rows read
+     "Re-validating...", all disabled, and each tab requested its active
+     operation, minted a ticket and opened its operation's stream; 10 s
+     later both were still queued. Once `operations_worker` was started,
+     both succeeded and the buttons were released 10.4 s later (measured,
+     fake-provider) with the 8 findings on screen and no second click.
+     Screenshots: `.playwright-mcp/phase4-review/live-check-stage2-others/`.
+  8. **Operations have their own queue and worker.** The dispatcher
+     enqueues `OperationRequested` on a new `operations` RQ queue
+     (`apps/worker/src/tenderos_worker/outbox_dispatcher.py`,
+     `_operation_requested_dispatch`); every other event keeps its queue.
+     A new compose service, `operations_worker` (same image and env as
+     `worker`, `restart: unless-stopped`, no healthcheck, like `worker`),
+     runs `python -m tenderos_worker.worker operations` and listens only to
+     it; the default worker no longer listens to it. Found by the E2E:
+     with one worker, an operation waited behind the workflow job already
+     running. Measured on the fake stack, E2E run 2 (UTC): proposal
+     requested 06:10:23.579, the commercial gate's resume job ran
+     06:10:25.179 to 06:10:32.419, the proposal job started 06:10:32.485
+     (66 ms after it), the red team was clicked at 06:10:40.858, and no
+     workflow event came after that click (the last at 06:10:32.409).
+  9. **The operations worker imports its job module before forking
+     jobs** (`apps/worker/src/tenderos_worker/worker.py`,
+     `preload_operations_module`). RQ forks a fresh child per job and
+     imports the job's module there; for operations that import took 7.2
+     to 7.9 s (measured, 5.5 s of it sentence_transformers and torch,
+     through `commercial_service` -> `document_service` -> ingestion).
+     Per-job startup, RQ job start to the first line of job code, 3
+     samples per kind (measured, fake stack): before 5.8 to 7.3 s red
+     team, 5.4 to 5.9 s proposal, 5.6 to 5.7 s commercial; after, 0.000 s
+     in all 9 (below the logs' 1 ms resolution). The parent forks every
+     job with one thread besides its main thread: RQ's own (item 10).
+  10. **BLAS is pinned to one thread in the operations worker.** Without
+     the pin, the preload would have added 30 threads to the parent that
+     forks the jobs: numpy's and scipy's bundled OpenBLAS each start a
+     pool when they load (observed: 1 -> 16 -> 31 OS threads on 16 CPUs;
+     0 sockets before and after). `operations_worker` sets
+     `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`
+     (`docker-compose.yml`), which keeps the import at one thread
+     (observed in the running parent: OS threads 1 -> 1, open sockets 0 ->
+     0). The worker refuses to start, logging an ERROR that names the
+     thread count and both variables and exiting non-zero, if the import
+     leaves more than one OS thread or opens a socket (Linux). What this
+     guarantees is that the preload adds no thread, not that the parent
+     forks single-threaded: the check runs before the RQ `Worker` exists,
+     and RQ 2.10.0's `Worker.bootstrap` then starts a Redis pubsub listener
+     thread (`rq/worker/base.py`, `subscribe` -> `pubsub.run_in_thread`,
+     daemon) that runs until teardown. Observed 2026-10-22, idle: the
+     parent python process has 2 OS threads and 3 open sockets in both
+     `operations_worker` and the default `worker`. That listener thread is
+     RQ's own design, present in every RQ worker; RQ's scheduler is a
+     separate forked process, not a thread.
+  11. With 8 to 10: E2E passed 2 of 2 (2.6 and 2.6 min, fake-provider),
+     after failing 3 of 3 before. Run B1 (UTC): the commercial gate's
+     resume job ran 06:50:49.925 to 06:50:57.559 and the proposal
+     operation started at 06:50:50.046, inside it; red team clicked
+     06:50:52.421, 9 workflow events after the click. Run B2: resume job
+     06:56:00.941 to 06:56:08.402, proposal started 06:56:01.057; red team
+     clicked 06:56:03.095, 9 events after. Memory (`docker stats`, 1 s
+     samples, measured): `operations_worker` idle about 126 MiB without
+     the preload and 520 MiB with it, peak 521.3 MiB during the E2E (474.7
+     MiB without the preload, when each job's child imported torch);
+     `worker` idle 126 to 174 MiB, peak 605.5 to 612.8 MiB. The operations
+     worker imports `sentence_transformers` but never loads the embedding
+     or reranker weights: no operation calls `embed_texts` or `rerank`
+     (the only embed on its path, `create_synthetic_chunk`, runs on
+     resolve, in the API), and its memory moved by under 2 MiB across all
+     its jobs.
+- **Accepted limits:**
+  1. **A replayed proposal 202 shows the status from the first request**
+     (usually `queued`). The client follows the operation for the current
+     status, so nothing reads the stale one.
+  2. **A manual run and the workflow's own step are not one operation.**
+     `proposal_drafting_node` and `commercial_analysis_node` call the same
+     services directly, so a manual run can overlap them, as before Stage
+     2. For commercial, the repeated lookup prevents duplicate rows, but
+     both runs may pay for the same new explanation inside that window.
+  3. **Reattach is best effort.** If the active-operation request fails,
+     the button is enabled after a reload; a click then returns the same
+     active operation, so no second run starts.
+  4. **In development the active-operation request is made twice on load**
+     (React StrictMode runs effects twice; seen in the live check). A
+     production build makes it once.
+  5. **BLAS runs single-threaded in the operations worker.** Operations do
+     no numeric work today; if one ever embeds or does maths, it runs
+     slower but correctly.
+  6. **The preload costs the operations worker about 400 MiB** at idle
+     (about 126 MiB without it, about 520 MiB with it; measured), almost
+     all of it sentence_transformers and torch, a library no operation
+     uses. Follow-up (a) below removes it.
+  7. **Workflow jobs, gate resumes included, still spend 7 to 8 s
+     importing per job** (the same per-fork import on the default worker,
+     unchanged in this stage). Measured 2026-10-16:
+     `tenderos_worker.jobs.workflow` takes 7.7 to 7.9 s to import in a
+     fresh interpreter (3 samples), through the same chain
+     (`orchestration.graph` -> `nodes.commercial` -> `commercial_service`
+     -> ingestion); the commercial gate's resume job lasted 7.5 to 7.6 s
+     in total in runs B1 and B2, so that job is almost all import.
+     Follow-ups, owner Phase 4 deployment prep, in this order, each tested
+     with its own E2E runs:
+     - (a) **First item of deployment prep: lazy-import the embedder**
+       (`ingestion/embed.py`), so code that never embeds never imports
+       torch. It recovers the operations worker's ~400 MiB (limit 6) and
+       cuts API and default-worker memory and start-up too.
+     - (b) **Preload the default worker** the same way. It needs the same
+       BLAS pin, and workflow jobs do embed (ingestion, retrieval), so
+       measure single-threaded BLAS there before choosing. It is expected
+       to break the E2E's step 11: the resume job would end well before
+       the red-team click instead of about 5 s after it (see the next
+       entry). Re-measure the workflow job's own import time (after (a))
+       before trying it.
+- **Risk:** limit 2 can repeat an explanation LLM call when a manual
+  re-validation and the workflow's commercial step run at the same time.
+- **Status:** built (Stage 2). Limits 1-7 accepted; limit 7's two
+  follow-ups open.
+- **Test:** `tests/integration/test_async_operations.py`
+  (`test_a_duplicate_delivery_runs_each_kind_once`, all three kinds;
+  `test_a_real_proposal_generation_runs_once_under_a_duplicate_delivery`;
+  `test_a_real_commercial_validation_runs_once_and_explains_only_new_findings`),
+  `tests/integration/test_operations_api.py`
+  (`test_the_active_operation_is_returned_while_running_and_null_when_idle`,
+  `test_the_active_operation_is_a_403_across_organizations_and_a_404_for_a_missing_tender`,
+  `test_the_active_operation_needs_a_known_kind`),
+  `tests/route/test_proposal_routes.py`
+  (`test_generate_proposal_returns_202_and_the_same_operation_while_active`),
+  `tests/route/test_commercial_routes.py`
+  (`test_validate_pricing_document_queues_an_operation_the_worker_runs`),
+  `tests/integration/test_commercial_service.py`
+  (`test_evaluate_commercial_for_tender_is_idempotent_on_retry` now asserts
+  no LLM call on the retry). The three commercial tests fail with the
+  stored-finding skip removed. Vitest: `ProposalWorkspace.test.tsx`,
+  `CommercialFindings.test.tsx`, `RedteamFindings.test.tsx` (busy until
+  finished, re-read before release, reattach on load); the release-order
+  and reattach tests fail with those parts of the hook switched off.
+  Queues: `tests/unit/test_dispatch_queues.py` (OperationRequested goes to
+  `operations`, every other event to its previous queue, the default
+  worker does not listen to `operations`) and
+  `tests/integration/test_outbox_dispatcher.py::test_operation_requested_routes_to_run_operation_with_its_kinds_timeout`.
+  Preload: `tests/unit/test_operations_preload.py` (the import starts no OS
+  thread with the pin; an import that starts a thread makes the preload
+  refuse to start, on any CPU count; with `OPENBLAS_NUM_THREADS=4` and
+  `OMP_NUM_THREADS` unset it refuses too). Linux only (it reads /proc),
+  so it skips on the Windows dev host; CI's backend job runs `uv run
+  pytest` on `ubuntu-latest`, where it runs. The pin-missing test also
+  skips when the process can use only one CPU: OpenBLAS then starts no
+  pool even with `OPENBLAS_NUM_THREADS=4` (observed with `taskset -c 0`),
+  so no setting can make that one CPU-independent; the thread-at-import
+  test covers the refusal there. On 2026-10-16 all four were run inside
+  the `operations_worker` container: 4 passed on 16 CPUs; on one CPU 3
+  passed and the pin-missing test skipped.
+  Review fixes (2026-10-22): the three routes that create operations,
+  called by another organization's admin, answer 403 `ORG_ACCESS_DENIED`
+  (as every tender-scoped route does through `require_permission`; so does
+  the active-operation route; only the `/operations/{id}` routes answer
+  404) and write no `async_operations`
+  row and no operation outbox event
+  (`tests/route/test_operation_routes_cross_org.py`, all three kinds; the
+  403 itself was already asserted by
+  `test_trigger_red_team_rejects_a_caller_outside_the_organization`,
+  `test_list_generate_and_patch_reject_a_caller_outside_the_organization`
+  and `test_commercial_routes_reject_a_caller_outside_the_organization`).
+  The proposal and red-team screens guard their re-read after a
+  finished operation, and their load-time read, against the user moving
+  to another tender meanwhile, like the commercial screen: the two new
+  stale-tender tests in `ProposalWorkspace.test.tsx` and
+  `RedteamFindings.test.tsx` fail without the guard.
+
+## [Phase 4 async operations, Stage 2, 2026-10-16, open, accepted] E2E step 11 depends on the workflow still running when the red team is clicked
+
+- **Discovered:** Stage 2's first E2E runs failed 3 of 3 at
+  `apps/web/e2e/full-flow.spec.ts:1024` (fake provider): the second tab
+  waits up to 60 s for a `GET /workflow-runs/{id}/tasks` refetch after
+  the red-team click, and none came.
+- **Behaviour:** that refetch is pushed only by a workflow event (the
+  spec's comment names `red_team_node`'s status write). The manual red
+  team is an async operation and writes no workflow event, so step 11
+  passes only if the workflow, resumed by the commercial-gate approval at
+  step 8, is still running when step 11 clicks. Before Stage 2, step 9's
+  proposal generation ran inside the API, alongside the workflow job, and
+  step 11 began while that job still ran. With operations on the shared
+  worker queue, the proposal waited for the workflow job to finish, so
+  step 11 began after its last event (run 2: last event 06:10:32.409,
+  click 06:10:40.858, 0 events after). Fixed by giving operations their
+  own queue and worker and preloading their job module (Stage 2 entry
+  above, behaviour 8 to 11); now 9 workflow events follow the click in
+  each passing run.
+- **Margin (measured, fake provider):** in the two passing runs the
+  red-team click came 5.1 s (B1: 06:50:52.421, job ended 06:50:57.559)
+  and 5.3 s (B2: 06:56:03.095, job ended 06:56:08.402) before the
+  workflow's resume job ended. That job lasts about 7.5 s, and its own
+  module import alone measures 7.7 to 7.9 s in a fresh interpreter, so
+  the job is probably almost all import; the margin exists only because
+  workflow jobs still pay that import.
+- **Accepted limit:** a timing coupling in a spec we do not edit (blob
+  `318599ac`). Anything that makes the workflow's last steps after the
+  commercial gate finish sooner, or the steps between that gate and the
+  red-team click take longer, can fail step 11 without a product bug.
+  Preloading the default worker (Stage 2 entry, limit 7, follow-up (b))
+  is expected to break it, since it would remove most of the resume job's
+  7.5 s; measure that job's own import time before trying it, and give it
+  its own E2E runs. Lazy-importing the embedder (follow-up (a)) shortens
+  the same job too, by less, so it also needs its own E2E runs.
+- **Status:** open, accepted.
+- **Test:** the E2E itself (2 of 2 green on 2026-10-16 after the fix).
+
+## [deps, 2026-10-22, open, accepted] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
+
+- **What happens:** `uv run pip-audit`, locally and in CI's `security`
+  job, skips `torch 2.13.0+cpu` with "Dependency not found on PyPI and
+  could not be audited" (measured 2026-10-22, the same skip as in the
+  2026-10-10 entry "What pip-audit and npm audit do not cover"). The lock
+  takes torch from the PyTorch CPU index, and the `+cpu` local version
+  does not exist on PyPI, so pip-audit never looks it up. CI runs without
+  `--strict`, so the skip passes silently: a torch advisory would never
+  turn the job red.
+- **Why it matters:** torch is installed in the api and worker images
+  (measured: `2.13.0+cpu` in both), and sentence_transformers loads it for
+  embedding (`ingestion/embed.py`) and reranking
+  (`agents/knowledge/rerank.py`), so it is runtime code, not dev tooling.
+- **The manual check, before each release:** query OSV (the database
+  pip-audit uses) for the locked version without the local suffix, and
+  read PyTorch's GitHub security advisories for anything OSV has not
+  picked up yet:
+  `curl -s -X POST https://api.osv.dev/v1/query -d '{"package":{"name":"torch","ecosystem":"PyPI"},"version":"2.13.0"}'`
+  (replace the version with the one in `uv.lock`). On 2026-10-22 it
+  returned no advisories for 2.13.0; the same query for 2.5.1 returned
+  22, so the query itself works (measured).
+- **Also outside pip-audit: native code.** pip-audit matches Python
+  package versions only. It does not see native libraries bundled inside
+  wheels, or the images' OS packages. What is there (measured in the
+  running containers, 2026-10-22):
+  - **PDFium**, bundled in the pypdfium2 5.12.1 wheel as
+    `site-packages/pypdfium2_raw/libpdfium.so` (7.6 MB, PDFium build
+    152.0.7947 from pdfium-binaries, listed in the wheel's RECORD), in the
+    api and worker images. pdfplumber uses it to render pages of uploaded
+    PDFs for OCR. PDFium is Chromium's PDF engine: its security fixes ship
+    as Chromium advisories, not PyPI ones, so a PDFium flaw shows up in
+    pip-audit only if pypdfium2 itself gets an advisory.
+  - **Pillow's bundled libraries**, `site-packages/pillow.libs/` (18 of
+    them, among them libwebp, libjpeg, libtiff, libopenjp2, libpng,
+    freetype), in both images. A flaw in one of them is filed against the
+    C library; pip-audit reports it only if Pillow also gets an advisory
+    for the release that updates it.
+  - **Tesseract**, from Debian 13 (trixie) OS packages installed by
+    `apps/worker/Dockerfile`: `tesseract-ocr` and `libtesseract5`
+    5.5.0-1+b1, `libleptonica6` 1.84.1-4, in the worker image only. It
+    reads images rendered from uploaded PDFs. The `python:3.12-slim`
+    base's own OS packages are likewise unaudited.
+  - **Who should cover this:** a container image scan (one that reads both
+    OS packages and binaries inside site-packages) as part of deployment
+    prep. Nothing in CI does it today.
+- **Not done:** no automated step. A CI step running that query would
+  close the torch gap; it is a separate change, as is the image scan.
+- **Status:** open, accepted.
+- **Test:** none; this is a manual release check.
+
+## [deps, recorded deviation from A2 under section 0.1, 2026-10-22] pypdf removed: declared, never imported
+
+- **The deviation:** A2 (Build Guide :154) lists pypdf among the
+  document-parsing libraries. It is no longer a dependency: removed from
+  `packages/tenderos_backend/pyproject.toml`, and only pypdf left
+  `uv.lock` (6.21.2; nothing else moved).
+- **Why:** nothing ever imported it. Searched on 2026-10-22: no import in
+  our code, and none in any installed package (its only dependant in the
+  lock was `tenderos-backend` itself). Uploaded PDFs are parsed by
+  pdfplumber (`ingestion/parse_pdf.py`), which uses pdfminer.six to
+  extract text and pypdfium2 to render pages for OCR. Keeping an unused
+  PDF parser in the runtime images only added advisories to track (11 in
+  October's first audit, more since) with no code path reaching it.
+- **What the docs still say:** A2's table is unchanged (the Build Guide is
+  not edited from here). `scripts/synthetic_common.py:5` cites that table
+  for why fixtures hand-write their PDFs; that stays true and was left as
+  is. The 2026-10-06 audit entry's claim that pypdf parses uploads carries
+  a dated correction.
+- **Verified (local, fake provider):** backend suite 739 passed, 4
+  skipped, via scripts/test-backend.ps1; `uv run pip-audit` "No known
+  vulnerabilities found", exit 0; the fake stack rebuilt with
+  scripts/fake-stack.ps1, every service running (api healthy), and pypdf
+  neither installed nor importable in the api, worker,
+  operations_worker and outbox_dispatcher containers. No E2E: no code
+  path changed.
+- **Reverse if:** a feature needs PDF writing or low-level PDF object
+  access that pdfplumber and pypdfium2 do not give; re-add it then, at a
+  version pip-audit passes.
+- **Status:** recorded, accepted.
+
+## [tests, 2026-10-22, open, accepted] One deprecation warning left in the backend suite: Starlette's test client on httpx
+
+- **What it says:** `StarletteDeprecationWarning: Using httpx with
+  starlette.testclient is deprecated; install httpx2 instead`, raised
+  once per run when `fastapi.testclient` is imported (Starlette 1.3.1,
+  FastAPI 0.140.13, httpx 0.28.1).
+- **Why it stays:** it concerns the test client only; the api does not
+  serve requests through httpx. 17 test files use `TestClient`, and
+  httpx is also a runtime dependency (LLM and HTTP clients), so moving
+  the tests to httpx2 (2.16.0 on PyPI) is a dependency change of its
+  own, with its own test pass.
+- **When it matters:** the release of Starlette that removes httpx
+  support from `starlette.testclient`. The suite then fails at import
+  rather than passing with a warning, so it cannot go unnoticed.
+- **The other four warnings** of CI's 2026-10-22 run are fixed: the
+  deprecated `HTTP_413_REQUEST_ENTITY_TOO_LARGE` constant (three
+  warnings, `routes/documents.py`) is now `HTTP_413_CONTENT_TOO_LARGE`,
+  the same 413 status; and `alembic.ini` sets `path_separator = os`
+  (one warning).
+- **Status:** open, accepted.
+- **Test:** the backend suite's warnings summary (1 entry expected).
+
+## [found 2026-10-22, open, fix before deployment] The web container serves the Vite dev server, not a production build
+
+- **What happens:** `apps/web/Dockerfile`'s CMD is `npm run dev -- --host
+  0.0.0.0`, the Vite dev server listening on every interface of the
+  container (observed 2026-10-22: the container logs `VITE v8.3.5 ready`).
+  No compose file or overlay changes it, and no production build is
+  served anywhere in the stack.
+- **Consequences:**
+  - Vite's dev-server advisories reach the running stack. The npm
+    advisories fixed in `cc74b1a` were of this kind (cross-origin script
+    execution through custom middleware; files outside `server.fs.allow`
+    served).
+  - The E2E clicks through the dev server's on-demand module transforms,
+    not the build users would get, so a failure that only appears in a
+    production build would not be caught.
+- **Fix before deployment:** plan item 27. A multi-stage image builds the
+  app and serves `dist/` from a small web server, with no Vite in the
+  runtime image. A compose dev override keeps the dev server with hot
+  reload for local work. The E2E runs against the build, with 3 runs,
+  because it changes what the E2E clicks through.
+- **Status:** open.
+- **Test:** none yet; item 27's proof is no `node_modules/vite` in the
+  image, plus the E2E runs.
+
+## [found 2026-10-22, open] Dependabot is configured but not delivering
+
+- **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
+  `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
+  for uv, `apps/web` npm and GitHub Actions.
+  - All 8 Dependabot PRs were opened on 2026-10-07, the first push, and
+    are still open and unreviewed: 5 npm, 3 GitHub Actions. Dependabot
+    stops opening version-update PRs at 5 open per ecosystem by default,
+    so npm updates have been blocked since then.
+  - No uv PR has ever been opened. The cause is not visible from the API.
+  - The repository's `security_and_analysis` came back empty, and the
+    vulnerability-alerts endpoint answered 404. Security updates (PRs
+    opened because of an advisory) appear to be off. This is a repository
+    setting to verify in GitHub, not something this file can confirm.
+  - `apps/landing` has no entry.
+- **Consequence:** two CI security jobs went red on 2026-10-22 (35 Python
+  advisories, then 3 npm) that Dependabot should have raised as PRs first.
+- **Fix:** plan item 26.
+  - Verify the setting, and turn on Dependabot alerts and security
+    updates.
+  - Group minor and patch updates, so one PR per ecosystem can't hit the
+    open-PR limit.
+  - Add `apps/landing`.
+  - Find why uv gets no PRs, from Dependabot's job log in the
+    repository's Insights.
+  - Close the 8 stale PRs once `phase4/backend-hardening` is merged.
+- **Status:** open.
+- **Test:** none; the proof is a grouped PR per ecosystem after the next
+  scheduled run.
+
+## [found 2026-10-22, open] An intermittent connection-leak warning in CI's backend run
+
+- **What happened:** CI on `cc74b1a` (run 39775453912) passed 743 tests with
+  2 warnings. One was the known test-client deprecation (the entry above on
+  Starlette's test client). The other was `SAWarning: The garbage collector
+  is trying to clean up non-checked-in connection`, raised during
+  `tests/integration/test_readiness_service.py::test_clean_tender_is_ready`.
+- **Seen:** once, in CI. Not in CI on `53a9ec8` or `ca998a6`, and never in
+  a local run. It appears only when the garbage collector runs at that
+  point, so its absence from a run proves nothing.
+- **Cause:** not yet known. Some path opens a database connection and drops
+  it without returning it to the pool; it may be in the test's own code or
+  fixtures, or on the readiness path itself.
+- **Fix:** plan item 29, batch 1.
+  - Reproduce with the warning raised as an error and tracemalloc on, to
+    find where the connection was created.
+  - Close it on that path.
+  - Make `SAWarning` an error in the pytest config, so a leak fails CI
+    instead of passing.
+- **Status:** open.
+- **Test:** none yet; item 29's proof is 20 runs of the file with the
+  warning as an error.

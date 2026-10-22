@@ -1,10 +1,14 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
-import type { PricingDocumentResponse, PricingFindingResponse } from "../api/client";
+import type {
+  OperationResponse,
+  PricingDocumentResponse,
+  PricingFindingResponse,
+} from "../api/client";
 import { CommercialFindings } from "./CommercialFindings";
 
 // B17 Phase 1 - see KNOWN_LIMITATIONS.md, "[owner: B17] CommercialFindings.
@@ -15,6 +19,12 @@ import { CommercialFindings } from "./CommercialFindings";
 // named as still open. Deterministic: validatePricingDocument's own promise
 // is held open under test control, so the race is driven directly rather
 // than hoped for via timing.
+//
+// Phase 4 Stage 2: Re-validate starts a tender-wide async operation (202)
+// and follows it over SSE (jsdom has no EventSource; a minimal fake records
+// the streams opened). The findings are re-read once it has finished,
+// before the buttons are released, and an operation already active when the
+// screen loads is followed the same way. Every fixture value is fake.
 
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof apiClient>();
@@ -26,6 +36,9 @@ vi.mock("../api/client", async (importOriginal) => {
     listGates: vi.fn(),
     validatePricingDocument: vi.fn(),
     resolvePricingFinding: vi.fn(),
+    getActiveOperation: vi.fn(),
+    getOperation: vi.fn(),
+    mintOperationEventsTicket: vi.fn(),
   };
 });
 
@@ -35,11 +48,58 @@ const listWorkflowRuns = vi.mocked(apiClient.listWorkflowRuns);
 const listGates = vi.mocked(apiClient.listGates);
 const validatePricingDocument = vi.mocked(apiClient.validatePricingDocument);
 const resolvePricingFinding = vi.mocked(apiClient.resolvePricingFinding);
+const getActiveOperation = vi.mocked(apiClient.getActiveOperation);
+const getOperation = vi.mocked(apiClient.getOperation);
+const mintOperationEventsTicket = vi.mocked(apiClient.mintOperationEventsTicket);
+
+class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+  readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+beforeEach(() => {
+  FakeEventSource.instances = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
+  getActiveOperation.mockResolvedValue(null);
+  mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+});
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
+
+function operation(status: OperationResponse["status"]): OperationResponse {
+  return {
+    operation_id: "op-tender-a",
+    tender_id: "tender-a",
+    kind: "commercial_validation",
+    status,
+    error_code: status === "failed" ? "LLM_TIMEOUT" : null,
+    error_message: status === "failed" ? "The model did not answer in time." : null,
+    created_at: "2026-01-01T00:00:00Z",
+    started_at: null,
+    finished_at: null,
+  };
+}
+
+// The operation's stream pushes a wake-up; the hook then re-reads it.
+function pushStatus() {
+  act(() => FakeEventSource.instances.at(-1)!.onmessage?.(new MessageEvent("message")));
+}
 
 function doc(tenderId: string): PricingDocumentResponse {
   return {
@@ -98,10 +158,10 @@ describe("handleValidate's stale-write guard", () => {
     // the navigation below land WHILE handleValidate is still in flight,
     // driving the exact race the guard exists for, rather than hoping a
     // real timing gap shows up.
-    let resolveValidate: (() => void) | undefined;
+    let resolveValidate: ((op: OperationResponse) => void) | undefined;
     validatePricingDocument.mockImplementation(
       () =>
-        new Promise<void>((resolve) => {
+        new Promise<OperationResponse>((resolve) => {
           resolveValidate = resolve;
         }),
     );
@@ -120,19 +180,58 @@ describe("handleValidate's stale-write guard", () => {
     await user.click(screen.getByText("switch to tender-b"));
     expect(await screen.findByText("tender B finding")).toBeInTheDocument();
 
-    // Now let the stale, tender-A-scoped validate/refresh actually resolve.
-    resolveValidate?.();
-    // listPricingFindings is called at least twice already (both mounts);
-    // waiting for a third call is what confirms handleValidate's own
-    // refreshFindings actually ran to completion, not just that the promise
-    // resolved - the guard's job is to run and then discard the result, not
-    // to prevent the fetch.
-    await vi.waitFor(() => expect(listPricingFindings).toHaveBeenCalledTimes(3));
-
-    // The guard should have discarded that stale result - tender B's
-    // finding must still be what's on screen.
+    // Now let the stale, tender-A-scoped POST resolve with its operation.
+    // Stage 2: the screen does not follow an operation started for a tender
+    // it has left (useTenderOperation's guard), so no stream opens for it
+    // and nothing re-reads tender A's findings onto tender B's screen.
+    resolveValidate?.(operation("queued"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mintOperationEventsTicket).not.toHaveBeenCalled();
+    expect(listPricingFindings).toHaveBeenCalledTimes(2);
     expect(screen.getByText("tender B finding")).toBeInTheDocument();
     expect(screen.queryByText("tender A finding")).not.toBeInTheDocument();
+  });
+
+  it("a finished operation's re-read of tender A, still in flight after navigating away, does not land on tender B", async () => {
+    // Stage 2's own stale-write case: the operation finishes, the screen
+    // starts re-reading tender A's findings, and the user moves to tender B
+    // before that read answers. handleFinished's guard discards it.
+    const user = userEvent.setup();
+    listWorkflowRuns.mockResolvedValue([]);
+    listGates.mockResolvedValue([]);
+    listPricingDocuments.mockImplementation((tenderId) =>
+      Promise.resolve(tenderId === "tender-a" ? [doc("tender-a")] : []),
+    );
+    let resolveStaleRead: ((rows: PricingFindingResponse[]) => void) | undefined;
+    listPricingFindings
+      .mockResolvedValueOnce([finding("tender-a", "tender A finding")])
+      .mockImplementationOnce(
+        () =>
+          new Promise<PricingFindingResponse[]>((resolve) => {
+            resolveStaleRead = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([finding("tender-b", "tender B finding")]);
+    validatePricingDocument.mockResolvedValue(operation("queued"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+
+    render(<Harness />);
+    expect(await screen.findByText("tender A finding")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Re-validate" }));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    pushStatus();
+    await waitFor(() => expect(listPricingFindings).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByText("switch to tender-b"));
+    expect(await screen.findByText("tender B finding")).toBeInTheDocument();
+
+    resolveStaleRead?.([finding("tender-a", "stale tender A finding")]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("tender B finding")).toBeInTheDocument();
+    expect(screen.queryByText("stale tender A finding")).not.toBeInTheDocument();
   });
 
   it("a validate started on tender A that REJECTS after navigating away does not paint its error onto tender B's screen", async () => {
@@ -154,7 +253,7 @@ describe("handleValidate's stale-write guard", () => {
     let rejectValidate: ((err: unknown) => void) | undefined;
     validatePricingDocument.mockImplementation(
       () =>
-        new Promise<void>((_resolve, reject) => {
+        new Promise<OperationResponse>((_resolve, reject) => {
           rejectValidate = reject;
         }),
     );
@@ -253,23 +352,92 @@ describe("CommercialFindings (restyle batch 4)", () => {
     expect(screen.getByText("Not stated")).toBeInTheDocument();
   });
 
-  it("marks only the clicked Re-validate aria-busy and disables them all while it runs", async () => {
+  it("keeps every Re-validate busy, not only the clicked one, until the tender-wide operation finishes and the findings are re-read", async () => {
     const user = userEvent.setup();
     listWorkflowRuns.mockResolvedValue([]);
     listPricingDocuments.mockResolvedValue([doc("tender-a"), { ...doc("tender-a"), id: "doc-2" }]);
-    listPricingFindings.mockResolvedValue([]);
-    let resolveValidate!: () => void;
-    validatePricingDocument.mockReturnValue(new Promise<void>((r) => (resolveValidate = r)));
+    let resolveReread!: (rows: PricingFindingResponse[]) => void;
+    listPricingFindings
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(new Promise((r) => (resolveReread = r)));
+    validatePricingDocument.mockResolvedValue(operation("queued"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
     renderSingle();
 
-    const buttons = await screen.findAllByRole("button", { name: "Re-validate" });
+    const buttons = await screen.findAllByRole("button", { name: /^Re-validat/ });
     await user.click(buttons[0]);
+    expect(validatePricingDocument).toHaveBeenCalledWith("doc-tender-a");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    // Accepted and running: one operation re-validates every document, so
+    // every row is busy, the same as after a reload. Nothing re-read yet.
     expect(buttons[0]).toHaveAttribute("aria-busy", "true");
-    expect(buttons[1]).not.toHaveAttribute("aria-busy");
+    expect(buttons[1]).toHaveAttribute("aria-busy", "true");
+    // Visible, not only in the DOM: the quiet button has no other busy look.
+    expect(buttons[0]).toHaveTextContent("Re-validating...");
+    expect(buttons[1]).toHaveTextContent("Re-validating...");
     expect(buttons[0]).toBeDisabled();
     expect(buttons[1]).toBeDisabled();
-    resolveValidate();
+    expect(listPricingFindings).toHaveBeenCalledTimes(1);
+
+    // Finished: the findings are re-read, and the buttons stay busy until
+    // that read has answered.
+    pushStatus();
+    await waitFor(() => expect(listPricingFindings).toHaveBeenCalledTimes(2));
+    expect(buttons[0]).toBeDisabled();
+    expect(buttons[0]).toHaveAttribute("aria-busy", "true");
+
+    resolveReread([typed("f9", {})]);
+    await screen.findByText("note f9");
     await waitFor(() => expect(buttons[0]).toBeEnabled());
+    expect(buttons[1]).toBeEnabled();
     expect(buttons[0]).not.toHaveAttribute("aria-busy");
+    expect(buttons[1]).not.toHaveAttribute("aria-busy");
+    expect(buttons[0]).toHaveTextContent("Re-validate");
+  });
+
+  it("shows a failed re-validation's own message and frees the buttons", async () => {
+    const user = userEvent.setup();
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([doc("tender-a")]);
+    listPricingFindings.mockResolvedValue([]);
+    validatePricingDocument.mockResolvedValue(operation("queued"));
+    getOperation.mockResolvedValue(operation("failed"));
+    renderSingle();
+
+    await user.click(await screen.findByRole("button", { name: "Re-validate" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The model did not answer in time.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Re-validate" })).toBeEnabled());
+  });
+
+  it("reattaches on load: a re-validation already running shows every Re-validate busy until it finishes", async () => {
+    // The operation is per tender and re-validates every document, so after a
+    // reload every row shows busy, exactly as after a click.
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([doc("tender-a"), { ...doc("tender-a"), id: "doc-2" }]);
+    listPricingFindings.mockResolvedValueOnce([]).mockResolvedValueOnce([typed("f1", {})]);
+    getActiveOperation.mockResolvedValue(operation("running"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    renderSingle();
+
+    const buttons = await screen.findAllByRole("button", { name: /^Re-validat/ });
+    expect(getActiveOperation).toHaveBeenCalledWith("tender-a", "commercial_validation");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(buttons[0]).toHaveAttribute("aria-busy", "true"));
+    expect(buttons[1]).toHaveAttribute("aria-busy", "true");
+    expect(buttons[1]).toHaveTextContent("Re-validating...");
+    expect(buttons[0]).toBeDisabled();
+    expect(validatePricingDocument).not.toHaveBeenCalled();
+    expect(mintOperationEventsTicket).toHaveBeenCalledWith("op-tender-a");
+
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    pushStatus();
+    await screen.findByText("note f1");
+    await waitFor(() => expect(buttons[0]).toBeEnabled());
+    expect(buttons[1]).not.toHaveAttribute("aria-busy");
   });
 });

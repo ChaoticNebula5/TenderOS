@@ -9,22 +9,17 @@ rejection test to write here (unlike compliance.py/talent.py/commercial.py);
 the real-member-vs-non-member distinction is tested instead, matching
 test_graph_routes.py's own pattern for the other all-7-role actions.
 
-trigger_red_team is this module's own LLM-touching route (via
-critique_proposal, agent_name="redteam_critique") - _build_llm_client
-(routes/redteam.py's own local one) is monkeypatched to FakeLLMClient.
-check_graph_contradictions (one of the 5 checks run_red_team performs)
-also touches Neo4j - the session-per-call fix for that lives in
-tests/route/conftest.py (_no_pooling_for_neo4j/_clean_neo4j, autouse),
-moved there from test_graph_routes.py once this file needed it too.
+Phase 4: trigger_red_team no longer runs the red team (or calls the LLM)
+inside the request. It records a redteam_run async operation and returns
+202; the worker runs it. So no LLM client is patched here any more; the
+run itself is covered by tests/integration/test_async_operations.py and
+the operation routes by tests/integration/test_operations_api.py.
 """
 
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from tenderos_api.routes import redteam
-from tenderos_backend.agents.llm.fake_client import FakeLLMClient
-from tenderos_backend.agents.schemas.redteam import RedteamCritique
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
 pytestmark = pytest.mark.asyncio
@@ -46,22 +41,22 @@ async def _seed_finding(tender_id: str) -> str:
         return str(finding.id)
 
 
-async def test_trigger_red_team_runs_clean_on_a_fresh_tender(
-    client: TestClient, register_actor, monkeypatch
+async def test_trigger_red_team_queues_an_operation_and_returns_202(
+    client: TestClient, register_actor
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Redteam Route Test Bid"}, headers=headers
     ).json()
 
-    fake_client = FakeLLMClient()
-    fake_client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
-    monkeypatch.setattr(redteam, "_build_llm_client", lambda: fake_client)
-
     response = client.post(f"/tenders/{tender['id']}/redteam/run", headers=headers)
 
-    assert response.status_code == 200, response.text
-    assert response.json() == []
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["kind"] == "redteam_run"
+    assert body["tender_id"] == tender["id"]
+    uuid.UUID(body["operation_id"])
 
 
 async def test_list_redteam_findings_returns_the_real_finding(
@@ -128,7 +123,7 @@ async def test_redteam_routes_reject_a_non_member(client: TestClient, register_a
 
 
 async def test_trigger_red_team_rejects_a_caller_outside_the_organization(
-    client: TestClient, register_actor, monkeypatch
+    client: TestClient, register_actor
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
@@ -136,10 +131,6 @@ async def test_trigger_red_team_rejects_a_caller_outside_the_organization(
         json={"name": "Redteam Route Test Bid 5"},
         headers=headers,
     ).json()
-
-    fake_client = FakeLLMClient()
-    fake_client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
-    monkeypatch.setattr(redteam, "_build_llm_client", lambda: fake_client)
 
     outsider_headers, _, _ = register_actor()
 

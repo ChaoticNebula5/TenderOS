@@ -27,12 +27,84 @@ per-test, and see this file's own test module
 gets genuine, direct test coverage with the flag deliberately re-enabled.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from redis.asyncio import Redis as AsyncRedis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from tenderos_api.config import settings
 
 GLOBAL_LIMIT = 100
 GLOBAL_WINDOW_SECONDS = 60
 LOGIN_LIMIT = 5
 LOGIN_WINDOW_SECONDS = 60
+
+# Phase 4 blocker 1: the limiter fails open. When Redis cannot be reached
+# or does not answer in time, the request is allowed and a WARNING is
+# logged, so a Redis outage degrades rate limiting instead of failing every
+# API call. Only these two errors mean "Redis is unavailable". Any other
+# error (a ResponseError from a broken script, say) is a bug, not an
+# outage, and still reaches the catch-all 500 in main.py.
+REDIS_UNAVAILABLE_ERRORS = (RedisConnectionError, RedisTimeoutError)
+
+# Design numbers, not measured. A healthy Redis on the same network answers
+# the limiter's EVAL in well under a millisecond, so 250 ms is generous for
+# a healthy server. The bound matters when Redis is unhealthy: the limiter
+# runs on every request, so whatever it waits is added to every request
+# for as long as Redis is down. redis-py 8.0.1's defaults would be 5 s for
+# each (redis/_defaults.py, DEFAULT_SOCKET_TIMEOUT and
+# DEFAULT_SOCKET_CONNECT_TIMEOUT).
+REDIS_SOCKET_TIMEOUT_SECONDS = 0.25
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 0.25
+
+# One client for the life of the process, created on first use rather than
+# once per request (the earlier `async with redis.from_url(...)` in
+# main.py's middleware opened and closed a new pool, and a new TCP
+# connection, on every call). Retries are pinned to zero explicitly. In
+# redis-py 8.0.1 a from_url() client already gets zero connection-level
+# retries (checked by building one), but the Redis() constructor's own
+# default is a 10-retry policy (redis/asyncio/client.py), so the effective
+# value depends on how the client is built. A retry ladder would multiply
+# the timeout above on every request during an outage, and a fail-open
+# limiter has nothing to gain from retrying.
+_shared_client: AsyncRedis | None = None
+
+
+def build_client(redis_url: str) -> AsyncRedis:
+    """A client with the limiter's timeouts and no retries. Public so the
+    route tests' per-request stand-in uses exactly this configuration."""
+    return AsyncRedis.from_url(
+        redis_url,
+        socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+        socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+        retry=Retry(NoBackoff(), 0),
+    )
+
+
+def _get_shared_client() -> AsyncRedis:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = build_client(settings.redis_url)
+    return _shared_client
+
+
+@asynccontextmanager
+async def rate_limit_redis() -> AsyncIterator[AsyncRedis]:
+    """Yields the shared client and never closes it.
+
+    A context manager rather than a plain getter for one reason: the route
+    tests swap it (tests/route/conftest.py) for one that opens and closes a
+    fresh client per request. TestClient runs each request on its own event
+    loop, and a pooled asyncio connection cannot cross loops, the same
+    problem the conftest already solves for the Postgres engine and the
+    Neo4j driver. A real uvicorn process has one loop, so sharing is safe.
+    """
+    yield _get_shared_client()
+
 
 # INCR then EXPIRE-on-first-hit as two separate round-trips (the original
 # shape) has a real gap: if the process is killed, the connection drops, or

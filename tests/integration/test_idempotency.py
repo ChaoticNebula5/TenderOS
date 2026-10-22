@@ -1,10 +1,19 @@
 import asyncio
+import json
+import logging
 from collections.abc import Callable
+from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from tenderos_api.errors import APIError
+from tenderos_api.idempotency import IdempotencyContext, request_hash
 from tenderos_api.main import app
+from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.repositories.idempotency import IdempotencyRepository
+from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import tender_service
 
 pytestmark = pytest.mark.asyncio
@@ -108,13 +117,17 @@ async def _assert_one_tender_with_id(client: AsyncClient, org_id: str, token: st
     assert tenders[0]["id"] == tender_id
 
 
-async def test_same_key_while_first_request_in_progress_conflicts(monkeypatch: pytest.MonkeyPatch):
+async def test_same_key_while_first_request_in_progress_is_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """B16 guarantee, forced rather than hoped for: while request A holds an
     in_progress record for an Idempotency-Key, request B with the same key
-    and body gets a clean 409 IDEMPOTENCY_CONFLICT (idempotency.py's
-    _context_for_existing_record, the final "not completed" branch) - never
-    a second tender and never a 500. A is then released and finishes as 201,
-    and exactly one tender exists.
+    and body gets a clean 409 - never a second tender and never a 500. A is
+    then released and finishes as 201, and exactly one tender exists.
+
+    Phase 4 blocker 2 changed the code B gets from IDEMPOTENCY_CONFLICT to
+    IDEMPOTENCY_IN_PROGRESS, with Retry-After: A holds a live lease, so B
+    should wait and retry the same key, not treat the key as burned.
 
     This replaces an asyncio.gather version that only hoped the two requests
     would overlap. In CI they did not: B reached its lookup after A had
@@ -135,12 +148,13 @@ async def test_same_key_while_first_request_in_progress_conflicts(monkeypatch: p
         )
 
         assert second.status_code == 409, f"expected 409, got {second.status_code}: {second.text}"
-        assert second.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+        assert second.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
+        assert int(second.headers["retry-after"]) > 0
         assert first.status_code == 201, f"expected 201, got {first.status_code}: {first.text}"
         await _assert_one_tender_with_id(client, org_id, token, first.json()["id"])
 
 
-async def test_lost_insert_race_rereads_and_conflicts(monkeypatch: pytest.MonkeyPatch):
+async def test_lost_insert_race_rereads_and_is_in_progress(monkeypatch: pytest.MonkeyPatch):
     """The other way two same-key requests can meet: both see "no record"
     and both try to insert one. B's first lookup is made to miss A's
     committed in_progress row, so B attempts its own insert, hits
@@ -148,7 +162,8 @@ async def test_lost_insert_race_rereads_and_conflicts(monkeypatch: pytest.Monkey
     (idempotency.py: rollback, re-read, then the shared existing-record
     logic) to a 409 - not a 500 and not a second tender. If B's insert
     somehow succeeded instead, B would reach the paused create_tender and
-    time out, failing the test."""
+    time out, failing the test. Since Phase 4 blocker 2 that 409 is
+    IDEMPOTENCY_IN_PROGRESS: the winner A holds a live lease."""
     entered, release = _pause_tender_creation(monkeypatch)
     original_get = IdempotencyRepository.get
     hide_next_lookup = {"armed": False}
@@ -179,7 +194,7 @@ async def test_lost_insert_race_rereads_and_conflicts(monkeypatch: pytest.Monkey
 
         assert hide_next_lookup["armed"] is False, "B's first lookup was never made"
         assert second.status_code == 409, f"expected 409, got {second.status_code}: {second.text}"
-        assert second.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+        assert second.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
         assert first.status_code == 201, f"expected 201, got {first.status_code}: {first.text}"
         await _assert_one_tender_with_id(client, org_id, token, first.json()["id"])
 
@@ -299,3 +314,417 @@ async def test_missing_idempotency_key_creates_separate_tenders():
         assert first.status_code == 201
         assert second.status_code == 201
         assert first.json()["id"] != second.json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 blocker 2: leases, takeover, release on failure, claim guards and
+# cleanup. Every record seeded below uses the same request_hash the
+# dependency computes (tenderos_api.idempotency.request_hash) over the exact
+# bytes the test sends, so a seeded record and a real request match.
+# ---------------------------------------------------------------------------
+
+_OPERATION = "create_tender"
+_LEASE = timedelta(seconds=60)
+_RETENTION = timedelta(hours=24)
+
+
+def _tender_body(name: str) -> bytes:
+    return json.dumps({"name": name}).encode()
+
+
+def _tender_headers(token: str, key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Idempotency-Key": key,
+        "Content-Type": "application/json",
+    }
+
+
+async def _seed_in_progress(
+    org_id: str, key: str, body: bytes, *, lease_seconds: float | None
+) -> IdempotencyRecord:
+    """An in_progress create_tender record for (org, key, body), as if a
+    request had claimed it and then died. lease_seconds sets locked_until to
+    now() + that many seconds (negative: already lapsed); None sets both
+    locked_until and claim_token to NULL, the shape of a row created before
+    migration 019."""
+    fingerprint = request_hash("POST", f"/organizations/{org_id}/tenders", "", body)
+    async with UnitOfWork() as uow:
+        record = await uow.idempotency.create_in_progress(
+            organization_id=UUID(org_id),
+            operation=_OPERATION,
+            idempotency_key=key,
+            request_hash=fingerprint,
+            lease=_LEASE,
+            retention=_RETENTION,
+        )
+        if lease_seconds is None:
+            await uow.session.execute(
+                text(
+                    "UPDATE idempotency_records SET locked_until = NULL, claim_token = NULL "
+                    "WHERE id = :id"
+                ),
+                {"id": record.id},
+            )
+        else:
+            await uow.session.execute(
+                text(
+                    "UPDATE idempotency_records "
+                    "SET locked_until = now() + make_interval(secs => :secs) WHERE id = :id"
+                ),
+                {"id": record.id, "secs": lease_seconds},
+            )
+        await uow.commit()
+    return record
+
+
+async def _record(org_id: str, key: str) -> IdempotencyRecord | None:
+    async with UnitOfWork() as uow:
+        return await uow.idempotency.get(UUID(org_id), _OPERATION, key)
+
+
+async def _tender_count(client: AsyncClient, org_id: str, token: str) -> int:
+    listing = await client.get(
+        f"/organizations/{org_id}/tenders", headers={"Authorization": f"Bearer {token}"}
+    )
+    return len(listing.json())
+
+
+def _fail_tender_creation_once(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """create_tender raises `error` on its first call and works after that."""
+    original = tender_service.create_tender
+    calls = {"n": 0}
+
+    async def failing_once(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise error
+        return await original(**kwargs)
+
+    monkeypatch.setattr(tender_service, "create_tender", failing_once)
+
+
+async def test_new_record_lease_and_expiry_come_from_the_db_clock():
+    """locked_until and expires_at are now() + a duration inside the INSERT,
+    and created_at's server default is now() in the same transaction, so the
+    differences are exact. A value computed from the API host's clock would
+    not be."""
+    async with await _client() as client:
+        _, org_id = await _register_admin(client, "idem-clock@example.com", "Idem Clock Org")
+    fingerprint = request_hash("POST", f"/organizations/{org_id}/tenders", "", b"{}")
+    async with UnitOfWork() as uow:
+        record = await uow.idempotency.create_in_progress(
+            organization_id=UUID(org_id),
+            operation=_OPERATION,
+            idempotency_key="clock-key",
+            request_hash=fingerprint,
+            lease=_LEASE,
+            retention=_RETENTION,
+        )
+        await uow.commit()
+    async with UnitOfWork() as uow:
+        row = (
+            await uow.session.execute(
+                text(
+                    "SELECT locked_until - created_at AS lease, expires_at - created_at AS kept "
+                    "FROM idempotency_records WHERE id = :id"
+                ),
+                {"id": record.id},
+            )
+        ).one()
+    assert row.lease == _LEASE
+    assert row.kept == _RETENTION
+    assert record.status == "in_progress"
+    assert record.claim_token is not None
+
+
+async def test_handler_apierror_releases_the_key(monkeypatch: pytest.MonkeyPatch):
+    """An APIError from the route used to leave the record in_progress, so a
+    retry with the same key got 409 for good. Now the record is deleted on
+    the way out and the retry runs the work."""
+    _fail_tender_creation_once(monkeypatch, APIError(409, "TEST_REFUSAL", "Refused once."))
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-apierr@example.com", "Idem ApiErr Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Refused Then Created")
+        headers = _tender_headers(token, "apierror-key")
+
+        first = await client.post(url, content=body, headers=headers)
+        assert first.status_code == 409, first.text
+        assert first.json()["error"]["code"] == "TEST_REFUSAL"
+        assert await _record(org_id, "apierror-key") is None
+
+        second = await client.post(url, content=body, headers=headers)
+        assert second.status_code == 201, second.text
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_retry_after_an_unhandled_500_with_the_same_key_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The GateDecisionPanel case: attempt 1 hits a transient 500 and the
+    client retries with the same key. That retry used to get 409
+    IDEMPOTENCY_CONFLICT; now the failed attempt released the key."""
+    _fail_tender_creation_once(monkeypatch, RuntimeError("transient failure"))
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-500@example.com", "Idem 500 Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Failed Then Created")
+        headers = _tender_headers(token, "five-hundred-key")
+
+        first = await client.post(url, content=body, headers=headers)
+        assert first.status_code == 500, first.text
+        assert first.json()["error"]["code"] == "INTERNAL_ERROR"
+
+        second = await client.post(url, content=body, headers=headers)
+        assert second.status_code == 201, second.text
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_live_lease_returns_in_progress_with_retry_after():
+    """A first attempt that still holds its lease: the retry is told to
+    wait, and Retry-After is the time left on that lease (within a second,
+    since the lease is read in SQL a moment after the response)."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-live@example.com", "Idem Live Org")
+        body = _tender_body("Live Lease")
+        record = await _seed_in_progress(org_id, "live-key", body, lease_seconds=30)
+
+        response = await client.post(
+            f"/organizations/{org_id}/tenders",
+            content=body,
+            headers=_tender_headers(token, "live-key"),
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json() == {
+            "error": {
+                "code": "IDEMPOTENCY_IN_PROGRESS",
+                "message": (
+                    "This request is already being processed. Please wait a moment and try again."
+                ),
+            }
+        }
+        async with UnitOfWork() as uow:
+            remaining = (
+                await uow.session.execute(
+                    text(
+                        "SELECT extract(epoch FROM locked_until - now()) "
+                        "FROM idempotency_records WHERE id = :id"
+                    ),
+                    {"id": record.id},
+                )
+            ).scalar_one()
+        assert abs(int(response.headers["retry-after"]) - float(remaining)) <= 1
+        assert await _tender_count(client, org_id, token) == 0
+
+
+async def test_different_body_on_an_in_progress_key_is_still_a_conflict():
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-diff@example.com", "Idem Diff Org")
+        await _seed_in_progress(org_id, "diff-key", _tender_body("Original"), lease_seconds=30)
+
+        response = await client.post(
+            f"/organizations/{org_id}/tenders",
+            content=_tender_body("Something Else"),
+            headers=_tender_headers(token, "diff-key"),
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+async def test_expired_lease_is_taken_over():
+    """The first attempt died and its lease lapsed: the retry
+    takes the record over under a new claim token and does the work."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-expired@example.com", "Idem Exp Org")
+        body = _tender_body("Expired Lease")
+        seeded = await _seed_in_progress(org_id, "expired-key", body, lease_seconds=-1)
+
+        response = await client.post(
+            f"/organizations/{org_id}/tenders",
+            content=body,
+            headers=_tender_headers(token, "expired-key"),
+        )
+
+        assert response.status_code == 201, response.text
+        record = await _record(org_id, "expired-key")
+        assert record is not None
+        assert record.status == "completed"
+        assert record.claim_token != seeded.claim_token
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_pre_migration_row_is_taken_over():
+    """A record from before migration 019 has locked_until and
+    claim_token NULL. It counts as expired, so its key is not stranded."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-null@example.com", "Idem Null Org")
+        body = _tender_body("Pre Migration")
+        await _seed_in_progress(org_id, "null-key", body, lease_seconds=None)
+
+        response = await client.post(
+            f"/organizations/{org_id}/tenders",
+            content=body,
+            headers=_tender_headers(token, "null-key"),
+        )
+
+        assert response.status_code == 201, response.text
+        record = await _record(org_id, "null-key")
+        assert record is not None
+        assert record.status == "completed"
+        assert record.claim_token is not None
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_concurrent_takeover_has_exactly_one_winner(monkeypatch: pytest.MonkeyPatch):
+    """Two retries find the same lapsed lease. A barrier holds
+    both until each is about to run take_over_expired, so the two UPDATEs
+    really are concurrent; Postgres serialises them on the row lock and only
+    the first matches its WHERE. The winner is paused inside create_tender
+    so it still holds its new lease when the loser answers: the loser gets
+    IDEMPOTENCY_IN_PROGRESS, the winner then finishes with 201, and exactly
+    one tender exists."""
+    entered, release = _pause_tender_creation(monkeypatch)
+    barrier = asyncio.Barrier(2)
+    original_take_over = IdempotencyRepository.take_over_expired
+
+    async def take_over_together(self, record_id, lease):
+        await asyncio.wait_for(barrier.wait(), timeout=_WAIT_SECONDS)
+        return await original_take_over(self, record_id, lease)
+
+    monkeypatch.setattr(IdempotencyRepository, "take_over_expired", take_over_together)
+
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-race@example.com", "Idem Race Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Raced Takeover")
+        headers = _tender_headers(token, "race-key")
+        await _seed_in_progress(org_id, "race-key", body, lease_seconds=-1)
+
+        tasks = [
+            asyncio.create_task(client.post(url, content=body, headers=headers)) for _ in range(2)
+        ]
+        try:
+            done, _ = await asyncio.wait(
+                tasks, timeout=_WAIT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert done, "neither request answered"
+            loser = next(iter(done)).result()
+        finally:
+            release.set()
+        responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=_WAIT_SECONDS)
+
+        assert loser.status_code == 409, loser.text
+        assert loser.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
+        assert sorted(r.status_code for r in responses) == [201, 409]
+        assert entered.is_set()
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_original_cannot_release_after_a_takeover(monkeypatch: pytest.MonkeyPatch):
+    """The original request is still alive after losing its lease,
+    and then fails. Its release must not delete the new holder's record."""
+    monkeypatch.setattr(logging.getLogger("tenderos_api.idempotency"), "disabled", False)
+    async with await _client() as client:
+        _, org_id = await _register_admin(client, "idem-rel@example.com", "Idem Release Org")
+    seeded = await _seed_in_progress(org_id, "rel-key", _tender_body("Rel"), lease_seconds=-1)
+    async with UnitOfWork() as uow:
+        taken = await uow.idempotency.take_over_expired(seeded.id, _LEASE)
+        assert taken is not None
+        new_token = taken.claim_token
+        await uow.commit()
+
+    original = IdempotencyContext(
+        active=True, operation=_OPERATION, record_id=seeded.id, claim_token=seeded.claim_token
+    )
+    await original.release()
+
+    record = await _record(org_id, "rel-key")
+    assert record is not None, "the original's release deleted the new holder's record"
+    assert record.status == "in_progress"
+    assert record.claim_token == new_token
+
+
+async def test_original_cannot_finalize_after_a_takeover(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The original request finishes after losing its lease. Its
+    finalize must not overwrite the new holder's record, and it logs a
+    WARNING instead; the new holder can still complete it.
+
+    The logger is re-enabled first: Alembic's fileConfig disables existing
+    loggers when tests/integration/test_schema_diff.py runs in the same
+    session (KNOWN_LIMITATIONS.md, Phase 4 blocker 1, limit 4)."""
+    monkeypatch.setattr(logging.getLogger("tenderos_api.idempotency"), "disabled", False)
+    caplog.set_level(logging.WARNING, logger="tenderos_api.idempotency")
+    async with await _client() as client:
+        _, org_id = await _register_admin(client, "idem-fin@example.com", "Idem Finalize Org")
+    seeded = await _seed_in_progress(org_id, "fin-key", _tender_body("Fin"), lease_seconds=-1)
+    async with UnitOfWork() as uow:
+        taken = await uow.idempotency.take_over_expired(seeded.id, _LEASE)
+        assert taken is not None
+        new_token = taken.claim_token
+        await uow.commit()
+
+    original = IdempotencyContext(
+        active=True, operation=_OPERATION, record_id=seeded.id, claim_token=seeded.claim_token
+    )
+    await original.finalize(201, {"id": "from-the-original"})
+
+    record = await _record(org_id, "fin-key")
+    assert record is not None
+    assert record.status == "in_progress"
+    assert record.response_body is None
+    assert any(
+        "lost before finalize" in r.getMessage() and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+    new_holder = IdempotencyContext(
+        active=True, operation=_OPERATION, record_id=seeded.id, claim_token=new_token
+    )
+    await new_holder.finalize(201, {"id": "from-the-new-holder"})
+    record = await _record(org_id, "fin-key")
+    assert record is not None
+    assert record.status == "completed"
+    assert record.response_body == {"id": "from-the-new-holder"}
+
+
+async def test_delete_expired_removes_only_expired_rows_in_bounded_batches():
+    async with await _client() as client:
+        _, org_id = await _register_admin(client, "idem-gc@example.com", "Idem Cleanup Org")
+    for i in range(5):
+        record = await _seed_in_progress(
+            org_id, f"old-{i}", _tender_body(f"Old {i}"), lease_seconds=-1
+        )
+        async with UnitOfWork() as uow:
+            await uow.session.execute(
+                text(
+                    "UPDATE idempotency_records SET expires_at = now() - interval '1 hour' "
+                    "WHERE id = :id"
+                ),
+                {"id": record.id},
+            )
+            await uow.commit()
+    for i in range(2):
+        await _seed_in_progress(org_id, f"kept-{i}", _tender_body(f"Kept {i}"), lease_seconds=30)
+
+    deleted_per_call = []
+    for _ in range(4):
+        async with UnitOfWork() as uow:
+            deleted_per_call.append(await uow.idempotency.delete_expired(batch_size=2))
+            await uow.commit()
+
+    assert deleted_per_call == [2, 2, 1, 0]
+    for i in range(5):
+        assert await _record(org_id, f"old-{i}") is None
+    for i in range(2):
+        assert await _record(org_id, f"kept-{i}") is not None
+
+
+async def test_delete_expired_rejects_a_non_positive_batch_size():
+    async with UnitOfWork() as uow:
+        with pytest.raises(ValueError):
+            await uow.idempotency.delete_expired(batch_size=0)

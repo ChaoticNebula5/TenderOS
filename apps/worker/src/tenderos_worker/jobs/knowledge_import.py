@@ -161,9 +161,27 @@ async def process_knowledge_document_import(document_id: str, batch_id: str) -> 
 async def _process_capability_statement(
     doc_id: uuid.UUID, batch_id: uuid.UUID, org_id: uuid.UUID
 ) -> None:
-    client = _build_llm_client()
+    # Phase 4 consumer guard. The outbox delivers KnowledgeDocumentUploaded
+    # at least once. A capability-statement batch covers one document
+    # (routes/knowledge.py creates it with that document's id), and its
+    # completed_at is stamped below once this import has finished, so a
+    # later delivery stops here: no LLM call, no rows. A delivery after a
+    # crash part-way through finds completed_at unset and runs again;
+    # import_past_project/import_capability then resume the rows the first
+    # attempt left instead of failing on their unique source_ref.
     async with UnitOfWork() as uow:
-        chunks = await uow.documents.list_chunks_for_document(doc_id)
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        already_completed = batch is not None and batch.completed_at is not None
+        chunks = [] if already_completed else await uow.documents.list_chunks_for_document(doc_id)
+    if already_completed:
+        logger.info(
+            "capability statement import for batch %s already completed; duplicate delivery, "
+            "skipping",
+            batch_id,
+        )
+        return
+
+    client = _build_llm_client()
     extraction = await extract_capability_statement(
         client, settings.extractor_model, chunks, org_id
     )
@@ -205,6 +223,10 @@ async def _process_capability_statement(
             await import_demonstrates_relationship(
                 org_id, project_knowledge_item_id, candidate, resolution
             )
+
+    async with UnitOfWork() as uow:
+        await uow.knowledge.mark_import_batch_completed(batch_id)
+        await uow.commit()
 
     logger.info(
         "capability statement import complete for batch %s (%d projects, %d capabilities)",

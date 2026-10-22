@@ -13,6 +13,8 @@ from rq.timeouts import JobTimeoutException
 from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import (
+    claim_run_for_resume,
+    claim_run_for_start,
     is_cancelled,
     mark_run_failed_on_timeout,
     sync_run_status,
@@ -135,11 +137,22 @@ async def run_workflow(workflow_run_id: str) -> None:
         if tender is None:
             raise ValueError(f"Tender {run.tender_id} not found")
 
-    if run.status == "cancelled":
-        # I6: both queue entry points are the only places that ever call
-        # graph.ainvoke() - checking here means a cancelled run never even
-        # starts, no LangGraph execution at all.
-        logger.info("workflow run %s is cancelled, skipping", run_id)
+    # Phase 4 blocker 3: the outbox delivers WorkflowRunCreated at least
+    # once, so this job can run twice for one run, even at the same time. A
+    # second graph.ainvoke(initial_state) on the same thread would start the
+    # whole workflow again. Only the delivery that moves the run from
+    # 'queued' to 'running' (one conditional UPDATE,
+    # WorkflowRepository.claim_queued_run) invokes the graph. This also
+    # covers I6: a cancelled run is not 'queued', so it never starts.
+    if not await claim_run_for_start(run_id):
+        async with UnitOfWork() as uow:
+            current = await uow.workflow.get_run(run_id)
+        logger.info(
+            "workflow run %s not started: no longer queued (status %s); "
+            "duplicate or concurrent delivery, or cancelled",
+            run_id,
+            current.status if current is not None else "missing",
+        )
         return
 
     initial_state: TenderState = {
@@ -213,12 +226,56 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
 
     config: RunnableConfig = {"configurable": {"thread_id": run.langgraph_thread_id}}
 
-    resume_command: Command[str] = Command(resume=gate.decision_payload)
-
     try:
         async with get_checkpointer() as checkpointer:
             graph = build_graph(checkpointer)
 
+            # Phase 4 consumer guard. GateDecisionRecorded is delivered at
+            # least once, and a plain Command(resume=payload) is stored as
+            # a resume value tied to no particular interrupt (langgraph
+            # pregel/_io.py:74-75) that the next interrupt() to run takes
+            # (types.py:913-920, pregel/_algo.py:1320-1331). A duplicate
+            # resume for gate A arriving after the thread had moved on to
+            # gate B would therefore decide gate B with gate A's payload.
+            #
+            # 1. Only resume if the thread is paused at THIS gate's
+            #    interrupt (gate payloads carry their gate_id,
+            #    orchestration/gates.py:75-76). Checked before the claim:
+            #    claiming first would flip a run legitimately waiting at a
+            #    different gate to running.
+            snapshot = await graph.aget_state(config)
+            pending = next(
+                (
+                    i
+                    for i in snapshot.interrupts
+                    if isinstance(i.value, dict) and i.value.get("gate_id") == str(gate.id)
+                ),
+                None,
+            )
+            if pending is None:
+                logger.info(
+                    "workflow run %s: no pending interrupt for gate %s; duplicate or stale "
+                    "resume, not resuming",
+                    run_id,
+                    gate.id,
+                )
+                return
+
+            # 2. Claim the run waiting_for_human -> running, so of two
+            #    concurrent resumes for the same gate only one proceeds.
+            if not await claim_run_for_resume(run_id):
+                logger.info(
+                    "workflow run %s: no longer waiting_for_human; another resume for gate %s "
+                    "claimed it, not resuming",
+                    run_id,
+                    gate.id,
+                )
+                return
+
+            # 3. Resume that interrupt by id (the resume-map path,
+            #    pregel/_loop.py:910-914), so the decision can only answer
+            #    the interrupt it was made for.
+            resume_command: Command[str] = Command(resume={pending.id: gate.decision_payload})
             await graph.ainvoke(resume_command, config)
     except Exception as exc:
         # See run_workflow's identical catch above - same gap, same fix,

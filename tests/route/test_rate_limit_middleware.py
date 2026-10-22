@@ -13,24 +13,22 @@ with rate_limit_enabled=False and would never read these keys anyway, but
 cleaning up is still the right default).
 """
 
+import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
-import pytest_asyncio
 from fastapi.testclient import TestClient
 from redis.asyncio import Redis as AsyncRedis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from tenderos_api import main as api_main
+from tenderos_api import rate_limit
 
 pytestmark = pytest.mark.asyncio
 
-
-@pytest_asyncio.fixture
-async def _cleanup_redis():
-    yield
-    client = AsyncRedis.from_url(api_main.settings.redis_url)
-    async for key in client.scan_iter(match="ratelimit:*"):
-        await client.delete(key)
-    await client.aclose()
+# _cleanup_redis now lives in tests/route/conftest.py (shared with
+# test_middleware_order.py).
 
 
 async def test_global_limit_returns_429_with_retry_after(
@@ -178,3 +176,98 @@ async def test_e2e_bypass_works_only_when_both_the_flag_and_header_are_present(
     for _ in range(5):
         response = client.get("/health/live", headers=headers)
         assert response.status_code == 200, response.text
+
+
+# Phase 4 blocker 1: the limiter fails open. When Redis cannot be reached
+# or times out, the request goes through and a WARNING is logged, for both
+# the global and the login limit.
+
+
+def _limiter_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "tenderos_api.main"
+        and record.levelno == logging.WARNING
+        and "Redis unavailable" in record.getMessage()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected_status"),
+    [
+        ("GET", "/health/live", 200),
+        # Unknown email: the route's own answer is 401, which is only
+        # reachable if the limiter let the request through.
+        ("POST", "/auth/login", 401),
+    ],
+)
+async def test_limiter_fails_open_when_redis_is_unreachable(
+    client: TestClient,
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+    main_logger_enabled,
+    method: str,
+    path: str,
+    expected_status: int,
+):
+    """A real connection failure, not a raised stand-in: the limiter's own
+    client (rate_limit.build_client, so the real timeouts and retry policy)
+    pointed at a port nothing listens on. Depending on the OS this surfaces
+    as a refused connection or as the 250 ms connect timeout; both are in
+    REDIS_UNAVAILABLE_ERRORS, and both must fail open."""
+    monkeypatch.setattr(api_main.settings, "rate_limit_enabled", True)
+
+    @asynccontextmanager
+    async def _unreachable_redis() -> AsyncIterator[AsyncRedis]:
+        redis_client = rate_limit.build_client("redis://127.0.0.1:1/1")
+        try:
+            yield redis_client
+        finally:
+            await redis_client.aclose()
+
+    monkeypatch.setattr(api_main, "rate_limit_redis", _unreachable_redis)
+    caplog.set_level(logging.WARNING, logger="tenderos_api.main")
+
+    body = {"email": f"{uuid.uuid4()}@example.com", "password": "wrong-password"}
+    response = client.request(method, path, json=body if method == "POST" else None)
+
+    assert response.status_code == expected_status, response.text
+    warnings = _limiter_warnings(caplog)
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    # Only the exception type is logged, never the exception's own message,
+    # which for a connection error names the host and port.
+    message = warnings[0].getMessage()
+    assert "allowing the request" in message
+    assert "127.0.0.1" not in message
+
+
+async def test_login_limit_fails_open_on_its_own(
+    client: TestClient,
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+    main_logger_enabled,
+    _cleanup_redis,
+):
+    """The login check has its own Redis call after the global one. Redis
+    is real and healthy for the global check here; only the login-key
+    check raises, so this proves the login limit's own failure path fails
+    open, not just a failure that happened to come first."""
+    monkeypatch.setattr(api_main.settings, "rate_limit_enabled", True)
+    real_check_rate_limit = api_main.check_rate_limit
+
+    async def _fail_on_login_key(redis_client, key, limit, window_seconds):
+        if key.startswith("ratelimit:login:"):
+            raise RedisConnectionError("simulated outage on the login check")
+        return await real_check_rate_limit(redis_client, key, limit, window_seconds)
+
+    monkeypatch.setattr(api_main, "check_rate_limit", _fail_on_login_key)
+    caplog.set_level(logging.WARNING, logger="tenderos_api.main")
+
+    response = client.post(
+        "/auth/login",
+        json={"email": f"{uuid.uuid4()}@example.com", "password": "wrong-password"},
+    )
+
+    assert response.status_code == 401, response.text
+    assert len(_limiter_warnings(caplog)) == 1

@@ -269,7 +269,7 @@ describe("decision buttons", () => {
 
   it("a 409 response shows the stale-readiness message immediately, with no retry", async () => {
     // retryTransient classifies 409 as terminal (an allowlist of retryable
-    // statuses - 408/429/5xx - not a denylist), for two independent reasons:
+    // statuses - 408/5xx - not a denylist), for two independent reasons:
     // Build Guide line 2707's IDEMPOTENCY_CONFLICT ("same key + different
     // request returns 409") is deterministic and permanent - retrying with
     // the same key this component already reuses can never resolve it - and
@@ -277,7 +277,15 @@ describe("decision buttons", () => {
     // within a few seconds of backoff either. No fake timers needed: a
     // terminal error re-throws on the first attempt.
     const user = userEvent.setup();
-    decideGate.mockRejectedValue(new apiClient.ApiError(409, { error: { code: "CONFLICT" } }));
+    decideGate.mockRejectedValue(
+      new apiClient.ApiError(409, {
+        error: {
+          code: "READINESS_NOT_WAIVED",
+          message:
+            "Readiness has unresolved blockers. Resolve them, or resubmit with waive=true to approve anyway.",
+        },
+      }),
+    );
     render(<GateDecisionPanel gate={finalReadinessGate({ ready: false })} onDecided={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
@@ -287,6 +295,40 @@ describe("decision buttons", () => {
         "This gate's readiness is stale or unresolved blockers block approval.",
       ),
     ).toBeInTheDocument();
+    expect(decideGate).toHaveBeenCalledTimes(1);
+  });
+
+  it("a 409 with any other code shows that error's own message, not the readiness one", async () => {
+    // Phase 4 blocker 2: the readiness message used to be shown for every
+    // 409, including "your first attempt is still being processed". Only
+    // READINESS_NOT_WAIVED means readiness; IDEMPOTENCY_IN_PROGRESS is also
+    // not retried here (retryTransient's set is 408/5xx), so the user sees
+    // the server's own wait message after one call.
+    const user = userEvent.setup();
+    decideGate.mockRejectedValue(
+      new apiClient.ApiError(
+        409,
+        {
+          error: {
+            code: "IDEMPOTENCY_IN_PROGRESS",
+            message: "This request is already being processed. Please wait a moment and try again.",
+          },
+        },
+        42,
+      ),
+    );
+    render(<GateDecisionPanel gate={finalReadinessGate({ ready: false })} onDecided={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "This request is already being processed. Please wait a moment and try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("This gate's readiness is stale or unresolved blockers block approval."),
+    ).not.toBeInTheDocument();
     expect(decideGate).toHaveBeenCalledTimes(1);
   });
 

@@ -7,7 +7,11 @@ import {
   listProposalSections,
   patchProposalSection,
 } from "../api/client";
-import type { ProposalClaimResponse, ProposalSectionResponse } from "../api/client";
+import type {
+  OperationResponse,
+  ProposalClaimResponse,
+  ProposalSectionResponse,
+} from "../api/client";
 import { TraceabilityDrawer } from "../components/TraceabilityDrawer";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -15,6 +19,7 @@ import { Field } from "../components/ui/Field";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { humanize } from "../format/humanize";
+import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatus, describeStatusKeepingRawWord } from "../status/statusMap";
 import "./ProposalWorkspace.css";
 
@@ -42,39 +47,73 @@ export function ProposalWorkspace() {
   const [editingContent, setEditingContent] = useState<Record<string, string>>({});
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
   // The "Inspect trace" button that opened the drawer, so focus can return
   // to it on close (DESIGN.md Accessibility, "Keyboard order").
   const drawerOpener = useRef<HTMLElement | null>(null);
+  // The tender on screen now, kept fresh on every render, so a read that
+  // answers after the user moved to another tender can tell (the same guard
+  // as CommercialFindings).
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
 
-  async function refreshSections() {
+  // isCancelled: true once this read's result no longer belongs on screen
+  // (the user moved to another tender); checked after every await, so a late
+  // answer is dropped instead of painting the previous tender's sections.
+  async function refreshSections(isCancelled: () => boolean) {
     if (!tenderId) return;
     const result = await listProposalSections(tenderId);
+    if (isCancelled()) return;
     setSections(result);
     setSectionsLoaded(true);
     for (const section of result) {
       const claims = await listProposalClaims(section.id);
+      if (isCancelled()) return;
       setClaimsBySection((prev) => ({ ...prev, [section.id]: claims }));
     }
   }
 
   useEffect(() => {
+    let cancelled = false;
     setSectionsLoaded(false);
-    refreshSections().catch(() => setError("Failed to load proposal sections"));
+    refreshSections(() => cancelled).catch(() => {
+      if (!cancelled) setError("Failed to load proposal sections");
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
+
+  // Phase 4 Stage 2: the POST returns 202 and the worker drafts. Generate
+  // stays busy until the operation is finished AND the sections (with their
+  // claims) have been re-read: full-flow.spec.ts:949-953 waits for the button
+  // to be enabled, then expects a section visible, and step 10 (:974)
+  // counts claim rows at once, without waiting. A generation started before a reload is
+  // picked up again on load (useTenderOperation).
+  async function handleFinished(operation: OperationResponse) {
+    const finishedForTenderId = tenderId;
+    const isCancelled = () => tenderIdRef.current !== finishedForTenderId;
+    if (operation.status === "failed") {
+      setError(operation.error_message ?? "Generate failed");
+    }
+    await refreshSections(isCancelled).catch(() => {
+      if (!isCancelled()) setError("Failed to load proposal sections");
+    });
+  }
+  const { busy: generating, start } = useTenderOperation(
+    tenderId,
+    "proposal_generation",
+    handleFinished,
+  );
 
   async function handleGenerate() {
     if (!tenderId) return;
     setError(null);
-    setGenerating(true);
     try {
-      await generateProposal(tenderId, crypto.randomUUID());
-      await refreshSections();
+      // One key per click: a network retry of this request replays its 202.
+      await start(() => generateProposal(tenderId, crypto.randomUUID()));
     } catch (err) {
       setError(err instanceof ApiError ? `Generate failed (${err.status})` : "Generate failed");
-    } finally {
-      setGenerating(false);
     }
   }
 

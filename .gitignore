@@ -75,3 +75,10 @@ data/synthetic/*.xlsx
 data/synthetic/tender_a/*.pdf
 data/synthetic/tender_a/*.docx
 data/synthetic/tender_a/*.xlsx
+
+# Private notes (interview story bank and similar). Never staged or committed.
+docs/private/
+
+# Engineering record (decision records and log). Kept local only, not committed.
+docs/decisions/
+docs/engineering-log.md

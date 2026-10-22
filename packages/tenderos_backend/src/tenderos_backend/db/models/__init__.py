@@ -1,4 +1,5 @@
 from tenderos_backend.db.models.agent_trace import AgentTrace
+from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.base import Base
 from tenderos_backend.db.models.commercial import PricingDocument, PricingFinding, PricingLineItem
@@ -58,6 +59,7 @@ from tenderos_backend.db.models.workflow import (
 __all__ = [
     "AgentTrace",
     "ApprovalGate",
+    "AsyncOperation",
     "AuditEvent",
     "Base",
     "Capability",

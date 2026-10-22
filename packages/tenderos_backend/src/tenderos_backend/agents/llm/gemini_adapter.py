@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import time
 
+import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -10,6 +11,7 @@ from redis.asyncio import Redis
 
 from tenderos_backend.agents.llm.client import (
     LLMResult,
+    LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
     RateLimitedError,
@@ -23,6 +25,18 @@ from tenderos_backend.agents.llm.client import (
 # against a live install.
 _MAX_TRANSIENT_RETRIES = 3
 _BASE_BACKOFF_SECONDS = 5.0
+
+# Phase 4 LLM timeouts, design numbers (not measured). Before these, a call
+# had no bound at all: the client was built with no http_options, so a hung
+# provider connection could hold a worker job (or, before the move to the
+# worker, an HTTP request) indefinitely.
+# - _HTTP_TIMEOUT_MS: each HTTP request to the provider. google-genai 2.17.0
+#   takes it in milliseconds (types.HttpOptions.timeout) and, with no retry
+#   options set, makes one attempt and re-raises httpx.TimeoutException.
+# - _CALL_DEADLINE_SECONDS: one logical call, including this adapter's own
+#   rate-limit and 5xx retries and their 5, 10 and 20 s backoffs.
+_HTTP_TIMEOUT_MS = 60_000
+_CALL_DEADLINE_SECONDS = 180.0
 
 # Post-B16: agent_traces.estimated_cost_usd was NULL on all 2,455 rows ever
 # written, not because the SDK doesn't return token counts (it does -
@@ -100,7 +114,10 @@ class GeminiClient:
     """
 
     def __init__(self, api_key: str, redis_client: Redis, cache_ttl_seconds: int) -> None:
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=_HTTP_TIMEOUT_MS),
+        )
         self._redis = redis_client
         self._cache_ttl_seconds = cache_ttl_seconds
 
@@ -127,7 +144,15 @@ class GeminiClient:
             )
 
         start = time.monotonic()
-        response = await self._call_with_retry(model, system_prompt, user_prompt, response_schema)
+        try:
+            response = await asyncio.wait_for(
+                self._call_with_retry(model, system_prompt, user_prompt, response_schema),
+                timeout=_CALL_DEADLINE_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise LLMTimeoutError(
+                f"{agent_name}: no answer within the {_CALL_DEADLINE_SECONDS:.0f} s call deadline"
+            ) from exc
         latency_ms = int((time.monotonic() - start) * 1000)
 
         response_text = response.text
@@ -200,6 +225,10 @@ class GeminiClient:
                 # automatic retry") - a bad request shape, not something a
                 # second attempt fixes.
                 raise
+            except httpx.TimeoutException as exc:
+                raise LLMTimeoutError(
+                    f"provider request timed out after {_HTTP_TIMEOUT_MS // 1000} s"
+                ) from exc
             except genai_errors.ServerError as exc:
                 if attempt >= _MAX_TRANSIENT_RETRIES:
                     raise TransientProviderError(str(exc)) from exc
