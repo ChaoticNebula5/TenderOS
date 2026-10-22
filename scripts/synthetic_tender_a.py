@@ -42,11 +42,12 @@ from typing import TypedDict
 
 import docx
 from openpyxl import Workbook
-from synthetic_common import native_pdf
+from synthetic_common import deterministic_ooxml, native_pdf, write_manifest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = REPO_ROOT / "data" / "synthetic" / "tender_a"
 GROUND_TRUTH_DIR = REPO_ROOT / "data" / "ground_truth"
+MANIFEST_PATH = DOCS_DIR / "SHA256SUMS"
 
 RFP_PDF = "rfp.pdf"
 ANNEXURE_DOCX = "technical_annexure.docx"
@@ -868,7 +869,9 @@ def _bytes_buffer() -> io.BytesIO:
 
 def _write_requirements_ground_truth() -> None:
     path = GROUND_TRUTH_DIR / "tender_a_requirements.jsonl"
-    with path.open("w", encoding="utf-8") as f:
+    # newline="\n": the same bytes on every platform (Windows text mode
+    # would write CRLF), which the manifest's hash depends on.
+    with path.open("w", encoding="utf-8", newline="\n") as f:
         for r in REQUIREMENTS:
             valid_keys = list(r.valid_evidence_keys)
             expected_compliance = r.expected_compliance
@@ -965,7 +968,7 @@ def _write_knowledge_ground_truth() -> None:
         }
     )
 
-    with path.open("w", encoding="utf-8") as f:
+    with path.open("w", encoding="utf-8", newline="\n") as f:
         for record in records:
             f.write(json.dumps(record) + "\n")
     print(f"wrote {path.relative_to(REPO_ROOT)} ({len(records)} records)")
@@ -1025,13 +1028,33 @@ def main() -> None:
         "pricing_schedule_2.xlsx", pricing_2_items
     )
 
+    written: list[Path] = []
     for name, content in documents.items():
+        if name.endswith((".docx", ".xlsx")):
+            content = deterministic_ooxml(content)
         path = DOCS_DIR / name
         path.write_bytes(content)
+        written.append(path)
         print(f"wrote {path.relative_to(REPO_ROOT)} ({len(content)} bytes)")
 
     _write_requirements_ground_truth()
     _write_knowledge_ground_truth()
+
+    # The tracked record of every synthetic file this script produces, so
+    # "this deployment serves only synthetic data" can be checked against a
+    # file (KNOWN_LIMITATIONS, the synthetic-manifest entry). CI regenerates
+    # and diffs it. B4's fixtures (make_synthetic_fixtures.py) are not in
+    # it: its scanned PDF uses a system font that differs between hosts.
+    write_manifest(
+        MANIFEST_PATH,
+        written
+        + [
+            GROUND_TRUTH_DIR / "tender_a_requirements.jsonl",
+            GROUND_TRUTH_DIR / "tender_a_knowledge.jsonl",
+        ],
+        REPO_ROOT,
+    )
+    print(f"wrote {MANIFEST_PATH.relative_to(REPO_ROOT)}")
 
     mandatory_count = sum(1 for r in REQUIREMENTS if r.mandatory)
     print(

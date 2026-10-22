@@ -9793,7 +9793,7 @@ actually has - three independent failures were reproduced, not inferred:
   on its first run, by design of the check - which is the honest state.
 - **Test:** the CI `security` job.
 
-## [found during B17 pre-push audit, open, deployment prerequisite] Phase 4's inspection plan refers to a data/synthetic manifest that does not exist
+## [found during B17 pre-push audit, deployment prerequisite, BUILT in Phase 4 batch 1] Phase 4's inspection plan refers to a data/synthetic manifest that does not exist
 
 - **Observed 2026-10-07** (read-only pre-push audit): `data/synthetic/`
   holds only generated, gitignored files plus a tracked `.gitkeep`. No
@@ -9810,6 +9810,35 @@ actually has - three independent failures were reproduced, not inferred:
   `scripts/synthetic_tender_a.py` itself, so that "this deployment serves
   only synthetic data" can be verified against a file rather than asserted.
 - **Test:** none yet.
+- **Built in Phase 4 batch 1 (item 17):** `scripts/synthetic_tender_a.py`
+  writes `data/synthetic/tender_a/SHA256SUMS` (tracked, `sha256sum`
+  format, paths from the repo root): its 13 documents and both
+  ground-truth JSONL files. CI regenerates the fixtures, fails on any diff
+  in that file or in `data/ground_truth`, and runs `sha256sum -c` on it.
+  - **The generator was not deterministic, which a manifest needs.** Two
+    runs a few seconds apart (measured 2026-10-22) gave identical PDFs and
+    JSONL but different bytes for every .docx and .xlsx: every zip entry
+    carries the time it was written, and openpyxl stamps
+    `dcterms:created`/`modified` at save time. Each .docx and .xlsx is now
+    repacked with a fixed time, fixed attributes and uncompressed entries
+    (`synthetic_common.deterministic_ooxml`); uncompressed because deflate
+    output depends on the zlib build.
+  - **The JSONL differed by platform:** Windows text mode wrote CRLF, while
+    git (`eol=lf`) shows the files as unchanged, so only a hash sees it.
+    Both are now written with LF on every platform.
+  - **Observed:** two Windows runs give a byte-identical manifest; the same
+    generator run in the worker image (Linux, Python 3.12.13; the host has
+    3.12.4, both openpyxl 3.1.5) gives the same manifest byte for byte; the
+    JSONL hashes equal the tracked blobs.
+  - **Not covered:** B4's fixtures from `make_synthetic_fixtures.py`
+    (`data/synthetic/*.pdf|docx|xlsx`, used by ingestion tests, not by the
+    E2E). Its scanned PDF draws text with DejaVuSans when the system has it
+    and Pillow's default font otherwise, so its bytes depend on the host.
+    The E2E and the demo flow use only `tender_a`.
+  - **Fixture bytes changed** (11 of 13 files: the fixed timestamps and
+    stored entries; the two PDFs are unchanged), so the E2E runs on the
+    regenerated files: 1 passed in 2.6 min (fake provider, 2026-10-22,
+    kept awake; `.playwright-mcp/phase4-review/e2e-awake-batch1.log`).
 
 ## [B17 pre-push, documented layout change] data_private/.gitkeep is no longer tracked
 
