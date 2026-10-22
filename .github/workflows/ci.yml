@@ -9,16 +9,16 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync
       - run: uv run ruff check .
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync
       - run: uv run mypy
 
@@ -89,8 +89,8 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 20
           --health-start-period 30s
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       # The S3 store needs a command (backend and health path) - GitHub
       # Actions' services: block has no command: field, so it is started
       # directly here. Same image, digest and settings as docker-compose.yml's
@@ -151,7 +151,7 @@ jobs:
         run: |
           names=$(uv run python -c "from tenderos_backend.ingestion.embed import _MODEL_NAME as e; from tenderos_backend.agents.knowledge.rerank import _MODEL_NAME as r; print(f'{e}+{r}'.replace('/', '_'))")
           echo "key=hf-${names}" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: hfcache
         with:
           path: ~/.cache/huggingface
@@ -178,8 +178,8 @@ jobs:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: npm ci
@@ -193,8 +193,8 @@ jobs:
       run:
         working-directory: apps/landing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: npm ci
@@ -219,9 +219,9 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: uv sync
