@@ -9763,6 +9763,11 @@ actually has - three independent failures were reproduced, not inferred:
     the library that signs and verifies the app's auth tokens.**
   - `pypdf` 6.15.0: 11 (fixes 6.16.0 / 6.16.1) - **parses uploaded,
     untrusted tender PDFs.**
+    **Correction (2026-10-22): that is wrong.** pypdf is declared in
+    `packages/tenderos_backend/pyproject.toml` but never imported, by our
+    code or by any installed package (searched). Uploaded PDFs go through
+    pdfplumber (`ingestion/parse_pdf.py`), which parses with pdfminer.six
+    and renders pages for OCR with pypdfium2.
   - `virtualenv` 21.7.0: 8 (dev tooling); `urllib3` 2.7.0: 3;
     `langgraph-sdk` 0.4.2: 1 (fix 0.4.4).
   - npm: `apps/web` 4 high (transitive: brace-expansion, js-yaml,
@@ -11067,3 +11072,54 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   the same job too, by less, so it also needs its own E2E runs.
 - **Status:** open, accepted.
 - **Test:** the E2E itself (2 of 2 green on 2026-10-16 after the fix).
+
+## [deps, 2026-10-22, open, accepted] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
+
+- **What happens:** `uv run pip-audit`, locally and in CI's `security`
+  job, skips `torch 2.13.0+cpu` with "Dependency not found on PyPI and
+  could not be audited" (measured 2026-10-22, the same skip as in the
+  2026-10-10 entry "What pip-audit and npm audit do not cover"). The lock
+  takes torch from the PyTorch CPU index, and the `+cpu` local version
+  does not exist on PyPI, so pip-audit never looks it up. CI runs without
+  `--strict`, so the skip passes silently: a torch advisory would never
+  turn the job red.
+- **Why it matters:** torch is installed in the api and worker images
+  (measured: `2.13.0+cpu` in both), and sentence_transformers loads it for
+  embedding (`ingestion/embed.py`) and reranking
+  (`agents/knowledge/rerank.py`), so it is runtime code, not dev tooling.
+- **The manual check, before each release:** query OSV (the database
+  pip-audit uses) for the locked version without the local suffix, and
+  read PyTorch's GitHub security advisories for anything OSV has not
+  picked up yet:
+  `curl -s -X POST https://api.osv.dev/v1/query -d '{"package":{"name":"torch","ecosystem":"PyPI"},"version":"2.13.0"}'`
+  (replace the version with the one in `uv.lock`). On 2026-10-22 it
+  returned no advisories for 2.13.0; the same query for 2.5.1 returned
+  22, so the query itself works (measured).
+- **Also outside pip-audit: native code.** pip-audit matches Python
+  package versions only. It does not see native libraries bundled inside
+  wheels, or the images' OS packages. What is there (measured in the
+  running containers, 2026-10-22):
+  - **PDFium**, bundled in the pypdfium2 5.12.1 wheel as
+    `site-packages/pypdfium2_raw/libpdfium.so` (7.6 MB, PDFium build
+    152.0.7947 from pdfium-binaries, listed in the wheel's RECORD), in the
+    api and worker images. pdfplumber uses it to render pages of uploaded
+    PDFs for OCR. PDFium is Chromium's PDF engine: its security fixes ship
+    as Chromium advisories, not PyPI ones, so a PDFium flaw shows up in
+    pip-audit only if pypdfium2 itself gets an advisory.
+  - **Pillow's bundled libraries**, `site-packages/pillow.libs/` (18 of
+    them, among them libwebp, libjpeg, libtiff, libopenjp2, libpng,
+    freetype), in both images. A flaw in one of them is filed against the
+    C library; pip-audit reports it only if Pillow also gets an advisory
+    for the release that updates it.
+  - **Tesseract**, from Debian 13 (trixie) OS packages installed by
+    `apps/worker/Dockerfile`: `tesseract-ocr` and `libtesseract5`
+    5.5.0-1+b1, `libleptonica6` 1.84.1-4, in the worker image only. It
+    reads images rendered from uploaded PDFs. The `python:3.12-slim`
+    base's own OS packages are likewise unaudited.
+  - **Who should cover this:** a container image scan (one that reads both
+    OS packages and binaries inside site-packages) as part of deployment
+    prep. Nothing in CI does it today.
+- **Not done:** no automated step. A CI step running that query would
+  close the torch gap; it is a separate change, as is the image scan.
+- **Status:** open, accepted.
+- **Test:** none; this is a manual release check.
