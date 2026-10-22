@@ -10091,7 +10091,8 @@ actually has - three independent failures were reproduced, not inferred:
   fixed above). Adding a landing audit step is deferred, by decision.
   **Resolved in Phase 4 batch 1 (item 10):** the `security` job now runs
   `npm ci` and `npm audit --audit-level=high` in `apps/landing` too.
-- dependabot.yml has no npm entry for `apps/landing` either.
+- dependabot.yml has no npm entry for `apps/landing` either. **Resolved in
+  batch 1 (item 26):** it has one now.
 - torch: automated in batch 1 (item 8), see the torch entry below.
 - **Checked, not a gap:** virtualenv and pre-commit (root `dev` group) are
   **not** installed in the api or worker images (measured in `/app/.venv`
@@ -11241,7 +11242,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none yet; item 27's proof is no `node_modules/vite` in the
   image, plus the E2E runs.
 
-## [found 2026-10-22, open] Dependabot is configured but not delivering
+## [found 2026-10-22, open: cause found, config built in batch 1, settings pending] Dependabot is configured but not delivering
 
 - **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
   `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
@@ -11267,9 +11268,48 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - Find why uv gets no PRs, from Dependabot's job log in the
     repository's Insights.
   - Close the 8 stale PRs once `phase4/backend-hardening` is merged.
-- **Status:** open.
-- **Test:** none; the proof is a grouped PR per ecosystem after the next
-  scheduled run.
+- **Why uv never got a PR (observed 2026-10-22, Dependabot job log of
+  run 39558240249, "uv in /."):** every uv job has failed (runs on
+  2026-10-07, 10-14 and 10-21; only the 10-21 log was read). Finding no Python version it
+  reads (no `.python-version`, and the root `pyproject.toml` is a bare
+  workspace root with no `requires-python`), Dependabot ran
+  `pyenv local 3.14.7`, its own default, which writes `.python-version`;
+  then each `uv lock --upgrade-package ...` failed with
+  `dependency_file_not_resolvable`: "The Python request from
+  `.python-version` resolved to Python 3.14.7, which is incompatible with
+  the project's Python requirement: `==3.12.*`". All 24 updates in that
+  job failed the same way, torch included; the CPU index was never the
+  problem. Batch 1 adds a tracked `.python-version` of `3.12`.
+- **Built in batch 1 (item 26), `.github/dependabot.yml`:** `apps/landing`
+  added; per ecosystem, three groups: minor and patch version updates,
+  major version updates, and security updates (none for Actions);
+  `open-pull-requests-limit: 5` set explicitly; no `ignore` at all.
+  Majors get their own group instead of an ignore because GitHub applies
+  ignore conditions to security updates as well (its how-to page
+  "Controlling which dependencies are updated by Dependabot": ignore
+  conditions apply "when it opens pull requests for version updates and
+  security updates"). A `"*"` major ignore could have blocked exactly the
+  2026-10-22 case, where pillow's advisories were fixed only in a major
+  (12 to 13). A majors group cannot block a security update, and skipped
+  majors stay visible as one open PR per ecosystem.
+- **The 8 PRs of 2026-10-07 (checked 2026-10-22 against main after the
+  merge, 4526e7b):** the merge superseded none of them; main still has
+  every "from" version. Five are majors that will come back inside the
+  majors PRs: #1 (setup-node 4 to 7), #2 (setup-uv 3 to 7), #3 (checkout
+  4 to 7) in the Actions majors PR, #4 (globals 15 to 17) and #6 (vitest 4
+  to 5) in the web majors PR. Three are minor or patch updates the grouped
+  web PR will carry: #5 (@playwright/test 1.62.1 to 1.64.1), #7 (react
+  19.2.8 to 19.3.0 with @types/react), #8 (prettier 3.9.6 to 3.9.9). So
+  all 8 can be closed once this merges; closing them is a step in GitHub.
+- **Still a repository setting, not a file:** `security_and_analysis` was
+  still empty and the vulnerability-alerts endpoint still answered 404 on
+  2026-10-22, so security updates stay off until they are turned on in
+  the repository settings.
+- **Status:** cause found; config built, not observed (Dependabot reads it
+  from the default branch, so nothing changes until this merges).
+- **Test:** none in the repo. The proof after merge: the next uv job (or a
+  manual "Check for updates") succeeds, and one grouped PR per ecosystem
+  appears.
 
 ## [found 2026-10-22, open: guarded in batch 1, cause unknown] An intermittent connection-leak warning in CI's backend run
 
