@@ -47,8 +47,11 @@ LEASE_MARGIN = timedelta(seconds=60)
 # operation: 8 attempts with waits of 30, 60, 120, 240, 300, 300 and 300 s
 # are 22.5 minutes at most (outbox_dispatcher.MAX_ATTEMPTS; jitter only
 # shortens them). 60 minutes is about 2.7 times that, and also covers a job
-# already enqueued but waiting in the workflow queue behind one full
-# 30-minute workflow job. A dead-lettered request is failed at once by the
+# already enqueued but waiting behind one full 30-minute operation (the
+# longest job timeout above): since Stage 2 operations have their own
+# "operations" queue and worker, so workflow jobs no longer delay them, but
+# operations still run one at a time. Re-checked for Stage 2; the number
+# stands. A dead-lettered request is failed at once by the
 # dispatcher (fail_undispatched_operation); this window is the backstop for
 # everything else that leaves one queued (a Redis outage longer than the
 # window, which does not use up attempts; a stopped dispatcher or worker).
@@ -68,6 +71,13 @@ class OperationRequest:
 async def get_operation(operation_id: uuid.UUID) -> AsyncOperation | None:
     async with UnitOfWork() as uow:
         return await uow.operations.get(operation_id)
+
+
+async def get_active_operation(tender_id: uuid.UUID, kind: str) -> AsyncOperation | None:
+    """The tender's queued or running operation of this kind, if any (at
+    most one, by uq_async_operation_active)."""
+    async with UnitOfWork() as uow:
+        return await uow.operations.get_active(tender_id, kind)
 
 
 async def request_operation(

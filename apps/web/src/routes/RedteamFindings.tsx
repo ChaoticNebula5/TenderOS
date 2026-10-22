@@ -2,19 +2,18 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
-  isFinishedOperation,
   listRedteamFindings,
   resolveRedteamFinding,
   triggerRedTeam,
 } from "../api/client";
-import type { RedteamFindingResponse } from "../api/client";
+import type { OperationResponse, RedteamFindingResponse } from "../api/client";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
-import { useOperation } from "../hooks/useOperation";
+import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
 
@@ -43,14 +42,6 @@ export function RedteamFindings() {
   // findings" after the response says so (DESIGN.md Copy rules).
   const [findingsLoaded, setFindingsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // `starting` covers the POST itself; `operationId` is the red-team run
-  // it started (Phase 4: the POST returns 202 and the worker runs it), and
-  // the button stays busy until useOperation reports it finished.
-  const [starting, setStarting] = useState(false);
-  const [operationId, setOperationId] = useState<string | null>(null);
-  const { operation } = useOperation(operationId);
-  const finishedStatus = operation && isFinishedOperation(operation) ? operation.status : null;
-  const running = starting || (operationId !== null && finishedStatus === null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
   async function refresh() {
@@ -65,28 +56,26 @@ export function RedteamFindings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
-  // Once the run finishes: re-read the findings it wrote, and on failure
-  // show the operation's own message (LLM timeout, worker lost, ...).
-  useEffect(() => {
-    if (finishedStatus === null || !operation) return;
-    if (finishedStatus === "failed") {
+  // Phase 4: the POST returns 202 and the worker runs the red team. The
+  // button stays busy until the run is finished and the findings it wrote
+  // have been re-read (useTenderOperation), and a run started before a
+  // reload is picked up again on load. On failure, the operation's own
+  // message (LLM timeout, worker lost, ...).
+  async function handleFinished(operation: OperationResponse) {
+    if (operation.status === "failed") {
       setError(operation.error_message ?? "Run failed");
     }
-    refresh().catch(() => setError("Failed to load red-team findings"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operationId, finishedStatus]);
+    await refresh().catch(() => setError("Failed to load red-team findings"));
+  }
+  const { busy: running, start } = useTenderOperation(tenderId, "redteam_run", handleFinished);
 
   async function handleRun() {
     if (!tenderId) return;
     setError(null);
-    setStarting(true);
     try {
-      const started = await triggerRedTeam(tenderId);
-      setOperationId(started.operation_id);
+      await start(() => triggerRedTeam(tenderId));
     } catch (err) {
       setError(err instanceof ApiError ? `Run failed (${err.status})` : "Run failed");
-    } finally {
-      setStarting(false);
     }
   }
 

@@ -43,6 +43,7 @@ from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
 from tenderos_worker.jobs.workflow import resume_workflow_job, run_workflow_job
 from tenderos_worker.settings import settings
+from tenderos_worker.worker import OPERATIONS_QUEUE
 
 logger = logging.getLogger(__name__)
 
@@ -295,11 +296,13 @@ def _operation_requested_dispatch(
 ) -> tuple[str, Callable[..., Any], tuple, str]:
     # Phase 4 async operations: one job per operation, whose id is part of
     # the job id (op_{operation_id}); OperationRequested is written exactly
-    # once per operation (operation_requested_idempotency_key). The
-    # "workflow" queue, like the other LLM-calling jobs; its job timeout
-    # comes from the operation's kind (_job_timeout_for).
+    # once per operation (operation_requested_idempotency_key). Its own
+    # "operations" queue (Stage 2), served by its own worker process, so an
+    # operation a person is waiting on never queues behind a workflow job
+    # (worker.OPERATIONS_QUEUE). Its job timeout comes from the operation's
+    # kind (_job_timeout_for).
     operation_id = event.payload["operation_id"]
-    return "workflow", run_operation_job, (operation_id,), f"op_{operation_id}"
+    return OPERATIONS_QUEUE, run_operation_job, (operation_id,), f"op_{operation_id}"
 
 
 def _job_timeout_for(event: OutboxEvent, queue_name: str) -> int | None:
@@ -493,7 +496,7 @@ def _redis_connection(redis_url: str) -> Redis:
 def _queues(connection: Redis) -> dict[str, Queue]:
     return {
         name: Queue(name, connection=connection)
-        for name in (DEFAULT_QUEUE_NAME, "workflow", "ingestion")
+        for name in (DEFAULT_QUEUE_NAME, "workflow", "ingestion", OPERATIONS_QUEUE)
     }
 
 

@@ -5,10 +5,13 @@ coverage anywhere before this file. All four share one action
 admin), the same shape as approve_compliance/select_resource, not the
 workflow-transparency shape the four view_* fixes addressed.
 
-validate_pricing_document is this module's own LLM-touching route -
-_build_llm_client (routes/commercial.py's own local one, not the
-orchestration node's) is monkeypatched to FakeLLMClient, matching every
-other LLM-adjacent test in this project.
+Phase 4 Stage 2: validate_pricing_document no longer runs the checks or
+their explanation LLM calls inside the request. It records a
+commercial_validation async operation for the document's tender and
+returns 202; the worker's run_operation does the work. The tests below run
+that worker call in-process, with the worker's _build_llm_client
+monkeypatched to FakeLLMClient, matching every other LLM-adjacent test in
+this project.
 """
 
 import uuid
@@ -16,11 +19,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from tenderos_api.routes import commercial
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import commercial_service, document_service
+from tenderos_worker.jobs import operations as operation_jobs
+from tenderos_worker.jobs.operations import run_operation
 
 pytestmark = pytest.mark.asyncio
 
@@ -71,7 +75,7 @@ async def test_list_pricing_documents_returns_the_real_document(
     assert pricing_document_id in [d["id"] for d in response.json()]
 
 
-async def test_validate_pricing_document_persists_findings(
+async def test_validate_pricing_document_queues_an_operation_the_worker_runs(
     client: TestClient, register_actor, monkeypatch
 ):
     headers, _, org_id = register_actor()
@@ -84,14 +88,48 @@ async def test_validate_pricing_document_persists_findings(
     fake_client.script(
         "commercial_explanation",
         FindingExplanation,
-        [FindingExplanation(severity="major", explanation="Deterministically identified.")] * 4,
+        [FindingExplanation(severity="major", explanation="Deterministically identified.")] * 8,
     )
-    monkeypatch.setattr(commercial, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    url = f"/pricing-documents/{pricing_document_id}/validate"
 
-    response = client.post(f"/pricing-documents/{pricing_document_id}/validate", headers=headers)
+    response = client.post(url, headers=headers)
+    second_click = client.post(url, headers=headers)
 
-    assert response.status_code == 200, response.text
-    assert len(response.json()) == 4
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert (body["kind"], body["status"], body["tender_id"]) == (
+        "commercial_validation",
+        "queued",
+        tender["id"],
+    )
+    # A second click while the first is queued joins it.
+    assert second_click.status_code == 202, second_click.text
+    assert second_click.json()["operation_id"] == body["operation_id"]
+    # Nothing ran in the request.
+    assert client.get(f"/tenders/{tender['id']}/pricing-findings", headers=headers).json() == []
+    assert fake_client.calls == []
+
+    await run_operation(body["operation_id"])
+
+    operation = client.get(f"/operations/{body['operation_id']}", headers=headers).json()
+    assert operation["status"] == "succeeded"
+    findings = client.get(f"/tenders/{tender['id']}/pricing-findings", headers=headers).json()
+    assert len(findings) == 4
+    assert len(fake_client.calls) == 4
+
+    # Re-validating once the first finished: a new operation, and no LLM
+    # call, because every finding is already stored.
+    again = client.post(url, headers=headers)
+    assert again.status_code == 202, again.text
+    assert again.json()["operation_id"] != body["operation_id"]
+    await run_operation(again.json()["operation_id"])
+    assert (
+        client.get(f"/operations/{again.json()['operation_id']}", headers=headers).json()["status"]
+        == "succeeded"
+    )
+    assert len(client.get(f"/tenders/{tender['id']}/pricing-findings", headers=headers).json()) == 4
+    assert len(fake_client.calls) == 4
 
 
 async def test_validate_pricing_document_404s_for_an_unknown_id(
@@ -166,7 +204,7 @@ async def test_commercial_routes_reject_a_role_outside_resolve_commercial_findin
 
 
 async def test_commercial_routes_reject_a_caller_outside_the_organization(
-    client: TestClient, register_actor, monkeypatch
+    client: TestClient, register_actor
 ):
     # The role-breadth test above proves resolve_commercial_finding's own
     # 4-role set is enforced WITHIN one org - this proves org isolation: a

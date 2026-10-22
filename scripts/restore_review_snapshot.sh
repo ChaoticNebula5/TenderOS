@@ -15,7 +15,7 @@
 #     its checksum on both sides before touching anything.
 # It never removes a Docker volume.
 #
-# Stop api/worker/outbox_dispatcher first (keep postgres and neo4j up): a
+# Stop api/worker/operations_worker/outbox_dispatcher first (keep postgres and neo4j up): a
 # --clean restore drops tables those processes hold open, and a worker
 # writing mid-restore would leave the result undefined.
 #

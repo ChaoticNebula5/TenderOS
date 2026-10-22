@@ -19,6 +19,7 @@ vi.mock("../api/client", async (importOriginal) => {
     triggerRedTeam: vi.fn(),
     getOperation: vi.fn(),
     mintOperationEventsTicket: vi.fn(),
+    getActiveOperation: vi.fn(),
   };
 });
 
@@ -27,6 +28,7 @@ const resolveRedteamFinding = vi.mocked(apiClient.resolveRedteamFinding);
 const triggerRedTeam = vi.mocked(apiClient.triggerRedTeam);
 const getOperation = vi.mocked(apiClient.getOperation);
 const mintOperationEventsTicket = vi.mocked(apiClient.mintOperationEventsTicket);
+const getActiveOperation = vi.mocked(apiClient.getActiveOperation);
 
 // Phase 4: Run red team follows an async operation over SSE. jsdom has
 // no EventSource, so a minimal fake records the streams opened.
@@ -50,6 +52,7 @@ class FakeEventSource {
 beforeEach(() => {
   FakeEventSource.instances = [];
   vi.stubGlobal("EventSource", FakeEventSource);
+  getActiveOperation.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -263,6 +266,29 @@ describe("RedteamFindings (restyle batch 5)", () => {
     await screen.findByText("No red-team findings yet");
     await user.click(screen.getByRole("button", { name: "Run red team" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The model did not answer in time.");
+    expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
+  });
+
+  // Phase 4 Stage 2: a run started before a reload is picked up again on
+  // load, exactly as after a click.
+  it("reattaches on load: a red-team run already running shows the button busy, then re-reads the findings", async () => {
+    listRedteamFindings.mockResolvedValueOnce([]).mockResolvedValueOnce([finding("f1")]);
+    getActiveOperation.mockResolvedValue(operation("running"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: /Running/ })).toBeDisabled();
+    expect(getActiveOperation).toHaveBeenCalledWith("t1", "redteam_run");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(mintOperationEventsTicket).toHaveBeenCalledWith("op-1");
+    expect(triggerRedTeam).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    act(() => FakeEventSource.instances[0]!.onmessage?.(new MessageEvent("message")));
+    await screen.findByText("Finding f1.");
     expect(screen.getByRole("button", { name: "Run red team" })).toBeEnabled();
   });
 });

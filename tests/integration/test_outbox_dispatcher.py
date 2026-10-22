@@ -665,7 +665,11 @@ async def test_operation_requested_routes_to_run_operation_with_its_kinds_timeou
 
     connection = Redis.from_url(settings.redis_url)
     try:
-        job = Queue("workflow", connection=connection).fetch_job(f"op_{requested.operation.id}")
+        # Stage 2: its own queue, served by operations_worker; never "workflow".
+        job_id = f"op_{requested.operation.id}"
+        assert job_id in Queue("operations", connection=connection).job_ids
+        assert job_id not in Queue("workflow", connection=connection).job_ids
+        job = Queue("operations", connection=connection).fetch_job(job_id)
         assert job is not None
         assert job.func_name.endswith("run_operation_job")
         assert job.args == (str(requested.operation.id),)

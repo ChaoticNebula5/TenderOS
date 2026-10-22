@@ -10,10 +10,12 @@
     1. starts redis and flushes it (orphaned scheduled RQ jobs from earlier
        runs otherwise fire in one burst on the next worker start - incident
        12),
-    2. builds and force-recreates api, web, worker and outbox_dispatcher,
+    2. builds and force-recreates api, web, worker, operations_worker and
+       outbox_dispatcher,
     3. waits for the api health check,
-    4. prints `printenv LLM_PROVIDER` for api, worker and outbox_dispatcher,
-       and fails unless all three say fake.
+    4. prints `printenv LLM_PROVIDER` for api, worker, operations_worker and
+       outbox_dispatcher,
+       and fails unless all four say fake.
   No behaviour change to the stack itself: this only runs the commands that
   were previously typed by hand.
 #>
@@ -35,7 +37,7 @@ try {
     & docker compose @files exec -T redis redis-cli FLUSHALL
     if ($LASTEXITCODE -ne 0) { throw "redis FLUSHALL failed" }
 
-    & docker compose @files up -d --build --force-recreate api web worker outbox_dispatcher
+    & docker compose @files up -d --build --force-recreate api web worker operations_worker outbox_dispatcher
     if ($LASTEXITCODE -ne 0) { throw "compose up failed" }
 
     $healthy = $false
@@ -47,7 +49,7 @@ try {
     if (-not $healthy) { throw "api never became healthy" }
 
     $bad = @()
-    foreach ($svc in @("api", "worker", "outbox_dispatcher")) {
+    foreach ($svc in @("api", "worker", "operations_worker", "outbox_dispatcher")) {
         $provider = (& docker compose @files exec -T $svc printenv LLM_PROVIDER | Out-String).Trim()
         Write-Host "${svc}: LLM_PROVIDER=$provider"
         if ($provider -ne "fake") { $bad += $svc }

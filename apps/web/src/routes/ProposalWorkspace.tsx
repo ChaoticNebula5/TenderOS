@@ -7,7 +7,11 @@ import {
   listProposalSections,
   patchProposalSection,
 } from "../api/client";
-import type { ProposalClaimResponse, ProposalSectionResponse } from "../api/client";
+import type {
+  OperationResponse,
+  ProposalClaimResponse,
+  ProposalSectionResponse,
+} from "../api/client";
 import { TraceabilityDrawer } from "../components/TraceabilityDrawer";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -15,6 +19,7 @@ import { Field } from "../components/ui/Field";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { humanize } from "../format/humanize";
+import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatus, describeStatusKeepingRawWord } from "../status/statusMap";
 import "./ProposalWorkspace.css";
 
@@ -42,7 +47,6 @@ export function ProposalWorkspace() {
   const [editingContent, setEditingContent] = useState<Record<string, string>>({});
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
   // The "Inspect trace" button that opened the drawer, so focus can return
   // to it on close (DESIGN.md Accessibility, "Keyboard order").
   const drawerOpener = useRef<HTMLElement | null>(null);
@@ -64,17 +68,32 @@ export function ProposalWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
+  // Phase 4 Stage 2: the POST returns 202 and the worker drafts. Generate
+  // stays busy until the operation is finished AND the sections (with their
+  // claims) have been re-read: full-flow.spec.ts:949-953 waits for the button
+  // to be enabled, then expects a section visible, and step 10 (:974)
+  // counts claim rows at once, without waiting. A generation started before a reload is
+  // picked up again on load (useTenderOperation).
+  async function handleFinished(operation: OperationResponse) {
+    if (operation.status === "failed") {
+      setError(operation.error_message ?? "Generate failed");
+    }
+    await refreshSections().catch(() => setError("Failed to load proposal sections"));
+  }
+  const { busy: generating, start } = useTenderOperation(
+    tenderId,
+    "proposal_generation",
+    handleFinished,
+  );
+
   async function handleGenerate() {
     if (!tenderId) return;
     setError(null);
-    setGenerating(true);
     try {
-      await generateProposal(tenderId, crypto.randomUUID());
-      await refreshSections();
+      // One key per click: a network retry of this request replays its 202.
+      await start(() => generateProposal(tenderId, crypto.randomUUID()));
     } catch (err) {
       setError(err instanceof ApiError ? `Generate failed (${err.status})` : "Generate failed");
-    } finally {
-      setGenerating(false);
     }
   }
 

@@ -1,10 +1,11 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
 import type {
+  OperationResponse,
   ProposalClaimResponse,
   ProposalClaimTraceResponse,
   ProposalSectionResponse,
@@ -25,17 +26,69 @@ vi.mock("../api/client", async (importOriginal) => {
     generateProposal: vi.fn(),
     patchProposalSection: vi.fn(),
     traceProposalClaim: vi.fn(),
+    getActiveOperation: vi.fn(),
+    getOperation: vi.fn(),
+    mintOperationEventsTicket: vi.fn(),
   };
 });
 
 const listProposalSections = vi.mocked(apiClient.listProposalSections);
 const listProposalClaims = vi.mocked(apiClient.listProposalClaims);
 const traceProposalClaim = vi.mocked(apiClient.traceProposalClaim);
+const generateProposal = vi.mocked(apiClient.generateProposal);
+const getActiveOperation = vi.mocked(apiClient.getActiveOperation);
+const getOperation = vi.mocked(apiClient.getOperation);
+const mintOperationEventsTicket = vi.mocked(apiClient.mintOperationEventsTicket);
+
+// Phase 4 Stage 2: Generate follows an async operation over SSE. jsdom has
+// no EventSource, so a minimal fake records the streams opened.
+class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+  readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+beforeEach(() => {
+  FakeEventSource.instances = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
+  getActiveOperation.mockResolvedValue(null);
+  mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+});
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
+
+function operation(status: OperationResponse["status"]): OperationResponse {
+  return {
+    operation_id: "op-1",
+    tender_id: "t1",
+    kind: "proposal_generation",
+    status,
+    error_code: status === "failed" ? "LLM_TIMEOUT" : null,
+    error_message: status === "failed" ? "The model did not answer in time." : null,
+    created_at: "2026-01-01T00:00:00Z",
+    started_at: null,
+    finished_at: null,
+  };
+}
+
+function pushStatus() {
+  act(() => FakeEventSource.instances.at(-1)!.onmessage?.(new MessageEvent("message")));
+}
 
 function section(id: string, status = "draft"): ProposalSectionResponse {
   return {
@@ -207,5 +260,99 @@ describe("ProposalWorkspace (restyle batch 5)", () => {
     expect(container.querySelectorAll("ul.claims li")).toHaveLength(0);
     resolve([]);
     expect(await screen.findByText("No claims in this section.")).toBeInTheDocument();
+  });
+});
+
+// Phase 4 Stage 2: Generate proposal starts an async operation (202) and the
+// worker drafts. full-flow.spec.ts:949-953 waits up to 300 s for the button
+// to be enabled, then expects a section visible at once, and step 10 (:974)
+// counts claim rows without waiting: so the button must stay disabled until
+// the operation is finished AND the sections and their claims are re-read.
+describe("ProposalWorkspace (Phase 4 Stage 2, async generation)", () => {
+  it("keeps Generate busy until the operation finishes, and re-reads sections and claims before releasing it", async () => {
+    const user = userEvent.setup();
+    let resolveSections!: (sections: ProposalSectionResponse[]) => void;
+    listProposalSections
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(new Promise((r) => (resolveSections = r)));
+    let resolveClaims!: (claims: ProposalClaimResponse[]) => void;
+    listProposalClaims.mockReturnValue(new Promise((r) => (resolveClaims = r)));
+    generateProposal.mockResolvedValue(operation("queued"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    const { container } = renderScreen();
+
+    await screen.findByText("No proposal sections drafted yet");
+    await user.click(screen.getByRole("button", { name: "Generate proposal" }));
+    expect(generateProposal).toHaveBeenCalledWith("t1", expect.any(String));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    // Accepted and running: busy, and no "Generate proposal" button to find.
+    expect(screen.getByRole("button", { name: "Generating..." })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Generate proposal" })).toBeNull();
+    expect(listProposalSections).toHaveBeenCalledTimes(1);
+
+    // Finished: the re-read starts, the button is still busy.
+    pushStatus();
+    await waitFor(() => expect(listProposalSections).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Generating..." })).toBeDisabled();
+
+    // Sections answered, claims not yet: still busy.
+    resolveSections([section("s1")]);
+    await screen.findByRole("heading", { name: "Section s1" });
+    expect(screen.getByRole("button", { name: "Generating..." })).toBeDisabled();
+
+    // Claims answered: only now is the button released, with the section and
+    // its claim rows already on screen.
+    resolveClaims([claim("c1", "unsupported")]);
+    const released = await screen.findByRole("button", { name: "Generate proposal" });
+    expect(released).toBeEnabled();
+    expect(container.querySelectorAll("main > section")).toHaveLength(1);
+    expect(screen.getByText("Claim c1.").closest("li")!.textContent).toContain("/ unsupported]");
+  });
+
+  it("shows a failed generation's own message and frees the button", async () => {
+    const user = userEvent.setup();
+    listProposalSections.mockResolvedValue([]);
+    generateProposal.mockResolvedValue(operation("queued"));
+    getOperation.mockResolvedValue(operation("failed"));
+    renderScreen();
+
+    await screen.findByText("No proposal sections drafted yet");
+    await user.click(screen.getByRole("button", { name: "Generate proposal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The model did not answer in time.");
+    expect(await screen.findByRole("button", { name: "Generate proposal" })).toBeEnabled();
+  });
+
+  it("reattaches on load: a generation already running shows the button busy and follows it to the end", async () => {
+    listProposalSections.mockResolvedValueOnce([]).mockResolvedValueOnce([section("s1")]);
+    listProposalClaims.mockResolvedValue([]);
+    getActiveOperation.mockResolvedValue(operation("running"));
+    getOperation
+      .mockResolvedValueOnce(operation("running"))
+      .mockResolvedValueOnce(operation("succeeded"));
+    renderScreen();
+
+    expect(await screen.findByRole("button", { name: "Generating..." })).toBeDisabled();
+    expect(getActiveOperation).toHaveBeenCalledWith("t1", "proposal_generation");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(mintOperationEventsTicket).toHaveBeenCalledWith("op-1");
+    expect(generateProposal).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(getOperation).toHaveBeenCalledTimes(1));
+    pushStatus();
+    await screen.findByRole("heading", { name: "Section s1" });
+    expect(await screen.findByRole("button", { name: "Generate proposal" })).toBeEnabled();
+  });
+
+  it("does not reattach when nothing is running", async () => {
+    listProposalSections.mockResolvedValue([]);
+    renderScreen();
+
+    await screen.findByText("No proposal sections drafted yet");
+    await waitFor(() => expect(getActiveOperation).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Generate proposal" })).toBeEnabled();
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 });

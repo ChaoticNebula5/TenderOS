@@ -1,14 +1,12 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from tenderos_backend.agents.llm.client import LLMClient
-from tenderos_backend.agents.llm.factory import build_llm_client
-from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.user import User
-from tenderos_backend.domain.services import proposal_service
+from tenderos_backend.domain.services import operation_service, proposal_service, tender_service
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
+from tenderos_api.schemas.operations import OperationResponse
 from tenderos_api.schemas.proposal import (
     PatchProposalSectionRequest,
     ProposalClaimResponse,
@@ -24,16 +22,6 @@ router = APIRouter(tags=["proposal"])
 _EDIT = "edit_proposal"
 
 
-def _build_llm_client() -> LLMClient:
-    # Same "function, not module-level singleton" shape every other route
-    # file's own helper uses - kept here rather than imported from
-    # orchestration.nodes.proposal, since A4.1 locks the dependency
-    # direction as routes -> domain services, never routes -> orchestration.
-    # B17: delegates to agents/llm/factory.py::build_llm_client - see
-    # commercial.py's identical comment for why.
-    return build_llm_client()
-
-
 @router.get(
     "/tenders/{tender_id}/proposal/sections", response_model=list[ProposalSectionResponse]
 )
@@ -45,7 +33,9 @@ async def list_proposal_sections(
 
 
 @router.post(
-    "/tenders/{tender_id}/proposal/generate", response_model=list[ProposalSectionResponse]
+    "/tenders/{tender_id}/proposal/generate",
+    response_model=OperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def generate_proposal(
     tender_id: UUID,
@@ -53,29 +43,35 @@ async def generate_proposal(
     idempotency: IdempotencyContext = Depends(
         get_idempotency_context("proposal_generation", required=True)
     ),
-) -> list[ProposalSectionResponse]:
-    """I1 explicitly names "proposal generation" as one of only six
-    operations requiring Idempotency-Key (Part I1) - wired in from the
-    start this time (B8A's select-candidate needed a second pass to catch
-    this same requirement). This route triggers draft_proposal_for_tender
-    directly, the same manual on-demand shape G9's /validate route gives
-    commercial checks; proposal_drafting_node runs the same pipeline
-    automatically once per workflow run.
+) -> OperationResponse:
+    """Phase 4 Stage 2: no longer drafts the proposal (up to 12 LLM calls)
+    inside the request. Records a proposal_generation async operation and
+    returns 202 with it, the same pattern as POST .../redteam/run; the
+    worker runs draft_proposal_for_tender (jobs/operations.py), and the web
+    app follows GET /operations/{operation_id} until it finishes, then
+    re-reads GET .../proposal/sections. A second request while one is
+    queued or running returns that same operation.
+
+    Part I1 still requires an Idempotency-Key here. The key now records and
+    replays this fast 202, so the request finishes well inside the key's
+    60 s lease, which closes blocker 2's limit about generation outlasting
+    it (KNOWN_LIMITATIONS.md). A replayed body shows the status at the time
+    of the first request; the client follows the operation for the current
+    one. proposal_drafting_node runs the same pipeline automatically once
+    per workflow run.
     """
     if idempotency.replay_response is not None:
         _, cached_body = idempotency.replay_response
-        return [ProposalSectionResponse.model_validate(s) for s in cached_body["sections"]]
+        return OperationResponse.model_validate(cached_body)
 
-    client = _build_llm_client()
-    sections = await proposal_service.draft_proposal_for_tender(
-        client, settings.reasoning_model, tender_id
+    tender = await tender_service.get_tender(tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    requested = await operation_service.request_operation(
+        tender.organization_id, tender_id, "proposal_generation", current_user.id
     )
-    response = [
-        ProposalSectionResponse.model_validate(s, from_attributes=True) for s in sections
-    ]
-    await idempotency.finalize(
-        200, {"sections": [r.model_dump(mode="json") for r in response]}
-    )
+    response = OperationResponse.from_operation(requested.operation)
+    await idempotency.finalize(202, response.model_dump(mode="json"))
     return response
 
 

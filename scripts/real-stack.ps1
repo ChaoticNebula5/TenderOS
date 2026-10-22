@@ -8,15 +8,15 @@
     - refuses if docker-compose.e2e-fake.yml (or any file named *fake*) is
       in the compose file list;
     - resolves the merged config (`docker compose config`) and refuses if
-      LLM_PROVIDER for api, worker or outbox_dispatcher is fake, missing,
-      or anything other than gemini;
+      LLM_PROVIDER for api, worker, operations_worker or outbox_dispatcher
+      is fake, missing, or anything other than gemini;
     - reports whether each Gemini key is present (length only, never the
       value).
   It prints a loud banner with the resolved provider and the exact compose
   command before doing anything. With -DryRun it stops there: nothing is
   started. Without it, it flushes Redis (a stale queued job picked up by a
   real-provider worker would spend budget), starts the stack, waits for the
-  api health check, and re-checks `printenv LLM_PROVIDER` in all three
+  api health check, and re-checks `printenv LLM_PROVIDER` in all four
   running containers.
   No behaviour change to the stack itself.
 
@@ -42,7 +42,7 @@ if ($fakeFiles.Count -gt 0) {
 }
 $files = @()
 foreach ($f in $ComposeFiles) { $files += @("-f", $f) }
-$services = @("api", "worker", "outbox_dispatcher")
+$services = @("api", "worker", "operations_worker", "outbox_dispatcher")
 
 Push-Location $repo
 try {
@@ -67,7 +67,7 @@ try {
     }
 
     $bad = @($services | Where-Object { $resolved[$_] -ne "gemini" })
-    $command = "docker compose $($files -join ' ') up -d --build --force-recreate api web worker outbox_dispatcher"
+    $command = "docker compose $($files -join ' ') up -d --build --force-recreate api web worker operations_worker outbox_dispatcher"
 
     Write-Host ""
     Write-Host "################################################################" -ForegroundColor Red
@@ -92,7 +92,7 @@ try {
     & docker compose @files exec -T redis redis-cli FLUSHALL
     if ($LASTEXITCODE -ne 0) { throw "redis FLUSHALL failed" }
 
-    & docker compose @files up -d --build --force-recreate api web worker outbox_dispatcher
+    & docker compose @files up -d --build --force-recreate api web worker operations_worker outbox_dispatcher
     if ($LASTEXITCODE -ne 0) { throw "compose up failed" }
 
     $healthy = $false

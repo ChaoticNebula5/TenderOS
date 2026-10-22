@@ -207,11 +207,25 @@ async def evaluate_commercial_for_tender(
 
     persisted: list[PricingFinding] = []
     for draft in drafts:
+        # Phase 4 Stage 2: look the finding up before explaining it. The
+        # fingerprint depends only on the draft, never on the explanation, so
+        # a finding already stored needs no LLM call: a re-validation (or a
+        # duplicate delivery of one) pays only for findings that are new.
+        # The lookup runs in its own short transaction so no transaction is
+        # held open across the LLM call below.
+        fingerprint = finding_fingerprint(str(tender_id), draft)
+        async with UnitOfWork() as uow:
+            stored = await uow.commercial.get_pricing_finding_by_fingerprint(tender_id, fingerprint)
+        if stored is not None:
+            persisted.append(stored)
+            continue
+
         explanation = await explain_finding(
             client, model, draft, tender_id, workflow_run_id=workflow_run_id, task_id=task_id
         )
-        fingerprint = finding_fingerprint(str(tender_id), draft)
         async with UnitOfWork() as uow:
+            # Checked again: a concurrent run (the workflow's commercial step
+            # and a manual re-validation) may have stored it during the call.
             existing = await uow.commercial.get_pricing_finding_by_fingerprint(
                 tender_id, fingerprint
             )

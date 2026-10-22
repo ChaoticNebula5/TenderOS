@@ -7,12 +7,14 @@ moment. Only the call that moves the operation from 'queued' to 'running'
 may do the work, and only the holder of that claim may finish it. Most
 tests here replace the kind's handler with a stand-in that counts calls:
 the question is how many times the work would run, not what it does. The
-last tests run the real red team (FakeLLMClient, real Neo4j) end to end.
+last tests run the real work for each kind (FakeLLMClient; real Neo4j for
+the red team, real object storage for commercial validation) end to end.
 """
 
 import asyncio
 import uuid
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -20,8 +22,10 @@ from _helpers import register_org_and_tender
 from sqlalchemy import func, select, update
 from tenderos_backend.agents.llm.client import LLMTimeoutError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
+from tenderos_backend.agents.schemas.commercial import FindingExplanation
+from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
-from tenderos_backend.db.models.async_operation import AsyncOperation
+from tenderos_backend.db.models.async_operation import OPERATION_KINDS, AsyncOperation
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.repositories.async_operations import (
     DISPATCH_FAILED,
@@ -33,7 +37,12 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_OPERATION_REQUESTED,
     EVENT_OPERATION_STATUS_CHANGED,
 )
-from tenderos_backend.domain.services import operation_service
+from tenderos_backend.domain.services import (
+    commercial_service,
+    document_service,
+    operation_service,
+    proposal_service,
+)
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_worker.jobs import operations as operation_jobs
 from tenderos_worker.jobs.operations import run_operation
@@ -41,6 +50,9 @@ from tenderos_worker.jobs.operations import run_operation
 pytestmark = pytest.mark.asyncio
 
 _WAIT_SECONDS = 10
+_PRICING_FIXTURES = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "synthetic" / "tender_a"
+)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -64,10 +76,10 @@ def _replace_redteam_handler(monkeypatch: pytest.MonkeyPatch, handler) -> None:
     monkeypatch.setitem(operation_jobs._HANDLERS, "redteam_run", handler)
 
 
-async def _request(email: str) -> operation_service.OperationRequest:
+async def _request(email: str, kind: str = "redteam_run") -> operation_service.OperationRequest:
     registered, tender = await register_org_and_tender(email, f"{email} org", f"{email} tender")
     return await operation_service.request_operation(
-        registered.organization.id, tender.id, "redteam_run", registered.user.id
+        registered.organization.id, tender.id, kind, registered.user.id
     )
 
 
@@ -151,6 +163,23 @@ async def test_a_duplicate_delivery_does_not_run_the_work_twice(monkeypatch):
     finished = await _reload(op_id)
     assert finished.status == "succeeded"
     assert finished.started_at is not None and finished.finished_at is not None
+    assert await _statuses_announced(op_id) == ["queued", "running", "succeeded"]
+
+
+@pytest.mark.parametrize("kind", OPERATION_KINDS)
+async def test_a_duplicate_delivery_runs_each_kind_once(monkeypatch, kind):
+    """Stage 2: the same claim guards every kind, so each one's handler runs
+    once under a duplicate delivery, and every kind has a handler."""
+    handler = _CountingHandler()
+    monkeypatch.setitem(operation_jobs._HANDLERS, kind, handler)
+    requested = await _request(f"op-dup-{kind}@example.com", kind)
+    op_id = requested.operation.id
+
+    await run_operation(str(op_id))
+    await run_operation(str(op_id))
+
+    assert handler.calls == [op_id]
+    assert (await _reload(op_id)).status == "succeeded"
     assert await _statuses_announced(op_id) == ["queued", "running", "succeeded"]
 
 
@@ -360,3 +389,74 @@ async def test_a_real_red_team_run_succeeds_through_the_worker(monkeypatch):
 
     assert (await _reload(requested.operation.id)).status == "succeeded"
     assert [c["agent_name"] for c in fake_client.calls] == ["redteam_critique"]
+
+
+async def test_a_real_proposal_generation_runs_once_under_a_duplicate_delivery(monkeypatch):
+    """Stage 2. The real handler (proposal_service.draft_proposal_for_tender):
+    a fresh tender drafts only the always-on Company Overview, one LLM call.
+    Two drafts are scripted, so a second delivery that wrongly ran the work
+    would succeed and be counted; it must not run."""
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "proposal_drafting",
+        ProposalSectionDraft,
+        [ProposalSectionDraft(content="Fake overview.", claims=[])] * 2,
+    )
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    requested = await _request("op-proposal@example.com", "proposal_generation")
+    op_id = requested.operation.id
+
+    await run_operation(str(op_id))
+    await run_operation(str(op_id))
+
+    assert (await _reload(op_id)).status == "succeeded"
+    assert [c["agent_name"] for c in fake_client.calls] == ["proposal_drafting"]
+    sections = await proposal_service.list_proposal_sections_for_tender(
+        requested.operation.tender_id
+    )
+    assert [s.section_name for s in sections] == ["Company Overview"]
+
+
+async def test_a_real_commercial_validation_runs_once_and_explains_only_new_findings(
+    monkeypatch,
+):
+    """Stage 2. The real handler (commercial_service.evaluate_commercial_for_
+    tender) on a real pricing workbook: pricing_schedule_1.xlsx yields 4
+    findings, so the first run makes 4 explanation calls. A duplicate
+    delivery does nothing; a later re-validation (a new operation) finds
+    all 4 stored by fingerprint and makes no LLM call."""
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "commercial_explanation",
+        FindingExplanation,
+        [FindingExplanation(severity="major", explanation="Fake explanation.")] * 8,
+    )
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    requested = await _request("op-commercial@example.com", "commercial_validation")
+    op = requested.operation
+    await document_service.create_document(
+        tender_id=op.tender_id,
+        organization_id=op.organization_id,
+        actor_user_id=uuid.uuid4(),
+        filename="pricing_schedule_1.xlsx",
+        content=(_PRICING_FIXTURES / "pricing_schedule_1.xlsx").read_bytes(),
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    await run_operation(str(op.id))
+    await run_operation(str(op.id))
+
+    assert (await _reload(op.id)).status == "succeeded"
+    assert len(fake_client.calls) == 4
+    findings = await commercial_service.list_pricing_findings_for_tender(op.tender_id)
+    assert len(findings) == 4
+
+    again = await operation_service.request_operation(
+        op.organization_id, op.tender_id, "commercial_validation", op.requested_by
+    )
+    assert again.created is True
+    await run_operation(str(again.operation.id))
+
+    assert (await _reload(again.operation.id)).status == "succeeded"
+    assert len(fake_client.calls) == 4, "an already-stored finding must not be explained again"
+    assert len(await commercial_service.list_pricing_findings_for_tender(op.tender_id)) == 4

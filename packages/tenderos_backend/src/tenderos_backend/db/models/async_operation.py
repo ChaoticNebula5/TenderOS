@@ -8,8 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
 
 # The kinds of work that run as an async operation instead of inside an
-# HTTP request (Phase 4: no LLM call inside a request). Stage 1 converts
-# redteam_run; proposal_generation and commercial_validation follow.
+# HTTP request (Phase 4: no LLM call inside a request). Stage 1 converted
+# redteam_run, Stage 2 proposal_generation and commercial_validation.
 OPERATION_KINDS = ("redteam_run", "proposal_generation", "commercial_validation")
 OPERATION_STATUSES = ("queued", "running", "succeeded", "failed")
 ACTIVE_STATUSES = ("queued", "running")

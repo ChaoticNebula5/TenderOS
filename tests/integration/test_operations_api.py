@@ -1,5 +1,6 @@
 """Phase 4: the async operation routes over real HTTP (routes/redteam.py's
-POST .../redteam/run, routes/operations.py), plus the operation stream's
+POST .../redteam/run, routes/operations.py, including Stage 2's
+GET /tenders/{id}/operations/active), plus the operation stream's
 generator.
 
 Same harness as test_workflow_api.py: httpx.AsyncClient over ASGITransport.
@@ -14,6 +15,7 @@ outbox dispatcher once, with a failing enqueue, to dead-letter a request.
 
 import json
 import uuid
+from typing import get_args
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -21,13 +23,14 @@ from rq import Queue
 from sqlalchemy import select, update
 from tenderos_api.main import app
 from tenderos_api.outbox_stream import outbox_event_stream
-from tenderos_api.routes.operations import _operation_message
+from tenderos_api.routes.operations import OperationKind, _operation_message
 from tenderos_api.sse_tickets import (
     SCOPE_OPERATION,
     SCOPE_WORKFLOW_RUN,
     consume_sse_ticket_with_scope,
     mint_sse_ticket,
 )
+from tenderos_backend.db.models.async_operation import OPERATION_KINDS
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.repositories.async_operations import DISPATCH_FAILED
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -184,6 +187,77 @@ async def test_another_organizations_operation_is_a_404_like_a_missing_one():
         assert missing.status_code == 404, missing.text
         assert cross_org.json() == missing.json()
         assert cross_org_ticket.status_code == 404, cross_org_ticket.text
+
+
+async def _active(client: AsyncClient, headers: dict[str, str], tender_id: str, kind: str):
+    return await client.get(
+        f"/tenders/{tender_id}/operations/active", params={"kind": kind}, headers=headers
+    )
+
+
+async def test_the_active_operation_is_returned_while_running_and_null_when_idle():
+    """Stage 2: what a screen asks on load to reattach after a reload."""
+    async with await _client() as client:
+        headers, _, org_id = await _register(client, "ops-api-active@example.com")
+        tender_id = await _tender(client, headers, org_id)
+
+        for kind in OPERATION_KINDS:
+            idle = await _active(client, headers, tender_id, kind)
+            assert idle.status_code == 200, idle.text
+            assert idle.json() is None
+
+        started = await _start_red_team(client, headers, tender_id)
+        queued = await _active(client, headers, tender_id, "redteam_run")
+        assert queued.json()["operation_id"] == started["operation_id"]
+        assert queued.json()["status"] == "queued"
+
+        operation_id = uuid.UUID(started["operation_id"])
+        claimed = await operation_service.claim_operation(
+            operation_id, operation_service.lease_for("redteam_run")
+        )
+        assert claimed is not None and claimed.claim_token is not None
+        running = await _active(client, headers, tender_id, "redteam_run")
+        assert running.json()["operation_id"] == started["operation_id"]
+        assert running.json()["status"] == "running"
+        # Per kind: the tender's other kinds are still idle.
+        other = await _active(client, headers, tender_id, "proposal_generation")
+        assert other.json() is None
+
+        assert await operation_service.finish_operation(
+            operation_id, claimed.claim_token, "succeeded"
+        )
+        finished = await _active(client, headers, tender_id, "redteam_run")
+        assert finished.status_code == 200, finished.text
+        assert finished.json() is None
+
+
+async def test_the_active_operation_is_a_404_across_organizations_like_a_missing_tender():
+    async with await _client() as client:
+        headers, _, org_id = await _register(client, "ops-api-active-owner@example.com")
+        tender_id = await _tender(client, headers, org_id)
+        await _start_red_team(client, headers, tender_id)
+        outsider_headers, _, _ = await _register(client, "ops-api-active-outsider@example.com")
+
+        cross_org = await _active(client, outsider_headers, tender_id, "redteam_run")
+        missing = await _active(client, outsider_headers, str(uuid.uuid4()), "redteam_run")
+
+        assert cross_org.status_code == 404, cross_org.text
+        assert missing.status_code == 404, missing.text
+        assert cross_org.json() == missing.json()
+
+
+async def test_the_active_operation_needs_a_known_kind():
+    async with await _client() as client:
+        headers, _, org_id = await _register(client, "ops-api-active-kind@example.com")
+        tender_id = await _tender(client, headers, org_id)
+
+        unknown = await _active(client, headers, tender_id, "not_a_kind")
+        no_kind = await client.get(f"/tenders/{tender_id}/operations/active", headers=headers)
+
+        assert unknown.status_code == 422, unknown.text
+        assert no_kind.status_code == 422, no_kind.text
+    # The route's accepted kinds are the model's kinds, no more, no fewer.
+    assert set(get_args(OperationKind)) == set(OPERATION_KINDS)
 
 
 async def test_a_minted_operation_ticket_is_scoped_to_its_operation_and_single_use():

@@ -7,9 +7,12 @@ rbac.py, not assumed - except GET /proposal/claims/{id}/trace, which
 test_trace_proposal_claim_is_accessible_to_a_role_outside_edit_proposal
 below).
 
-generate_proposal is this module's own LLM-touching route -
-_build_llm_client (routes/proposal.py's own local one) is monkeypatched to
-FakeLLMClient, matching every other LLM-adjacent test in this project.
+Phase 4 Stage 2: generate_proposal no longer drafts inside the request. It
+records a proposal_generation async operation and returns 202; the worker's
+run_operation drafts. _generate below runs that worker call in-process,
+with the worker's _build_llm_client monkeypatched to FakeLLMClient, then
+reads the sections back through GET .../proposal/sections, so every test
+that needs a drafted section still goes through the real route and job.
 Fixtures target a brand-new tender with zero requirements/compliance/roles
 on purpose: draft_proposal_for_tender only drafts a section with no
 underlying facts when the template is `always_on` (SECTION_TEMPLATES'
@@ -22,9 +25,10 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from tenderos_api.routes import proposal
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
+from tenderos_worker.jobs import operations as operation_jobs
+from tenderos_worker.jobs.operations import run_operation
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,16 +52,22 @@ def _script_company_overview(fake_client: FakeLLMClient) -> None:
     )
 
 
-def _generate(client: TestClient, headers: dict, tender_id: str, monkeypatch) -> dict:
+async def _generate(client: TestClient, headers: dict, tender_id: str, monkeypatch) -> list:
     fake_client = FakeLLMClient()
     _script_company_overview(fake_client)
-    monkeypatch.setattr(proposal, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
     response = client.post(
         f"/tenders/{tender_id}/proposal/generate",
         headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
     )
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert response.status_code == 202, response.text
+    # What the worker does when the outbox delivers OperationRequested.
+    await run_operation(response.json()["operation_id"])
+    operation = client.get(f"/operations/{response.json()['operation_id']}", headers=headers)
+    assert operation.json()["status"] == "succeeded", operation.text
+    sections = client.get(f"/tenders/{tender_id}/proposal/sections", headers=headers)
+    assert sections.status_code == 200, sections.text
+    return sections.json()
 
 
 async def test_generate_proposal_drafts_exactly_the_always_on_section(
@@ -68,23 +78,53 @@ async def test_generate_proposal_drafts_exactly_the_always_on_section(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid"}, headers=headers
     ).json()
 
-    sections = _generate(client, headers, tender["id"], monkeypatch)
+    sections = await _generate(client, headers, tender["id"], monkeypatch)
 
     assert len(sections) == 1
     assert sections[0]["section_name"] == "Company Overview"
     assert sections[0]["status"] == "draft"
 
 
-async def test_generate_proposal_requires_idempotency_key(
-    client: TestClient, register_actor, monkeypatch
+async def test_generate_proposal_returns_202_and_the_same_operation_while_active(
+    client: TestClient, register_actor
 ):
+    """Phase 4 Stage 2: the POST only records the operation. A retry with the
+    same Idempotency-Key replays the 202; a second click (a new key) while
+    the first is still queued gets the same operation, not a second one."""
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 12"},
+        headers=headers,
+    ).json()
+    key = str(uuid.uuid4())
+    url = f"/tenders/{tender['id']}/proposal/generate"
+
+    first = client.post(url, headers={**headers, "Idempotency-Key": key})
+    replayed = client.post(url, headers={**headers, "Idempotency-Key": key})
+    second_click = client.post(url, headers={**headers, "Idempotency-Key": str(uuid.uuid4())})
+
+    assert first.status_code == 202, first.text
+    body = first.json()
+    assert (body["kind"], body["status"], body["tender_id"]) == (
+        "proposal_generation",
+        "queued",
+        tender["id"],
+    )
+    assert replayed.status_code == 202, replayed.text
+    assert replayed.json() == body
+    assert second_click.status_code == 202, second_click.text
+    assert second_click.json()["operation_id"] == body["operation_id"]
+    # Nothing was drafted in the request.
+    sections = client.get(f"/tenders/{tender['id']}/proposal/sections", headers=headers)
+    assert sections.json() == []
+
+
+async def test_generate_proposal_requires_idempotency_key(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 2"}, headers=headers
     ).json()
-    fake_client = FakeLLMClient()
-    _script_company_overview(fake_client)
-    monkeypatch.setattr(proposal, "_build_llm_client", lambda: fake_client)
 
     response = client.post(f"/tenders/{tender['id']}/proposal/generate", headers=headers)
 
@@ -98,7 +138,7 @@ async def test_list_proposal_sections_returns_the_real_section(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 3"}, headers=headers
     ).json()
-    _generate(client, headers, tender["id"], monkeypatch)
+    await _generate(client, headers, tender["id"], monkeypatch)
 
     response = client.get(f"/tenders/{tender['id']}/proposal/sections", headers=headers)
 
@@ -113,7 +153,7 @@ async def test_list_proposal_claims_returns_the_real_claim(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 4"}, headers=headers
     ).json()
-    sections = _generate(client, headers, tender["id"], monkeypatch)
+    sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
 
     response = client.get(f"/proposal/sections/{section_id}/claims", headers=headers)
@@ -132,7 +172,7 @@ async def test_patch_proposal_section_updates_content(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 5"}, headers=headers
     ).json()
-    sections = _generate(client, headers, tender["id"], monkeypatch)
+    sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
 
     response = client.patch(
@@ -162,7 +202,7 @@ async def test_trace_proposal_claim_walks_claim_to_section(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 6"}, headers=headers
     ).json()
-    sections = _generate(client, headers, tender["id"], monkeypatch)
+    sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
     claim_id = client.get(
         f"/proposal/sections/{section_id}/claims", headers=headers
@@ -229,7 +269,7 @@ async def test_trace_proposal_claim_is_accessible_to_a_role_outside_edit_proposa
         json={"name": "Proposal Route Test Bid 8"},
         headers=admin_headers,
     ).json()
-    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+    sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
     claim_id = client.get(
         f"/proposal/sections/{sections[0]['id']}/claims", headers=admin_headers
     ).json()[0]["id"]
@@ -261,7 +301,7 @@ async def test_list_proposal_claims_rejects_a_section_from_another_organization(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 9"}, headers=admin_headers
     ).json()
-    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+    sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
 
     other_admin_headers, _, _other_org_id = register_actor()
 
@@ -286,7 +326,7 @@ async def test_trace_proposal_claim_rejects_a_claim_from_another_organization(
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 10"}, headers=admin_headers
     ).json()
-    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+    sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
     claim_id = client.get(
         f"/proposal/sections/{sections[0]['id']}/claims", headers=admin_headers
     ).json()[0]["id"]
@@ -305,16 +345,15 @@ async def test_list_generate_and_patch_reject_a_caller_outside_the_organization(
     # B16 item 3: the other 3 proposal.py routes had zero cross-org
     # coverage - only claims-list and trace (above) did. Same shape:
     # a real Admin of a DIFFERENT organization. generate_proposal's own
-    # RBAC dependency runs before the route body (and before any LLM
-    # call) - a 403 here is proven without needing FakeLLMClient scripted
-    # at all, since draft_proposal_for_tender never runs.
+    # RBAC dependency runs before the route body, so the 403 comes before
+    # any operation is recorded.
     admin_headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders",
         json={"name": "Proposal Route Test Bid 11"},
         headers=admin_headers,
     ).json()
-    sections = _generate(client, admin_headers, tender["id"], monkeypatch)
+    sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
 
     outsider_headers, _, _outsider_org_id = register_actor()
 

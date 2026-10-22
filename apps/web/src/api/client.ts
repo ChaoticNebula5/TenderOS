@@ -831,10 +831,12 @@ export function listPricingDocuments(tenderId: string): Promise<PricingDocumentR
   return apiFetch<PricingDocumentResponse[]>(`/tenders/${tenderId}/pricing-documents`);
 }
 
-export function validatePricingDocument(
-  pricingDocumentId: string,
-): Promise<PricingFindingResponse[]> {
-  return apiFetch<PricingFindingResponse[]>(`/pricing-documents/${pricingDocumentId}/validate`, {
+// Phase 4 Stage 2: starts a re-validation of the document's whole tender in
+// the background and returns at once with the operation to follow (202). One
+// operation per tender: a call from any of its documents while one is queued
+// or running returns that same operation.
+export function validatePricingDocument(pricingDocumentId: string): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/pricing-documents/${pricingDocumentId}/validate`, {
     method: "POST",
   });
 }
@@ -972,11 +974,15 @@ export function listProposalSections(tenderId: string): Promise<ProposalSectionR
   return apiFetch<ProposalSectionResponse[]>(`/tenders/${tenderId}/proposal/sections`);
 }
 
+// Phase 4 Stage 2: starts proposal generation in the background and returns
+// at once with the operation to follow (202); the sections are re-read once
+// it has finished. A second call while one is queued or running returns that
+// same operation; a retry with the same key replays the first 202.
 export function generateProposal(
   tenderId: string,
   idempotencyKey: string,
-): Promise<ProposalSectionResponse[]> {
-  return apiFetch<ProposalSectionResponse[]>(`/tenders/${tenderId}/proposal/generate`, {
+): Promise<OperationResponse> {
+  return apiFetch<OperationResponse>(`/tenders/${tenderId}/proposal/generate`, {
     method: "POST",
     idempotencyKey,
   });
@@ -1157,10 +1163,12 @@ export function getGraphTrace(
 
 export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
 
+export type OperationKind = "redteam_run" | "proposal_generation" | "commercial_validation";
+
 export interface OperationResponse {
   operation_id: string;
   tender_id: string;
-  kind: string;
+  kind: OperationKind;
   status: OperationStatus;
   // Set when status is "failed"; safe to show as is.
   error_code: string | null;
@@ -1176,6 +1184,18 @@ export function isFinishedOperation(operation: OperationResponse): boolean {
 
 export function getOperation(operationId: string): Promise<OperationResponse> {
   return apiFetch<OperationResponse>(`/operations/${operationId}`);
+}
+
+// Stage 2: the tender's queued or running operation of this kind, or null.
+// A screen asks on load, so after a reload it can show its button busy and
+// follow the run it started before.
+export function getActiveOperation(
+  tenderId: string,
+  kind: OperationKind,
+): Promise<OperationResponse | null> {
+  return apiFetch<OperationResponse | null>(
+    `/tenders/${tenderId}/operations/active?kind=${encodeURIComponent(kind)}`,
+  );
 }
 
 export function mintOperationEventsTicket(operationId: string): Promise<SSETicketResponse> {

@@ -20,7 +20,12 @@ from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.session import engine
-from tenderos_backend.domain.services import operation_service, redteam_service
+from tenderos_backend.domain.services import (
+    commercial_service,
+    operation_service,
+    proposal_service,
+    redteam_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +49,29 @@ async def _run_redteam(operation: AsyncOperation) -> None:
     )
 
 
-# kind -> the work. Stage 2 adds proposal_generation and commercial_validation.
+async def _run_proposal_generation(operation: AsyncOperation) -> None:
+    # Stage 2: what POST .../proposal/generate used to run inside the
+    # request. The drafted sections are the result; the web app re-reads
+    # GET .../proposal/sections once the operation has succeeded.
+    await proposal_service.draft_proposal_for_tender(
+        _build_llm_client(), settings.reasoning_model, operation.tender_id
+    )
+
+
+async def _run_commercial_validation(operation: AsyncOperation) -> None:
+    # Stage 2: what POST /pricing-documents/{id}/validate used to run inside
+    # the request. Tender-wide, as before (cross-document checks need every
+    # sheet); findings already stored are looked up, not explained again.
+    await commercial_service.evaluate_commercial_for_tender(
+        _build_llm_client(), settings.reasoning_model, operation.tender_id
+    )
+
+
+# kind -> the work. Every kind in async_operation.OPERATION_KINDS has one.
 _HANDLERS: dict[str, Callable[[AsyncOperation], Awaitable[None]]] = {
     "redteam_run": _run_redteam,
+    "proposal_generation": _run_proposal_generation,
+    "commercial_validation": _run_commercial_validation,
 }
 
 
@@ -117,6 +142,10 @@ def run_operation_job(operation_id: str) -> None:
     marked failed as JOB_TIMEOUT instead of waiting for the reaper. The
     engine is disposed first because its pooled connections belong to the
     event loop that just stopped."""
+    # The first line of job code. Its timestamp, against RQ's own job
+    # started_at, is the job's startup cost (forking the work-horse and
+    # importing this module; see worker.py's preload).
+    logger.info("operation %s: job code started", operation_id)
     try:
         asyncio.run(run_operation(operation_id))
     except JobTimeoutException:

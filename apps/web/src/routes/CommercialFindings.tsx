@@ -9,7 +9,12 @@ import {
   resolvePricingFinding,
   validatePricingDocument,
 } from "../api/client";
-import type { GateResponse, PricingDocumentResponse, PricingFindingResponse } from "../api/client";
+import type {
+  GateResponse,
+  OperationResponse,
+  PricingDocumentResponse,
+  PricingFindingResponse,
+} from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -17,6 +22,7 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { humanize } from "../format/humanize";
+import { useTenderOperation } from "../hooks/useTenderOperation";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeFinding } from "../status/statusMap";
 import "./CommercialFindings.css";
@@ -41,10 +47,6 @@ export function CommercialFindings() {
   const [findingsLoaded, setFindingsLoaded] = useState(false);
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The document whose re-validation is in flight, or null. Every
-  // Re-validate stays disabled while any one runs (as before, when this was
-  // a boolean); the id lets the clicked one alone carry aria-busy.
-  const [validatingId, setValidatingId] = useState<string | null>(null);
   // The latest run's status, from the listWorkflowRuns call this screen
   // already makes for the gate - reported to the tender bar. No extra fetch.
   const [runStatus, setRunStatus] = useState<string | null>(null);
@@ -119,33 +121,48 @@ export function CommercialFindings() {
     setRunStatus(null);
   }
 
+  // Once the operation is finished, and before the buttons are released:
+  // re-read the findings, and on failure show the operation's own message.
+  // useTenderOperation only calls this for the tender on screen; the
+  // findings read itself is guarded the same way as the mount effect's,
+  // against tenderIdRef.current (kept fresh by the render-time assignment
+  // above), in case the user moves to another tender while it is in flight.
+  async function handleFinished(operation: OperationResponse) {
+    const finishedForTenderId = tenderId;
+    if (operation.status === "failed") {
+      setError(operation.error_message ?? "Validation failed");
+    }
+    await refreshFindings(() => tenderIdRef.current !== finishedForTenderId);
+  }
+  // Phase 4 Stage 2: one re-validation is one tender-wide operation. It
+  // re-checks every pricing document of the tender together (cross-document
+  // checks need every sheet), whichever row's Re-validate started it, and a
+  // click on another row while it runs joins it (observed on the fake stack,
+  // 2026-10-16: two documents' POSTs, one operation, findings on both). So
+  // every row shows busy while it runs, after a click and after a reload
+  // alike.
+  const { busy: validating, start } = useTenderOperation(
+    tenderId,
+    "commercial_validation",
+    handleFinished,
+  );
+
   async function handleValidate(pricingDocumentId: string) {
     setError(null);
-    setValidatingId(pricingDocumentId);
-    // Captured now, compared against tenderIdRef.current (kept fresh by the
-    // render-time assignment above) once the awaits below resolve - the
-    // same "did the world move on since this async work started" check the
-    // mount effect's own `cancelled` closure already makes, just without a
-    // useEffect cleanup to flip a boolean, since this fires from a click,
-    // not a mount. If the user has navigated to a different tender by then,
-    // tenderIdRef.current no longer equals startedForTenderId and this
-    // write is skipped instead of landing on the wrong tender's screen.
+    // Captured now, compared against tenderIdRef.current once the POST
+    // resolves: a rejection arriving after the user has navigated to a
+    // different tender must not paint THIS tender's failure onto that
+    // other tender's screen. (useTenderOperation applies the same check
+    // before following the operation the POST returns.)
     const startedForTenderId = tenderId;
     try {
-      await validatePricingDocument(pricingDocumentId);
-      await refreshFindings(() => tenderIdRef.current !== startedForTenderId);
+      await start(() => validatePricingDocument(pricingDocumentId));
     } catch (err) {
-      // Same guard as the success path above, applied here too: a rejection
-      // arriving after the user has already navigated to a different
-      // tender must not paint THIS tender's failure onto that other
-      // tender's screen.
       if (tenderIdRef.current === startedForTenderId) {
         setError(
           err instanceof ApiError ? `Validation failed (${err.status})` : "Validation failed",
         );
       }
-    } finally {
-      setValidatingId(null);
     }
   }
 
@@ -215,8 +232,8 @@ export function CommercialFindings() {
                     <Button
                       variant="quiet"
                       onClick={() => handleValidate(doc.id)}
-                      disabled={validatingId !== null}
-                      busy={validatingId === doc.id}
+                      busy={validating}
+                      busyLabel="Re-validating..."
                     >
                       Re-validate
                     </Button>

@@ -5,15 +5,22 @@ routes push OperationStatusChanged events to the web app the same way a
 workflow run's progress is pushed (tenderos_api/outbox_stream.py), so a
 screen can keep its button busy until the operation is finished.
 
-Access follows the operation's own organization, with the same RBAC action
-as the route that creates that kind of operation. An operation that does
-not exist and one belonging to another organization both answer 404, so
-the response does not reveal that another organization's operation exists.
+GET /tenders/{tender_id}/operations/active?kind=... returns the tender's
+queued or running operation of that kind, or null: a screen asks it on
+load, so after a reload it can show its button busy and follow the
+operation it started before (Phase 4 Stage 2).
+
+Access follows the operation's (or tender's) own organization, with the
+same RBAC action as the route that creates that kind of operation. A
+missing operation or tender and one belonging to another organization all
+answer 404, so the response does not reveal that another organization's
+operation or tender exists.
 """
 
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from tenderos_backend.core.enums import Role
 from tenderos_backend.db.models.async_operation import AsyncOperation
@@ -22,7 +29,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import EVENT_OPERATION_STATUS_CHANGED
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
-from tenderos_backend.domain.services import operation_service
+from tenderos_backend.domain.services import operation_service, tender_service
 
 from tenderos_api.dependencies import get_current_user, get_current_user_for_sse
 from tenderos_api.errors import OrgAccessDeniedError
@@ -42,18 +49,49 @@ _KIND_ACTIONS = {
 }
 
 
+# The ?kind= values the active-operation route accepts (anything else is
+# 422): async_operation.OPERATION_KINDS as a type, so FastAPI validates it.
+# test_operations_api.py checks the two lists stay equal.
+OperationKind = Literal["redteam_run", "proposal_generation", "commercial_validation"]
+
+
+async def _authorize(organization_id: UUID, kind: str, user: User, not_found: str) -> None:
+    """The one organization check for every route here: a non-member gets
+    the same 404 as a missing resource; a member whose role may not create
+    this kind of operation gets 403."""
+    async with UnitOfWork() as uow:
+        membership = await uow.memberships.get(organization_id, user.id)
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=not_found)
+    if Role(membership.role) not in ACTION_ROLES[_KIND_ACTIONS[kind]]:
+        raise OrgAccessDeniedError()
+
+
 async def _authorized_operation(operation_id: UUID, user: User) -> AsyncOperation:
     operation = await operation_service.get_operation(operation_id)
     if operation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
-    async with UnitOfWork() as uow:
-        membership = await uow.memberships.get(operation.organization_id, user.id)
-    if membership is None:
-        # Another organization's operation: the same answer as a missing one.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
-    if Role(membership.role) not in ACTION_ROLES[_KIND_ACTIONS[operation.kind]]:
-        raise OrgAccessDeniedError()
+    # Another organization's operation: the same answer as a missing one.
+    await _authorize(operation.organization_id, operation.kind, user, "Operation not found")
     return operation
+
+
+@router.get("/tenders/{tender_id}/operations/active", response_model=OperationResponse | None)
+async def get_active_operation(
+    tender_id: UUID,
+    kind: OperationKind = Query(...),
+    current_user: User = Depends(get_current_user),
+) -> OperationResponse | None:
+    """The tender's queued or running operation of this kind, or null when
+    there is none. Read on a screen's load, so a reload does not lose track
+    of a run started before it."""
+    tender = await tender_service.get_tender(tender_id)
+    if tender is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
+    # Another organization's tender: the same answer as a missing one.
+    await _authorize(tender.organization_id, kind, current_user, "Tender not found")
+    active = await operation_service.get_active_operation(tender_id, kind)
+    return OperationResponse.from_operation(active) if active is not None else None
 
 
 @router.get("/operations/{operation_id}", response_model=OperationResponse)

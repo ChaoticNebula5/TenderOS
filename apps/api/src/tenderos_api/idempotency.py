@@ -22,11 +22,10 @@ logger = logging.getLogger(__name__)
 # Phase 4 blocker 2. How long a request holds its claim on an in_progress
 # record before a retry with the same key may take the record over. A design
 # number, not measured: it assumes every idempotent request finishes well
-# inside 60 s. That holds for six of the seven operations, which do their
-# slow work through the outbox. It does NOT yet hold for proposal_generation,
-# which still calls the LLM inline (routes/proposal.py) until it moves to
-# the worker; with a real provider it can outlast this lease, and a retry
-# can then start a second, concurrent generation (KNOWN_LIMITATIONS.md).
+# inside 60 s. All seven operations now do their slow work through the
+# outbox; proposal_generation was the last to call the LLM inline, and since
+# Phase 4 Stage 2 its route only records an async operation and returns 202
+# (routes/proposal.py), so the key replays that fast response.
 _LEASE = timedelta(seconds=60)
 
 # How long a record is kept at all (expires_at), for replaying a completed
