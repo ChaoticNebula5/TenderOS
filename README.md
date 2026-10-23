@@ -11,9 +11,12 @@ Functional through B13. Run it:
 ```
 docker compose up          # full local stack
 uv run pytest               # backend tests
-uv run alembic upgrade head # apply migrations
+uv run alembic upgrade head # apply migrations by hand (from the host, with POSTGRES_DSN on localhost:5433)
 npm --prefix apps/web run test:e2e # Playwright golden-path scenario, against a running stack
 ```
+
+The stack's Postgres is published on host port 5433, not 5432, so a native
+PostgreSQL on the host cannot answer in its place.
 
 See the `Makefile` for the equivalent `lint` / `typecheck` / `format` / `test` targets.
 

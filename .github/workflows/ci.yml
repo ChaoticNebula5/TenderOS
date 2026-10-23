@@ -66,8 +66,10 @@ jobs:
           POSTGRES_USER: tenderos
           POSTGRES_PASSWORD: changeme
           POSTGRES_DB: tenderos_test
+        # 5433 on the runner, as on the dev host (docker-compose.yml): the
+        # test steps source scripts/test-backend.env, whose DSN uses 5433.
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd "pg_isready -U tenderos -d tenderos_test"
           --health-interval 5s --health-timeout 5s --health-retries 10

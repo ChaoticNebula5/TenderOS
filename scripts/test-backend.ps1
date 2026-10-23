@@ -12,6 +12,8 @@
     - POSTGRES_DSN must end in _test (tests/integration/conftest.py checks
       this too; failing here is earlier and louder).
     - REDIS_URL must be database 1 (the running stack's RQ uses 0).
+    - The server behind POSTGRES_DSN must report PostgreSQL 16.x (another
+      server on the port fails here, before pytest).
     - The stack's api, worker, operations_worker and outbox_dispatcher
       containers must be stopped: six fixtures run `MATCH (n) DETACH DELETE n` against the one
       shared Neo4j (KNOWN_LIMITATIONS.md). -AllowRunningStack overrides it.
@@ -106,7 +108,33 @@ foreach ($k in $vars.Keys) {
     if ($v -eq "") { $v = "disabled-in-tests" }
     Set-Item -Path "Env:$k" -Value $v
 }
-Write-Host "test env from $envFile (POSTGRES_DSN=...$($vars['POSTGRES_DSN'].Split('/')[-1]), REDIS_URL=$($vars['REDIS_URL']), HF offline, cache $hfCache)"
+
+# The server behind POSTGRES_DSN must be the project's PostgreSQL 16, not
+# whatever else answers on that port: on this host a native PostgreSQL 18
+# once held localhost:5432 and the suite ran against it (KNOWN_LIMITATIONS.md,
+# environment traps, incident 2). The compose stack now publishes 5433; this
+# asks the server itself. psycopg (sync) keeps the probe to one line; single
+# quotes only, because Windows PowerShell 5.1 mangles embedded double quotes
+# in native arguments.
+Push-Location $repo
+try {
+    $probe = "import os, psycopg; c = psycopg.connect(os.environ['POSTGRES_DSN'].replace('postgresql+asyncpg://', 'postgresql://', 1), connect_timeout=10); print(c.info.server_version); c.close()"
+    $serverVersion = (& uv run --frozen python -c $probe 2>&1 | Out-String).Trim()
+    $probeCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+$dbHost = ($vars["POSTGRES_DSN"] -split "@")[-1].Split("/")[0]
+if ($probeCode -ne 0 -or $serverVersion -notmatch '^\d+$') {
+    throw "refusing: could not ask the Postgres server at $dbHost for its version. Is the stack's postgres running (docker compose start postgres)? Output: $serverVersion"
+}
+$pgMajor = [int]([int]$serverVersion / 10000)
+$pgLabel = "$pgMajor.$([int]$serverVersion % 10000)"
+if ($pgMajor -ne 16) {
+    throw "refusing: the Postgres server at $dbHost reports version $pgLabel, not 16.x. Another server holds that port; the project's container publishes 5433 (docker-compose.yml)."
+}
+
+Write-Host "test env from $envFile (POSTGRES_DSN=...$($vars['POSTGRES_DSN'].Split('/')[-1]) on $dbHost, PostgreSQL $pgLabel, REDIS_URL=$($vars['REDIS_URL']), HF offline, cache $hfCache)"
 
 Push-Location $repo
 try {

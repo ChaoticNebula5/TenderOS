@@ -837,6 +837,22 @@ Each entry:
      into the container bypasses host networking entirely, which is why
      that path kept working the whole time and made the underlying cause
      harder to spot at first.
+     **Phase 4 item 6 (batch 2a):** the stack's Postgres is published on
+     host port 5433; containers still use `postgres:5432`. Every host-side
+     DSN moved with it (`scripts/test-backend.env`, the usage lines of
+     `check_fake_run_invariants.py`, `project_all_tenders.py` and
+     `restore_review_snapshot.sh`), and so did CI's service mapping,
+     because CI sources `test-backend.env`. `scripts/test-backend.ps1` now
+     asks the server for its version before pytest starts and refuses
+     anything but 16.x. On 2026-10-23, before the move, 5432 was held by
+     Docker Desktop and by WSL's localhost relay (`wslrelay.exe` on
+     `127.0.0.1` and `[::1]`); the native service was not running.
+     Observed 2026-10-23: a host connection to `localhost:5433` reports
+     PostgreSQL 16.13 with pgvector 0.8.2; the suite's first line names
+     "localhost:5433, PostgreSQL 16.13"; with the DSN pointed at 5432 the
+     script refused both with nothing listening ("could not ask the
+     Postgres server") and with a throwaway PostgreSQL 17 container there
+     ("reports version 17.11, not 16.x"). The E2E passed after the move.
   3. **Test-suite teardown destroying a live diagnostic.** During B9,
      right after a real, hour-plus live pipeline run produced real
      `proposal_sections`/`proposal_claims`/`compliance_entries`/
