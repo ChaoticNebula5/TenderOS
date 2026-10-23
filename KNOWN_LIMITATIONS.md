@@ -11457,7 +11457,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status (batch 1):** guarded; cause unknown. The next occurrence fails
   CI and names its origin.
 
-## [Phase 4 batch 2a, 2026-10-23] Starting the stack: migrations run at start
+## [Phase 4 batch 2a, 2026-10-23] Starting and stopping the stack: migrations at start, and what a stop does to a job in progress
 
 - **Migrations (item 4):** before, a fresh database stayed empty until
   someone ran `alembic upgrade head` by hand; nothing in compose or the
@@ -11475,3 +11475,55 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   migrate exited 1 (`DuplicateTableError`), `up` failed with "service
   migrate didn't complete successfully", and the api container was
   created but never started.
+- **Stopping (item 28), observed 2026-10-23 on the fake stack before any
+  change:** every Python container ran `uv run` (uv 0.12.3) as PID 1, and
+  uv forwarded SIGTERM to Python. Idle stops: worker 1.7 s (RQ's "warm
+  shut down requested", the scheduler releasing its locks, exit 0); api
+  0.8 s (uvicorn's full shutdown, exit 143, which is uvicorn re-raising
+  the signal after it); outbox_dispatcher 0.6 s (no handler: killed by
+  the signal, exit 143). With a 45 s job running, the worker began a warm
+  shutdown, waited for the job, and Docker's default 10 s grace ran out:
+  SIGKILL, exit 137, and the job stayed `started` in RQ's started
+  registry; RQ's own `Job.delete()` then failed on it ("Execution ... not
+  found in Redis"). With `stop -t 60` and a 20 s job, the job finished and
+  the worker exited 0 after 16.4 s. RQ's warm shutdown never requeues the
+  job in progress (read in code, rq 2.12.0 `worker/base.py`,
+  `request_stop`, `_shutdown`); a second SIGTERM is a cold shutdown that
+  kills it. Every start also rebuilt and reinstalled the two workspace
+  packages ("Uninstalled 2 packages ... Installed 2 packages").
+- **Changed:** the images install the workspace packages at build time,
+  after their code, and each CMD runs the venv's program directly as PID
+  1 (`uvicorn` with `--timeout-graceful-shutdown 10`, `python -m ...`).
+  As PID 1 a process gets no default signal action, so the dispatcher now
+  handles SIGTERM itself: the tick in progress finishes and it exits.
+  Grace periods (`stop_grace_period`): api 20 s, outbox_dispatcher 30 s,
+  worker and operations_worker 31 min. A worker's job can run 1800 s. A
+  killed workflow job leaves its run `running`, since the workflow-run
+  reaper is designed, not built (decision 0035); a killed operation is
+  failed by the dispatcher's reaper as WORKER_LOST, but only once its
+  lease (job timeout plus 60 s) has lapsed, so killing it early only
+  loses the work. An idle worker still stops in seconds; the 31 minutes
+  apply only while a job runs. `docker compose stop -t <seconds>` stops
+  sooner, accepting the loss. Compose also sets `init: true` on the five
+  Python services (api, worker, operations_worker, outbox_dispatcher,
+  migrate): Docker's tini is PID 1, forwards signals and reaps orphaned
+  children, and the program runs with ordinary signal defaults; the
+  dispatcher's handler is what lets it finish its tick.
+  **Observed 2026-10-23 after the change:** `docker-init` is PID 1 in each
+  app container, the program its child, and no reinstall lines in any
+  start log. Idle stops: outbox_dispatcher 2.2 s, exit 0, logging
+  "outbox dispatcher stopping after tick 7" (it was killed before); api
+  0.8 s (uvicorn's shutdown, exit 143 as before); worker 0.8 s and
+  operations_worker 2.4 s, warm shutdowns, exit 0. A 30 s job started 4 s
+  before a plain `docker compose stop worker` ran to completion
+  ("Successfully completed"), and the worker exited 0 after 26.4 s. The
+  reaping of orphans was not observed (Docker's documented init
+  behaviour).
+- **Limits:**
+  - **Host-dependent (accepted 2026-10-23 for compose):** the 31-minute
+    grace is compose's. A host that caps shutdown time (a platform's
+    deploy or stop timeout, the Docker daemon's own timeout at host
+    shutdown, which was not checked) kills a running job sooner, and the
+    two reaper paths above apply. Choosing the host settles this.
+  - A job killed anyway is not retried by RQ. Operations are failed by
+    the reaper; workflow runs need decision 0035's reaper.

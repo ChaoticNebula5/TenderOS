@@ -80,10 +80,14 @@ services:
   # becomes the release command. A second start is a no-op (alembic finds
   # the database at head).
   migrate:
+    # Phase 4 item 28: Docker's init (tini) is PID 1. It forwards SIGTERM to
+    # the program and reaps orphaned child processes; the program then has
+    # ordinary signal defaults, and still handles SIGTERM itself.
+    init: true
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["uv", "run", "--frozen", "--package", "tenderos-api", "alembic", "upgrade", "head"]
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
     env_file: .env
     depends_on:
       postgres:
@@ -93,6 +97,7 @@ services:
     # Phase 4 blocker 3: come back after a crash or a host restart, but
     # stay down after an explicit `docker compose stop`.
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -110,6 +115,12 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Phase 4 item 28: uvicorn stops accepting connections on SIGTERM and
+    # waits for open ones, for at most 10 s (--timeout-graceful-shutdown in
+    # apps/api/Dockerfile's CMD: an open SSE stream would otherwise hold the
+    # shutdown until Docker kills it). 20 s leaves room for the lifespan
+    # shutdown after that.
+    stop_grace_period: 20s
     healthcheck:
       # /health/ready (not /health/live) - checks real Postgres/Redis/
       # Neo4j/object-storage connectivity, not just "the process is up." Does NOT
@@ -125,6 +136,7 @@ services:
 
   worker:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -136,6 +148,16 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Phase 4 item 28. On SIGTERM, RQ stops taking jobs and lets the job in
+    # progress finish (warm shutdown); it does not requeue it. A workflow
+    # job may run up to its 1800 s timeout (outbox_dispatcher.py,
+    # _QUEUE_TIMEOUTS_SECONDS), and a run whose job is killed stays
+    # `running`: the workflow-run reaper is designed, not built (decision
+    # 0035). So the grace period covers the longest job plus a margin. An
+    # idle worker stops in about 2 s (observed), so the wait is only ever
+    # as long as the job in progress; to stop sooner and accept losing that
+    # job, `docker compose stop -t <seconds> worker`.
+    stop_grace_period: 31m
 
   # Phase 4 Stage 2: the worker for async operations (red team, proposal
   # generation, commercial re-validation), listening only to the
@@ -149,10 +171,11 @@ services:
   # pubsub listener thread, which every RQ worker runs, is separate.
   operations_worker:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    command: ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.worker", "operations"]
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "operations"]
     env_file: .env
     environment:
       OPENBLAS_NUM_THREADS: "1"
@@ -164,19 +187,31 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Phase 4 item 28: as for worker. An operation's job runs up to 1800 s
+    # (operation_service.JOB_TIMEOUT_SECONDS). A killed one is failed by the
+    # dispatcher's reaper as WORKER_LOST, but only once its lease (the job
+    # timeout plus 60 s) has lapsed, so killing it early loses the work
+    # without letting the user retry any sooner.
+    stop_grace_period: 31m
 
   outbox_dispatcher:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    command: ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.outbox_dispatcher"]
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.outbox_dispatcher"]
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Phase 4 item 28: on SIGTERM the dispatcher finishes its current tick
+    # and exits (outbox_dispatcher._run_until_terminated). A tick is bounded
+    # by its Redis and lock timeouts; delivery is at-least-once (decision
+    # 0029), so even a kill mid-tick loses nothing.
+    stop_grace_period: 30s
 
   web:
     build:
