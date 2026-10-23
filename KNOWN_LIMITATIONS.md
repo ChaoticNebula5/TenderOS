@@ -9950,7 +9950,7 @@ actually has - three independent failures were reproduced, not inferred:
 - **Test:** tests/unit/test_object_storage_readiness.py (the probe's
   decision table); the integration suite against the live s3 service.
 
-## [B17 incident, open, owner: Phase 0c] An image reference with no tag means `:latest`, and nothing in the repo is pinned by digest
+## [B17 incident, RESOLVED in Phase 4 batch 2a (item 7)] An image reference with no tag means `:latest`, and nothing in the repo is pinned by digest
 
 - **What happened:** `docker-compose.yml` said `image: minio/minio` and
   ci.yml ran `minio/minio` - no tag, so `:latest` at pull time. When the
@@ -9974,6 +9974,39 @@ actually has - three independent failures were reproduced, not inferred:
 - **To do in Phase 0c:** pin every image by `tag@sha256:digest`, and pin
   GitHub Actions `uses:` by commit SHA. Not done here (out of scope for
   the swap).
+- **Phase 4 item 7 (batch 2a), done:** every image is pinned as
+  `tag@sha256:digest` at the version and digest that ran before pinning:
+  `pgvector/pgvector:0.8.2-pg16`, `redis:7.4.8-alpine`,
+  `neo4j:5.26.28-community`, `prom/prometheus:v3.13.1`,
+  `grafana/grafana:13.1.1`, `python:3.12.13-slim`, `node:22.23.4-slim`,
+  and uv 0.12.3 from `ghcr.io/astral-sh/uv` (a named FROM stage, replacing
+  an unpinned `pip install uv`). The tags are exact versions, not the old
+  floating ones, so each new release reaches us as a version bump that
+  carries its digest. pgvector's, Neo4j's and Grafana's exact tags have
+  been rebuilt since our copies were pulled, so the pinned digests are
+  older builds of those tags. Every digest answered HTTP 200 to an
+  anonymous registry request (2026-10-23). Actions are pinned by commit
+  SHA at the releases Dependabot's #17 proposed (checkout v7.0.1, setup-uv
+  v7.6.0, cache v6.1.0, setup-node v7.1.0, the SHAs its green run used);
+  setup-uv installs uv 0.12.3 and setup-node Node 22.23.4, whose bundled
+  npm 10.9.9 is what both `package.json` files name in `packageManager`
+  (a CI step checks it, since npm does not enforce the field).
+  setup-uv v3 to v7 changes defaults: from v5 it caches uv's downloads in
+  the Actions cache on GitHub-hosted runners; v6 stopped activating a venv
+  (we never relied on it); v7 runs on Node 24. Dependabot keeps the pins
+  current through new `docker` (the three Dockerfiles) and
+  `docker-compose` entries. It never reads ci.yml's service images or the
+  setup-uv and setup-node version inputs, so `scripts/check_pins.py`
+  (CI lint job) fails when those drift from the images, or when any
+  reference is not pinned. Read in dependabot-core's source, not yet
+  observed: an exact version tag gets version-bump PRs with the new
+  digest; a digest-only refresh of an unchanged versioned tag can be
+  suppressed by an experiment flag whose state on GitHub is not visible.
+  Observed 2026-10-23 on the rebuilt stack: the same versions as before
+  (PostgreSQL 16.13, pgvector 0.8.2, Redis 7.4.8, Neo4j 5.26.28, Python
+  3.12.13); `check_pins.py` passes on the repo, and its tests plant each
+  kind of drift in a copy and see it fail. CI on the pinned SHAs is
+  observed only once this is pushed.
 
 ## [B17, backups kept, 2026-10-07] Object-store migration from MinIO to VersityGW, and the backups it left
 
@@ -11396,6 +11429,15 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none in the repo. The proof after merge: the next uv job (or a
   manual "Check for updates") succeeds, and one grouped PR per ecosystem
   appears.
+- **Expected red (batch 2a, item 7):** `scripts/check_pins.py` (CI's lint
+  job) requires ci.yml's `services:` images to equal docker-compose.yml's
+  for postgres, redis and neo4j, and Dependabot's docker-compose PRs
+  update only the compose file. Every such PR that moves one of those
+  three images will fail the lint job until ci.yml's matching image is
+  updated on the same branch. The fix: one commit on the Dependabot
+  branch changing that ci.yml image line to the PR's new `tag@digest`.
+  The red is intended; without it, CI would test against a different
+  image than the stack runs.
 
 ## [found 2026-10-22, open: guarded in batch 1, cause unknown] An intermittent connection-leak warning in CI's backend run
 

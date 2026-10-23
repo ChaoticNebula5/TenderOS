@@ -1,6 +1,14 @@
-FROM python:3.12-slim
+# Phase 4 item 7: base images pinned as tag@sha256:digest, at the versions
+# that ran before pinning (Python 3.12.13; uv 0.12.3, which `pip install uv`
+# had picked up). uv comes from its own image as a named stage, not
+# `pip install uv`, so Dependabot's docker entry, which reads FROM lines,
+# updates it too. apps/api/Dockerfile and apps/worker/Dockerfile use the
+# same two images; scripts/check_pins.py fails CI if they differ.
+FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
-RUN pip install --no-cache-dir uv
+FROM python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+
+COPY --from=uv /uv /uvx /bin/
 
 WORKDIR /app
 

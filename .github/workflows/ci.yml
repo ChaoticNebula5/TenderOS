@@ -5,20 +5,33 @@ on:
     branches: [main]
   pull_request:
 
+# Phase 4 item 7: every action is pinned by commit SHA, with its release in
+# a comment, at the releases Dependabot's PR #17 proposed (its CI was green
+# on exactly these SHAs, run 39821371762). Dependabot's github-actions entry
+# updates the SHA and the comment together. setup-uv installs uv 0.12.3 and
+# setup-node Node 22.23.4 (with npm 10.9.9), the versions the images use;
+# scripts/check_pins.py, run in the lint job, fails if they drift apart, and
+# if the service images below drift from docker-compose.yml's.
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.3"
       - run: uv sync
       - run: uv run ruff check .
+      - name: Image, action and tool versions are pinned and agree
+        run: uv run python scripts/check_pins.py
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.3"
       - run: uv sync
       - run: uv run mypy
 
@@ -61,7 +74,7 @@ jobs:
       # real values from .env (gitignored, never committed - checked
       # directly before writing this).
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:0.8.2-pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
         env:
           POSTGRES_USER: tenderos
           POSTGRES_PASSWORD: changeme
@@ -74,14 +87,14 @@ jobs:
           --health-cmd "pg_isready -U tenderos -d tenderos_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7-alpine
+        image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
       neo4j:
-        image: neo4j:5.26-community
+        image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
         env:
           NEO4J_AUTH: neo4j/changeme
         ports:
@@ -91,8 +104,10 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 20
           --health-start-period 30s
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.3"
       # The S3 store needs a command (backend and health path) - GitHub
       # Actions' services: block has no command: field, so it is started
       # directly here. Same image, digest and settings as docker-compose.yml's
@@ -153,7 +168,7 @@ jobs:
         run: |
           names=$(uv run python -c "from tenderos_backend.ingestion.embed import _MODEL_NAME as e; from tenderos_backend.agents.knowledge.rerank import _MODEL_NAME as r; print(f'{e}+{r}'.replace('/', '_'))")
           echo "key=hf-${names}" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: hfcache
         with:
           path: ~/.cache/huggingface
@@ -180,10 +195,14 @@ jobs:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "22.23.4"
+      # Phase 4 item 7: the npm this job runs is the one package.json's
+      # packageManager names (npm does not enforce the field itself).
+      - name: npm matches packageManager
+        run: test "npm@$(npm --version)" = "$(node -p "require('./package.json').packageManager")"
       - run: npm ci
       - run: npx tsc -b
       - run: npm run lint
@@ -195,10 +214,14 @@ jobs:
       run:
         working-directory: apps/landing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "22.23.4"
+      # Phase 4 item 7: the npm this job runs is the one package.json's
+      # packageManager names (npm does not enforce the field itself).
+      - name: npm matches packageManager
+        run: test "npm@$(npm --version)" = "$(node -p "require('./package.json').packageManager")"
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
@@ -221,11 +244,13 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
-          node-version: "22"
+          version: "0.12.3"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.23.4"
       - run: uv sync
       - name: detect-secrets
         # NUL-delimited throughout (git ls-files -z / grep -z / mapfile -d

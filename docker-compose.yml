@@ -1,6 +1,13 @@
+# Phase 4 item 7: every image is pinned as tag@sha256:digest, at the exact
+# version and digest that ran before pinning (PostgreSQL 16.13 with pgvector
+# 0.8.2, Redis 7.4.8, Neo4j 5.26.28, Prometheus 3.13.1, Grafana 13.1.1). The
+# tag is for people; Docker pulls the digest. Dependabot's docker-compose
+# entry (.github/dependabot.yml) proposes new versions with their digests,
+# and scripts/check_pins.py fails CI if ci.yml's service images drift from
+# these.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.2-pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -20,7 +27,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
     volumes:
       - redis_data:/data
     ports:
@@ -32,7 +39,7 @@ services:
       retries: 10
 
   neo4j:
-    image: neo4j:5.26-community
+    image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
     volumes:
@@ -223,7 +230,7 @@ services:
       - api
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
     profiles: ["observability"]
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
@@ -231,7 +238,7 @@ services:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:13.1.1@sha256:1c1bd67c54c5fcf6e759897852b5a584191bd6796e8d328a5ace457799801261
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
