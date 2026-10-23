@@ -27,6 +27,7 @@ from tenderos_api.errors import (
     error_response,
     register_exception_handlers,
 )
+from tenderos_api.logging_filters import install_access_log_redaction
 from tenderos_api.rate_limit import (
     GLOBAL_LIMIT,
     GLOBAL_WINDOW_SECONDS,
@@ -68,6 +69,9 @@ from tenderos_api.routes import (
 # and doesn't care about import order beyond "before the process actually
 # starts serving").
 configure_logging()
+# Phase 4 plan item 3: SSE tickets out of uvicorn's access log. See
+# logging_filters.py for why import time is after uvicorn's own setup.
+install_access_log_redaction()
 # B17: a real no-op unless LLM_PROVIDER=fake (see that function's own
 # docstring) - installed at the same three entrypoints configure_logging()
 # already documents, right after it, so a fake-provider process is fully

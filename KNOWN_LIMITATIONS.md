@@ -11636,3 +11636,37 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     two reaper paths above apply. Choosing the host settles this.
   - A job killed anyway is not retried by RQ. Operations are failed by
     the reaper; workflow runs need decision 0035's reaper.
+
+## [Phase 4 batch 2b, 2026-10-23, resolved for the api; the proxy's log is a deployment item] SSE tickets in the access log
+
+- **Before:** `GET .../events/stream?ticket=...` carries its single-use
+  ticket in the query string (EventSource cannot send headers), and
+  uvicorn writes every request's path and query string to the
+  `uvicorn.access` log, so each ticket was in the api log (observed in
+  Phase 4 Stage 1 logs; decision 0008). A ticket is consumed on first use
+  (Redis GETDEL) and lives 30 s, so a logged one was normally dead
+  already.
+- **Changed (plan item 3):** a filter on the `uvicorn.access` logger
+  replaces the value with `[redacted]`
+  (`apps/api/src/tenderos_api/logging_filters.py`, installed by
+  `main.py:74` at import). It sits on the logger, not a handler, because
+  uvicorn's access handler does not propagate to the root handlers that
+  `configure_logging()` filters. Read in uvicorn 0.54.0's `config.py`:
+  uvicorn applies its logging config in `Config.__init__`, before
+  `Config.load()` imports the app, so the filter is attached after
+  uvicorn's own setup, and a later `dictConfig` keeps a logger's filters
+  (tested in both orders). The query parameter stays.
+- **Observed 2026-10-23:** after one E2E on the rebuilt fake stack,
+  `docker compose logs api` held 8 `events/stream` lines (4 workflow, 4
+  operation), all 8 with `ticket=[redacted]`, and no line with `ticket=`
+  followed by anything else.
+- **Limits:**
+  - The reverse proxy in front of the api, once there is one, keeps its
+    own access log; it needs the same redaction, configured at
+    deployment (plan item 3, host part).
+  - Browser history still holds the stream URL with its ticket (dead
+    after first use).
+- **Test:** `tests/unit/test_logging_filters.py` (a record made as
+  uvicorn 0.54.0 makes it, written through uvicorn's own `LOGGING_CONFIG`
+  handler and formatter; the filter installed after and before uvicorn's
+  `dictConfig`; installing twice adds one filter; the pattern's edges).
