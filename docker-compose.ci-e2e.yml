@@ -1,0 +1,29 @@
+# Phase 4 plan item 30: CI's E2E only. The e2e job in .github/workflows/
+# ci.yml builds the three images once, with BuildKit's GitHub Actions cache
+# (docker/build-push-action), and loads them under the local tags below.
+# This file points each service at its image, so `docker compose up
+# --no-build` starts the stack without building anything a second time
+# (migrate shares the api image; the two workers and the dispatcher share
+# the worker image, as their builds already do).
+#
+# Used only with the other three files, through the job's COMPOSE_FILE:
+#   docker-compose.yml : docker-compose.e2e.yml : docker-compose.e2e-fake.yml : this file
+# Not for local use: locally scripts/fake-stack.ps1 builds through compose.
+# These are local tags, never pulled (pull_policy: never), so they carry no
+# digest; scripts/check_pins.py reads only docker-compose.yml's images.
+x-api-image: &api-image
+  image: tenderos-ci/api:e2e
+  pull_policy: never
+x-worker-image: &worker-image
+  image: tenderos-ci/worker:e2e
+  pull_policy: never
+
+services:
+  migrate: *api-image
+  api: *api-image
+  worker: *worker-image
+  operations_worker: *worker-image
+  outbox_dispatcher: *worker-image
+  web:
+    image: tenderos-ci/web:e2e
+    pull_policy: never

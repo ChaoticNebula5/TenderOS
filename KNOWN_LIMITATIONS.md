@@ -11272,6 +11272,27 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   module import alone measures 7.7 to 7.9 s in a fresh interpreter, so
   the job is probably almost all import; the margin exists only because
   workflow jobs still pay that import.
+- **Observed 2026-10-23 (batch 2b's E2E, passed):** the margin was
+  5.150 s (click 10:57:56.438, resume job 10:57:54.224 to 10:58:01.588).
+  The api log shows one `GET /workflow-runs/<id>/tasks` 0.855 s before the
+  click (10:57:55.583) and none after: the red team caused none.
+  Playwright's `waitForRequest` matches only requests issued after it is
+  registered (`full-flow.spec.ts:1024`, after the second tab's
+  `networkidle`, before the click), so that earlier fetch met the wait and
+  was issued after the registration. Two candidate causes:
+  (a) the tab's own first data fetch, issued after `networkidle` had
+  already resolved; (b) a refetch driven by a workflow event pushed to the
+  tab while the resume job ran (the last workflow event the worker logged
+  before the fetch was `WorkflowRunStatusChanged`, 1.366 s earlier). The
+  same log weighs against (b): the fetch reached the api in the tab's first
+  burst (`/auth/me` 55.42, runs and documents 55.48, ticket mints 55.53)
+  and before either of its event streams opened (55.584, 55.592), so no
+  event could yet have been pushed to it. Neither is proven: server logs
+  cannot show when the wait was registered, or which tab a request came
+  from. Either way the margin did not decide that run: the wait was met
+  before the click. CI's `e2e` job records the fetches on both sides of
+  the click and the last workflow event before the fetch (the entry
+  below); its runs settle which cause holds.
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11737,3 +11758,51 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   cookie once item 27 settles whether the web app and the API share an
   origin.
 
+## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
+
+- **Before:** the E2E ran only on the dev laptop, by hand, so no pull
+  request met the E2E stop-gate in CI, Dependabot's included.
+- **Now:** `ci.yml`'s `e2e` job builds the api, worker and web images once
+  (BuildKit, GitHub Actions cache, one scope per Dockerfile), starts the
+  stack from the three compose files plus `docker-compose.ci-e2e.yml`
+  (which points the services at those images), checks migrate exited 0,
+  the api is ready, the web app answers and all four app services run the
+  fake provider, then runs `full-flow.spec.ts` unchanged. The `.env` is
+  generated from `.env.example` for each run (`scripts/ci_e2e_env.py`): no
+  secrets, `LLM_PROVIDER=fake`, every Gemini key blank. Every run saves the
+  compose logs, writes its step 11 timeline to the job summary
+  (`scripts/e2e_step11_timeline.py`), and uploads the logs, the timeline
+  and the Playwright report.
+- **Limits:**
+  - **Non-blocking** (`continue-on-error: true`) until 5 of 5 runs pass
+    with their step 11 timelines recorded; then the line is removed and
+    the job made required. Until then a red `e2e` does not block a merge.
+  - **Artifacts are not masked.** The logs are uploaded only if none of
+    the run's generated values appears in them (`--scan`); the Playwright
+    report (traces on failure) holds the run's own access tokens, signed
+    by that run's throwaway key, so they open nothing after the run.
+  - **Cost:** cold image builds were estimated at 10 to 15 min and warm at
+    2 to 4 min (not measured on a runner yet); a lockfile change, every
+    Dependabot uv PR, invalidates the dependency layer and pays close to
+    the cold cost. The two Python images are about 2.5 GB each locally;
+    the job prints `df -h` before and after the builds, since runner disk
+    is the likeliest limit.
+  - **Actions cache size, to check on the first runs:** the repository's
+    GitHub Actions cache is capped at 10 GB, and the three image scopes
+    (`e2e-api`, `e2e-worker`, `e2e-web`) are written with `mode=max`, so
+    the torch and model layers of two images are cached; that can approach
+    the cap and evict older entries, such as the test job's Hugging Face
+    model cache. Check the Caches page under Actions after the first runs
+    (each scope's size, and whether the `hf-...` entry survives). Fallback:
+    `mode=min` (only the final image's layers), or fewer scopes (one shared
+    scope for api and worker, whose dependency layers are the same).
+  - **Step 11** (the entry above): the runner's timing is a new variable
+    in a race the spec cannot be changed to avoid.
+- **Status:** built; not observed until the pull request runs it.
+- **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
+  the DSN's password matches, an existing `.env` is never overwritten, a
+  new placeholder credential is refused, no value printed, the log scan),
+  `tests/unit/test_e2e_step11_timeline.py` (the batch 2b run's figures, a
+  job that ended before the click, fetches on either side of the click,
+  the last workflow event before the fetch);
+  the job itself on the pull request.
