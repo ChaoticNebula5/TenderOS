@@ -10,8 +10,10 @@
     1. starts redis and flushes it (orphaned scheduled RQ jobs from earlier
        runs otherwise fire in one burst on the next worker start - incident
        12),
-    2. builds and force-recreates api, web, worker, operations_worker and
-       outbox_dispatcher,
+    2. builds and force-recreates migrate, api, web, worker,
+       operations_worker and outbox_dispatcher; migrate runs alembic to head
+       and the app services start only once it has exited 0 (compose's
+       service_completed_successfully), so a failed migration fails here,
     3. waits for the api health check,
     4. prints `printenv LLM_PROVIDER` for api, worker, operations_worker and
        outbox_dispatcher,
@@ -37,8 +39,10 @@ try {
     & docker compose @files exec -T redis redis-cli FLUSHALL
     if ($LASTEXITCODE -ne 0) { throw "redis FLUSHALL failed" }
 
-    & docker compose @files up -d --build --force-recreate api web worker operations_worker outbox_dispatcher
-    if ($LASTEXITCODE -ne 0) { throw "compose up failed" }
+    & docker compose @files up -d --build --force-recreate migrate api web worker operations_worker outbox_dispatcher
+    if ($LASTEXITCODE -ne 0) { throw "compose up failed (a failed migration stops it here too: docker compose logs migrate)" }
+    $migrateExit = (& docker inspect -f "{{.State.ExitCode}}" tenderos-migrate-1).Trim()
+    Write-Host "migrate: exit $migrateExit"
 
     $healthy = $false
     for ($i = 0; $i -lt 60; $i++) {

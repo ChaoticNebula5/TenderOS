@@ -9,7 +9,7 @@ Evidence-grounded, human-supervised bid operations platform for IT services and 
 Functional through B13. Run it:
 
 ```
-docker compose up          # full local stack
+docker compose up          # full local stack; the one-shot migrate service applies migrations first
 uv run pytest               # backend tests
 uv run alembic upgrade head # apply migrations by hand (from the host, with POSTGRES_DSN on localhost:5433)
 npm --prefix apps/web run test:e2e # Playwright golden-path scenario, against a running stack

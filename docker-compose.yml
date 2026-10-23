@@ -70,6 +70,25 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 4 item 4: migrations run once, before anything that uses the
+  # schema. A one-shot service on the api image (alembic.ini and the
+  # migrations are in it), which exits 0 at head; api, worker,
+  # operations_worker and outbox_dispatcher start only after it has
+  # completed successfully, so a failing migration keeps them all down.
+  # Not in the api's own entrypoint: with more than one api replica, each
+  # would race to migrate. On a host with a release phase, this command
+  # becomes the release command. A second start is a no-op (alembic finds
+  # the database at head).
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["uv", "run", "--frozen", "--package", "tenderos-api", "alembic", "upgrade", "head"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     # Phase 4 blocker 3: come back after a crash or a host restart, but
     # stay down after an explicit `docker compose stop`.
@@ -89,6 +108,8 @@ services:
         condition: service_healthy
       s3:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       # /health/ready (not /health/live) - checks real Postgres/Redis/
       # Neo4j/object-storage connectivity, not just "the process is up." Does NOT
@@ -113,6 +134,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # Phase 4 Stage 2: the worker for async operations (red team, proposal
   # generation, commercial re-validation), listening only to the
@@ -139,6 +162,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   outbox_dispatcher:
     restart: unless-stopped
@@ -150,6 +175,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   web:
     build:

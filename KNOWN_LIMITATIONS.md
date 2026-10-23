@@ -11456,3 +11456,22 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     LangGraph's checkpointer has its own psycopg pool.
 - **Status (batch 1):** guarded; cause unknown. The next occurrence fails
   CI and names its origin.
+
+## [Phase 4 batch 2a, 2026-10-23] Starting the stack: migrations run at start
+
+- **Migrations (item 4):** before, a fresh database stayed empty until
+  someone ran `alembic upgrade head` by hand; nothing in compose or the
+  api's CMD ran it. Now a one-shot `migrate` service on the api image runs
+  `alembic upgrade head`, and api, worker, operations_worker and
+  outbox_dispatcher start only after it has exited 0
+  (`service_completed_successfully`). It is a service, not part of the
+  api's entrypoint, because api replicas would each race to migrate. On a
+  host with a release phase, the same command becomes the release
+  command. Observed 2026-10-23 on throwaway compose projects with their
+  own volumes (the project's volumes untouched): a fresh database ran all
+  20 upgrades to `020_async_operations (head)` and the api became
+  healthy; a second start re-ran migrate (new start time), applied 0
+  upgrades, exited 0; with a conflicting `organizations` table planted,
+  migrate exited 1 (`DuplicateTableError`), `up` failed with "service
+  migrate didn't complete successfully", and the api container was
+  created but never started.
