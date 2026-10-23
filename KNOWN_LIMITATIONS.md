@@ -10627,7 +10627,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      the body with its own fixed status code (201, 202 or 200). That equals
      the stored code today only because each route has exactly one success
      code; a route that could succeed with two different codes would replay
-     the wrong one.
+     the wrong one. **RESOLVED in Phase 4 batch 2b (plan item 21):** the
+     dependency sets the stored code on the response FastAPI shares with
+     dependencies (`idempotency.py:157-158`), which overrides the route's
+     default, so all seven replaying routes answer with the code first
+     stored; the routes themselves are unchanged.
   5. **Expired rows are not yet removed.** `IdempotencyRepository.
      delete_expired` exists and is tested, but nothing calls it yet; Phase 4
      blocker 3 runs it from the outbox dispatcher's loop.
@@ -10641,14 +10645,17 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
   late failure in a narrow window. (Limit 3's duplicate real-provider
   proposal generation was closed in Stage 2.)
-- **Status:** limit 3 resolved (2026-10-16, Stage 2); accepted until the
-  cleanup is scheduled (limit 5); limits 1, 2, 4 and 6 accepted.
+- **Status:** limit 3 resolved (2026-10-16, Stage 2); limit 4 resolved
+  in Phase 4 batch 2b; accepted until the cleanup is scheduled
+  (limit 5); limits 1, 2 and 6 accepted.
 - **Test:** `tests/integration/test_idempotency.py` (lease on the database
   clock, release on APIError and on a 500, live lease with Retry-After,
   takeover of an expired and of a NULL lease, exactly one winner between
   concurrent takers, an overtaken original can neither release nor
-  finalize, bounded cleanup). No test covers limits 1, 2, 4 or 6: each
-  needs a crash or a client disconnect at a precise point. Limit 3's fix:
+  finalize, bounded cleanup; batch 2b: a replay answers with a stored 200
+  where the route's default is 201). No test covers limits 1, 2 or 6:
+  each needs a crash or a client disconnect at a precise point.
+  Limit 3's fix:
   `tests/route/test_proposal_routes.py::test_generate_proposal_returns_202_and_the_same_operation_while_active`
   (a same-key retry replays the 202; a second click joins the operation).
 

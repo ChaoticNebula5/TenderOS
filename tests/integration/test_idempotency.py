@@ -481,6 +481,36 @@ async def test_retry_after_an_unhandled_500_with_the_same_key_succeeds(
         assert await _tender_count(client, org_id, token) == 1
 
 
+async def test_replay_returns_the_stored_status_code():
+    """Blocker 2, limit 4: a replay used to answer with the route's default
+    code (201 here) whatever was stored. The stored code is set to 200,
+    which this route never returns itself, so only the replay path can
+    produce it."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-code@example.com", "Idem Code Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Stored Code")
+        headers = _tender_headers(token, "stored-code-key")
+
+        first = await client.post(url, content=body, headers=headers)
+        assert first.status_code == 201, first.text
+        async with UnitOfWork() as uow:
+            await uow.session.execute(
+                text(
+                    "UPDATE idempotency_records SET response_status = 200 "
+                    "WHERE organization_id = :org AND idempotency_key = :key"
+                ),
+                {"org": UUID(org_id), "key": "stored-code-key"},
+            )
+            await uow.commit()
+
+        replay = await client.post(url, content=body, headers=headers)
+
+        assert replay.status_code == 200, replay.text
+        assert replay.json() == first.json()
+        assert await _tender_count(client, org_id, token) == 1
+
+
 async def test_live_lease_returns_in_progress_with_retry_after():
     """A first attempt that still holds its lease: the retry is told to
     wait, and Retry-After is the time left on that lease (within a second,

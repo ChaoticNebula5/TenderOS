@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
-from fastapi import Request
+from fastapi import Request, Response
 from sqlalchemy.exc import IntegrityError
 from tenderos_backend.db.models.idempotency import IdempotencyRecord
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -108,7 +108,7 @@ class IdempotencyContext:
 
 def get_idempotency_context(
     operation: str, required: bool = False
-) -> Callable[[Request], AsyncIterator[IdempotencyContext]]:
+) -> Callable[[Request, Response], AsyncIterator[IdempotencyContext]]:
     """Idempotency-Key was optional-but-honored for every B2 operation: Part I1
     only requires it for create workflow run / gate decision / resource
     selection / knowledge selection change / proposal generation / graph
@@ -128,10 +128,20 @@ def get_idempotency_context(
     exception is re-raised unchanged. A cancelled request (client gone,
     asyncio.CancelledError) is not an Exception and does not release; its
     lease runs out instead and a retry takes the record over.
+
+    Blocker 2, limit 4: a replay sets the stored status code on the
+    response FastAPI builds, through the Response parameter it shares with
+    dependencies. A status set there overrides the route's default
+    (fastapi/routing.py, serialize_response's caller), so every route that
+    returns the replayed body answers with the code first stored.
     """
 
-    async def _dependency(request: Request) -> AsyncIterator[IdempotencyContext]:
+    async def _dependency(
+        request: Request, response: Response
+    ) -> AsyncIterator[IdempotencyContext]:
         context = await _claim_or_replay(request, operation, required)
+        if context.replay_response is not None:
+            response.status_code = context.replay_response[0]
         if context.claim_token is None:
             yield context
             return
