@@ -46,6 +46,11 @@ export function Login() {
     setSubmitting(true);
     try {
       if (mode === "login") {
+        // Deliberately not wrapped in retryTransient: a 503 LOGIN_UNAVAILABLE
+        // (decision 0041) says when to try again, and its Retry-After is
+        // longer than retryTransient's backoff, so an automatic retry would
+        // only meet the same outage. A 429 would spend more of the login
+        // limit. The user sees the wait and decides (Login.test.tsx).
         const tokens = await login({ email, password });
         setTokens(tokens.access_token, tokens.refresh_token);
       } else {

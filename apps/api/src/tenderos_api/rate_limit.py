@@ -27,7 +27,8 @@ per-test, and see this file's own test module
 gets genuine, direct test coverage with the flag deliberately re-enabled.
 """
 
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from redis.asyncio import Redis as AsyncRedis
@@ -49,7 +50,57 @@ LOGIN_WINDOW_SECONDS = 60
 # API call. Only these two errors mean "Redis is unavailable". Any other
 # error (a ResponseError from a broken script, say) is a bug, not an
 # outage, and still reaches the catch-all 500 in main.py.
+#
+# Phase 4 plan item 2 (decision 0041): except on LOGIN_PATH, which fails
+# closed with a 503 while Redis is unavailable. Without Redis the login
+# limit cannot be counted, and an unlimited login endpoint is what an
+# attacker who can disrupt Redis would want. Users already signed in keep
+# working for the life of their access token (a JWT verified without
+# Redis). POST /auth/refresh needs no Redis either and fails open, but the
+# web app never calls it, so a web user whose token expires mid-outage
+# must log in and gets the 503.
 REDIS_UNAVAILABLE_ERRORS = (RedisConnectionError, RedisTimeoutError)
+
+LOGIN_PATH = "/auth/login"
+
+# Design numbers, not measured. Retry-After on the login 503: long enough
+# that a user who follows it does not meet the same outage at once, short
+# enough to read as "briefly". The web app shows it as the wait.
+LOGIN_UNAVAILABLE_RETRY_AFTER_SECONDS = 30
+# At most one outage WARNING per process per interval. The limiter runs on
+# every request, so one line per request floods the log during an outage.
+REDIS_OUTAGE_LOG_INTERVAL_SECONDS = 60
+
+
+class OutageLog:
+    """Decides when a Redis outage is logged: on the first failure, then at
+    most once per interval, each line carrying how many failures it covers.
+
+    Per process, held in memory. record() has no await in it, so on one
+    event loop two requests cannot interleave inside it.
+    """
+
+    def __init__(
+        self, interval_seconds: float, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._interval_seconds = interval_seconds
+        self._clock = clock
+        self._last_logged_at: float | None = None
+        self._unlogged = 0
+
+    def record(self) -> int | None:
+        """Counts one failure. Returns the number of failures to report if a
+        line is due now (this one included), or None inside the interval."""
+        self._unlogged += 1
+        now = self._clock()
+        if self._last_logged_at is not None and now - self._last_logged_at < self._interval_seconds:
+            return None
+        covered, self._unlogged = self._unlogged, 0
+        self._last_logged_at = now
+        return covered
+
+
+redis_outage_log = OutageLog(REDIS_OUTAGE_LOG_INTERVAL_SECONDS)
 
 # Design numbers, not measured. A healthy Redis on the same network answers
 # the limiter's EVAL in well under a millisecond, so 250 ms is generous for
