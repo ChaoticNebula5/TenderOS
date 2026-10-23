@@ -3,13 +3,13 @@ name = "tenderos-backend"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "sqlalchemy[asyncio]>=2.0",
+    "sqlalchemy[asyncio]>=2.1.5",
     "asyncpg>=0.30",
     "alembic>=1.13",
     "argon2-cffi>=23.1",
     "pyjwt>=2.9",
     "pydantic>=2.9",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.16.0",
     "langgraph>=0.6",
     # LangGraph's own Postgres checkpointer (A3.1) is psycopg (v3)-based, not
     # asyncpg - it owns only its own checkpoint tables (created via .setup(),
@@ -17,7 +17,7 @@ dependencies = [
     # PostgreSQL checkpointer package/imports" - this pairing is the
     # build-time-verifiable piece, not a locked contract detail.
     "langgraph-checkpoint-postgres>=2.0",
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary,pool]>=3.3.6",
     # B4: object storage, document parsing, OCR fallback, embeddings.
     "boto3>=1.35",
     "pgvector>=0.3",

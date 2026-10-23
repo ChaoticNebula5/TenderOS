@@ -3,11 +3,11 @@ members = ["apps/api", "apps/worker", "packages/tenderos_backend"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.8",
-    "mypy>=1.13",
+    "ruff>=0.17.1",
+    "mypy>=2.4.0",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "pre-commit>=4.0",
+    "pre-commit>=4.7.0",
     "detect-secrets>=1.5",
     "pip-audit>=2.7",
 ]
