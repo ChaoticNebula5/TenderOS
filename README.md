@@ -45,4 +45,9 @@ to run against `.env`'s default Postgres DSN.
 The Playwright scenario (`apps/web/e2e/full-flow.spec.ts`) is separate from
 the backend suite - it drives a real browser against a running
 `docker compose up` stack (`npm --prefix apps/web run test:e2e`), not a
-mocked one, and is not part of `make test`.
+mocked one, and is not part of `make test`. Locally, start that stack with
+`scripts/fake-stack.ps1` (fake LLM provider). CI runs the same scenario in
+its `e2e` job on every push and pull request, on a fake-provider stack whose
+`.env` is generated from `.env.example` (`scripts/ci_e2e_env.py`); the job is
+non-blocking until its first five runs have passed, and each run's step 11
+timeline is in the job summary (`scripts/e2e_step11_timeline.py`).

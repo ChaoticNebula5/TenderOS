@@ -11272,6 +11272,27 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   module import alone measures 7.7 to 7.9 s in a fresh interpreter, so
   the job is probably almost all import; the margin exists only because
   workflow jobs still pay that import.
+- **Observed 2026-10-23 (batch 2b's E2E, passed):** the margin was
+  5.150 s (click 10:57:56.438, resume job 10:57:54.224 to 10:58:01.588).
+  The api log shows one `GET /workflow-runs/<id>/tasks` 0.855 s before the
+  click (10:57:55.583) and none after: the red team caused none.
+  Playwright's `waitForRequest` matches only requests issued after it is
+  registered (`full-flow.spec.ts:1024`, after the second tab's
+  `networkidle`, before the click), so that earlier fetch met the wait and
+  was issued after the registration. Two candidate causes:
+  (a) the tab's own first data fetch, issued after `networkidle` had
+  already resolved; (b) a refetch driven by a workflow event pushed to the
+  tab while the resume job ran (the last workflow event the worker logged
+  before the fetch was `WorkflowRunStatusChanged`, 1.366 s earlier). The
+  same log weighs against (b): the fetch reached the api in the tab's first
+  burst (`/auth/me` 55.42, runs and documents 55.48, ticket mints 55.53)
+  and before either of its event streams opened (55.584, 55.592), so no
+  event could yet have been pushed to it. Neither is proven: server logs
+  cannot show when the wait was registered, or which tab a request came
+  from. Either way the margin did not decide that run: the wait was met
+  before the click. CI's `e2e` job records the fetches on both sides of
+  the click and the last workflow event before the fetch (the entry
+  below); its runs settle which cause holds.
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11697,3 +11718,121 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   uvicorn 0.54.0 makes it, written through uvicorn's own `LOGGING_CONFIG`
   handler and formatter; the filter installed after and before uvicorn's
   `dictConfig`; installing twice adds one filter; the pattern's edges).
+
+## [found 2026-10-23 in batch 2b's review, open, fix planned before deployment] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
+
+- **Behaviour (read in code, not observed):** the web app never calls
+  `POST /auth/refresh`. `getRefreshToken()`
+  (`apps/web/src/api/client.ts:18`) has no caller, and the only code that
+  reacts to a 401 is `AuthContext.refresh()`, which runs when the app
+  mounts and clears the tokens (`apps/web/src/auth/AuthContext.tsx:33-35`).
+  So every session ends when its access token expires,
+  `JWT_ACCESS_MINUTES` = 15 (configured,
+  `packages/tenderos_backend/src/tenderos_backend/core/config.py:20`),
+  whether or not Redis is up. Mid-session the screens' requests start
+  failing with 401 one by one, an SSE ticket mint gets 401 and the live
+  stream stops with an error, and the next reload shows the login screen.
+  A real-provider run lasts longer than that: 15.8 min for an attempt that
+  reached red team and 45.1 min for the last complete live run
+  (`docs/eval/b16-scorecard.md:91`, `:37`). Not observed: no fake E2E
+  lasts 15 minutes (the longest recorded is 2.7 min).
+- **Refresh tokens:** plain HS256 JWTs (`user_id`, `token_type`, `iat`,
+  `exp`; `core/security.py:27-46`) with no server-side store, no `jti`,
+  no rotation and no revocation. Both tokens sit in `localStorage`
+  (`client.ts:11-34`), readable by any script on the page. Logout only
+  clears `localStorage` (`AuthContext.tsx:40-43`): a refresh token copied
+  before logout, or stolen, keeps minting access tokens for
+  `JWT_REFRESH_DAYS` = 7 (configured, `core/config.py:21`). Rotating
+  `JWT_SIGNING_KEY` is the only way to end one, and it ends every session.
+- **Relation to batch 2b:** decision 0041's "signed-in users keep working
+  during a Redis outage" holds for the life of the access token only;
+  `/auth/refresh` itself needs no Redis and fails open
+  (`tests/route/test_rate_limit_middleware.py::test_refresh_still_works_during_the_outage`),
+  but the web app does not use it.
+- **Risk:** a reviewer is logged out in the middle of a run; at
+  deployment, a leaked refresh token is a 7-day credential that logout
+  cannot end.
+- **Status:** open. Phase 4 plan item 34: refresh on a 401 with one
+  shared refresh (recommended, before deployment), then server-side
+  rotation with reuse detection, then the refresh token in an `httpOnly`
+  cookie once item 27 settles whether the web app and the API share an
+  origin.
+
+## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
+
+- **Before:** the E2E ran only on the dev laptop, by hand, so no pull
+  request met the E2E stop-gate in CI, Dependabot's included.
+- **Now:** `ci.yml`'s `e2e` job builds the api, worker and web images once
+  (BuildKit, GitHub Actions cache, one scope per Dockerfile), starts the
+  stack from the three compose files plus `docker-compose.ci-e2e.yml`
+  (which points the services at those images), checks migrate exited 0,
+  the api is ready, the web app answers and all four app services run the
+  fake provider, then runs `full-flow.spec.ts` unchanged. The `.env` is
+  generated from `.env.example` for each run (`scripts/ci_e2e_env.py`): no
+  secrets, `LLM_PROVIDER=fake`, every Gemini key blank. Every run saves the
+  compose logs, writes its step 11 timeline to the job summary
+  (`scripts/e2e_step11_timeline.py`), and uploads the logs, the timeline
+  and the Playwright report.
+- **Limits:**
+  - **Non-blocking** (`continue-on-error: true`) until 5 of 5 runs pass
+    with their step 11 timelines recorded; then the line is removed and
+    the job made required. Until then a red `e2e` does not block a merge.
+  - **Artifacts are not masked.** The logs are uploaded only if none of
+    the run's generated values appears in them (`--scan`); the Playwright
+    report (traces on failure) holds the run's own access tokens, signed
+    by that run's throwaway key, so they open nothing after the run.
+  - **Cost:** cold image builds were estimated at 10 to 15 min and warm at
+    2 to 4 min (not measured on a runner yet); a lockfile change, every
+    Dependabot uv PR, invalidates the dependency layer and pays close to
+    the cold cost. The two Python images are about 2.5 GB each locally;
+    the job prints `df -h` before and after the builds, since runner disk
+    is the likeliest limit.
+  - **Actions cache size, to check on the first runs:** the repository's
+    GitHub Actions cache is capped at 10 GB, and the three image scopes
+    (`e2e-api`, `e2e-worker`, `e2e-web`) are written with `mode=max`, so
+    the torch and model layers of two images are cached; that can approach
+    the cap and evict older entries, such as the test job's Hugging Face
+    model cache. Check the Caches page under Actions after the first runs
+    (each scope's size, and whether the `hf-...` entry survives). Fallback:
+    `mode=min` (only the final image's layers), or fewer scopes (one shared
+    scope for api and worker, whose dependency layers are the same).
+    **Measured after the first run (2026-10-23,
+    `gh api .../actions/cache/usage` and `gh cache list`):** 2,782,146,941
+    bytes in 56 entries, 27.8% of the 10 GB cap. By key prefix: image
+    layers (`buildkit-blob-`, 40 entries, shared by the three scopes and
+    not attributable to one; the largest blob 345 MiB) 1.32 GiB; the model
+    cache (`hf-`, one copy per ref, 6 entries of about 160 MB) 0.94 GiB;
+    setup-uv (`setup-uv-`, 7 entries, one of 358 MB) 0.33 GiB; the three
+    `index-e2e-<scope>` entries under 25 KB together. One cold run of all
+    three scopes added about 1.3 GiB, far less than the images' size,
+    since layers are stored compressed and once. Re-check after a
+    lockfile-changing run, which writes new dependency layers beside the
+    old ones until they are evicted.
+  - **Runner disk (first run, 2026-10-23, run 39959278103):** the job ran
+    out of disk (ENOSPC) at setup-node, after the three builds (api 2 m
+    50 s, worker 3 m 5 s, web 41 s, cold) and a healthy stack start; "Save
+    the stack's logs" then failed partway (`compose.log` stops at 21 KB).
+    The runner could not write its own diagnostics, so the job's log never
+    reached GitHub, and that run's `df -h` figures were lost with it. The
+    fix: preinstalled toolchains this job never uses are removed first
+    (.NET, Android, GHC, CodeQL) and the runner's preloaded images pruned;
+    the host installs only what its four scripts import (python-docx,
+    openpyxl, Pillow and their three dependencies, at uv.lock's versions;
+    the fixtures' manifest is identical), not the whole workspace with
+    torch; the builder's own copy of the layers is pruned once the images
+    are loaded (they are already in the Actions cache); and every big
+    stage ends with `df -h /`, so a failure names its stage. Not yet
+    observed on a runner.
+  - **Step 11** (the entry above): the runner's timing is a new variable
+    in a race the spec cannot be changed to avoid.
+- **Status:** built; not observed until the pull request runs it.
+- **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
+  the DSN's password matches, an existing `.env` is never overwritten, a
+  new placeholder credential is refused, no value printed outside GitHub
+  Actions, and under it every value only on its `::add-mask::` line, the
+  log scan; the file passes with `GITHUB_ACTIONS` unset and set to
+  `true`),
+  `tests/unit/test_e2e_step11_timeline.py` (the batch 2b run's figures, a
+  job that ended before the click, fetches on either side of the click,
+  the last workflow event before the fetch);
+  the job itself on the pull request.

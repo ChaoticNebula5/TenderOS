@@ -227,6 +227,195 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+  # Phase 4 plan item 30: the golden-path E2E (apps/web/e2e/full-flow.spec.ts,
+  # unchanged) on the fake-provider stack, so a PR meets the E2E stop-gate
+  # here and not only on a laptop. The same stack scripts/fake-stack.ps1
+  # starts locally: the three compose files, plus docker-compose.ci-e2e.yml
+  # pointing the services at the images built once below. No secrets: the
+  # .env is built from .env.example with values generated for this run
+  # (scripts/ci_e2e_env.py), LLM_PROVIDER is fake, every Gemini key blank.
+  #
+  # Non-blocking for its first 5 runs (continue-on-error): step 11 of the
+  # spec depends on timing (KNOWN_LIMITATIONS, "E2E step 11 depends on the
+  # workflow still running when the red team is clicked"), and a runner
+  # moves both sides of that race. Every run writes its step 11 timeline to
+  # the job summary and the e2e-logs artifact. Make the job required, and
+  # drop continue-on-error, only after 5 of 5 pass with their timelines
+  # recorded.
+  e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      COMPOSE_PROJECT_NAME: tenderos
+      # Every docker compose command in this job uses all four files. A
+      # partial file list starts the stack with the wrong settings and still
+      # looks healthy (KNOWN_LIMITATIONS, environment traps, incident 13).
+      COMPOSE_FILE: docker-compose.yml:docker-compose.e2e.yml:docker-compose.e2e-fake.yml:docker-compose.ci-e2e.yml
+    # Disk: the first run (39959278103) filled the runner's disk after the
+    # builds and the stack start (ENOSPC at setup-node; its log never
+    # reached GitHub). So: toolchains this job never uses are removed first,
+    # the host gets only what its scripts import (no torch), the builder's
+    # own copy of the layers is dropped once the images are loaded, and
+    # every big stage ends with `df -h /`, so a future failure names its
+    # stage.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free disk space (toolchains and images this job does not use)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null
+          df -h /
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.3"
+      # The host runs four scripts: ci_e2e_env.py and e2e_step11_timeline.py
+      # use the standard library only; the two fixture generators import
+      # python-docx, openpyxl and Pillow. Those (with their own dependencies)
+      # are installed at uv.lock's versions, so the fixtures are the bytes
+      # the test job generates, instead of `uv sync`, which installs the
+      # whole workspace, torch included. A generator that gains an import
+      # fails at that import, here.
+      - name: Install what the host-side scripts import (versions from uv.lock)
+        run: |
+          uv export --frozen --no-hashes --no-dev --no-emit-workspace --all-packages \
+            | grep -E '^(python-docx|openpyxl|pillow|lxml|typing-extensions|et-xmlfile)==' \
+            > "$RUNNER_TEMP/host-requirements.txt"
+          test "$(wc -l < "$RUNNER_TEMP/host-requirements.txt")" -eq 6
+          uv venv --python 3.12 "$RUNNER_TEMP/host-venv"
+          uv pip install --python "$RUNNER_TEMP/host-venv" -r "$RUNNER_TEMP/host-requirements.txt"
+          echo "HOST_PYTHON=$RUNNER_TEMP/host-venv/bin/python" >> "$GITHUB_ENV"
+          df -h /
+      - name: Write the compose .env (generated values, fake provider)
+        run: '"$HOST_PYTHON" scripts/ci_e2e_env.py'
+      # The spec uploads the synthetic tender package from data/synthetic/
+      # (gitignored, generated as in the test job).
+      - name: Generate synthetic fixtures
+        run: |
+          "$HOST_PYTHON" scripts/make_synthetic_fixtures.py
+          "$HOST_PYTHON" scripts/synthetic_tender_a.py
+      # One build per Dockerfile, cached in the GitHub Actions cache (one
+      # scope each, mode=max so the torch and model layers are reused). A
+      # lockfile change (every Dependabot uv PR) invalidates the dependency
+      # layer and everything after it, so those runs pay close to a cold
+      # build.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the api image (api, migrate)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          tags: tenderos-ci/api:e2e
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=e2e-api
+          cache-to: type=gha,scope=e2e-api,mode=max
+      - name: Disk after the api build
+        run: df -h /
+      - name: Build the worker image (worker, operations_worker, outbox_dispatcher)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: apps/worker/Dockerfile
+          tags: tenderos-ci/worker:e2e
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=e2e-worker
+          cache-to: type=gha,scope=e2e-worker,mode=max
+      - name: Disk after the worker build
+        run: df -h /
+      - name: Build the web image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          tags: tenderos-ci/web:e2e
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=e2e-web
+          cache-to: type=gha,scope=e2e-web,mode=max
+      - name: Disk after the web build
+        run: |
+          df -h /
+          docker image ls 'tenderos-ci/*'
+      # Each build has already written its layers to the GitHub Actions
+      # cache (cache-to) and loaded its image into Docker, so the builder's
+      # own store is a second copy of the same layers. Dropping it is the
+      # biggest single saving; the next run reads the layers from the cache.
+      - name: Drop the builder's copy of the layers
+        run: |
+          docker buildx du | tail -n 2
+          docker buildx prune --all --force > /dev/null
+          docker system df
+          df -h /
+      # What scripts/fake-stack.ps1 does locally, minus the Redis flush: a
+      # fresh runner has no orphaned scheduled jobs to clear.
+      - name: Start the stack
+        run: |
+          docker compose up -d --no-build migrate api web worker operations_worker outbox_dispatcher
+          test "$(docker inspect -f '{{.State.ExitCode}}' tenderos-migrate-1)" = 0
+          df -h /
+      - name: Wait for the api and the web app
+        run: |
+          timeout 300 bash -c 'until curl -sf http://localhost:8000/health/ready > /dev/null; do sleep 3; done'
+          timeout 120 bash -c 'until curl -sf http://localhost:5173 > /dev/null; do sleep 3; done'
+      - name: Every app service runs the fake provider
+        run: |
+          for svc in api worker operations_worker outbox_dispatcher; do
+            provider=$(docker compose exec -T "$svc" printenv LLM_PROVIDER)
+            echo "$svc: LLM_PROVIDER=$provider"
+            test "$provider" = fake
+          done
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.23.4"
+      - run: npm ci
+        working-directory: apps/web
+      # The Playwright version in apps/web's lockfile, with its own Chromium.
+      - name: Install Chromium for the lockfile's Playwright
+        run: |
+          npx playwright install --with-deps chromium
+          df -h /
+        working-directory: apps/web
+      - name: Run the golden-path E2E
+        run: npx playwright test
+        working-directory: apps/web
+      - name: Save the stack's logs
+        if: always()
+        run: |
+          df -h /
+          mkdir -p e2e-logs
+          docker compose ps -a > e2e-logs/ps.txt
+          docker compose logs --no-color --timestamps > e2e-logs/compose.log
+      # $HOST_PYTHON, not `uv run`: inside the project, `uv run` would sync
+      # the whole workspace (torch included) first.
+      - name: Step 11 timeline
+        if: always()
+        run: |
+          "$HOST_PYTHON" scripts/e2e_step11_timeline.py e2e-logs/compose.log --json e2e-logs/step11.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # Masking covers the console log, not artifact files: the logs are
+      # uploaded only if none of this run's generated values appears in them.
+      - name: No generated value in the saved logs
+        id: logscan
+        if: always()
+        run: '"$HOST_PYTHON" scripts/ci_e2e_env.py --scan e2e-logs'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.logscan.outcome == 'success'
+        with:
+          name: e2e-logs
+          path: e2e-logs
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 14
+          if-no-files-found: ignore
+
   # B15: secret scanning + dependency scanning. detect-secrets-hook (the
   # same command pre-commit runs locally, not `detect-secrets scan` -
   # verified directly, not assumed: `scan` merges new findings INTO the
