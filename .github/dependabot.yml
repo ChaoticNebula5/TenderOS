@@ -38,6 +38,20 @@ updates:
       uv-security:
         applies-to: security-updates
         patterns: ["*"]
+      # Phase 4 batch 2a. Groups match in order and the first match wins;
+      # a dependency no group matches gets a PR of its own. The four
+      # dependencies declared with extras (sqlalchemy[asyncio],
+      # psycopg[binary,pool], uvicorn[standard], pydantic[email]) have no
+      # current version in Dependabot's view, so they match no update-types
+      # group: on 2026-10-22 they arrived as single PRs #24 to #26, and
+      # pydantic[email]'s update was never opened as a PR (probably the
+      # open-PR limit of 5; not confirmed). This last group catches whatever
+      # the typed groups above did not. For those four the update type is
+      # unknown, so a major among them lands here, not in uv-majors: read
+      # this group's PR as possibly containing a major.
+      uv-other:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/apps/web"

@@ -11361,7 +11361,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none yet; item 27's proof is no `node_modules/vite` in the
   image, plus the E2E runs.
 
-## [found 2026-10-22, open: cause found, config built in batch 1, settings pending] Dependabot is configured but not delivering
+## [found 2026-10-22, RESOLVED: delivering since batch 1 merged; batch 2a adds a catch-all group and docker entries] Dependabot is configured but not delivering
 
 - **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
   `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
@@ -11429,6 +11429,37 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none in the repo. The proof after merge: the next uv job (or a
   manual "Check for updates") succeeds, and one grouped PR per ecosystem
   appears.
+- **First run under the new config (observed 2026-10-22 and 10-23, `gh`):**
+  - The uv jobs now succeed (Python 3.12.13 from `.python-version`), and
+    Dependabot opened ten PRs, #17 to #26. It closed the 8 old PRs itself
+    as superseded.
+  - #18, #20, #22, #24, #25 and #26 were merged and tested as one branch
+    (decision 0050) and merged as PR #28; GitHub marked all six merged.
+    #22's title said "5 updates" but its lock moved 25 packages (torch
+    2.14.1, rq 2.12.0, langgraph 1.2.16, alembic 1.20.0 among them).
+  - The four dependencies declared with extras (`sqlalchemy[asyncio]`,
+    `psycopg[binary,pool]`, `uvicorn[standard]`, `pydantic[email]`) have
+    no current version in Dependabot's view, so they matched no
+    update-types group: three came as single PRs (#24 to #26), and
+    pydantic[email]'s update was submitted but never opened as a PR
+    (probably the uv open-PR limit of 5; not confirmed). Batch 2a adds a
+    catch-all `uv-other` group after the typed ones.
+  - Still open: #17 (Actions majors; closes with item 7, which pins those
+    releases by SHA), #19 and #21 (npm majors; `npm ci` fails with
+    ERESOLVE because TypeScript 7 is outside typescript-eslint 8's peer
+    range `>=4.8.4 <6.1.0`; plan item 33, no ignore), #23 (neo4j 6, and
+    sentence-transformers 5 to 6 in the same PR; plan items 31 and 32).
+  - Security updates are on now: `automated-security-fixes` answered
+    `{"enabled":true}` on 2026-10-23 (it was `false` on 10-22), and the
+    first security PR, #27 (Mako 1.3.12 to 1.4.2, GHSA-5639-2j2p-m4mx,
+    through alembic), came through the `uv-security` group and was
+    merged. pip-audit did not report that advisory on 2026-10-22, when
+    GitHub's alert already listed it (observed); why its sources lagged
+    was not checked.
+- **Status:** the uv cause is fixed and observed; grouping and security
+  updates observed working. Majors are planned items, not ignores. The
+  catch-all group and the docker entries (item 7) are not observed until
+  merged.
 - **Expected red (batch 2a, item 7):** `scripts/check_pins.py` (CI's lint
   job) requires ci.yml's `services:` images to equal docker-compose.yml's
   for postgres, redis and neo4j, and Dependabot's docker-compose PRs
