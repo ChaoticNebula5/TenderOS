@@ -1,6 +1,8 @@
 import asyncio
+import contextlib
 import logging
 import random
+import signal
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
@@ -17,6 +19,7 @@ from sqlalchemy import text
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
@@ -362,9 +365,10 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
     - The enqueue runs in a worker thread (asyncio.to_thread): redis-py's
       client is synchronous, and calling it on the event loop froze the
       whole dispatcher for as long as Redis took to answer.
-    - It is enqueued with unique=True. RQ 2.10.0 then refuses a job id whose
-      job hash already exists in Redis (the Lua check in rq/scripts.py:22,
-      raised as DuplicateJobError at :96-97): a job that is queued,
+    - It is enqueued with unique=True. RQ then refuses a job id whose job
+      hash already exists in Redis (rq 2.12.0, the same lines as in 2.10.0:
+      the Lua check in rq/scripts.py:22, raised as DuplicateJobError at
+      :96-97): a job that is queued,
       started, deferred or scheduled, a finished job until its result TTL
       lapses (500 s by default, rq/defaults.py:43), or a failed one until
       its failure TTL lapses (1 year, :50). Every job id is derived from a
@@ -576,7 +580,7 @@ def _error_backoff_seconds(consecutive_failures: int) -> float:
     return min(POLL_INTERVAL_SECONDS * 2 ** (consecutive_failures - 1), MAX_ERROR_BACKOFF_SECONDS)
 
 
-async def _run_forever() -> None:
+async def _run_forever(stop: asyncio.Event | None = None) -> None:
     # One event loop for the whole process lifetime - asyncpg connections
     # (held open by the module-level SQLAlchemy engine) are bound to whichever
     # event loop was active when they were created, so calling asyncio.run()
@@ -587,11 +591,17 @@ async def _run_forever() -> None:
     # with its traceback and retried after a growing backoff instead of
     # ending the process. Before, the first exception out of _dispatch_once
     # stopped all event delivery until someone restarted the container.
+    #
+    # Phase 4 item 28: `stop`, once set, ends the loop after the tick in
+    # progress, and cuts the wait between ticks short. Without one (the
+    # integration tests), the loop runs until cancelled.
+    if stop is None:
+        stop = asyncio.Event()
     connection = _redis_connection(settings.redis_url)
     queues = _queues(connection)
     tick = 0
     consecutive_failures = 0
-    while True:
+    while not stop.is_set():
         tick += 1
         delay: float = POLL_INTERVAL_SECONDS
         try:
@@ -620,7 +630,27 @@ async def _run_forever() -> None:
         if tick % CLEANUP_EVERY_N_TICKS == 0:
             await _delete_expired_idempotency_records()
             await _reap_lapsed_operations()
-        await asyncio.sleep(delay)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+    logger.info("outbox dispatcher stopping after tick %d", tick)
+    connection.close()
+
+
+async def _run_until_terminated() -> None:
+    """Phase 4 item 28. SIGTERM sets the stop event: the tick in progress
+    finishes, and the process exits 0, instead of dying mid-tick. Under
+    compose, tini (`init: true`) is PID 1 and forwards the signal; where the
+    image runs without an init, the dispatcher is PID 1 itself, and the
+    kernel would ignore a SIGTERM it had no handler for. At-least-once delivery
+    (decision 0029) makes a kill mid-tick safe too; this only makes the
+    ordinary stop quick and clean. Linux only (add_signal_handler), like
+    the container."""
+    stop = asyncio.Event()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
+    try:
+        await _run_forever(stop)
+    finally:
+        await engine.dispose()
 
 
 def main() -> None:
@@ -630,7 +660,7 @@ def main() -> None:
     # here too keeps all three real entrypoints identical, matching
     # configure_logging()'s own placement.
     install_fake_fallback_responses()
-    asyncio.run(_run_forever())
+    asyncio.run(_run_until_terminated())
 
 
 if __name__ == "__main__":

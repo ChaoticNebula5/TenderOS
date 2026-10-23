@@ -1,14 +1,25 @@
+# Phase 4 item 7: every image is pinned as tag@sha256:digest, at the exact
+# version and digest that ran before pinning (PostgreSQL 16.13 with pgvector
+# 0.8.2, Redis 7.4.8, Neo4j 5.26.28, Prometheus 3.13.1, Grafana 13.1.1). The
+# tag is for people; Docker pulls the digest. Dependabot's docker-compose
+# entry (.github/dependabot.yml) proposes new versions with their digests,
+# and scripts/check_pins.py fails CI if ci.yml's service images drift from
+# these.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.2-pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Host port 5433, not 5432: on the Windows dev host a native PostgreSQL
+    # service (and WSL's localhost relay) can hold 5432 first, and host-side
+    # scripts and pytest then reach the wrong server (KNOWN_LIMITATIONS.md,
+    # environment traps, incident 2). Containers still use postgres:5432.
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -16,7 +27,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
     volumes:
       - redis_data:/data
     ports:
@@ -28,7 +39,7 @@ services:
       retries: 10
 
   neo4j:
-    image: neo4j:5.26-community
+    image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
     volumes:
@@ -66,10 +77,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Phase 4 item 4: migrations run once, before anything that uses the
+  # schema. A one-shot service on the api image (alembic.ini and the
+  # migrations are in it), which exits 0 at head; api, worker,
+  # operations_worker and outbox_dispatcher start only after it has
+  # completed successfully, so a failing migration keeps them all down.
+  # Not in the api's own entrypoint: with more than one api replica, each
+  # would race to migrate. On a host with a release phase, this command
+  # becomes the release command. A second start is a no-op (alembic finds
+  # the database at head).
+  migrate:
+    # Phase 4 item 28: Docker's init (tini) is PID 1. It forwards SIGTERM to
+    # the program and reaps orphaned child processes; the program then has
+    # ordinary signal defaults, and still handles SIGTERM itself.
+    init: true
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     # Phase 4 blocker 3: come back after a crash or a host restart, but
     # stay down after an explicit `docker compose stop`.
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -85,6 +120,14 @@ services:
         condition: service_healthy
       s3:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Phase 4 item 28: uvicorn stops accepting connections on SIGTERM and
+    # waits for open ones, for at most 10 s (--timeout-graceful-shutdown in
+    # apps/api/Dockerfile's CMD: an open SSE stream would otherwise hold the
+    # shutdown until Docker kills it). 20 s leaves room for the lifespan
+    # shutdown after that.
+    stop_grace_period: 20s
     healthcheck:
       # /health/ready (not /health/live) - checks real Postgres/Redis/
       # Neo4j/object-storage connectivity, not just "the process is up." Does NOT
@@ -100,6 +143,7 @@ services:
 
   worker:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -109,6 +153,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Phase 4 item 28. On SIGTERM, RQ stops taking jobs and lets the job in
+    # progress finish (warm shutdown); it does not requeue it. A workflow
+    # job may run up to its 1800 s timeout (outbox_dispatcher.py,
+    # _QUEUE_TIMEOUTS_SECONDS), and a run whose job is killed stays
+    # `running`: the workflow-run reaper is designed, not built (decision
+    # 0035). So the grace period covers the longest job plus a margin. An
+    # idle worker stops in about 2 s (observed), so the wait is only ever
+    # as long as the job in progress; to stop sooner and accept losing that
+    # job, `docker compose stop -t <seconds> worker`.
+    stop_grace_period: 31m
 
   # Phase 4 Stage 2: the worker for async operations (red team, proposal
   # generation, commercial re-validation), listening only to the
@@ -122,10 +178,11 @@ services:
   # pubsub listener thread, which every RQ worker runs, is separate.
   operations_worker:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    command: ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.worker", "operations"]
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "operations"]
     env_file: .env
     environment:
       OPENBLAS_NUM_THREADS: "1"
@@ -135,17 +192,33 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Phase 4 item 28: as for worker. An operation's job runs up to 1800 s
+    # (operation_service.JOB_TIMEOUT_SECONDS). A killed one is failed by the
+    # dispatcher's reaper as WORKER_LOST, but only once its lease (the job
+    # timeout plus 60 s) has lapsed, so killing it early loses the work
+    # without letting the user retry any sooner.
+    stop_grace_period: 31m
 
   outbox_dispatcher:
     restart: unless-stopped
+    init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    command: ["uv", "run", "--frozen", "--package", "tenderos-worker", "python", "-m", "tenderos_worker.outbox_dispatcher"]
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.outbox_dispatcher"]
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Phase 4 item 28: on SIGTERM the dispatcher finishes its current tick
+    # and exits (outbox_dispatcher._run_until_terminated). A tick is bounded
+    # by its Redis and lock timeouts; delivery is at-least-once (decision
+    # 0029), so even a kill mid-tick loses nothing.
+    stop_grace_period: 30s
 
   web:
     build:
@@ -157,7 +230,7 @@ services:
       - api
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
     profiles: ["observability"]
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
@@ -165,7 +238,7 @@ services:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:13.1.1@sha256:1c1bd67c54c5fcf6e759897852b5a584191bd6796e8d328a5ace457799801261
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}

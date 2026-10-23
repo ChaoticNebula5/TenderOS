@@ -837,6 +837,22 @@ Each entry:
      into the container bypasses host networking entirely, which is why
      that path kept working the whole time and made the underlying cause
      harder to spot at first.
+     **Phase 4 item 6 (batch 2a):** the stack's Postgres is published on
+     host port 5433; containers still use `postgres:5432`. Every host-side
+     DSN moved with it (`scripts/test-backend.env`, the usage lines of
+     `check_fake_run_invariants.py`, `project_all_tenders.py` and
+     `restore_review_snapshot.sh`), and so did CI's service mapping,
+     because CI sources `test-backend.env`. `scripts/test-backend.ps1` now
+     asks the server for its version before pytest starts and refuses
+     anything but 16.x. On 2026-10-23, before the move, 5432 was held by
+     Docker Desktop and by WSL's localhost relay (`wslrelay.exe` on
+     `127.0.0.1` and `[::1]`); the native service was not running.
+     Observed 2026-10-23: a host connection to `localhost:5433` reports
+     PostgreSQL 16.13 with pgvector 0.8.2; the suite's first line names
+     "localhost:5433, PostgreSQL 16.13"; with the DSN pointed at 5432 the
+     script refused both with nothing listening ("could not ask the
+     Postgres server") and with a throwaway PostgreSQL 17 container there
+     ("reports version 17.11, not 16.x"). The E2E passed after the move.
   3. **Test-suite teardown destroying a live diagnostic.** During B9,
      right after a real, hour-plus live pipeline run produced real
      `proposal_sections`/`proposal_claims`/`compliance_entries`/
@@ -9934,7 +9950,7 @@ actually has - three independent failures were reproduced, not inferred:
 - **Test:** tests/unit/test_object_storage_readiness.py (the probe's
   decision table); the integration suite against the live s3 service.
 
-## [B17 incident, open, owner: Phase 0c] An image reference with no tag means `:latest`, and nothing in the repo is pinned by digest
+## [B17 incident, RESOLVED in Phase 4 batch 2a (item 7)] An image reference with no tag means `:latest`, and nothing in the repo is pinned by digest
 
 - **What happened:** `docker-compose.yml` said `image: minio/minio` and
   ci.yml ran `minio/minio` - no tag, so `:latest` at pull time. When the
@@ -9958,6 +9974,39 @@ actually has - three independent failures were reproduced, not inferred:
 - **To do in Phase 0c:** pin every image by `tag@sha256:digest`, and pin
   GitHub Actions `uses:` by commit SHA. Not done here (out of scope for
   the swap).
+- **Phase 4 item 7 (batch 2a), done:** every image is pinned as
+  `tag@sha256:digest` at the version and digest that ran before pinning:
+  `pgvector/pgvector:0.8.2-pg16`, `redis:7.4.8-alpine`,
+  `neo4j:5.26.28-community`, `prom/prometheus:v3.13.1`,
+  `grafana/grafana:13.1.1`, `python:3.12.13-slim`, `node:22.23.4-slim`,
+  and uv 0.12.3 from `ghcr.io/astral-sh/uv` (a named FROM stage, replacing
+  an unpinned `pip install uv`). The tags are exact versions, not the old
+  floating ones, so each new release reaches us as a version bump that
+  carries its digest. pgvector's, Neo4j's and Grafana's exact tags have
+  been rebuilt since our copies were pulled, so the pinned digests are
+  older builds of those tags. Every digest answered HTTP 200 to an
+  anonymous registry request (2026-10-23). Actions are pinned by commit
+  SHA at the releases Dependabot's #17 proposed (checkout v7.0.1, setup-uv
+  v7.6.0, cache v6.1.0, setup-node v7.1.0, the SHAs its green run used);
+  setup-uv installs uv 0.12.3 and setup-node Node 22.23.4, whose bundled
+  npm 10.9.9 is what both `package.json` files name in `packageManager`
+  (a CI step checks it, since npm does not enforce the field).
+  setup-uv v3 to v7 changes defaults: from v5 it caches uv's downloads in
+  the Actions cache on GitHub-hosted runners; v6 stopped activating a venv
+  (we never relied on it); v7 runs on Node 24. Dependabot keeps the pins
+  current through new `docker` (the three Dockerfiles) and
+  `docker-compose` entries. It never reads ci.yml's service images or the
+  setup-uv and setup-node version inputs, so `scripts/check_pins.py`
+  (CI lint job) fails when those drift from the images, or when any
+  reference is not pinned. Read in dependabot-core's source, not yet
+  observed: an exact version tag gets version-bump PRs with the new
+  digest; a digest-only refresh of an unchanged versioned tag can be
+  suppressed by an experiment flag whose state on GitHub is not visible.
+  Observed 2026-10-23 on the rebuilt stack: the same versions as before
+  (PostgreSQL 16.13, pgvector 0.8.2, Redis 7.4.8, Neo4j 5.26.28, Python
+  3.12.13); `check_pins.py` passes on the repo, and its tests plant each
+  kind of drift in a copy and see it fail. CI on the pinned SHAs is
+  observed only once this is pushed.
 
 ## [B17, backups kept, 2026-10-07] Object-store migration from MinIO to VersityGW, and the backups it left
 
@@ -10164,7 +10213,7 @@ actually has - three independent failures were reproduced, not inferred:
   it. The effective upload limit is 50 MiB minus the framing (a few hundred
   bytes). Inferred from the code, not measured with an HTTP upload.
 
-## [found 2026-10-10, open, owner decision] The dev .env's JWT signing key is 8 bytes
+## [found 2026-10-10, RESOLVED in Phase 4 batch 2a (item 5, decision 0042)] The dev .env's JWT signing key is 8 bytes
 
 - pyjwt emits `InsecureKeyLengthWarning: The HMAC key is 8 bytes long,
   which is below the minimum recommended length of 32 bytes for SHA256`
@@ -10174,6 +10223,30 @@ actually has - three independent failures were reproduced, not inferred:
 - **Risk:** none locally; any deployment that copies `.env` as-is would
   sign tokens with a guessable key. Settings does not enforce a minimum
   length.
+- **Phase 4 item 5 (batch 2a), decision 0042:** importing
+  `tenderos_backend.core.config` now refuses a key shorter than 32 bytes
+  (UTF-8 bytes, what HS256 and pyjwt measure) in every environment, so
+  the api, both workers, the dispatcher and the migrate service all
+  refuse to start; the error names `JWT_SIGNING_KEY` and the minimum,
+  never the value. With `APP_ENV=production` they also refuse
+  `changeme`/empty model names and credentials (the S3 keys, as decided,
+  and by the same rule the Neo4j password and the password in
+  `POSTGRES_DSN`), and the api refuses a localhost or plain-http
+  `WEB_BASE_URL`, rate limiting off, or the E2E bypass on. Each module
+  lists all of its own problems in one error, the backend's first: the
+  api reports its own only once the backend's are fixed (observed). No
+  compose overlay sets `APP_ENV`, so the E2E
+  stack runs with the local `.env`'s value. Tests:
+  `tests/unit/test_production_settings.py`. Observed 2026-10-23 in the
+  api image (`docker compose run`, every relevant variable set
+  explicitly): a 15-byte key refused with "JWT_SIGNING_KEY is 15 bytes;
+  at least 32 are required ..." and no part of the value; production with
+  placeholders refused, listing REASONING_MODEL, NEO4J_PASSWORD and
+  POSTGRES_DSN; production with only API-side problems refused, listing
+  WEB_BASE_URL, RATE_LIMIT_ENABLED and E2E_RATE_LIMIT_BYPASS_ENABLED; good
+  production values imported. The local `.env` key was replaced (64
+  bytes, length measured only), and the suite's only warning is now the
+  Starlette test-client one: no `InsecureKeyLengthWarning`.
 
 ## [measured 2026-10-10; re-measured 2026-10-22 (Phase 4 batch 1): 20 of 20 passed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
 
@@ -11288,7 +11361,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none yet; item 27's proof is no `node_modules/vite` in the
   image, plus the E2E runs.
 
-## [found 2026-10-22, open: cause found, config built in batch 1, settings pending] Dependabot is configured but not delivering
+## [found 2026-10-22, RESOLVED: delivering since batch 1 merged; batch 2a adds a catch-all group and docker entries] Dependabot is configured but not delivering
 
 - **What happens (observed 2026-10-22, `gh pr list` and `gh api`):**
   `.github/dependabot.yml` has existed since B15 (`020b65c`), with entries
@@ -11356,6 +11429,46 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Test:** none in the repo. The proof after merge: the next uv job (or a
   manual "Check for updates") succeeds, and one grouped PR per ecosystem
   appears.
+- **First run under the new config (observed 2026-10-22 and 10-23, `gh`):**
+  - The uv jobs now succeed (Python 3.12.13 from `.python-version`), and
+    Dependabot opened ten PRs, #17 to #26. It closed the 8 old PRs itself
+    as superseded.
+  - #18, #20, #22, #24, #25 and #26 were merged and tested as one branch
+    (decision 0050) and merged as PR #28; GitHub marked all six merged.
+    #22's title said "5 updates" but its lock moved 25 packages (torch
+    2.14.1, rq 2.12.0, langgraph 1.2.16, alembic 1.20.0 among them).
+  - The four dependencies declared with extras (`sqlalchemy[asyncio]`,
+    `psycopg[binary,pool]`, `uvicorn[standard]`, `pydantic[email]`) have
+    no current version in Dependabot's view, so they matched no
+    update-types group: three came as single PRs (#24 to #26), and
+    pydantic[email]'s update was submitted but never opened as a PR
+    (probably the uv open-PR limit of 5; not confirmed). Batch 2a adds a
+    catch-all `uv-other` group after the typed ones.
+  - Still open: #17 (Actions majors; closes with item 7, which pins those
+    releases by SHA), #19 and #21 (npm majors; `npm ci` fails with
+    ERESOLVE because TypeScript 7 is outside typescript-eslint 8's peer
+    range `>=4.8.4 <6.1.0`; plan item 33, no ignore), #23 (neo4j 6, and
+    sentence-transformers 5 to 6 in the same PR; plan items 31 and 32).
+  - Security updates are on now: `automated-security-fixes` answered
+    `{"enabled":true}` on 2026-10-23 (it was `false` on 10-22), and the
+    first security PR, #27 (Mako 1.3.12 to 1.4.2, GHSA-5639-2j2p-m4mx,
+    through alembic), came through the `uv-security` group and was
+    merged. pip-audit did not report that advisory on 2026-10-22, when
+    GitHub's alert already listed it (observed); why its sources lagged
+    was not checked.
+- **Status:** the uv cause is fixed and observed; grouping and security
+  updates observed working. Majors are planned items, not ignores. The
+  catch-all group and the docker entries (item 7) are not observed until
+  merged.
+- **Expected red (batch 2a, item 7):** `scripts/check_pins.py` (CI's lint
+  job) requires ci.yml's `services:` images to equal docker-compose.yml's
+  for postgres, redis and neo4j, and Dependabot's docker-compose PRs
+  update only the compose file. Every such PR that moves one of those
+  three images will fail the lint job until ci.yml's matching image is
+  updated on the same branch. The fix: one commit on the Dependabot
+  branch changing that ci.yml image line to the PR's new `tag@digest`.
+  The red is intended; without it, CI would test against a different
+  image than the stack runs.
 
 ## [found 2026-10-22, open: guarded in batch 1, cause unknown] An intermittent connection-leak warning in CI's backend run
 
@@ -11416,3 +11529,74 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     LangGraph's checkpointer has its own psycopg pool.
 - **Status (batch 1):** guarded; cause unknown. The next occurrence fails
   CI and names its origin.
+
+## [Phase 4 batch 2a, 2026-10-23] Starting and stopping the stack: migrations at start, and what a stop does to a job in progress
+
+- **Migrations (item 4):** before, a fresh database stayed empty until
+  someone ran `alembic upgrade head` by hand; nothing in compose or the
+  api's CMD ran it. Now a one-shot `migrate` service on the api image runs
+  `alembic upgrade head`, and api, worker, operations_worker and
+  outbox_dispatcher start only after it has exited 0
+  (`service_completed_successfully`). It is a service, not part of the
+  api's entrypoint, because api replicas would each race to migrate. On a
+  host with a release phase, the same command becomes the release
+  command. Observed 2026-10-23 on throwaway compose projects with their
+  own volumes (the project's volumes untouched): a fresh database ran all
+  20 upgrades to `020_async_operations (head)` and the api became
+  healthy; a second start re-ran migrate (new start time), applied 0
+  upgrades, exited 0; with a conflicting `organizations` table planted,
+  migrate exited 1 (`DuplicateTableError`), `up` failed with "service
+  migrate didn't complete successfully", and the api container was
+  created but never started.
+- **Stopping (item 28), observed 2026-10-23 on the fake stack before any
+  change:** every Python container ran `uv run` (uv 0.12.3) as PID 1, and
+  uv forwarded SIGTERM to Python. Idle stops: worker 1.7 s (RQ's "warm
+  shut down requested", the scheduler releasing its locks, exit 0); api
+  0.8 s (uvicorn's full shutdown, exit 143, which is uvicorn re-raising
+  the signal after it); outbox_dispatcher 0.6 s (no handler: killed by
+  the signal, exit 143). With a 45 s job running, the worker began a warm
+  shutdown, waited for the job, and Docker's default 10 s grace ran out:
+  SIGKILL, exit 137, and the job stayed `started` in RQ's started
+  registry; RQ's own `Job.delete()` then failed on it ("Execution ... not
+  found in Redis"). With `stop -t 60` and a 20 s job, the job finished and
+  the worker exited 0 after 16.4 s. RQ's warm shutdown never requeues the
+  job in progress (read in code, rq 2.12.0 `worker/base.py`,
+  `request_stop`, `_shutdown`); a second SIGTERM is a cold shutdown that
+  kills it. Every start also rebuilt and reinstalled the two workspace
+  packages ("Uninstalled 2 packages ... Installed 2 packages").
+- **Changed:** the images install the workspace packages at build time,
+  after their code, and each CMD runs the venv's program directly as PID
+  1 (`uvicorn` with `--timeout-graceful-shutdown 10`, `python -m ...`).
+  As PID 1 a process gets no default signal action, so the dispatcher now
+  handles SIGTERM itself: the tick in progress finishes and it exits.
+  Grace periods (`stop_grace_period`): api 20 s, outbox_dispatcher 30 s,
+  worker and operations_worker 31 min. A worker's job can run 1800 s. A
+  killed workflow job leaves its run `running`, since the workflow-run
+  reaper is designed, not built (decision 0035); a killed operation is
+  failed by the dispatcher's reaper as WORKER_LOST, but only once its
+  lease (job timeout plus 60 s) has lapsed, so killing it early only
+  loses the work. An idle worker still stops in seconds; the 31 minutes
+  apply only while a job runs. `docker compose stop -t <seconds>` stops
+  sooner, accepting the loss. Compose also sets `init: true` on the five
+  Python services (api, worker, operations_worker, outbox_dispatcher,
+  migrate): Docker's tini is PID 1, forwards signals and reaps orphaned
+  children, and the program runs with ordinary signal defaults; the
+  dispatcher's handler is what lets it finish its tick.
+  **Observed 2026-10-23 after the change:** `docker-init` is PID 1 in each
+  app container, the program its child, and no reinstall lines in any
+  start log. Idle stops: outbox_dispatcher 2.2 s, exit 0, logging
+  "outbox dispatcher stopping after tick 7" (it was killed before); api
+  0.8 s (uvicorn's shutdown, exit 143 as before); worker 0.8 s and
+  operations_worker 2.4 s, warm shutdowns, exit 0. A 30 s job started 4 s
+  before a plain `docker compose stop worker` ran to completion
+  ("Successfully completed"), and the worker exited 0 after 26.4 s. The
+  reaping of orphans was not observed (Docker's documented init
+  behaviour).
+- **Limits:**
+  - **Host-dependent (accepted 2026-10-23 for compose):** the 31-minute
+    grace is compose's. A host that caps shutdown time (a platform's
+    deploy or stop timeout, the Docker daemon's own timeout at host
+    shutdown, which was not checked) kills a running job sooner, and the
+    two reaper paths above apply. Choosing the host settles this.
+  - A job killed anyway is not retried by RQ. Operations are failed by
+    the reaper; workflow runs need decision 0035's reaper.

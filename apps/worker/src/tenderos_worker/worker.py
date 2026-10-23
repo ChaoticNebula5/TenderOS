@@ -57,10 +57,11 @@ def queue_names_from(argv: list[str]) -> list[str]:
 #
 # What the check guarantees is that the preload adds no thread. It does not
 # make the parent fork single-threaded: once the check has passed, RQ's own
-# Worker.bootstrap starts a Redis pubsub listener thread (rq 2.10.0,
-# rq/worker/base.py: subscribe -> pubsub.run_in_thread, daemon) that runs
-# until teardown, so every RQ worker, this one included, forks its jobs
-# with that one thread alive (observed idle: 2 OS threads in the parent).
+# Worker.bootstrap starts a Redis pubsub listener thread (rq 2.12.0, as in
+# 2.10.0: rq/worker/base.py, subscribe -> pubsub.run_in_thread, daemon)
+# that runs until teardown, so every RQ worker, this one included, forks
+# its jobs with that one thread alive (observed idle: 2 OS threads in the
+# parent).
 # That is RQ's own design, the same in the default worker.
 _OPERATIONS_JOB_MODULE = "tenderos_worker.jobs.operations"
 _BLAS_THREAD_VARIABLES = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")
@@ -152,9 +153,18 @@ def main() -> None:
     # only ever lands a job in RQ's own scheduled-jobs registry - nothing
     # promotes it to a real queue for a worker to pick up unless a
     # scheduler component is running. RQ's own Worker starts one with this
-    # flag (in rq 2.10.0 a separate forked process named "Scheduler", not a
-    # thread: rq/scheduler.py, ForkProcess); without it, every scheduled
-    # retry would sit invisibly in Redis forever, never executing.
+    # flag (in rq 2.12.0, as in 2.10.0, a separate forked process named
+    # "Scheduler", not a thread: rq/scheduler.py, ForkProcess); without it,
+    # every scheduled retry would sit invisibly in Redis forever, never
+    # executing. Both this worker and operations_worker run one; each takes
+    # a per-queue lock (SET NX), so only one promotes a given queue's jobs.
+    # In 2.10.0 the heartbeat extended each lock's expiry and stop deleted
+    # each lock key without checking who held it, so after a lapse two
+    # schedulers could both act on one queue, and stopping one could
+    # release the other's lock. 2.12.0 refreshes and releases a lock only
+    # if it still holds it (a compare-and-set script) and stops scheduling
+    # a queue whose lock another scheduler took over (read in the 2.10.0
+    # and 2.12.0 wheels, rq/scheduler.py).
     worker.work(with_scheduler=True)
 
 
