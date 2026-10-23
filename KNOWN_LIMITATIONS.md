@@ -11796,6 +11796,33 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     (each scope's size, and whether the `hf-...` entry survives). Fallback:
     `mode=min` (only the final image's layers), or fewer scopes (one shared
     scope for api and worker, whose dependency layers are the same).
+    **Measured after the first run (2026-10-23,
+    `gh api .../actions/cache/usage` and `gh cache list`):** 2,782,146,941
+    bytes in 56 entries, 27.8% of the 10 GB cap. By key prefix: image
+    layers (`buildkit-blob-`, 40 entries, shared by the three scopes and
+    not attributable to one; the largest blob 345 MiB) 1.32 GiB; the model
+    cache (`hf-`, one copy per ref, 6 entries of about 160 MB) 0.94 GiB;
+    setup-uv (`setup-uv-`, 7 entries, one of 358 MB) 0.33 GiB; the three
+    `index-e2e-<scope>` entries under 25 KB together. One cold run of all
+    three scopes added about 1.3 GiB, far less than the images' size,
+    since layers are stored compressed and once. Re-check after a
+    lockfile-changing run, which writes new dependency layers beside the
+    old ones until they are evicted.
+  - **Runner disk (first run, 2026-10-23, run 39959278103):** the job ran
+    out of disk (ENOSPC) at setup-node, after the three builds (api 2 m
+    50 s, worker 3 m 5 s, web 41 s, cold) and a healthy stack start; "Save
+    the stack's logs" then failed partway (`compose.log` stops at 21 KB).
+    The runner could not write its own diagnostics, so the job's log never
+    reached GitHub, and that run's `df -h` figures were lost with it. The
+    fix: preinstalled toolchains this job never uses are removed first
+    (.NET, Android, GHC, CodeQL) and the runner's preloaded images pruned;
+    the host installs only what its four scripts import (python-docx,
+    openpyxl, Pillow and their three dependencies, at uv.lock's versions;
+    the fixtures' manifest is identical), not the whole workspace with
+    torch; the builder's own copy of the layers is pruned once the images
+    are loaded (they are already in the Actions cache); and every big
+    stage ends with `df -h /`, so a failure names its stage. Not yet
+    observed on a runner.
   - **Step 11** (the entry above): the runner's timing is a new variable
     in a race the spec cannot be changed to avoid.
 - **Status:** built; not observed until the pull request runs it.
