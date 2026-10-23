@@ -17,7 +17,7 @@ dependencies = [
     # PostgreSQL checkpointer package/imports" - this pairing is the
     # build-time-verifiable piece, not a locked contract detail.
     "langgraph-checkpoint-postgres>=2.0",
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary,pool]>=3.3.6",
     # B4: object storage, document parsing, OCR fallback, embeddings.
     "boto3>=1.35",
     "pgvector>=0.3",
