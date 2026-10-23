@@ -11293,6 +11293,17 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   before the click. CI's `e2e` job records the fetches on both sides of
   the click and the last workflow event before the fetch (the entry
   below); its runs settle which cause holds.
+- **Observed 2026-10-23, CI run 2 (run 39980533388, passed; run 1 ran out
+  of disk before the E2E):** margin +14.776 s (click 15:51:39.069, resume
+  job 15:51:35.201 to 15:51:53.845). The job took 18.6 s on the runner
+  against about 7.5 s locally, so the slower runner widened the margin
+  rather than narrowing it. 0 task fetches after the click; the last one
+  1.437 s before it; the last workflow event the worker logged before that
+  fetch (`WorkflowRunStatusChanged`) 7.414 s before it. A refetch driven
+  by a workflow event would follow its event within about a second, so a
+  7.4 s gap points to cause (a), the second tab's own first data fetch.
+  **Tally (runs with a timeline):** 2 of 2 point to (a), batch 2b's local
+  run and CI run 2. Counted until 5 CI runs are recorded.
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11821,11 +11832,15 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     the fixtures' manifest is identical), not the whole workspace with
     torch; the builder's own copy of the layers is pruned once the images
     are loaded (they are already in the Actions cache); and every big
-    stage ends with `df -h /`, so a failure names its stage. Not yet
-    observed on a runner.
+    stage ends with `df -h /`, so a failure names its stage. Observed on
+    run 2 (run 39980533388, passed, warm cache): 14 GB free at the start,
+    37 GB after freeing space, 29 GB at the lowest (after the Chromium
+    install).
   - **Step 11** (the entry above): the runner's timing is a new variable
     in a race the spec cannot be changed to avoid.
-- **Status:** built; not observed until the pull request runs it.
+- **Status:** merged (#37); run 1 ran out of disk before the E2E, run 2
+  (39980533388) passed. Non-blocking until 5 runs pass with their step 11
+  timelines recorded (1 so far).
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub
