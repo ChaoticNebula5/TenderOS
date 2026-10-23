@@ -365,9 +365,10 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
     - The enqueue runs in a worker thread (asyncio.to_thread): redis-py's
       client is synchronous, and calling it on the event loop froze the
       whole dispatcher for as long as Redis took to answer.
-    - It is enqueued with unique=True. RQ 2.10.0 then refuses a job id whose
-      job hash already exists in Redis (the Lua check in rq/scripts.py:22,
-      raised as DuplicateJobError at :96-97): a job that is queued,
+    - It is enqueued with unique=True. RQ then refuses a job id whose job
+      hash already exists in Redis (rq 2.12.0, the same lines as in 2.10.0:
+      the Lua check in rq/scripts.py:22, raised as DuplicateJobError at
+      :96-97): a job that is queued,
       started, deferred or scheduled, a finished job until its result TTL
       lapses (500 s by default, rq/defaults.py:43), or a failed one until
       its failure TTL lapses (1 year, :50). Every job id is derived from a

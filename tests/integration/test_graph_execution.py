@@ -301,7 +301,9 @@ async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(
 
     Expected, stated before running, from reading LangGraph 1.2.10's own
     installed source (.venv/Lib/site-packages/langgraph/pregel/_runner.py)
-    rather than assumed: compliance_analysis/talent_analysis/
+    rather than assumed (re-read in 1.2.16: the path below is unchanged,
+    except that a failed task is first offered to a per-node error
+    handler, which this graph does not register): compliance_analysis/talent_analysis/
     commercial_analysis are three tasks Send()-dispatched into the SAME
     Pregel super-step (graph.py's own comment: "all Send()-dispatched...
     same shape for all three branches"). PregelRunner.tick's async loop
