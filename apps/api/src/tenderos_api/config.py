@@ -1,4 +1,7 @@
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from tenderos_backend.core.config import reject_production_problems
 
 
 class Settings(BaseSettings):
@@ -45,4 +48,28 @@ class Settings(BaseSettings):
     e2e_rate_limit_bypass_enabled: bool = False
 
 
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _api_production_problems(s: Settings) -> list[str]:
+    """Phase 4 item 5 (decision 0042), the API's half: what these settings
+    get wrong for APP_ENV=production, one line per problem, naming the
+    variable, never its value. Empty outside production. The backend
+    settings (JWT key, model names, credentials) are checked when
+    tenderos_backend.core.config is imported, which every API process does.
+    """
+    if s.app_env != "production":
+        return []
+    problems: list[str] = []
+    origin = urlsplit(s.web_base_url)
+    if origin.scheme != "https" or (origin.hostname or "") in _LOCAL_HOSTS:
+        problems.append("WEB_BASE_URL (the CORS origin) must be an https URL that is not localhost")
+    if not s.rate_limit_enabled:
+        problems.append("RATE_LIMIT_ENABLED must be true")
+    if s.e2e_rate_limit_bypass_enabled:
+        problems.append("E2E_RATE_LIMIT_BYPASS_ENABLED must be false")
+    return problems
+
+
 settings = Settings()
+reject_production_problems(_api_production_problems(settings))

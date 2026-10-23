@@ -10180,7 +10180,7 @@ actually has - three independent failures were reproduced, not inferred:
   it. The effective upload limit is 50 MiB minus the framing (a few hundred
   bytes). Inferred from the code, not measured with an HTTP upload.
 
-## [found 2026-10-10, open, owner decision] The dev .env's JWT signing key is 8 bytes
+## [found 2026-10-10, RESOLVED in Phase 4 batch 2a (item 5, decision 0042)] The dev .env's JWT signing key is 8 bytes
 
 - pyjwt emits `InsecureKeyLengthWarning: The HMAC key is 8 bytes long,
   which is below the minimum recommended length of 32 bytes for SHA256`
@@ -10190,6 +10190,30 @@ actually has - three independent failures were reproduced, not inferred:
 - **Risk:** none locally; any deployment that copies `.env` as-is would
   sign tokens with a guessable key. Settings does not enforce a minimum
   length.
+- **Phase 4 item 5 (batch 2a), decision 0042:** importing
+  `tenderos_backend.core.config` now refuses a key shorter than 32 bytes
+  (UTF-8 bytes, what HS256 and pyjwt measure) in every environment, so
+  the api, both workers, the dispatcher and the migrate service all
+  refuse to start; the error names `JWT_SIGNING_KEY` and the minimum,
+  never the value. With `APP_ENV=production` they also refuse
+  `changeme`/empty model names and credentials (the S3 keys, as decided,
+  and by the same rule the Neo4j password and the password in
+  `POSTGRES_DSN`), and the api refuses a localhost or plain-http
+  `WEB_BASE_URL`, rate limiting off, or the E2E bypass on. Each module
+  lists all of its own problems in one error, the backend's first: the
+  api reports its own only once the backend's are fixed (observed). No
+  compose overlay sets `APP_ENV`, so the E2E
+  stack runs with the local `.env`'s value. Tests:
+  `tests/unit/test_production_settings.py`. Observed 2026-10-23 in the
+  api image (`docker compose run`, every relevant variable set
+  explicitly): a 15-byte key refused with "JWT_SIGNING_KEY is 15 bytes;
+  at least 32 are required ..." and no part of the value; production with
+  placeholders refused, listing REASONING_MODEL, NEO4J_PASSWORD and
+  POSTGRES_DSN; production with only API-side problems refused, listing
+  WEB_BASE_URL, RATE_LIMIT_ENABLED and E2E_RATE_LIMIT_BYPASS_ENABLED; good
+  production values imported. The local `.env` key was replaced (64
+  bytes, length measured only), and the suite's only warning is now the
+  Starlette test-client one: no `InsecureKeyLengthWarning`.
 
 ## [measured 2026-10-10; re-measured 2026-10-22 (Phase 4 batch 1): 20 of 20 passed] test_outbox_dispatcher.py flake: counts, two signatures, and a clock-skew mechanism
 

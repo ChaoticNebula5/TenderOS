@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -173,5 +174,67 @@ def _reject_fake_provider_in_production(llm_provider: str, app_env: str) -> None
         )
 
 
+# Phase 4 item 5, decision 0042. HS256 keys shorter than 32 bytes are below
+# RFC 7518 section 3.2's minimum, the length under which pyjwt warns. Held in
+# every environment, not only production: a dev .env copied as-is is the
+# likely way a guessable key reaches a deployment.
+JWT_SIGNING_KEY_MIN_BYTES = 32
+
+# The placeholder .env.example ships for every secret, plus empty.
+_PLACEHOLDER_VALUES = frozenset({"", "changeme"})
+
+
+def _require_jwt_signing_key_length(jwt_signing_key: str) -> None:
+    """Refuse a JWT signing key shorter than JWT_SIGNING_KEY_MIN_BYTES.
+
+    The error names the variable and the minimum, never the key itself.
+    Bytes, not characters: HS256's key is a byte string, and pyjwt measures
+    the UTF-8 encoding (len() on the str would count characters).
+    """
+    length = len(jwt_signing_key.encode("utf-8"))
+    if length < JWT_SIGNING_KEY_MIN_BYTES:
+        raise RuntimeError(
+            f"JWT_SIGNING_KEY is {length} bytes; at least {JWT_SIGNING_KEY_MIN_BYTES} are "
+            "required in every environment (decision 0042). Generate one with: "
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
+
+
+def _production_problems(s: Settings) -> list[str]:
+    """What this deployment's settings get wrong for APP_ENV=production:
+    one line per problem, naming the variable, never its value. Empty
+    outside production. The API checks its own settings the same way
+    (tenderos_api.config._api_production_problems)."""
+    if s.app_env != "production":
+        return []
+    problems: list[str] = []
+    for name in ("extractor_model", "verifier_model", "reasoning_model"):
+        if getattr(s, name) in _PLACEHOLDER_VALUES:
+            problems.append(f"{name.upper()} is unset or the placeholder 'changeme'")
+    # Every credential .env.example ships as "changeme", not only the
+    # object store's: the same copied-.env risk applies to each.
+    for name in ("s3_access_key", "s3_secret_key", "neo4j_password"):
+        if getattr(s, name) in _PLACEHOLDER_VALUES:
+            problems.append(f"{name.upper()} is unset or the placeholder 'changeme'")
+    if make_url(s.postgres_dsn).password in _PLACEHOLDER_VALUES | {None}:
+        problems.append("POSTGRES_DSN has no password or the placeholder 'changeme'")
+    return problems
+
+
+def reject_production_problems(problems: list[str]) -> None:
+    """Raise once, listing every problem in the list, rather than one
+    restart per variable. The backend's problems are checked when this
+    module is imported, before the API's own (tenderos_api.config imports
+    this module first), so the API's are reported only once the backend's
+    are fixed."""
+    if problems:
+        raise RuntimeError(
+            "Refusing to start: APP_ENV=production with unsafe settings:\n  - "
+            + "\n  - ".join(problems)
+        )
+
+
 settings = Settings()
+_require_jwt_signing_key_length(settings.jwt_signing_key)
 _reject_fake_provider_in_production(settings.llm_provider, settings.app_env)
+reject_production_problems(_production_problems(settings))
