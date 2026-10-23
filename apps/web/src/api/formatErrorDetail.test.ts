@@ -51,6 +51,15 @@ describe("formatErrorDetail", () => {
     expect(formatErrorDetail(err)).toBe("Too many attempts. Please wait a moment and try again.");
   });
 
+  it("only a 503 coded LOGIN_UNAVAILABLE is described as a sign-in problem", () => {
+    const login = new ApiError(503, { error: { code: "LOGIN_UNAVAILABLE", message: "x" } }, 30);
+    expect(formatErrorDetail(login)).toBe(
+      "Sign-in is briefly unavailable. Try again in 30 seconds.",
+    );
+    const other = new ApiError(503, { error: { code: "SOMETHING_ELSE", message: "Busy." } }, 30);
+    expect(formatErrorDetail(other)).toBe("Busy.");
+  });
+
   it("still joins FastAPI's 422 detail array", () => {
     const err = new ApiError(422, {
       detail: [{ msg: "field required" }, { msg: "value is not a valid email" }],

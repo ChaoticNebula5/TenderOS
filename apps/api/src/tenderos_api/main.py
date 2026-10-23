@@ -23,18 +23,23 @@ from tenderos_api.config import settings
 from tenderos_api.errors import (
     APIError,
     InternalServerError,
+    LoginUnavailableError,
     error_response,
     register_exception_handlers,
 )
+from tenderos_api.logging_filters import install_access_log_redaction
 from tenderos_api.rate_limit import (
     GLOBAL_LIMIT,
     GLOBAL_WINDOW_SECONDS,
     LOGIN_LIMIT,
+    LOGIN_PATH,
+    LOGIN_UNAVAILABLE_RETRY_AFTER_SECONDS,
     LOGIN_WINDOW_SECONDS,
     REDIS_UNAVAILABLE_ERRORS,
     check_rate_limit,
     client_key,
     rate_limit_redis,
+    redis_outage_log,
 )
 from tenderos_api.routes import (
     auth,
@@ -64,6 +69,9 @@ from tenderos_api.routes import (
 # and doesn't care about import order beyond "before the process actually
 # starts serving").
 configure_logging()
+# Phase 4 plan item 3: SSE tickets out of uvicorn's access log. See
+# logging_filters.py for why import time is after uvicorn's own setup.
+install_access_log_redaction()
 # B17: a real no-op unless LLM_PROVIDER=fake (see that function's own
 # docstring) - installed at the same three entrypoints configure_logging()
 # already documents, right after it, so a fake-provider process is fully
@@ -187,7 +195,7 @@ async def _limit_rejection(redis_client: AsyncRedis, ip: str, path: str) -> Resp
     # A tighter, dedicated limit on the one route a credential-stuffing/
     # brute-force attempt would actually hit - checked in addition to,
     # not instead of, the global limit above.
-    if path == "/auth/login":
+    if path == LOGIN_PATH:
         allowed, retry_after = await check_rate_limit(
             redis_client, f"ratelimit:login:{ip}", LOGIN_LIMIT, LOGIN_WINDOW_SECONDS
         )
@@ -254,10 +262,17 @@ async def _rate_limit(
 
     # Phase 4 blocker 1: one shared client (rate_limit.py) instead of a new
     # pool per request, and fail open. If Redis cannot be reached or does
-    # not answer within rate_limit.py's timeouts, the request is allowed
-    # and a WARNING is logged, for the global and the login limit alike: a
-    # failure on the global check skips the login check too, since both
+    # not answer within rate_limit.py's timeouts, the request is allowed.
+    # A failure on the global check skips the login check too, since both
     # use the same unavailable Redis. Only the exception TYPE is logged.
+    #
+    # Phase 4 plan item 2 (decision 0041): login is the exception. While
+    # Redis is unavailable, POST /auth/login gets a 503 with Retry-After,
+    # whichever of its two checks failed. The 503 is returned here, inside
+    # CORSMiddleware and _security_headers, so it carries both header sets
+    # like the 429. The WARNING goes through redis_outage_log: the first
+    # failure, then at most one line per interval with a count, not one
+    # line per request.
     #
     # call_next stays outside the try on purpose. A route that itself uses
     # Redis (sse_tickets.py) can raise the same ConnectionError; inside the
@@ -267,10 +282,16 @@ async def _rate_limit(
         async with rate_limit_redis() as redis_client:
             rejection = await _limit_rejection(redis_client, ip, request.url.path)
     except REDIS_UNAVAILABLE_ERRORS as exc:
-        logger.warning(
-            "rate limiter skipped, Redis unavailable (%s); allowing the request",
-            type(exc).__name__,
-        )
+        covered = redis_outage_log.record()
+        if covered is not None:
+            logger.warning(
+                "rate limiter skipped, Redis unavailable (%s); %d request(s) since the last "
+                "such line; login refused with 503, other routes allowed",
+                type(exc).__name__,
+                covered,
+            )
+        if request.url.path == LOGIN_PATH:
+            return error_response(LoginUnavailableError(LOGIN_UNAVAILABLE_RETRY_AFTER_SECONDS))
         rejection = None
 
     if rejection is not None:

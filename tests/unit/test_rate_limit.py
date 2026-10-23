@@ -7,7 +7,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from redis.asyncio import Redis as AsyncRedis
-from tenderos_api.rate_limit import check_rate_limit, client_key
+from tenderos_api.rate_limit import OutageLog, check_rate_limit, client_key
 from tenderos_backend.core.config import settings
 
 
@@ -101,3 +101,23 @@ async def test_the_first_increment_atomically_sets_a_ttl(redis_client):
 def test_client_key_falls_back_when_no_client_info_is_present():
     assert client_key("203.0.113.5") == "203.0.113.5"
     assert client_key(None) == "unknown"
+
+
+def test_outage_log_reports_the_first_failure_then_once_per_interval():
+    """Phase 4 plan item 2. The first failure is logged at once; failures
+    inside the interval are counted, not logged; the first one at or past
+    the interval reports them all, itself included, and starts a new
+    interval."""
+    clock = {"now": 0.0}
+    outage_log = OutageLog(60, clock=lambda: clock["now"])
+
+    assert outage_log.record() == 1
+    for second in (1.0, 30.0, 59.9):
+        clock["now"] = second
+        assert outage_log.record() is None
+    clock["now"] = 60.0
+    assert outage_log.record() == 4
+    clock["now"] = 119.9
+    assert outage_log.record() is None
+    clock["now"] = 120.0
+    assert outage_log.record() == 2

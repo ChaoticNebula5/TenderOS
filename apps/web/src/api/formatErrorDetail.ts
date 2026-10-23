@@ -28,6 +28,14 @@ export function formatErrorDetail(err: unknown): string {
       ? `Too many attempts. Please wait ${err.retryAfterSeconds} seconds and try again.`
       : "Too many attempts. Please wait a moment and try again.";
   }
+  // Phase 4 plan item 2 (decision 0041): login refused while the API's rate
+  // limiter cannot reach Redis. Keyed on the code, not on 503 alone, so no
+  // other 503 is ever described as a sign-in problem.
+  if (err.status === 503 && readEnvelopeCode(err.body) === "LOGIN_UNAVAILABLE") {
+    return err.retryAfterSeconds !== null
+      ? `Sign-in is briefly unavailable. Try again in ${err.retryAfterSeconds} seconds.`
+      : "Sign-in is briefly unavailable. Try again in a moment.";
+  }
   const envelopeMessage = readEnvelopeMessage(err.body);
   if (envelopeMessage !== null) return envelopeMessage;
   const raw =
@@ -51,9 +59,19 @@ export function formatErrorDetail(err: unknown): string {
 // shape, including an envelope whose message is missing, empty or not a
 // string.
 function readEnvelopeMessage(body: unknown): string | null {
+  const message = readEnvelopeField(body, "message");
+  return message !== null && message.trim() !== "" ? message : null;
+}
+
+// The code from {"error": {"code": "..."}}, or null for any other shape.
+function readEnvelopeCode(body: unknown): string | null {
+  return readEnvelopeField(body, "code");
+}
+
+function readEnvelopeField(body: unknown, field: "code" | "message"): string | null {
   if (typeof body !== "object" || body === null || !("error" in body)) return null;
   const error = (body as { error: unknown }).error;
-  if (typeof error !== "object" || error === null || !("message" in error)) return null;
-  const message = (error as { message: unknown }).message;
-  return typeof message === "string" && message.trim() !== "" ? message : null;
+  if (typeof error !== "object" || error === null || !(field in error)) return null;
+  const value = (error as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : null;
 }

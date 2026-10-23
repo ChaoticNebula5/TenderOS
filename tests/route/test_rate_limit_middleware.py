@@ -178,9 +178,10 @@ async def test_e2e_bypass_works_only_when_both_the_flag_and_header_are_present(
         assert response.status_code == 200, response.text
 
 
-# Phase 4 blocker 1: the limiter fails open. When Redis cannot be reached
-# or times out, the request goes through and a WARNING is logged, for both
-# the global and the login limit.
+# Phase 4 blocker 1: the limiter fails open when Redis cannot be reached or
+# times out. Phase 4 plan item 2 (decision 0041): except POST /auth/login,
+# which fails closed with a 503 and Retry-After. The outage is logged once
+# per interval, not once per request.
 
 
 def _limiter_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -193,28 +194,24 @@ def _limiter_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecor
     ]
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "expected_status"),
-    [
-        ("GET", "/health/live", 200),
-        # Unknown email: the route's own answer is 401, which is only
-        # reachable if the limiter let the request through.
-        ("POST", "/auth/login", 401),
-    ],
-)
-async def test_limiter_fails_open_when_redis_is_unreachable(
-    client: TestClient,
-    monkeypatch,
-    caplog: pytest.LogCaptureFixture,
-    method: str,
-    path: str,
-    expected_status: int,
-):
+@pytest.fixture(autouse=True)
+def _fresh_outage_log(monkeypatch):
+    """The outage log is per process, so a line logged by one test would
+    suppress the next test's line. Each test gets its own."""
+    monkeypatch.setattr(
+        api_main,
+        "redis_outage_log",
+        rate_limit.OutageLog(rate_limit.REDIS_OUTAGE_LOG_INTERVAL_SECONDS),
+    )
+
+
+@pytest.fixture
+def unreachable_redis(monkeypatch):
     """A real connection failure, not a raised stand-in: the limiter's own
     client (rate_limit.build_client, so the real timeouts and retry policy)
     pointed at a port nothing listens on. Depending on the OS this surfaces
     as a refused connection or as the 250 ms connect timeout; both are in
-    REDIS_UNAVAILABLE_ERRORS, and both must fail open."""
+    REDIS_UNAVAILABLE_ERRORS."""
     monkeypatch.setattr(api_main.settings, "rate_limit_enabled", True)
 
     @asynccontextmanager
@@ -226,31 +223,127 @@ async def test_limiter_fails_open_when_redis_is_unreachable(
             await redis_client.aclose()
 
     monkeypatch.setattr(api_main, "rate_limit_redis", _unreachable_redis)
+
+
+def _login_body() -> dict[str, str]:
+    # Unknown email: the route's own answer would be 401, so any other
+    # status comes from the middleware.
+    return {"email": f"{uuid.uuid4()}@example.com", "password": "wrong-password"}
+
+
+async def test_login_fails_closed_when_redis_is_unreachable(
+    client: TestClient, unreachable_redis, caplog: pytest.LogCaptureFixture
+):
     caplog.set_level(logging.WARNING, logger="tenderos_api.main")
+    origin = api_main.settings.web_base_url
 
-    body = {"email": f"{uuid.uuid4()}@example.com", "password": "wrong-password"}
-    response = client.request(method, path, json=body if method == "POST" else None)
+    response = client.post("/auth/login", json=_login_body(), headers={"Origin": origin})
 
-    assert response.status_code == expected_status, response.text
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "LOGIN_UNAVAILABLE"
+    assert response.headers["Retry-After"] == str(rate_limit.LOGIN_UNAVAILABLE_RETRY_AFTER_SECONDS)
+    # Inside CORS and the security headers, like the 429: the browser shows
+    # the page this response, and page JS can read Retry-After.
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "retry-after" in response.headers["access-control-expose-headers"].lower()
+    assert response.headers["x-content-type-options"] == "nosniff"
     warnings = _limiter_warnings(caplog)
     assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
     # Only the exception type is logged, never the exception's own message,
     # which for a connection error names the host and port.
     message = warnings[0].getMessage()
-    assert "allowing the request" in message
+    assert "login refused" in message
     assert "127.0.0.1" not in message
 
 
-async def test_login_limit_fails_open_on_its_own(
+async def test_other_routes_still_fail_open_when_redis_is_unreachable(
+    client: TestClient, unreachable_redis
+):
+    response = client.get("/health/live")
+    assert response.status_code == 200, response.text
+
+
+async def test_signed_in_requests_still_work_during_the_outage(
+    client: TestClient, register_actor, unreachable_redis
+):
+    """Decision 0041's reason login alone can fail closed: an access token
+    is a JWT verified without Redis, so a route that needs one still
+    answers during the outage, for the life of that token
+    (jwt_access_minutes). (Registering is not login, so it fails open
+    too.)"""
+    headers, user_id, _ = register_actor()
+
+    response = client.get("/auth/me", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["id"] == user_id
+
+
+async def test_refresh_still_works_during_the_outage(client: TestClient, unreachable_redis):
+    """POST /auth/refresh needs no Redis (auth_service.refresh_access_token
+    decodes the refresh JWT and reads the user from Postgres; there is no
+    refresh-token store) and is not the login path, so it fails open: a
+    client that refreshes keeps its session through the outage. The web app
+    does not call it (KNOWN_LIMITATIONS, blocker 1, limit 1)."""
+    registered = client.post(
+        "/auth/register",
+        json={
+            "email": f"{uuid.uuid4()}@example.com",
+            "password": str(uuid.uuid4()),
+            "organization_name": "Refresh During Outage Org",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+
+    response = client.post(
+        "/auth/refresh", json={"refresh_token": registered.json()["refresh_token"]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["access_token"]
+
+
+async def test_the_outage_is_logged_once_per_interval_not_per_request(
+    client: TestClient, unreachable_redis, monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    """Ten requests inside one interval, logins and other routes mixed,
+    give one WARNING. A clock moved past the interval gives the second line,
+    which counts the nine requests the first line did not cover plus its
+    own."""
+    clock = {"now": 1000.0}
+    outage_log = rate_limit.OutageLog(
+        rate_limit.REDIS_OUTAGE_LOG_INTERVAL_SECONDS, clock=lambda: clock["now"]
+    )
+    monkeypatch.setattr(api_main, "redis_outage_log", outage_log)
+    caplog.set_level(logging.WARNING, logger="tenderos_api.main")
+
+    statuses = []
+    for i in range(10):
+        if i % 2 == 0:
+            statuses.append(client.post("/auth/login", json=_login_body()).status_code)
+        else:
+            statuses.append(client.get("/health/live").status_code)
+
+    assert statuses == [503, 200] * 5
+    assert len(_limiter_warnings(caplog)) == 1
+
+    clock["now"] += rate_limit.REDIS_OUTAGE_LOG_INTERVAL_SECONDS
+    client.get("/health/live")
+
+    warnings = _limiter_warnings(caplog)
+    assert len(warnings) == 2
+    assert "10 request(s)" in warnings[1].getMessage()
+
+
+async def test_login_fails_closed_when_only_its_own_check_fails(
     client: TestClient,
     monkeypatch,
-    caplog: pytest.LogCaptureFixture,
     _cleanup_redis,
 ):
     """The login check has its own Redis call after the global one. Redis
     is real and healthy for the global check here; only the login-key
     check raises, so this proves the login limit's own failure path fails
-    open, not just a failure that happened to come first."""
+    closed, not just a failure that happened to come first."""
     monkeypatch.setattr(api_main.settings, "rate_limit_enabled", True)
     real_check_rate_limit = api_main.check_rate_limit
 
@@ -260,12 +353,8 @@ async def test_login_limit_fails_open_on_its_own(
         return await real_check_rate_limit(redis_client, key, limit, window_seconds)
 
     monkeypatch.setattr(api_main, "check_rate_limit", _fail_on_login_key)
-    caplog.set_level(logging.WARNING, logger="tenderos_api.main")
 
-    response = client.post(
-        "/auth/login",
-        json={"email": f"{uuid.uuid4()}@example.com", "password": "wrong-password"},
-    )
+    response = client.post("/auth/login", json=_login_body())
 
-    assert response.status_code == 401, response.text
-    assert len(_limiter_warnings(caplog)) == 1
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "LOGIN_UNAVAILABLE"

@@ -10503,6 +10503,33 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      is no rate limiting at all, the login limit included, and one
      WARNING is logged per request: there is no log throttling, so an
      outage under load produces one log line per request.
+     **Changed in Phase 4 batch 2b (plan item 2, decision 0041).**
+     `POST /auth/login` now fails closed: while the limiter cannot reach
+     Redis it answers 503 `LOGIN_UNAVAILABLE` with `Retry-After: 30`
+     (`main.py:284-295`, `rate_limit.py:69`, a design number), inside
+     CORS and the security headers like the 429. Every other route still
+     fails open. A signed-in user keeps working for the life of their
+     access token (a JWT verified without Redis; `jwt_access_minutes`,
+     15, configured). `POST /auth/refresh` needs no Redis either (it
+     decodes the refresh JWT and reads the user from Postgres; there is
+     no refresh-token store) and fails open, so a client that refreshes
+     keeps its session; but the web app never calls refresh
+     (`getRefreshToken()` in `apps/web/src/api/client.ts` has no caller),
+     so a web user whose access token expires during the outage must log
+     in again and gets the 503. The outage is logged on the first
+     failure, then at most once per 60 s per process with a count of the
+     requests it covers (`OutageLog`, `rate_limit.py:72-103`). The login
+     screen says "Sign-in is briefly unavailable. Try again in N
+     seconds." with N from `Retry-After`, and does not retry the login
+     itself. What stays open: with Redis down, nobody can start a new
+     session; the rest of the API is still unlimited for the outage.
+     Observed live 2026-10-23 on the fake stack with `docker compose stop
+     redis`: the browser's one `POST /auth/login` got 503 and the screen
+     read "Sign-in is briefly unavailable. Try again in 30 seconds." (no
+     second request); two `GET /auth/me` calls in the same outage failed
+     open (401 from the route, no token yet); the api logged one WARNING
+     for all three. After `docker compose start redis`, the same login
+     returned 200.
   2. **A 429 on `/auth/me` ends the session view.** `AuthContext.refresh()`
      no longer retries a 429, so it goes straight to
      `setMeResponse(null)` and keeps the token
@@ -10527,18 +10554,27 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      (`disable_existing_loggers=False`) is planned as a separate small
      commit. **Resolved in Phase 4 batch 1 (item 12)**; see the Alembic
      entry above.
-- **Risk:** limits 1 and 3 matter at deployment: an attacker who can
-  make Redis unavailable also disables brute-force protection on login,
-  and a proxy in front of the API turns per-user limits into one shared
-  limit.
-- **Status:** resolved (the CORS and UI defects); limits 1-3 accepted,
-  limit 4 resolved in Phase 4 batch 1 (item 12).
+- **Risk:** limit 3 matters at deployment: a proxy in front of the API
+  turns per-user limits into one shared limit. Limit 1's login part (an
+  attacker who can make Redis unavailable also disabled brute-force
+  protection on login) is closed by batch 2b; what is left of it is an
+  unlimited API, not an unlimited login, for the length of an outage.
+- **Status:** resolved (the CORS and UI defects); limit 1 changed in
+  Phase 4 batch 2b (login fails closed, outage logged once per interval),
+  the rest of it accepted; limits 2 and 3 accepted; limit 4 resolved in
+  Phase 4 batch 1 (item 12).
 - **Test:** `tests/route/test_middleware_order.py` (full middleware order,
   CORS and security headers on 429/413/500, the 500 envelope with no
-  internal detail), fail-open tests in
-  `tests/route/test_rate_limit_middleware.py` (a real unreachable Redis
-  on the global and the login path, and a failure on the login check
-  alone), `apps/web/src/api/formatErrorDetail.test.ts`, and
+  internal detail), `tests/route/test_rate_limit_middleware.py` (a real
+  unreachable Redis: login gets 503 with `Retry-After`, CORS and the
+  security headers; another route still passes; a signed-in request still
+  works; `POST /auth/refresh` still issues an access token; ten requests
+  give one WARNING and the next interval's line
+  counts them; a failure on the login check alone also gives the 503),
+  `tests/unit/test_rate_limit.py` (the outage log's interval),
+  `apps/web/src/routes/Login.test.tsx` (the message with N from
+  `Retry-After`, one fetch, no automatic retry),
+  `apps/web/src/api/formatErrorDetail.test.ts`, and
   `apps/web/src/api/retryTransient.test.ts` (a 429 is not retried).
 
 ## [Phase 4 blocker 2, 2026-10-13, open, accepted] Idempotency leases: what a lease cannot make safe
@@ -10591,28 +10627,55 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      the body with its own fixed status code (201, 202 or 200). That equals
      the stored code today only because each route has exactly one success
      code; a route that could succeed with two different codes would replay
-     the wrong one.
+     the wrong one. **RESOLVED in Phase 4 batch 2b (plan item 21):** the
+     dependency sets the stored code on the response FastAPI shares with
+     dependencies (`idempotency.py:157-158`), which overrides the route's
+     default, so all seven replaying routes answer with the code first
+     stored; the routes themselves are unchanged.
   5. **Expired rows are not yet removed.** `IdempotencyRepository.
      delete_expired` exists and is tested, but nothing calls it yet; Phase 4
-     blocker 3 runs it from the outbox dispatcher's loop.
+     blocker 3 runs it from the outbox dispatcher's loop. **RESOLVED by
+     `13414ed`:** the dispatcher's loop calls it
+     (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:631`); marked
+     here in batch 2b.
   6. **A cancelled request does not release its key.** When a client
      disconnects, the request is cancelled with `asyncio.CancelledError`,
      which is not an `Exception`, so the dependency's release-on-error path
      (`apps/api/src/tenderos_api/idempotency.py:134-153`) does not run. The
      record stays `in_progress` until its lease runs out; a retry with the
      same key gets `IDEMPOTENCY_IN_PROGRESS` for up to 60 s (the lease, a
-     design number) and then takes the record over.
+     design number) and then takes the record over. **RESOLVED in Phase 4
+     batch 2b (plan item 21):** the dependency catches `BaseException`,
+     releases, and re-raises (`idempotency.py:164-166`). Catching it was
+     not enough on its own (observed): the route runs inside
+     `BaseHTTPMiddleware`'s anyio task group, whose cancellation is
+     level-triggered, so the release's own first database call was
+     cancelled too. The release now runs in a shielded anyio scope,
+     bounded at 5 s (`_RELEASE_TIMEOUT_SECONDS`, a design number, inside
+     the api's 20 s stop grace) so a stopping server cannot hang on it;
+     past that, the lease runs out as before. A failure or cancellation
+     that arrives after the route called `finalize()` also runs the
+     release, which is safe because `IdempotencyRepository.release`
+     deletes only a record still `in_progress`: the completed record
+     stays and the retry replays it (tested both ways).
 - **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
   late failure in a narrow window. (Limit 3's duplicate real-provider
   proposal generation was closed in Stage 2.)
-- **Status:** limit 3 resolved (2026-10-16, Stage 2); accepted until the
-  cleanup is scheduled (limit 5); limits 1, 2, 4 and 6 accepted.
+- **Status:** limit 3 resolved (2026-10-16, Stage 2); limits 4 and 6
+  resolved in Phase 4 batch 2b; limit 5 resolved by `13414ed` (the
+  dispatcher calls `delete_expired`; this line was stale until batch 2b);
+  limits 1 and 2 accepted (plan item 21, planned).
 - **Test:** `tests/integration/test_idempotency.py` (lease on the database
   clock, release on APIError and on a 500, live lease with Retry-After,
   takeover of an expired and of a NULL lease, exactly one winner between
   concurrent takers, an overtaken original can neither release nor
-  finalize, bounded cleanup). No test covers limits 1, 2, 4 or 6: each
-  needs a crash or a client disconnect at a precise point. Limit 3's fix:
+  finalize, bounded cleanup; batch 2b: a replay answers with a stored 200
+  where the route's default is 201, and a request cancelled while it
+  holds the key releases it, so the retry creates the one tender; an
+  exception or a cancellation after `finalize()` leaves the record
+  completed and the retry replays it, one tender). No
+  test covers limits 1 or 2: each needs a crash at a precise point.
+  Limit 3's fix:
   `tests/route/test_proposal_routes.py::test_generate_proposal_returns_202_and_the_same_operation_while_active`
   (a same-key retry replays the 202; a second click joins the operation).
 
@@ -11600,3 +11663,37 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     two reaper paths above apply. Choosing the host settles this.
   - A job killed anyway is not retried by RQ. Operations are failed by
     the reaper; workflow runs need decision 0035's reaper.
+
+## [Phase 4 batch 2b, 2026-10-23, resolved for the api; the proxy's log is a deployment item] SSE tickets in the access log
+
+- **Before:** `GET .../events/stream?ticket=...` carries its single-use
+  ticket in the query string (EventSource cannot send headers), and
+  uvicorn writes every request's path and query string to the
+  `uvicorn.access` log, so each ticket was in the api log (observed in
+  Phase 4 Stage 1 logs; decision 0008). A ticket is consumed on first use
+  (Redis GETDEL) and lives 30 s, so a logged one was normally dead
+  already.
+- **Changed (plan item 3):** a filter on the `uvicorn.access` logger
+  replaces the value with `[redacted]`
+  (`apps/api/src/tenderos_api/logging_filters.py`, installed by
+  `main.py:74` at import). It sits on the logger, not a handler, because
+  uvicorn's access handler does not propagate to the root handlers that
+  `configure_logging()` filters. Read in uvicorn 0.54.0's `config.py`:
+  uvicorn applies its logging config in `Config.__init__`, before
+  `Config.load()` imports the app, so the filter is attached after
+  uvicorn's own setup, and a later `dictConfig` keeps a logger's filters
+  (tested in both orders). The query parameter stays.
+- **Observed 2026-10-23:** after one E2E on the rebuilt fake stack,
+  `docker compose logs api` held 8 `events/stream` lines (4 workflow, 4
+  operation), all 8 with `ticket=[redacted]`, and no line with `ticket=`
+  followed by anything else.
+- **Limits:**
+  - The reverse proxy in front of the api, once there is one, keeps its
+    own access log; it needs the same redaction, configured at
+    deployment (plan item 3, host part).
+  - Browser history still holds the stream URL with its ticket (dead
+    after first use).
+- **Test:** `tests/unit/test_logging_filters.py` (a record made as
+  uvicorn 0.54.0 makes it, written through uvicorn's own `LOGGING_CONFIG`
+  handler and formatter; the filter installed after and before uvicorn's
+  `dictConfig`; installing twice adds one filter; the pattern's edges).

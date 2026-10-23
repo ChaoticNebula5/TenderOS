@@ -146,6 +146,21 @@ class GraphStaleAPIError(APIError):
         )
 
 
+class LoginUnavailableError(APIError):
+    # Phase 4 plan item 2 (decision 0041): POST /auth/login while the rate
+    # limiter cannot reach Redis. The login limit cannot be enforced, so
+    # login is refused rather than left unlimited. Returned by main.py's
+    # _rate_limit middleware; the web app's login screen shows its own
+    # sentence with the wait taken from Retry-After.
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(
+            503,
+            "LOGIN_UNAVAILABLE",
+            "Sign-in is briefly unavailable. Please try again shortly.",
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+
 class InternalServerError(APIError):
     # Returned by main.py's catch-all middleware for any exception nothing
     # else handled. The message is deliberately generic: the real exception
@@ -164,16 +179,21 @@ def error_response(exc: APIError, headers: dict[str, str] | None = None) -> JSON
     middlewares (the 429, the 413 and the catch-all 500), which return
     before or outside FastAPI's exception handling and so cannot raise an
     APIError and let the handler build the body.
+
+    Without `headers`, the error's own headers are sent (Retry-After on
+    LOGIN_UNAVAILABLE, say). Before Phase 4 plan item 2 only `headers` was
+    sent, so a middleware returning an error that carries its own headers
+    lost them (caught by the login 503's route test).
     """
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
-        headers=headers,
+        headers=headers if headers is not None else exc.headers,
     )
 
 
 async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
-    return error_response(exc, headers=exc.headers)
+    return error_response(exc)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
