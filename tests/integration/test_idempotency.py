@@ -511,6 +511,84 @@ async def test_replay_returns_the_stored_status_code():
         assert await _tender_count(client, org_id, token) == 1
 
 
+async def test_cancelled_request_releases_the_key(monkeypatch: pytest.MonkeyPatch):
+    """Blocker 2, limit 6: a request cancelled while it holds the key (the
+    client went away, or the server is stopping) used to keep its record
+    in_progress until the 60 s lease ran out, so a retry got 409. The
+    request is cancelled while paused inside create_tender, after its claim
+    committed; the record must be gone and a retry must do the work."""
+    entered, release = _pause_tender_creation(monkeypatch)
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-cancel@example.com", "Idem Cancel Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Cancelled Then Created")
+        headers = _tender_headers(token, "cancel-key")
+
+        task = asyncio.create_task(client.post(url, content=body, headers=headers))
+        await asyncio.wait_for(entered.wait(), timeout=_WAIT_SECONDS)
+        claimed = await _record(org_id, "cancel-key")
+        assert claimed is not None and claimed.status == "in_progress"
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=_WAIT_SECONDS)
+
+        assert await _record(org_id, "cancel-key") is None
+        release.set()
+        retry = await client.post(url, content=body, headers=headers)
+        assert retry.status_code == 201, retry.text
+        assert await _tender_count(client, org_id, token) == 1
+
+
+@pytest.mark.parametrize("after_finalize", ["raise", "cancel"])
+async def test_a_failure_after_finalize_keeps_the_completed_record(
+    monkeypatch: pytest.MonkeyPatch, after_finalize: str
+):
+    """The dependency releases on any BaseException, cancellation included,
+    so one that arrives after the route has called finalize() still runs the
+    release. release() deletes only an in_progress record
+    (IdempotencyRepository.release), so the completed record must survive
+    and a retry must replay it, not create a second tender."""
+    finalized = asyncio.Event()
+    original_finalize = IdempotencyContext.finalize
+
+    async def finalize_then_fail(self, status_code, body):
+        await original_finalize(self, status_code, body)
+        finalized.set()
+        if after_finalize == "raise":
+            raise RuntimeError("failure after finalize")
+        await asyncio.sleep(_WAIT_SECONDS * 10)  # held here until cancelled
+
+    monkeypatch.setattr(IdempotencyContext, "finalize", finalize_then_fail)
+    async with await _client() as client:
+        token, org_id = await _register_admin(
+            client, f"idem-after-{after_finalize}@example.com", f"Idem After {after_finalize}"
+        )
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Finalized Then Failed")
+        headers = _tender_headers(token, "after-finalize-key")
+
+        task = asyncio.create_task(client.post(url, content=body, headers=headers))
+        await asyncio.wait_for(finalized.wait(), timeout=_WAIT_SECONDS)
+        if after_finalize == "raise":
+            first = await asyncio.wait_for(task, timeout=_WAIT_SECONDS)
+            assert first.status_code == 500, first.text
+        else:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=_WAIT_SECONDS)
+
+        record = await _record(org_id, "after-finalize-key")
+        assert record is not None, "the release deleted a completed record"
+        assert record.status == "completed"
+
+        monkeypatch.setattr(IdempotencyContext, "finalize", original_finalize)
+        retry = await client.post(url, content=body, headers=headers)
+        assert retry.status_code == 201, retry.text
+        assert retry.json()["id"] == record.response_body["id"]
+        assert await _tender_count(client, org_id, token) == 1
+
+
 async def test_live_lease_returns_in_progress_with_retry_after():
     """A first attempt that still holds its lease: the retry is told to
     wait, and Retry-After is the time left on that lease (within a second,

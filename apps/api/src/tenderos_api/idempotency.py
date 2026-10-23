@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
 
+import anyio
 from fastapi import Request, Response
 from sqlalchemy.exc import IntegrityError
 from tenderos_backend.db.models.idempotency import IdempotencyRecord
@@ -32,6 +33,12 @@ _LEASE = timedelta(seconds=60)
 # response. Applied on the database clock; expired rows are removed by
 # IdempotencyRepository.delete_expired.
 _RECORD_RETENTION = timedelta(hours=24)
+
+# Upper bound on releasing a key after a failure or a cancellation. A design
+# number: the release is one DELETE by primary key, and the api's stop
+# grace is 20 s (docker-compose.yml) with uvicorn's own graceful timeout at
+# 10 s, so 5 s leaves the stop on time.
+_RELEASE_TIMEOUT_SECONDS = 5
 
 
 def request_hash(method: str, path: str, query: str, body: bytes) -> str:
@@ -120,14 +127,21 @@ def get_idempotency_context(
     optional-everywhere default.
 
     Phase 4 blocker 2: a yield dependency, so it can release the key when
-    the route fails. FastAPI 0.140.13 throws the route's exception into
+    the route fails. FastAPI (0.148.0) throws the route's exception into
     this generator at its `yield` (the dependency sits on the request's
-    AsyncExitStack, fastapi/routing.py:137-143), before the error response
-    is built. Any exception, an APIError included, deletes this request's
-    record so a retry with the same key runs the work again, then the
-    exception is re-raised unchanged. A cancelled request (client gone,
-    asyncio.CancelledError) is not an Exception and does not release; its
-    lease runs out instead and a retry takes the record over.
+    AsyncExitStack), before the error response is built. Any exception, an
+    APIError included, deletes this request's record so a retry with the
+    same key runs the work again, then the exception is re-raised
+    unchanged.
+
+    A cancelled request (client gone, server stopping) releases too:
+    asyncio.CancelledError is a BaseException, so it is caught here as
+    well. The release runs in a shielded scope. The route runs inside
+    BaseHTTPMiddleware's anyio task group, and anyio cancellation is
+    level-triggered: without the shield the release's own first await is
+    cancelled too (observed, "Cancelled via cancel scope"). The shield is
+    bounded by _RELEASE_TIMEOUT_SECONDS so a stopping server cannot hang
+    on it; past that, the lease runs out and a retry takes the record over.
 
     Blocker 2, limit 4: a replay sets the stored status code on the
     response FastAPI builds, through the Response parameter it shares with
@@ -147,21 +161,33 @@ def get_idempotency_context(
             return
         try:
             yield context
-        except Exception:
-            try:
-                await context.release()
-            except Exception:
-                # Releasing is best effort: if it fails too, the lease runs
-                # out and a retry takes the record over. The route's own
-                # exception, re-raised below, is the one the client sees.
-                logger.exception(
-                    "idempotency %s: could not release record %s",
-                    operation,
-                    context.record_id,
-                )
+        except BaseException:
+            await _release_after_failure(context)
             raise
 
     return _dependency
+
+
+async def _release_after_failure(context: IdempotencyContext) -> None:
+    """Best effort: if the release fails or runs out of time, the lease runs
+    out and a retry takes the record over. The route's own exception,
+    re-raised by the caller, is the one the client sees."""
+    with anyio.move_on_after(_RELEASE_TIMEOUT_SECONDS, shield=True) as scope:
+        try:
+            await context.release()
+        except Exception:
+            logger.exception(
+                "idempotency %s: could not release record %s",
+                context.operation,
+                context.record_id,
+            )
+    if scope.cancelled_caught:
+        logger.warning(
+            "idempotency %s: release of record %s took over %s s; left for the lease",
+            context.operation,
+            context.record_id,
+            _RELEASE_TIMEOUT_SECONDS,
+        )
 
 
 async def _claim_or_replay(request: Request, operation: str, required: bool) -> IdempotencyContext:

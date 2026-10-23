@@ -10634,27 +10634,47 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      stored; the routes themselves are unchanged.
   5. **Expired rows are not yet removed.** `IdempotencyRepository.
      delete_expired` exists and is tested, but nothing calls it yet; Phase 4
-     blocker 3 runs it from the outbox dispatcher's loop.
+     blocker 3 runs it from the outbox dispatcher's loop. **RESOLVED by
+     `13414ed`:** the dispatcher's loop calls it
+     (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:631`); marked
+     here in batch 2b.
   6. **A cancelled request does not release its key.** When a client
      disconnects, the request is cancelled with `asyncio.CancelledError`,
      which is not an `Exception`, so the dependency's release-on-error path
      (`apps/api/src/tenderos_api/idempotency.py:134-153`) does not run. The
      record stays `in_progress` until its lease runs out; a retry with the
      same key gets `IDEMPOTENCY_IN_PROGRESS` for up to 60 s (the lease, a
-     design number) and then takes the record over.
+     design number) and then takes the record over. **RESOLVED in Phase 4
+     batch 2b (plan item 21):** the dependency catches `BaseException`,
+     releases, and re-raises (`idempotency.py:164-166`). Catching it was
+     not enough on its own (observed): the route runs inside
+     `BaseHTTPMiddleware`'s anyio task group, whose cancellation is
+     level-triggered, so the release's own first database call was
+     cancelled too. The release now runs in a shielded anyio scope,
+     bounded at 5 s (`_RELEASE_TIMEOUT_SECONDS`, a design number, inside
+     the api's 20 s stop grace) so a stopping server cannot hang on it;
+     past that, the lease runs out as before. A failure or cancellation
+     that arrives after the route called `finalize()` also runs the
+     release, which is safe because `IdempotencyRepository.release`
+     deletes only a record still `in_progress`: the completed record
+     stays and the retry replays it (tested both ways).
 - **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
   late failure in a narrow window. (Limit 3's duplicate real-provider
   proposal generation was closed in Stage 2.)
-- **Status:** limit 3 resolved (2026-10-16, Stage 2); limit 4 resolved
-  in Phase 4 batch 2b; accepted until the cleanup is scheduled
-  (limit 5); limits 1, 2 and 6 accepted.
+- **Status:** limit 3 resolved (2026-10-16, Stage 2); limits 4 and 6
+  resolved in Phase 4 batch 2b; limit 5 resolved by `13414ed` (the
+  dispatcher calls `delete_expired`; this line was stale until batch 2b);
+  limits 1 and 2 accepted (plan item 21, planned).
 - **Test:** `tests/integration/test_idempotency.py` (lease on the database
   clock, release on APIError and on a 500, live lease with Retry-After,
   takeover of an expired and of a NULL lease, exactly one winner between
   concurrent takers, an overtaken original can neither release nor
   finalize, bounded cleanup; batch 2b: a replay answers with a stored 200
-  where the route's default is 201). No test covers limits 1, 2 or 6:
-  each needs a crash or a client disconnect at a precise point.
+  where the route's default is 201, and a request cancelled while it
+  holds the key releases it, so the retry creates the one tender; an
+  exception or a cancellation after `finalize()` leaves the record
+  completed and the retry replays it, one tender). No
+  test covers limits 1 or 2: each needs a crash at a precise point.
   Limit 3's fix:
   `tests/route/test_proposal_routes.py::test_generate_proposal_returns_202_and_the_same_operation_while_active`
   (a same-key retry replays the 202; a second click joins the operation).
