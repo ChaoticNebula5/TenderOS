@@ -96,7 +96,12 @@ def test_an_existing_env_is_never_overwritten(workdir, capsys):
     assert "refusing to overwrite" in capsys.readouterr().err
 
 
-def test_main_writes_the_file_and_prints_no_value(workdir, capsys):
+def test_main_writes_the_file_and_prints_no_value(workdir, capsys, monkeypatch):
+    """Outside GitHub Actions nothing is masked, so nothing may be printed.
+    GITHUB_ACTIONS is removed explicitly: on a runner it is "true", main()
+    then prints its ::add-mask:: lines (the next test), and this test failed
+    in CI while passing locally (engineering log, item 30)."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     target = workdir / ".env"
 
     assert ci_e2e_env.main(["--output", str(target)]) == 0
@@ -105,7 +110,27 @@ def test_main_writes_the_file_and_prints_no_value(workdir, capsys):
     values = _values(target.read_text(encoding="utf-8"))
     for name in ci_e2e_env._GENERATORS:
         assert values[name] not in out
+    assert "::add-mask::" not in out
     assert "LLM_PROVIDER=fake" in out
+
+
+def test_under_github_actions_values_appear_only_on_mask_lines(workdir, capsys, monkeypatch):
+    """On a runner each generated value is registered with ::add-mask::
+    before anything else could print it. Each value must appear on a line
+    starting with ::add-mask::, and on no other line."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    target = workdir / ".env"
+
+    assert ci_e2e_env.main(["--output", str(target)]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    values = _values(target.read_text(encoding="utf-8"))
+    secrets_ = [values[name] for name in (*ci_e2e_env._GENERATORS, "POSTGRES_DSN")]
+    mask_lines = [line for line in lines if line.startswith("::add-mask::")]
+    other_lines = [line for line in lines if not line.startswith("::add-mask::")]
+    for value in secrets_:
+        assert any(value in line for line in mask_lines), "a generated value was not masked"
+        assert not any(value in line for line in other_lines), "a generated value was printed"
 
 
 def test_scan_names_a_generated_value_found_in_the_logs(workdir, capsys):

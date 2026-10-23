@@ -11801,7 +11801,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** built; not observed until the pull request runs it.
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
-  new placeholder credential is refused, no value printed, the log scan),
+  new placeholder credential is refused, no value printed outside GitHub
+  Actions, and under it every value only on its `::add-mask::` line, the
+  log scan; the file passes with `GITHUB_ACTIONS` unset and set to
+  `true`),
   `tests/unit/test_e2e_step11_timeline.py` (the batch 2b run's figures, a
   job that ended before the click, fetches on either side of the click,
   the last workflow event before the fetch);
