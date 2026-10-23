@@ -11697,3 +11697,43 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   uvicorn 0.54.0 makes it, written through uvicorn's own `LOGGING_CONFIG`
   handler and formatter; the filter installed after and before uvicorn's
   `dictConfig`; installing twice adds one filter; the pattern's edges).
+
+## [found 2026-10-23 in batch 2b's review, open, fix planned before deployment] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
+
+- **Behaviour (read in code, not observed):** the web app never calls
+  `POST /auth/refresh`. `getRefreshToken()`
+  (`apps/web/src/api/client.ts:18`) has no caller, and the only code that
+  reacts to a 401 is `AuthContext.refresh()`, which runs when the app
+  mounts and clears the tokens (`apps/web/src/auth/AuthContext.tsx:33-35`).
+  So every session ends when its access token expires,
+  `JWT_ACCESS_MINUTES` = 15 (configured,
+  `packages/tenderos_backend/src/tenderos_backend/core/config.py:20`),
+  whether or not Redis is up. Mid-session the screens' requests start
+  failing with 401 one by one, an SSE ticket mint gets 401 and the live
+  stream stops with an error, and the next reload shows the login screen.
+  A real-provider run lasts longer than that: 15.8 min for an attempt that
+  reached red team and 45.1 min for the last complete live run
+  (`docs/eval/b16-scorecard.md:91`, `:37`). Not observed: no fake E2E
+  lasts 15 minutes (the longest recorded is 2.7 min).
+- **Refresh tokens:** plain HS256 JWTs (`user_id`, `token_type`, `iat`,
+  `exp`; `core/security.py:27-46`) with no server-side store, no `jti`,
+  no rotation and no revocation. Both tokens sit in `localStorage`
+  (`client.ts:11-34`), readable by any script on the page. Logout only
+  clears `localStorage` (`AuthContext.tsx:40-43`): a refresh token copied
+  before logout, or stolen, keeps minting access tokens for
+  `JWT_REFRESH_DAYS` = 7 (configured, `core/config.py:21`). Rotating
+  `JWT_SIGNING_KEY` is the only way to end one, and it ends every session.
+- **Relation to batch 2b:** decision 0041's "signed-in users keep working
+  during a Redis outage" holds for the life of the access token only;
+  `/auth/refresh` itself needs no Redis and fails open
+  (`tests/route/test_rate_limit_middleware.py::test_refresh_still_works_during_the_outage`),
+  but the web app does not use it.
+- **Risk:** a reviewer is logged out in the middle of a run; at
+  deployment, a leaked refresh token is a 7-day credential that logout
+  cannot end.
+- **Status:** open. Phase 4 plan item 34: refresh on a 401 with one
+  shared refresh (recommended, before deployment), then server-side
+  rotation with reuse detection, then the refresh token in an `httpOnly`
+  cookie once item 27 settles whether the web app and the API share an
+  origin.
+
