@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, clearTokens, getAccessToken, me } from "../api/client";
+import { ApiError, clearTokens, getAccessToken, me, setSessionExpiredHandler } from "../api/client";
 import type { MeResponse } from "../api/client";
 import { retryTransient } from "../api/retryTransient";
 import { AuthContext } from "./authContextValue";
@@ -45,6 +45,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Phase 4 plan item 34: client.ts refreshes an expired access token on
+  // its own; this runs only when that fails (the refresh token rejected, or
+  // a 401 again with the new token). client.ts has already cleared the
+  // tokens; nulling meResponse makes RequireAuth redirect to /login with
+  // the current location as `from`, so the user returns to it.
+  useEffect(() => {
+    setSessionExpiredHandler(() => setMeResponse(null));
+    return () => setSessionExpiredHandler(null);
+  }, []);
 
   const organizationId = meResponse?.memberships[0]?.organization_id ?? null;
 

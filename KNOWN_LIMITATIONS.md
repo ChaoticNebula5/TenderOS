@@ -11293,6 +11293,17 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   before the click. CI's `e2e` job records the fetches on both sides of
   the click and the last workflow event before the fetch (the entry
   below); its runs settle which cause holds.
+- **Observed 2026-10-23, CI run 2 (run 39980533388, passed; run 1 ran out
+  of disk before the E2E):** margin +14.776 s (click 15:51:39.069, resume
+  job 15:51:35.201 to 15:51:53.845). The job took 18.6 s on the runner
+  against about 7.5 s locally, so the slower runner widened the margin
+  rather than narrowing it. 0 task fetches after the click; the last one
+  1.437 s before it; the last workflow event the worker logged before that
+  fetch (`WorkflowRunStatusChanged`) 7.414 s before it. A refetch driven
+  by a workflow event would follow its event within about a second, so a
+  7.4 s gap points to cause (a), the second tab's own first data fetch.
+  **Tally (runs with a timeline):** 2 of 2 point to (a), batch 2b's local
+  run and CI run 2. Counted until 5 CI runs are recorded.
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11719,9 +11730,43 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   handler and formatter; the filter installed after and before uvicorn's
   `dictConfig`; installing twice adds one filter; the pattern's edges).
 
-## [found 2026-10-23 in batch 2b's review, open, fix planned before deployment] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
+## [found 2026-10-23 in batch 2b's review; the 15-minute session RESOLVED for the web app in plan item 34; revocation open] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
 
-- **Behaviour (read in code, not observed):** the web app never calls
+- **Resolved for the web app (plan item 34, option 1, decision 0057):**
+  `apps/web/src/api/client.ts` now answers a 401 from any route except
+  `/auth/login` and `/auth/refresh` by calling `/auth/refresh` and
+  retrying the request once. One refresh at a time: every 401 that
+  arrives while it runs waits for it, and a 401 whose request carried the
+  token the refresh has just replaced retries without refreshing again. A
+  retried POST keeps its Idempotency-Key; the API answers an expired
+  token with 401 before it claims the key, on every route that takes one
+  (`tests/route/test_idempotency_after_auth.py`). A refresh the API
+  rejects (a 4xx other than 429), or a 401 on the retry, clears the
+  tokens and lands on the login screen with the destination kept; a
+  refresh that fails on the network, with a 5xx or with a 429 (transient,
+  and plausible once a proxy puts every user behind one IP, blocker 1,
+  limit 3) keeps the session and returns the original 401.
+  SSE ticket mints take the same path, and a dropped stream reconnects
+  with a fresh ticket on any error. **Observed (live check, 2026-10-23,
+  fake provider, `JWT_ACCESS_MINUTES=1` for the api only, not committed):**
+  logged in at 16:30:48, waited until 16:32:14 (26 s past the token's
+  expiry), opened Talent then Bids: Talent's two parallel requests got
+  401, one `POST /auth/refresh` (200), both retried with 200; Bids
+  loaded with the new token; no logout; exactly one refresh request in
+  both the browser's network log and the api's access log. The E2E
+  passed once afterwards on normal settings (2.7 min).
+- **Found by the live check and fixed before commit:** storage cleared
+  while a page load's refresh was in flight got a new access token
+  written back into it by that refresh's answer, so the next load was
+  signed in again (an access token with no refresh token). The answer is
+  now dropped when the stored refresh token is no longer the one sent; a
+  vitest case reproduces it and failed before the fix.
+- **Still open:** everything below about refresh tokens (no revocation,
+  no rotation, `localStorage`, client-side logout). A session now lasts
+  the refresh token's 7 days instead of 15 minutes, so option 3
+  (server-side rotation and revocation) is the next step before
+  deployment, and option 2 (an `httpOnly` cookie) follows item 27.
+- **Behaviour before item 34 (read in code, not observed):** the web app never calls
   `POST /auth/refresh`. `getRefreshToken()`
   (`apps/web/src/api/client.ts:18`) has no caller, and the only code that
   reacts to a 401 is `AuthContext.refresh()`, which runs when the app
@@ -11748,15 +11793,31 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   during a Redis outage" holds for the life of the access token only;
   `/auth/refresh` itself needs no Redis and fails open
   (`tests/route/test_rate_limit_middleware.py::test_refresh_still_works_during_the_outage`),
-  but the web app does not use it.
-- **Risk:** a reviewer is logged out in the middle of a run; at
-  deployment, a leaked refresh token is a 7-day credential that logout
-  cannot end.
-- **Status:** open. Phase 4 plan item 34: refresh on a 401 with one
-  shared refresh (recommended, before deployment), then server-side
-  rotation with reuse detection, then the refresh token in an `httpOnly`
+  and since item 34 the web app uses it, so a signed-in user now keeps
+  working through a Redis outage for the life of the refresh token.
+- **Risk:** at deployment, a leaked refresh token is a 7-day credential
+  that logout cannot end. (Being logged out in the middle of a run is
+  fixed by item 34.)
+- **Status:** the 15-minute session resolved for the web app (item 34,
+  option 1). Open: server-side rotation with reuse detection (option 3,
+  next, before deployment), then the refresh token in an `httpOnly`
   cookie once item 27 settles whether the web app and the API share an
-  origin.
+  origin (option 2).
+- **Test:** `apps/web/src/api/sessionRefresh.test.tsx` (two parallel 401s
+  make one refresh; a 401 after the refresh finished makes none; a 401
+  after a successful refresh logs out once, no loop; a retried POST keeps
+  its Idempotency-Key; an SSE mint is refreshed; a refresh that cannot
+  reach the API keeps the session; a rate-limited (429) refresh keeps the
+  session; a logout during a refresh stays logged
+  out; login's own 401 is not refreshed; a rejected refresh lands on login
+  and logging in returns to the same page), `useEventStream.test.ts` (a
+  drop the browser would retry is reconnected with a fresh ticket),
+  `tests/route/test_idempotency_after_auth.py` (all seven routes that
+  take a key, found by walking the routers). Checked to fail with their
+  mechanism removed: single-flight, the replaced-token check, the logout
+  on a retried 401, the network-failure split, the 429 exclusion, the
+  stream reconnect, the logout race (before its fix), and the route test
+  with one route's dependencies swapped.
 
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 
@@ -11821,11 +11882,15 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     the fixtures' manifest is identical), not the whole workspace with
     torch; the builder's own copy of the layers is pruned once the images
     are loaded (they are already in the Actions cache); and every big
-    stage ends with `df -h /`, so a failure names its stage. Not yet
-    observed on a runner.
+    stage ends with `df -h /`, so a failure names its stage. Observed on
+    run 2 (run 39980533388, passed, warm cache): 14 GB free at the start,
+    37 GB after freeing space, 29 GB at the lowest (after the Chromium
+    install).
   - **Step 11** (the entry above): the runner's timing is a new variable
     in a race the spec cannot be changed to avoid.
-- **Status:** built; not observed until the pull request runs it.
+- **Status:** merged (#37); run 1 ran out of disk before the E2E, run 2
+  (39980533388) passed. Non-blocking until 5 runs pass with their step 11
+  timelines recorded (1 so far).
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub

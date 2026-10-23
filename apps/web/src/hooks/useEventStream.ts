@@ -52,6 +52,15 @@ const _MAX_MINT_RETRIES = 3;
 // delay and no cap, which hammers the mint endpoint in a tight loop
 // whenever the stream itself (not just minting) keeps failing the same
 // way.
+//
+// Phase 4 plan item 34: the mint goes through client.ts, which refreshes
+// an expired access token and retries the mint once, so a 401 that
+// reaches this hook means the session itself is over (client.ts has
+// already sent the user to login); it still stops here. And any error on
+// the stream, not only a CLOSED one, now closes it and reconnects with a
+// fresh ticket: on a CONNECTING error the browser's own reconnect would
+// replay the consumed ticket, get a 401, and only then reach the CLOSED
+// path, one wasted request per drop.
 // Phase 4: what a stream follows. A workflow run's progress (B14) and an
 // async operation's status use the same transport; only the ticket route
 // and the stream path differ.
@@ -162,13 +171,11 @@ export function useEventStreamFor<T>(
       };
       source.onerror = () => {
         if (cancelled || source === null) return;
-        if (source.readyState === EventSource.CLOSED) {
-          source.close();
-          setStreamDown(true);
-          const delay = Math.min(1000 * 2 ** streamFailures, _MAX_STREAM_BACKOFF_MS);
-          streamFailures += 1;
-          retryTimeout = setTimeout(() => void openStream(0), delay);
-        }
+        source.close();
+        setStreamDown(true);
+        const delay = Math.min(1000 * 2 ** streamFailures, _MAX_STREAM_BACKOFF_MS);
+        streamFailures += 1;
+        retryTimeout = setTimeout(() => void openStream(0), delay);
       };
     }
 

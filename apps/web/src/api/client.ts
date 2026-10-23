@@ -95,6 +95,120 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+// Phase 4 plan item 34: an expired access token is refreshed, not a logout.
+// Every request goes through send(), which on a 401 gets a new access
+// token from POST /auth/refresh and retries the request once. The retry
+// rebuilds only the Authorization header: the body and the Idempotency-Key
+// are fixed before the first attempt, so a retried POST carries the same
+// key (the API answers 401 before it claims a key, so the first attempt
+// left no record; tests/route/test_idempotency_after_auth.py).
+//
+// These two never refresh: a 401 from login is a wrong password, and a 401
+// from refresh is the end of the session.
+const NO_REFRESH_PATHS = new Set(["/auth/login", "/auth/refresh"]);
+
+// Single-flight: every 401 that arrives while a refresh is running waits
+// for that one refresh instead of starting its own.
+let refreshInFlight: Promise<string> | null = null;
+let sessionExpiredHandler: (() => void) | null = null;
+
+// AuthProvider registers this, so a session that cannot be refreshed
+// reaches the screens: it nulls meResponse and RequireAuth redirects to
+// /login with the current location as `from`.
+export function setSessionExpiredHandler(handler: (() => void) | null): void {
+  sessionExpiredHandler = handler;
+}
+
+function expireSession(): void {
+  clearTokens();
+  sessionExpiredHandler?.();
+}
+
+// The session changed while a refresh was in flight: the user logged out,
+// or logged in again. The answer belongs to a session that is gone, so it
+// is dropped, and the session as it now is stays untouched.
+class SessionChangedError extends Error {}
+
+async function requestAccessToken(): Promise<string> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) throw new ApiError(401, { detail: "No refresh token" });
+  const response = await fetch(`${BASE_URL}/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  const { access_token } = await handleResponse<{ access_token: string }>(response);
+  // Found in the live check: storing it unconditionally wrote an access
+  // token into storage a logout had just emptied, signing the user back in.
+  if (getRefreshToken() !== refreshToken) throw new SessionChangedError();
+  setAccessToken(access_token);
+  return access_token;
+}
+
+// sentToken is the token the rejected request carried. If the stored token
+// is already a different one, another request refreshed after this one was
+// sent, so this one only needs to retry with it: without this check a 401
+// arriving just after a refresh finished would start a second refresh.
+function freshAccessToken(sentToken: string | null): Promise<string> {
+  const current = getAccessToken();
+  if (current !== null && current !== sentToken) return Promise.resolve(current);
+  if (refreshInFlight === null) {
+    refreshInFlight = requestAccessToken().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+// A refresh the API rejected (a 4xx other than 429: the refresh token
+// expired, or was signed with another key) ends the session. A network
+// failure, a 5xx or a 429 says nothing about the session, so the tokens
+// stay and the caller gets the original 401, the same split
+// AuthContext.refresh() makes for /auth/me (KNOWN_LIMITATIONS.md, the
+// B16/B17 destination entry). A 429 is transient, and behind a proxy that
+// puts every user on one IP (Phase 4 blocker 1, limit 3) it is plausible:
+// logging users out for it would turn a rate limit into a mass logout. A
+// SessionChangedError is not an ApiError, so it ends nothing either: the
+// storage already holds whatever session the user now has.
+function refreshWasRejected(err: unknown): boolean {
+  return err instanceof ApiError && err.status < 500 && err.status !== 429;
+}
+
+async function send<T>(
+  path: string,
+  method: string,
+  headers: Record<string, string>,
+  body: BodyInit | undefined,
+  auth: boolean,
+): Promise<T> {
+  const attempt = (token: string | null) => {
+    const withAuth = { ...headers };
+    if (auth && token) withAuth["Authorization"] = `Bearer ${token}`;
+    return fetch(`${BASE_URL}${path}`, { method, headers: withAuth, body });
+  };
+
+  const sentToken = auth ? getAccessToken() : null;
+  const response = await attempt(sentToken);
+  if (response.status !== 401 || !auth || NO_REFRESH_PATHS.has(path)) {
+    return handleResponse<T>(response);
+  }
+
+  let token: string;
+  try {
+    token = await freshAccessToken(sentToken);
+  } catch (err) {
+    if (refreshWasRejected(err)) expireSession();
+    return handleResponse<T>(response);
+  }
+
+  // Once only: a 401 with a token just issued means the session is over
+  // (the user deactivated, the signing key rotated), and refreshing again
+  // would loop.
+  const retried = await attempt(token);
+  if (retried.status === 401) expireSession();
+  return handleResponse<T>(retried);
+}
+
 // Not exported - every route gets its own named function below (or in a
 // screen's own api/*.ts module as screens are built), never called with a
 // raw path from outside this module. Keeps the "one function per Part G
@@ -102,39 +216,25 @@ async function handleResponse<T>(response: Response): Promise<T> {
 async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, auth = true, idempotencyKey } = options;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (auth) {
-    const token = getAccessToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-  }
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
-  const response = await fetch(`${BASE_URL}${path}`, {
+  return send<T>(
+    path,
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-
-  return handleResponse<T>(response);
+    body === undefined ? undefined : JSON.stringify(body),
+    auth,
+  );
 }
 
 // Separate from apiFetch, not a variant of it: a multipart body must not
 // carry a JSON Content-Type header (the browser sets its own, including
 // the multipart boundary) and is never JSON.stringify'd.
 async function apiUpload<T>(path: string, file: File): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = getAccessToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    method: "POST",
-    headers,
-    body: formData,
-  });
-
-  return handleResponse<T>(response);
+  return send<T>(path, "POST", {}, formData, true);
 }
 
 // uploadResumes (G6) is the one route taking multiple files under one
@@ -142,20 +242,10 @@ async function apiUpload<T>(path: string, file: File): Promise<T> {
 // list parameter) - a second small helper rather than overloading
 // apiUpload's single-file signature.
 async function apiUploadMultiple<T>(path: string, files: File[]): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = getAccessToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
   const formData = new FormData();
   for (const file of files) formData.append("files", file);
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    method: "POST",
-    headers,
-    body: formData,
-  });
-
-  return handleResponse<T>(response);
+  return send<T>(path, "POST", {}, formData, true);
 }
 
 // ----------------------------------------------------------------------

@@ -94,6 +94,29 @@ describe("useEventStream", () => {
     expect(FakeEventSource.instances[1]!.url).toContain("ticket=second-ticket");
   });
 
+  it("a drop the browser would retry itself is closed and reconnected with a fresh ticket", async () => {
+    // Phase 4 plan item 34. An error with readyState still CONNECTING is
+    // EventSource about to reconnect on its own, to the same URL, with a
+    // ticket the server has already consumed. The hook must close it and
+    // open its own connection with a new ticket instead.
+    mintWorkflowEventsTicket
+      .mockResolvedValueOnce({ ticket: "first-ticket", expires_in_seconds: 30 })
+      .mockResolvedValueOnce({ ticket: "second-ticket", expires_in_seconds: 30 });
+
+    renderHook(() => useEventStream(fetcher, "run-5", true));
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const first = FakeEventSource.instances[0]!;
+    first.onopen?.();
+    first.readyState = FakeEventSource.CONNECTING;
+    first.onerror?.();
+
+    expect(first.readyState).toBe(FakeEventSource.CLOSED);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2), { timeout: 2000 });
+    expect(mintWorkflowEventsTicket).toHaveBeenCalledTimes(2);
+    expect(FakeEventSource.instances[1]!.url).toContain("ticket=second-ticket");
+  });
+
   it("backs off exponentially on repeated terminal failures and resets after a real onopen", async () => {
     vi.useFakeTimers();
     try {
