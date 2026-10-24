@@ -19,6 +19,7 @@ import { Field } from "../components/ui/Field";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { humanize } from "../format/humanize";
+import { useListReads } from "../hooks/useListReads";
 import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatus, describeStatusKeepingRawWord } from "../status/statusMap";
 import "./ProposalWorkspace.css";
@@ -41,6 +42,9 @@ export function ProposalWorkspace() {
   // Set once listProposalSections answers, so the empty state only claims
   // "nothing drafted" after the response says so (DESIGN.md Copy rules).
   const [sectionsLoaded, setSectionsLoaded] = useState(false);
+  // A saved edit can land while the re-read after a generation is in
+  // flight; that read's answer must not undo it (useListReads.ts).
+  const sectionReads = useListReads();
   const [claimsBySection, setClaimsBySection] = useState<Record<string, ProposalClaimResponse[]>>(
     {},
   );
@@ -61,9 +65,10 @@ export function ProposalWorkspace() {
   // answer is dropped instead of painting the previous tender's sections.
   async function refreshSections(isCancelled: () => boolean) {
     if (!tenderId) return;
+    const startedAt = sectionReads.start();
     const result = await listProposalSections(tenderId);
     if (isCancelled()) return;
-    setSections(result);
+    setSections((current) => sectionReads.merge(startedAt, result, current));
     setSectionsLoaded(true);
     for (const section of result) {
       const claims = await listProposalClaims(section.id);
@@ -122,6 +127,7 @@ export function ProposalWorkspace() {
     try {
       const content = editingContent[sectionId];
       const updated = await patchProposalSection(sectionId, content);
+      sectionReads.changed(sectionId);
       setSections((prev) => prev.map((s) => (s.id === sectionId ? updated : s)));
       setEditingContent((prev) => {
         const next = { ...prev };

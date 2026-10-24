@@ -30,6 +30,8 @@ vi.mock("../api/client", async (importOriginal) => {
     listGates: vi.fn(),
     decideGate: vi.fn(),
     getWorkflowRun: vi.fn(),
+    patchRequirement: vi.fn(),
+    verifyRequirement: vi.fn(),
   };
 });
 
@@ -38,6 +40,8 @@ const listWorkflowRuns = vi.mocked(apiClient.listWorkflowRuns);
 const listGates = vi.mocked(apiClient.listGates);
 const decideGate = vi.mocked(apiClient.decideGate);
 const getWorkflowRun = vi.mocked(apiClient.getWorkflowRun);
+const patchRequirement = vi.mocked(apiClient.patchRequirement);
+const verifyRequirement = vi.mocked(apiClient.verifyRequirement);
 
 afterEach(() => {
   cleanup();
@@ -215,5 +219,39 @@ describe("RequirementRegister (restyle batch 3)", () => {
     expect(within(open).getByRole("button", { name: "Confirm" })).toHaveClass("btn--quiet");
     expect(within(open).getByRole("button", { name: "Reject" })).toHaveClass("btn--danger");
     expect(within(open).getByRole("button", { name: "Re-verify" })).toHaveClass("btn--quiet");
+  });
+});
+
+// Upload-list race, sibling screens (useListReads.ts): Re-verify re-reads
+// the whole list, and a Confirm on another row can land while that read is
+// in flight. The read predates the confirm and must not undo it.
+describe("a confirm that lands while Re-verify's re-read is in flight", () => {
+  it("keeps the confirmed row reviewed", async () => {
+    const user = userEvent.setup();
+    const a = requirement({ id: "a", display_code: "A-1", human_reviewed: false });
+    const b = requirement({ id: "b", display_code: "B-1", human_reviewed: false });
+    let answerReread: (rows: RequirementResponse[]) => void = () => {};
+    listRequirements.mockResolvedValueOnce([a, b]).mockReturnValueOnce(
+      new Promise<RequirementResponse[]>((r) => {
+        answerReread = r;
+      }),
+    );
+    listWorkflowRuns.mockResolvedValue([]);
+    verifyRequirement.mockResolvedValue(a);
+    patchRequirement.mockResolvedValue({ ...b, human_reviewed: true });
+    renderScreen();
+
+    const rowA = (await screen.findByText("A-1")).closest("tr")!;
+    const rowB = screen.getByText("B-1").closest("tr")!;
+    const reviewed = (row: Element) => row.querySelectorAll("td")[5]?.textContent;
+    await user.click(within(rowA).getByRole("button", { name: "Re-verify" }));
+    await waitFor(() => expect(listRequirements).toHaveBeenCalledTimes(2));
+    await user.click(within(rowB).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(reviewed(screen.getByText("B-1").closest("tr")!)).toBe("yes"));
+
+    answerReread([a, b]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(reviewed(screen.getByText("B-1").closest("tr")!)).toBe("yes");
   });
 });

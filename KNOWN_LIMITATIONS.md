@@ -11901,3 +11901,55 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   job that ended before the click, fetches on either side of the click,
   the last workflow event before the fetch);
   the job itself on the pull request.
+
+## [found 2026-10-23 in CI run 39983426118, RESOLVED on phase4/upload-list-race] A list read that answered after a change undid the change on screen
+
+- **Observed (CI, Dependabot #33, fake provider):** the E2E failed at
+  `full-flow.spec.ts:540`: after the first tender-document upload the
+  documents table stayed at 0 rows for 30 s. The api log: `GET
+  .../documents` 200, the upload's `POST` 202, a second `GET` 200 0.5 ms
+  later, then nothing; no error in any service's log. Passing runs show
+  the same GET, POST, GET order, 2.5 ms apart.
+- **Cause (read in code, then reproduced in vitest):**
+  `UploadAndProcessingStatus.tsx` read the documents on mount and replaced
+  the list with the answer, and appended an upload's row when the upload
+  returned. The file input works before the first read has answered, so
+  the read (sent before the upload, answered with the list as it was) can
+  be handled after the append and replace the list with its empty picture.
+  Nothing read the list again. A vitest case that holds the first read
+  until the upload has landed fails on main with 0 rows. The CI timing
+  fits this; that it is what happened in CI is an inference.
+- **Same shape elsewhere (searched: every screen that updates rows in
+  place and also replaces its whole list from a read):**
+  - `CommercialFindings.tsx`, `RedteamFindings.tsx`: the re-read after an
+    operation finishes, against Resolve (the Resolve buttons are not
+    disabled during that read);
+  - `ProposalWorkspace.tsx`: the sections re-read after a generation,
+    against Save edits;
+  - `RequirementRegister.tsx`: Re-verify's whole-list re-read, against
+    Confirm and Reject on another row;
+  - `TalentLibrary.tsx`: the mount read and the re-read after a capability
+    statement upload, against a status change.
+  Not affected: `ComplianceMatrix.tsx` (reads once on mount; its rows
+  exist only after that read), `TeamWorkspace.tsx` (keeps only the latest
+  role's matches, and its table is empty while they load),
+  `GraphExplorer.tsx` (appends to a history, replaces no list).
+- **Fix (all six screens, one rule, `apps/web/src/hooks/useListReads.ts`):**
+  one clock per screen orders reads and changes. A read older than one
+  already applied is dropped. Otherwise its rows replace the list by id,
+  except rows changed after the read started, which keep their local
+  version and are kept even when the read lacks them (a fresh upload).
+  Merging instead of dropping the stale read keeps what else it carries
+  (the new findings after a re-validation). The documents screen also
+  reads the list once more after each upload, so it ends on the server's
+  state. Not reproduced live: the window is milliseconds wide.
+- **Status:** resolved on `phase4/upload-list-race`; the E2E passed once
+  locally (2.6 min), every upload followed by its re-read in the api log.
+  CI's 5 consecutive passes are counted from this fix's merge (the item 30
+  entry).
+- **Test:** `src/hooks/useListReads.test.ts` (the merge cases, an older
+  read dropped, safe to run twice); one race test per screen in that
+  screen's own test file (the read held, the change landed, the stale
+  answer plus a new row released). Every race test fails with the merge
+  replaced by a plain replace, the documents test also on main's screen,
+  and the hook's drop test fails without the drop.

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -163,5 +163,45 @@ describe("TalentLibrary (restyle batch 6)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Failed to load the knowledge library",
     );
+  });
+});
+
+// Upload-list race, sibling screens (useListReads.ts): the re-read after a
+// capability-statement upload can be in flight when a status change lands.
+// Its answer predates the change and must not put the old status back,
+// while the item it adds must still appear.
+describe("a status change that lands while the re-read after an upload is in flight", () => {
+  it("keeps the new status, and the upload's new item still appears", async () => {
+    const pmp = ki("k3", "certification", "PMP", { status: "expired", valid_until: "2025-03-31" });
+    let answerReread: (rows: KnowledgeItemResponse[]) => void = () => {};
+    listOrganizationKnowledge.mockReset();
+    listOrganizationKnowledge.mockResolvedValueOnce([pmp]).mockReturnValueOnce(
+      new Promise<KnowledgeItemResponse[]>((r) => {
+        answerReread = r;
+      }),
+    );
+    vi.mocked(apiClient.uploadKnowledgeDocument).mockResolvedValue(undefined);
+    vi.mocked(apiClient.patchKnowledgeItem).mockResolvedValue({ ...pmp, status: "active" });
+    const { container } = renderScreen();
+
+    const select = (await screen.findByRole("combobox", {
+      name: "Status of PMP",
+    })) as HTMLSelectElement;
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "capability.pdf")] } });
+    await waitFor(() => expect(listOrganizationKnowledge).toHaveBeenCalledTimes(2));
+    fireEvent.change(select, { target: { value: "active" } });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("combobox", { name: "Status of PMP" }) as HTMLSelectElement).value,
+      ).toBe("active"),
+    );
+
+    answerReread([pmp, ki("k9", "past_project", "Harbour Systems")]);
+
+    expect(await screen.findByText("Harbour Systems")).toBeInTheDocument();
+    expect(
+      (screen.getByRole("combobox", { name: "Status of PMP" }) as HTMLSelectElement).value,
+    ).toBe("active");
   });
 });

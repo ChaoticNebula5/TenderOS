@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
@@ -20,6 +20,7 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { humanize } from "../format/humanize";
 import { useEventStream } from "../hooks/useEventStream";
+import { useListReads } from "../hooks/useListReads";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeStatus } from "../status/statusMap";
 import "./UploadAndProcessingStatus.css";
@@ -43,6 +44,12 @@ export function UploadAndProcessingStatus() {
   // documents" while the list is still loading. Set from the existing
   // listDocuments call below; no extra fetch.
   const [documentsLoaded, setDocumentsLoaded] = useState(false);
+  // The file input works before the first documents read has answered, so
+  // an upload can land while that read is in flight; its late answer must
+  // not remove the uploaded row (useListReads.ts, CI run 39983426118).
+  const documentReads = useListReads();
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
@@ -97,10 +104,11 @@ export function UploadAndProcessingStatus() {
     if (!tenderId) return;
     let cancelled = false;
     setDocumentsLoaded(false);
+    const startedAt = documentReads.start();
     listDocuments(tenderId)
       .then((result) => {
         if (cancelled) return;
-        setDocuments(result);
+        setDocuments((current) => documentReads.merge(startedAt, result, current));
         setDocumentsLoaded(true);
       })
       .catch(() => {
@@ -109,7 +117,22 @@ export function UploadAndProcessingStatus() {
     return () => {
       cancelled = true;
     };
-  }, [tenderId]);
+  }, [tenderId, documentReads]);
+
+  // After a change: the server's list, so the screen does not rest on the
+  // upload's own answer alone. Dropped if the user has moved to another
+  // tender meanwhile; a failure keeps the rows already shown.
+  function rereadDocuments(forTenderId: string) {
+    const startedAt = documentReads.start();
+    listDocuments(forTenderId)
+      .then((result) => {
+        if (tenderIdRef.current !== forTenderId) return;
+        setDocuments((current) => documentReads.merge(startedAt, result, current));
+      })
+      .catch(() => {
+        if (tenderIdRef.current === forTenderId) setError("Failed to load documents");
+      });
+  }
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -118,10 +141,12 @@ export function UploadAndProcessingStatus() {
     setUploading(true);
     try {
       const uploaded = await uploadDocument(tenderId, file);
+      documentReads.changed(uploaded.id);
       setDocuments((prev) => {
         const withoutDuplicate = prev.filter((d) => d.id !== uploaded.id);
         return [...withoutDuplicate, uploaded];
       });
+      rereadDocuments(tenderId);
     } catch (err) {
       setError(err instanceof ApiError ? `Upload failed (${err.status})` : "Upload failed");
     } finally {
@@ -134,6 +159,7 @@ export function UploadAndProcessingStatus() {
     setError(null);
     try {
       const updated = await reprocessDocument(documentId);
+      documentReads.changed(documentId);
       setDocuments((prev) => prev.map((d) => (d.id === documentId ? updated : d)));
     } catch (err) {
       setError(err instanceof ApiError ? `Reprocess failed (${err.status})` : "Reprocess failed");

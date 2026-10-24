@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -50,6 +50,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listWorkflowTasks: vi.fn(),
     getWorkflowRun: vi.fn(),
     mintWorkflowEventsTicket: vi.fn(),
+    uploadDocument: vi.fn(),
   };
 });
 
@@ -58,6 +59,7 @@ const listDocuments = vi.mocked(apiClient.listDocuments);
 const listWorkflowTasks = vi.mocked(apiClient.listWorkflowTasks);
 const getWorkflowRun = vi.mocked(apiClient.getWorkflowRun);
 const mintWorkflowEventsTicket = vi.mocked(apiClient.mintWorkflowEventsTicket);
+const uploadDocument = vi.mocked(apiClient.uploadDocument);
 
 beforeEach(() => {
   FakeEventSource.instances = [];
@@ -250,5 +252,57 @@ describe("restyle batch 3: processing screen", () => {
     // No new call: the run list and documents, as before, and no run fetch.
     expect(listWorkflowRuns).toHaveBeenCalledTimes(1);
     expect(getWorkflowRun).not.toHaveBeenCalled();
+  });
+});
+
+// CI run 39983426118 (Dependabot #33): the E2E uploaded a document on a
+// freshly opened screen, the upload's row appeared, and the screen's first
+// documents read, sent before the upload and answered after it, replaced
+// the list with its empty picture. The table stayed at 0 rows and
+// full-flow.spec.ts:540 timed out. Here the first read is held until the
+// upload has landed, then answers with the list as it was when it started.
+describe("an upload that lands before the first documents read answers", () => {
+  it("keeps the uploaded row, then shows the server's list", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    const uploaded = { ...parsedDocument(), id: "doc-new", filename: "rfp.pdf" };
+    let answerFirstRead: (docs: DocumentResponse[]) => void = () => {};
+    let answerReread: (docs: DocumentResponse[]) => void = () => {};
+    listDocuments
+      .mockReturnValueOnce(
+        new Promise<DocumentResponse[]>((r) => {
+          answerFirstRead = r;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<DocumentResponse[]>((r) => {
+          answerReread = r;
+        }),
+      );
+    uploadDocument.mockResolvedValue(uploaded);
+    const { container } = render(
+      <MemoryRouter initialEntries={["/tenders/tender-1"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<UploadAndProcessingStatus />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "rfp.pdf")] } });
+    expect(await screen.findByText("rfp.pdf")).toBeInTheDocument();
+
+    // The screen reads the list once more after the upload, so what it
+    // shows ends as the server's state, not only the upload's own answer.
+    // That read is held too: the first read answers before it, as in CI.
+    await waitFor(() => expect(listDocuments).toHaveBeenCalledTimes(2));
+    answerFirstRead([]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The race itself: the late, older answer must not remove the row.
+    expect(container.querySelectorAll("table tbody tr")).toHaveLength(1);
+
+    answerReread([{ ...uploaded, parse_status: "parsing" }]);
+    await screen.findByText("parsing");
+    expect(container.querySelectorAll("table tbody tr")).toHaveLength(1);
   });
 });
