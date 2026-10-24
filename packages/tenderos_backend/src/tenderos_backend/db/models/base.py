@@ -1,13 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, func, text
+from sqlalchemy import TIMESTAMP, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    pass
+    # Every migration declares string columns as Text, so a bare Mapped[str]
+    # is TEXT here too, not SQLAlchemy's default VARCHAR. A column that
+    # names its own type (String(n), JSONB, ...) is unaffected.
+    type_annotation_map = {str: Text}
 
 
 class UUIDPrimaryKeyMixin:
