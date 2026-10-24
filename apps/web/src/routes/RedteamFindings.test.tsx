@@ -338,3 +338,38 @@ describe("RedteamFindings (stale-tender guard)", () => {
     expect(screen.queryByText("Finding a-stale.")).toBeNull();
   });
 });
+
+// Upload-list race, sibling screens (useListReads.ts): the re-read after a
+// finished run can be in flight when a Resolve lands. Its answer predates
+// the resolve and must not reopen the finding, while the new finding it
+// carries must still appear.
+describe("a resolve that lands while the re-read after a run is in flight", () => {
+  it("stays resolved, and the run's new finding still appears", async () => {
+    const user = userEvent.setup();
+    let answerReread: (rows: RedteamFindingResponse[]) => void = () => {};
+    listRedteamFindings.mockResolvedValueOnce([finding("f1")]).mockReturnValueOnce(
+      new Promise<RedteamFindingResponse[]>((r) => {
+        answerReread = r;
+      }),
+    );
+    triggerRedTeam.mockResolvedValue(operation("queued"));
+    mintOperationEventsTicket.mockResolvedValue({ ticket: "fake-ticket", expires_in_seconds: 30 });
+    getOperation.mockResolvedValue(operation("succeeded"));
+    resolveRedteamFinding.mockResolvedValue(finding("f1", { resolved: true }));
+    renderScreen();
+
+    await screen.findByText("Finding f1.");
+    await user.click(screen.getByRole("button", { name: "Run red team" }));
+    await waitFor(() => expect(listRedteamFindings).toHaveBeenCalledTimes(2));
+
+    const resolveButtons = () => screen.queryAllByRole("button", { name: /Resolve/ });
+    await user.click(resolveButtons()[0]);
+    await waitFor(() => expect(resolveButtons()).toHaveLength(0));
+
+    answerReread([finding("f1"), finding("f2")]);
+
+    expect(await screen.findByText("Finding f2.")).toBeInTheDocument();
+    // Only f2 is open: f1's resolve survived the older answer.
+    expect(resolveButtons()).toHaveLength(1);
+  });
+});

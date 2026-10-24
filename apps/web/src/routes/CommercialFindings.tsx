@@ -22,6 +22,7 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { humanize } from "../format/humanize";
+import { useListReads } from "../hooks/useListReads";
 import { useTenderOperation } from "../hooks/useTenderOperation";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeFinding } from "../status/statusMap";
@@ -45,6 +46,9 @@ export function CommercialFindings() {
   // the response says so (DESIGN.md Copy rules).
   const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [findingsLoaded, setFindingsLoaded] = useState(false);
+  // A resolve can land while the re-read after an operation is in flight;
+  // that read's answer must not undo it (useListReads.ts).
+  const findingReads = useListReads();
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The latest run's status, from the listWorkflowRuns call this screen
@@ -57,10 +61,11 @@ export function CommercialFindings() {
 
   async function refreshFindings(isCancelled: () => boolean) {
     if (!tenderId) return;
+    const startedAt = findingReads.start();
     try {
       const result = await listPricingFindings(tenderId);
       if (!isCancelled()) {
-        setFindings(result);
+        setFindings((current) => findingReads.merge(startedAt, result, current));
         setFindingsLoaded(true);
       }
     } catch {
@@ -170,6 +175,7 @@ export function CommercialFindings() {
     setError(null);
     try {
       const updated = await resolvePricingFinding(findingId);
+      findingReads.changed(findingId);
       setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
     } catch (err) {
       setError(err instanceof ApiError ? `Resolve failed (${err.status})` : "Resolve failed");

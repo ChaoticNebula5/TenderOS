@@ -13,6 +13,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
+import { useListReads } from "../hooks/useListReads";
 import { useTenderOperation } from "../hooks/useTenderOperation";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
@@ -41,6 +42,9 @@ export function RedteamFindings() {
   // Set once the list answers, so the empty state only claims "no
   // findings" after the response says so (DESIGN.md Copy rules).
   const [findingsLoaded, setFindingsLoaded] = useState(false);
+  // A resolve can land while the re-read after an operation is in flight;
+  // that read's answer must not undo it (useListReads.ts).
+  const findingReads = useListReads();
   const [error, setError] = useState<string | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
 
@@ -55,9 +59,10 @@ export function RedteamFindings() {
   // painting the previous tender's findings.
   async function refresh(isCancelled: () => boolean) {
     if (!tenderId) return;
+    const startedAt = findingReads.start();
     const result = await listRedteamFindings(tenderId);
     if (isCancelled()) return;
-    setFindings(result);
+    setFindings((current) => findingReads.merge(startedAt, result, current));
     setFindingsLoaded(true);
   }
 
@@ -104,6 +109,7 @@ export function RedteamFindings() {
     setError(null);
     try {
       const updated = await resolveRedteamFinding(findingId, resolutionNotes[findingId] ?? null);
+      findingReads.changed(findingId);
       setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
     } catch (err) {
       setError(err instanceof ApiError ? `Resolve failed (${err.status})` : "Resolve failed");

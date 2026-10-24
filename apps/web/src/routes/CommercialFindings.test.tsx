@@ -441,3 +441,48 @@ describe("CommercialFindings (restyle batch 4)", () => {
     expect(buttons[1]).not.toHaveAttribute("aria-busy");
   });
 });
+
+// Upload-list race, sibling screens (useListReads.ts): the re-read after a
+// finished re-validation can be in flight when a Resolve lands. Its answer
+// predates the resolve and must not reopen the finding, while the new
+// finding it carries must still appear.
+describe("a resolve that lands while the re-read after a re-validation is in flight", () => {
+  it("stays resolved, and the re-validation's new finding still appears", async () => {
+    const user = userEvent.setup();
+    const open = { ...finding("tender-a", "note f1"), id: "f1" };
+    const added = { ...finding("tender-a", "note f2"), id: "f2" };
+    listWorkflowRuns.mockResolvedValue([]);
+    listPricingDocuments.mockResolvedValue([doc("tender-a")]);
+    let answerReread: (rows: PricingFindingResponse[]) => void = () => {};
+    listPricingFindings.mockResolvedValueOnce([open]).mockReturnValueOnce(
+      new Promise<PricingFindingResponse[]>((r) => {
+        answerReread = r;
+      }),
+    );
+    validatePricingDocument.mockResolvedValue(operation("queued"));
+    getOperation.mockResolvedValue(operation("succeeded"));
+    resolvePricingFinding.mockResolvedValue({ ...open, resolved: true });
+    const { container } = render(
+      <MemoryRouter initialEntries={["/tenders/tender-a/commercial"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId/commercial" element={<CommercialFindings />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText("note f1");
+    await user.click(screen.getByRole("button", { name: /^Re-validat/ }));
+    await waitFor(() => expect(listPricingFindings).toHaveBeenCalledTimes(2));
+    const findingsTable = () => container.querySelectorAll("table")[1] as HTMLElement;
+    await user.click(within(findingsTable()).getByRole("button", { name: "Resolve" }));
+    await waitFor(() =>
+      expect(within(findingsTable()).queryAllByRole("button", { name: "Resolve" })).toHaveLength(0),
+    );
+
+    answerReread([open, added]);
+
+    expect(await screen.findByText("note f2")).toBeInTheDocument();
+    // Only f2 is open: f1's resolve survived the older answer.
+    expect(within(findingsTable()).getAllByRole("button", { name: "Resolve" })).toHaveLength(1);
+  });
+});

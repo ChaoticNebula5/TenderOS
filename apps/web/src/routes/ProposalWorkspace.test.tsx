@@ -403,3 +403,41 @@ describe("ProposalWorkspace (stale-tender guard)", () => {
     expect(screen.queryByRole("heading", { name: "Section a-stale" })).toBeNull();
   });
 });
+
+// Upload-list race, sibling screens (useListReads.ts): the re-read after a
+// finished generation can be in flight when a section's saved edit lands.
+// Its answer predates the save and must not put the old text back, while
+// the section it adds must still appear.
+describe("a saved edit that lands while the re-read after a generation is in flight", () => {
+  it("keeps the saved text, and the generation's new section still appears", async () => {
+    const user = userEvent.setup();
+    let answerReread: (rows: ProposalSectionResponse[]) => void = () => {};
+    listProposalSections.mockResolvedValueOnce([section("s1")]).mockReturnValueOnce(
+      new Promise<ProposalSectionResponse[]>((r) => {
+        answerReread = r;
+      }),
+    );
+    listProposalClaims.mockResolvedValue([]);
+    generateProposal.mockResolvedValue(operation("queued"));
+    getOperation.mockResolvedValue(operation("succeeded"));
+    vi.mocked(apiClient.patchProposalSection).mockResolvedValue({
+      ...section("s1"),
+      content: "Drafted text. Edited.",
+      version: 3,
+    });
+    renderScreen();
+
+    await screen.findByRole("heading", { name: "Section s1" });
+    await user.click(screen.getByRole("button", { name: "Generate proposal" }));
+    await waitFor(() => expect(listProposalSections).toHaveBeenCalledTimes(2));
+    const [field] = screen.getAllByLabelText("Section text");
+    await user.type(field, " Edited.");
+    await user.click(screen.getByRole("button", { name: "Save edits" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save edits" })).toBeNull());
+
+    answerReread([section("s1"), section("s2")]);
+
+    await screen.findByRole("heading", { name: "Section s2" });
+    expect(screen.getAllByLabelText("Section text")[0]).toHaveValue("Drafted text. Edited.");
+  });
+});

@@ -11304,6 +11304,21 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   7.4 s gap points to cause (a), the second tab's own first data fetch.
   **Tally (runs with a timeline):** 2 of 2 point to (a), batch 2b's local
   run and CI run 2. Counted until 5 CI runs are recorded.
+- **Observed 2026-10-23, three more CI runs (all passed):** main
+  `ca9feda` (39983007910): margin +19.642 s, 4 task fetches after the
+  click, the last before it 1.423 s, its workflow event 8.448 s before
+  it; PR #38 (39989695235): +15.251 s, 1 after, 1.812 s, 2.119 s; main
+  `fbe383e` (39991181703): +24.249 s, 0 after, 1.906 s, 3.267 s. By the
+  event gap alone #38's 2.1 s is ambiguous, but in all four CI runs the
+  pre-click task fetch reached the api before either of the second tab's
+  event streams opened (by 61, 40, 4 and 85 ms; uvicorn logs a streaming
+  response when it starts), so no pushed event could have caused it.
+  **Tally: 4 of 4 CI runs point to (a)**, an inference (server logs
+  cannot name the tab). Two runs had task fetches after the click, which
+  earlier runs did not; neither follows a worker-logged workflow event
+  within a second, their source is not identifiable from the logs, and
+  neither decided the wait. On the runner the margin is +14.8 to +24.2 s
+  (about +5 s locally).
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11835,9 +11850,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   (`scripts/e2e_step11_timeline.py`), and uploads the logs, the timeline
   and the Playwright report.
 - **Limits:**
-  - **Non-blocking** (`continue-on-error: true`) until 5 of 5 runs pass
-    with their step 11 timelines recorded; then the line is removed and
-    the job made required. Until then a red `e2e` does not block a merge.
+  - **Non-blocking** (`continue-on-error: true`) until 5 consecutive runs
+    pass with their step 11 timelines recorded; then the line is removed
+    and the job made required. Until then a red `e2e` does not block a
+    merge. **Decided 2026-10-23:** a product failure counts against the
+    run of passes (Dependabot #33's run failed on the upload-list race,
+    the entry at the end of this file), so the count of 5 consecutive
+    passes starts once that fix is merged; #33 is held until then and
+    its next run counts.
   - **Artifacts are not masked.** The logs are uploaded only if none of
     the run's generated values appears in them (`--scan`); the Playwright
     report (traces on failure) holds the run's own access tokens, signed
@@ -11888,9 +11908,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     install).
   - **Step 11** (the entry above): the runner's timing is a new variable
     in a race the spec cannot be changed to avoid.
-- **Status:** merged (#37); run 1 ran out of disk before the E2E, run 2
-  (39980533388) passed. Non-blocking until 5 runs pass with their step 11
-  timelines recorded (1 so far).
+- **Status:** merged (#37); run 1 ran out of disk before the E2E; runs
+  39980533388, 39983007910, 39989695235 and 39991181703 passed;
+  Dependabot #33's run (39983426118) failed on the upload-list race. Non-
+  blocking until 5 consecutive passes, counted from the race's fix.
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub
@@ -11969,8 +11990,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Fixed (apps/web/package-lock.json only):** `npm audit fix`, no
   `--force`: undici 7.30.0 -> 7.30.1 (released 2026-10-15, inside jsdom's
   range); nothing else moved. npm 10.9.9 on this Windows host also dropped
-  the `libc` fields of six optional native packages (rolldown and
-  lightningcss bindings), which npm uses to pick glibc or musl binaries on
+  the `libc` fields of six optional native packages (all six rolldown
+  bindings, `@rolldown/binding-linux-*`), which npm uses to pick glibc or musl binaries on
   Linux; that was the host rewriting the file, not the fix, so the commit
   keeps the original lockfile with only undici's three lines changed. `npm
   ci` installs from it without rewriting it.
@@ -11979,3 +12000,55 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   pass; the fake stack rebuilt (the web image carries undici 7.30.1); the
   E2E passed once (2.7 min).
 - **Status:** resolved on the branch.
+
+## [found 2026-10-23 in CI run 39983426118, RESOLVED on phase4/upload-list-race] A list read that answered after a change undid the change on screen
+
+- **Observed (CI, Dependabot #33, fake provider):** the E2E failed at
+  `full-flow.spec.ts:540`: after the first tender-document upload the
+  documents table stayed at 0 rows for 30 s. The api log: `GET
+  .../documents` 200, the upload's `POST` 202, a second `GET` 200 0.5 ms
+  later, then nothing; no error in any service's log. Passing runs show
+  the same GET, POST, GET order, 2.5 ms apart.
+- **Cause (read in code, then reproduced in vitest):**
+  `UploadAndProcessingStatus.tsx` read the documents on mount and replaced
+  the list with the answer, and appended an upload's row when the upload
+  returned. The file input works before the first read has answered, so
+  the read (sent before the upload, answered with the list as it was) can
+  be handled after the append and replace the list with its empty picture.
+  Nothing read the list again. A vitest case that holds the first read
+  until the upload has landed fails on main with 0 rows. The CI timing
+  fits this; that it is what happened in CI is an inference.
+- **Same shape elsewhere (searched: every screen that updates rows in
+  place and also replaces its whole list from a read):**
+  - `CommercialFindings.tsx`, `RedteamFindings.tsx`: the re-read after an
+    operation finishes, against Resolve (the Resolve buttons are not
+    disabled during that read);
+  - `ProposalWorkspace.tsx`: the sections re-read after a generation,
+    against Save edits;
+  - `RequirementRegister.tsx`: Re-verify's whole-list re-read, against
+    Confirm and Reject on another row;
+  - `TalentLibrary.tsx`: the mount read and the re-read after a capability
+    statement upload, against a status change.
+  Not affected: `ComplianceMatrix.tsx` (reads once on mount; its rows
+  exist only after that read), `TeamWorkspace.tsx` (keeps only the latest
+  role's matches, and its table is empty while they load),
+  `GraphExplorer.tsx` (appends to a history, replaces no list).
+- **Fix (all six screens, one rule, `apps/web/src/hooks/useListReads.ts`):**
+  one clock per screen orders reads and changes. A read older than one
+  already applied is dropped. Otherwise its rows replace the list by id,
+  except rows changed after the read started, which keep their local
+  version and are kept even when the read lacks them (a fresh upload).
+  Merging instead of dropping the stale read keeps what else it carries
+  (the new findings after a re-validation). The documents screen also
+  reads the list once more after each upload, so it ends on the server's
+  state. Not reproduced live: the window is milliseconds wide.
+- **Status:** resolved on `phase4/upload-list-race`; the E2E passed once
+  locally (2.6 min), every upload followed by its re-read in the api log.
+  CI's 5 consecutive passes are counted from this fix's merge (the item 30
+  entry).
+- **Test:** `src/hooks/useListReads.test.ts` (the merge cases, an older
+  read dropped, safe to run twice); one race test per screen in that
+  screen's own test file (the read held, the change landed, the stale
+  answer plus a new row released). Every race test fails with the merge
+  replaced by a plain replace, the documents test also on main's screen,
+  and the hook's drop test fails without the drop.

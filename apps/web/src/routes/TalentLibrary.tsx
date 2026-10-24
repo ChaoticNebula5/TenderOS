@@ -15,6 +15,7 @@ import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { formatDay } from "../format/date";
 import { humanize } from "../format/humanize";
+import { useListReads } from "../hooks/useListReads";
 import { describeStatus } from "../status/statusMap";
 import { NOT_SET } from "./talentImportValues";
 import "./TalentLibrary.css";
@@ -47,13 +48,18 @@ export function TalentLibrary() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // The upload input works before the first read answers, and a status
+  // change can land while the re-read after an upload is in flight; a
+  // late, older answer must not undo either (useListReads.ts).
+  const itemReads = useListReads();
 
   useEffect(() => {
     if (!organizationId) return;
     let cancelled = false;
+    const startedAt = itemReads.start();
     listOrganizationKnowledge(organizationId)
       .then((result) => {
-        if (!cancelled) setItems(result);
+        if (!cancelled) setItems((current) => itemReads.merge(startedAt, result, current ?? []));
       })
       .catch(() => {
         if (!cancelled) setError("Failed to load the knowledge library");
@@ -64,7 +70,7 @@ export function TalentLibrary() {
     return () => {
       cancelled = true;
     };
-  }, [organizationId]);
+  }, [organizationId, itemReads]);
 
   async function handleStatusChange(itemId: string, status: string) {
     setError(null);
@@ -72,6 +78,7 @@ export function TalentLibrary() {
       const updated = await patchKnowledgeItem(itemId, {
         status: status as "active" | "expired" | "archived" | "unverified",
       });
+      itemReads.changed(itemId);
       setItems((prev) => (prev ? prev.map((i) => (i.id === itemId ? updated : i)) : prev));
     } catch (err) {
       setError(err instanceof ApiError ? `Update failed (${err.status})` : "Update failed");
@@ -85,7 +92,9 @@ export function TalentLibrary() {
     setUploading(true);
     try {
       await uploadKnowledgeDocument(organizationId, file);
-      setItems(await listOrganizationKnowledge(organizationId));
+      const startedAt = itemReads.start();
+      const result = await listOrganizationKnowledge(organizationId);
+      setItems((current) => itemReads.merge(startedAt, result, current ?? []));
     } catch (err) {
       setError(err instanceof ApiError ? `Upload failed (${err.status})` : "Upload failed");
     } finally {

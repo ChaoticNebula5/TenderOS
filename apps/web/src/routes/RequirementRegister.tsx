@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { GateResponse, RequirementResponse } from "../api/client";
 import {
@@ -14,6 +14,7 @@ import { Button } from "../components/ui/Button";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
+import { useListReads } from "../hooks/useListReads";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeVerified } from "../status/statusMap";
 import "./RequirementRegister.css";
@@ -28,6 +29,12 @@ import "./RequirementRegister.css";
 export function RequirementRegister() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [requirements, setRequirements] = useState<RequirementResponse[]>([]);
+  // Verify re-reads the whole list; a confirm or reject on another row can
+  // land while that read is in flight, and its answer must not undo it
+  // (useListReads.ts).
+  const requirementReads = useListReads();
+  const tenderIdRef = useRef(tenderId);
+  tenderIdRef.current = tenderId;
   const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The latest run's status, from the listWorkflowRuns call below that this
@@ -40,9 +47,12 @@ export function RequirementRegister() {
   useEffect(() => {
     if (!tenderId) return;
     let cancelled = false;
+    const startedAt = requirementReads.start();
     listRequirements(tenderId)
       .then((result) => {
-        if (!cancelled) setRequirements(result);
+        if (!cancelled) {
+          setRequirements((current) => requirementReads.merge(startedAt, result, current));
+        }
       })
       .catch(() => {
         if (!cancelled) setError("Failed to load requirements");
@@ -50,7 +60,7 @@ export function RequirementRegister() {
     return () => {
       cancelled = true;
     };
-  }, [tenderId]);
+  }, [tenderId, requirementReads]);
 
   useEffect(() => {
     if (!tenderId) return;
@@ -89,6 +99,7 @@ export function RequirementRegister() {
     setError(null);
     try {
       const updated = await patchRequirement(requirementId, { action: "confirm" });
+      requirementReads.changed(requirementId);
       setRequirements((prev) => prev.map((r) => (r.id === requirementId ? updated : r)));
     } catch (err) {
       setError(err instanceof ApiError ? `Confirm failed (${err.status})` : "Confirm failed");
@@ -99,6 +110,7 @@ export function RequirementRegister() {
     setError(null);
     try {
       const updated = await patchRequirement(requirementId, { action: "reject" });
+      requirementReads.changed(requirementId);
       setRequirements((prev) => prev.map((r) => (r.id === requirementId ? updated : r)));
     } catch (err) {
       setError(err instanceof ApiError ? `Reject failed (${err.status})` : "Reject failed");
@@ -112,7 +124,14 @@ export function RequirementRegister() {
       // requirement's state at request time, not the verified one yet.
       // Re-fetching the list is what actually shows the outcome.
       await verifyRequirement(requirementId);
-      if (tenderId) setRequirements(await listRequirements(tenderId));
+      if (tenderId) {
+        const forTenderId = tenderId;
+        const startedAt = requirementReads.start();
+        const result = await listRequirements(forTenderId);
+        if (tenderIdRef.current === forTenderId) {
+          setRequirements((current) => requirementReads.merge(startedAt, result, current));
+        }
+      }
     } catch (err) {
       setError(err instanceof ApiError ? `Verify failed (${err.status})` : "Verify failed");
     }
