@@ -11946,3 +11946,36 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   filelock warning in any service's log.
 - **Status:** resolved on the branch. Advisory databases change daily, so
   the security job can fail again with no code change.
+
+## [deps/pip-audit-2026-10-24, RESOLVED on the branch] npm audit: undici 7.0.0 to 7.30.0 (high) in apps/web, through jsdom
+
+- **Found:** CI's security job on PR #40 failed a second way, at `npm
+  audit --audit-level=high` in `apps/web`: undici 7.30.0, high, three
+  advisories (GHSA-4qv8-2p9j-2685, EventSource parser memory;
+  GHSA-f72v-6w45-q472, Subresource Integrity bypass; GHSA-xjj6-f33q-929c,
+  excessive content-encodings). `apps/landing`: 0 vulnerabilities.
+  Reproduced locally.
+- **What pulls it in:** only jsdom 28.1.0 (`undici ^7.21.0`), which vitest
+  loads as the test environment; `dev: true` in the lockfile.
+- **Does it reach the stack:** installed, not loaded (read in code, not
+  observed at runtime). The web image runs `npm ci`, which installs dev
+  dependencies (Vite is one), so undici is in the image's `node_modules`.
+  Nothing the dev server runs imports it: `vite.config.ts` imports
+  `vitest/config`, whose two chunks import only `node:os` and `std-env`;
+  `environment: "jsdom"` there is a string vitest reads when it runs tests;
+  no app source imports jsdom or undici, so nothing is served to the
+  browser. Item 27's static build will drop dev dependencies from what
+  runs entirely.
+- **Fixed (apps/web/package-lock.json only):** `npm audit fix`, no
+  `--force`: undici 7.30.0 -> 7.30.1 (released 2026-10-15, inside jsdom's
+  range); nothing else moved. npm 10.9.9 on this Windows host also dropped
+  the `libc` fields of six optional native packages (rolldown and
+  lightningcss bindings), which npm uses to pick glibc or musl binaries on
+  Linux; that was the host rewriting the file, not the fix, so the commit
+  keeps the original lockfile with only undici's three lines changed. `npm
+  ci` installs from it without rewriting it.
+- **Proof (2026-10-24):** `npm audit` 0 vulnerabilities in both apps;
+  vitest 360 passed; eslint and `tsc -b` clean; both production builds
+  pass; the fake stack rebuilt (the web image carries undici 7.30.1); the
+  E2E passed once (2.7 min).
+- **Status:** resolved on the branch.
