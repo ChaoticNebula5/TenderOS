@@ -36,6 +36,7 @@ from tenderos_backend.db.models.proposal import (
 )
 from tenderos_backend.db.models.readiness import ReadinessReport
 from tenderos_backend.db.models.redteam import RedteamFinding
+from tenderos_backend.db.models.refresh_token import RefreshToken
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
@@ -94,6 +95,7 @@ __all__ = [
     "ProposalSection",
     "ReadinessReport",
     "RedteamFinding",
+    "RefreshToken",
     "Requirement",
     "RoleMatch",
     "RoleMatchEvidence",
