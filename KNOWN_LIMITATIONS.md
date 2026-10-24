@@ -11990,8 +11990,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Fixed (apps/web/package-lock.json only):** `npm audit fix`, no
   `--force`: undici 7.30.0 -> 7.30.1 (released 2026-10-15, inside jsdom's
   range); nothing else moved. npm 10.9.9 on this Windows host also dropped
-  the `libc` fields of six optional native packages (rolldown and
-  lightningcss bindings), which npm uses to pick glibc or musl binaries on
+  the `libc` fields of six optional native packages (all six rolldown
+  bindings, `@rolldown/binding-linux-*`), which npm uses to pick glibc or musl binaries on
   Linux; that was the host rewriting the file, not the fix, so the commit
   keeps the original lockfile with only undici's three lines changed. `npm
   ci` installs from it without rewriting it.
