@@ -4,7 +4,7 @@
 # `pip install uv`, so Dependabot's docker entry, which reads FROM lines,
 # updates it too. apps/api/Dockerfile and apps/worker/Dockerfile use the
 # same two images; scripts/check_pins.py fails CI if they differ.
-FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 FROM python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
 
