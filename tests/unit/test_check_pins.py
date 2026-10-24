@@ -1,14 +1,21 @@
 """Phase 4 item 7: scripts/check_pins.py. The real repo must pass, and each
 kind of drift the script exists to catch must fail it: planted in a copy
-of the real files in a temporary directory, never in the repo itself."""
+of the real files in a temporary directory, never in the repo itself.
+
+Each test reads the current value from the copied file and plants drift
+relative to it, so a pin bump that keeps the copies in line (Dependabot's
+PR plus the ci.yml fix) passes here too; only check_pins.py itself goes
+red on a bump that leaves a copy behind."""
 
 import importlib.util
+import json
 import shutil
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
@@ -18,9 +25,10 @@ assert _spec is not None and _spec.loader is not None
 check_pins = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check_pins)
 
+_CI = ".github/workflows/ci.yml"
 _FILES = (
     "docker-compose.yml",
-    ".github/workflows/ci.yml",
+    _CI,
     *check_pins.DOCKERFILES,
     *check_pins.PACKAGE_JSONS,
 )
@@ -44,8 +52,30 @@ def tree() -> Iterator[Path]:
 def _edit(root: Path, relative: str, old: str, new: str) -> None:
     path = root / relative
     text = path.read_text(encoding="utf-8")
-    assert old in text, f"{old!r} not in {relative}; the test needs updating"
+    assert old in text, f"{old!r} not in {relative}"
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _compose_image(root: Path, service: str) -> str:
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+    return compose["services"][service]["image"]
+
+
+def _ci_steps(root: Path, action: str) -> list[dict]:
+    workflow = yaml.safe_load((root / _CI).read_text(encoding="utf-8"))
+    return [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("uses", "").split("@", 1)[0] == action
+    ]
+
+
+def _another_tag(ref: str) -> str:
+    """`redis:8.10.1-alpine@sha256:...` -> `redis:8.10.1-alpine-drift@sha256:...`:
+    still pinned, so only the comparison between copies can catch it."""
+    name_and_tag, digest = ref.split("@", 1)
+    return f"{name_and_tag}-drift@{digest}"
 
 
 def test_the_repo_passes():
@@ -56,25 +86,25 @@ def test_the_copied_tree_passes(tree: Path):
     assert check_pins.check(tree) == []
 
 
+def test_a_pin_bump_that_keeps_the_copies_in_line_passes(tree: Path):
+    # What a docker-compose PR plus its ci.yml fix leaves behind.
+    ref = _compose_image(tree, "redis")
+    _edit(tree, "docker-compose.yml", f"image: {ref}", f"image: {_another_tag(ref)}")
+    _edit(tree, _CI, f"image: {ref}", f"image: {_another_tag(ref)}")
+    assert check_pins.check(tree) == []
+
+
 def test_a_compose_image_without_a_digest_fails(tree: Path):
-    _edit(
-        tree,
-        "docker-compose.yml",
-        "image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6",
-        "image: redis:7-alpine",
-    )
+    ref = _compose_image(tree, "redis")
+    _edit(tree, "docker-compose.yml", f"image: {ref}", f"image: {ref.split('@', 1)[0]}")
     problems = check_pins.check(tree)
     assert any("docker-compose.yml: redis image is not" in p for p in problems)
 
 
 def test_a_ci_service_image_that_drifts_from_compose_fails(tree: Path):
     # What a Dependabot docker-compose PR alone would leave behind.
-    _edit(
-        tree,
-        "docker-compose.yml",
-        "neo4j:5.26.28-community@sha256:3",
-        "neo4j:5.26.29-community@sha256:3",
-    )
+    ref = _compose_image(tree, "neo4j")
+    _edit(tree, "docker-compose.yml", f"image: {ref}", f"image: {_another_tag(ref)}")
     problems = check_pins.check(tree)
     assert any(
         "service neo4j image" in p and "differs from docker-compose.yml" in p for p in problems
@@ -82,37 +112,41 @@ def test_a_ci_service_image_that_drifts_from_compose_fails(tree: Path):
 
 
 def test_a_versitygw_run_line_that_drifts_from_compose_fails(tree: Path):
-    _edit(
-        tree, ".github/workflows/ci.yml", "versity/versitygw:v1.8.0@", "versity/versitygw:v1.8.1@"
-    )
+    ref = _compose_image(tree, "s3")
+    _edit(tree, _CI, ref, _another_tag(ref))
     assert any("VersityGW image other than" in p for p in check_pins.check(tree))
 
 
 def test_an_action_pinned_by_tag_fails(tree: Path):
-    _edit(
-        tree,
-        ".github/workflows/ci.yml",
-        "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
-        "actions/cache@v6",
-    )
+    uses = _ci_steps(tree, "actions/cache")[0]["uses"]
+    _edit(tree, _CI, uses, "actions/cache@v6")
     assert any("not pinned by commit SHA: actions/cache@v6" in p for p in check_pins.check(tree))
 
 
 def test_api_and_worker_base_images_that_differ_fail(tree: Path):
-    _edit(tree, "apps/worker/Dockerfile", "python:3.12.13-slim@", "python:3.12.14-slim@")
+    python = next(
+        ref
+        for ref in check_pins._from_images(tree, "apps/worker/Dockerfile")
+        if check_pins._image_name(ref) == "python"
+    )
+    _edit(tree, "apps/worker/Dockerfile", python, _another_tag(python))
     assert any("use different base images" in p for p in check_pins.check(tree))
 
 
 def test_a_setup_uv_version_that_drifts_from_the_uv_image_fails(tree: Path):
-    _edit(tree, ".github/workflows/ci.yml", 'version: "0.12.3"', 'version: "0.12.4"')
+    version = _ci_steps(tree, "astral-sh/setup-uv")[0]["with"]["version"]
+    _edit(tree, _CI, f'version: "{version}"', f'version: "{version}-drift"')
     assert any("setup-uv versions" in p for p in check_pins.check(tree))
 
 
 def test_a_setup_node_version_that_drifts_from_the_web_image_fails(tree: Path):
-    _edit(tree, ".github/workflows/ci.yml", 'node-version: "22.23.4"', 'node-version: "22"')
+    version = _ci_steps(tree, "actions/setup-node")[0]["with"]["node-version"]
+    _edit(tree, _CI, f'node-version: "{version}"', f'node-version: "{version}-drift"')
     assert any("setup-node versions" in p for p in check_pins.check(tree))
 
 
 def test_package_managers_that_differ_fail(tree: Path):
-    _edit(tree, "apps/landing/package.json", '"npm@10.9.9"', '"npm@11.0.0"')
+    landing = "apps/landing/package.json"
+    package_manager = json.loads((tree / landing).read_text(encoding="utf-8"))["packageManager"]
+    _edit(tree, landing, f'"{package_manager}"', f'"{package_manager}-drift"')
     assert any("packageManager differs" in p for p in check_pins.check(tree))

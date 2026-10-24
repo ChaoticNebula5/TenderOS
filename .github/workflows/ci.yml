@@ -8,7 +8,7 @@ on:
 # Phase 4 item 7: every action is pinned by commit SHA, with its release in
 # a comment, at the releases Dependabot's PR #17 proposed (its CI was green
 # on exactly these SHAs, run 39821371762). Dependabot's github-actions entry
-# updates the SHA and the comment together. setup-uv installs uv 0.12.3 and
+# updates the SHA and the comment together. setup-uv installs uv 0.13.5 and
 # setup-node Node 22.23.4 (with npm 10.9.9), the versions the images use;
 # scripts/check_pins.py, run in the lint job, fails if they drift apart, and
 # if the service images below drift from docker-compose.yml's.
@@ -17,9 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.3"
+          version: "0.13.5"
       - run: uv sync
       - run: uv run ruff check .
       - name: Image, action and tool versions are pinned and agree
@@ -29,9 +29,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.3"
+          version: "0.13.5"
       - run: uv sync
       - run: uv run mypy
 
@@ -74,7 +74,7 @@ jobs:
       # real values from .env (gitignored, never committed - checked
       # directly before writing this).
       postgres:
-        image: pgvector/pgvector:0.8.2-pg16@sha256:7d400e340efb42f4d8c9c12c6427adb253f726881a9985d2a471bf0eed824dff
+        image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         env:
           POSTGRES_USER: tenderos
           POSTGRES_PASSWORD: changeme
@@ -87,14 +87,14 @@ jobs:
           --health-cmd "pg_isready -U tenderos -d tenderos_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
+        image: redis:8.10.1-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79
         ports:
           - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
       neo4j:
-        image: neo4j:5.26.28-community@sha256:362542416de6c09a971484d1893878016cc3b5cdec166e54b1c824a220ecd6b9
+        image: neo4j:5.26.31-community@sha256:c7d25c0eeebfe125718d58b72ed5d663c85d0479047733845eb2237c67ce8069
         env:
           NEO4J_AUTH: neo4j/changeme
         ports:
@@ -105,9 +105,9 @@ jobs:
           --health-start-period 30s
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.3"
+          version: "0.13.5"
       # The S3 store needs a command (backend and health path) - GitHub
       # Actions' services: block has no command: field, so it is started
       # directly here. Same image, digest and settings as docker-compose.yml's
@@ -121,7 +121,7 @@ jobs:
           docker run -d --name s3 -p 9000:9000 -v s3_data:/data \
             -e ROOT_ACCESS_KEY_ID=changeme -e ROOT_SECRET_ACCESS_KEY=changeme \
             -e VGW_PORT=":9000" \
-            versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499 \
+            versity/versitygw:v1.9.0@sha256:eb7f786fcd91e72194e48fcf1ac16302d686bf8e3a71434bdbc067a6efd3fdc7 \
             --health /health posix /data
           timeout 30 bash -c 'until curl -sf http://localhost:9000/health; do sleep 1; done'
       - run: uv sync
@@ -267,9 +267,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           docker image prune --all --force > /dev/null
           df -h /
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.3"
+          version: "0.13.5"
       # The host runs four scripts: ci_e2e_env.py and e2e_step11_timeline.py
       # use the standard library only; the two fixture generators import
       # python-docx, openpyxl and Pillow. Those (with their own dependencies)
@@ -434,9 +434,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          version: "0.12.3"
+          version: "0.13.5"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22.23.4"
