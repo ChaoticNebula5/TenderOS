@@ -433,6 +433,39 @@ async def test_a_cleanup_failure_does_not_stop_the_loop(monkeypatch):
     assert cleanup_calls[0] == outbox_dispatcher.CLEANUP_BATCH_SIZE
 
 
+async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
+    """Plan item 34, option 3: the refresh-token cleanup runs on the same
+    tick as the idempotency cleanup and the operations reaper. When it
+    raises, the loop keeps running and the other two still run each tick."""
+    from tenderos_backend.db.repositories.refresh_tokens import RefreshTokenRepository
+
+    monkeypatch.setattr(outbox_dispatcher, "POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(outbox_dispatcher, "CLEANUP_EVERY_N_TICKS", 1)
+    calls: dict[str, list[int]] = {"refresh": [], "idempotency": [], "reaper": []}
+
+    async def no_events(queues=None):
+        return None
+
+    async def broken_refresh_cleanup(self, batch_size):
+        calls["refresh"].append(batch_size)
+        raise RuntimeError("refresh token cleanup broke")
+
+    async def counted_idempotency_cleanup(self, batch_size):
+        calls["idempotency"].append(batch_size)
+        return 0
+
+    async def counted_reaper():
+        calls["reaper"].append(1)
+
+    monkeypatch.setattr(outbox_dispatcher, "_dispatch_once", no_events)
+    monkeypatch.setattr(RefreshTokenRepository, "delete_expired", broken_refresh_cleanup)
+    monkeypatch.setattr(IdempotencyRepository, "delete_expired", counted_idempotency_cleanup)
+    monkeypatch.setattr(outbox_dispatcher, "_reap_lapsed_operations", counted_reaper)
+
+    await _run_loop_until(lambda: all(len(c) >= 3 for c in calls.values()))
+    assert calls["refresh"][0] == outbox_dispatcher.CLEANUP_BATCH_SIZE
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 blocker 3 retry policy: Redis being unreachable never consumes an
 # attempt; any other enqueue error does, with growing, capped delays, and
