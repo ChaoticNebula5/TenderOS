@@ -11304,6 +11304,21 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   7.4 s gap points to cause (a), the second tab's own first data fetch.
   **Tally (runs with a timeline):** 2 of 2 point to (a), batch 2b's local
   run and CI run 2. Counted until 5 CI runs are recorded.
+- **Observed 2026-10-23, three more CI runs (all passed):** main
+  `ca9feda` (39983007910): margin +19.642 s, 4 task fetches after the
+  click, the last before it 1.423 s, its workflow event 8.448 s before
+  it; PR #38 (39989695235): +15.251 s, 1 after, 1.812 s, 2.119 s; main
+  `fbe383e` (39991181703): +24.249 s, 0 after, 1.906 s, 3.267 s. By the
+  event gap alone #38's 2.1 s is ambiguous, but in all four CI runs the
+  pre-click task fetch reached the api before either of the second tab's
+  event streams opened (by 61, 40, 4 and 85 ms; uvicorn logs a streaming
+  response when it starts), so no pushed event could have caused it.
+  **Tally: 4 of 4 CI runs point to (a)**, an inference (server logs
+  cannot name the tab). Two runs had task fetches after the click, which
+  earlier runs did not; neither follows a worker-logged workflow event
+  within a second, their source is not identifiable from the logs, and
+  neither decided the wait. On the runner the margin is +14.8 to +24.2 s
+  (about +5 s locally).
 - **Accepted limit:** a timing coupling in a spec we do not edit (blob
   `318599ac`). Anything that makes the workflow's last steps after the
   commercial gate finish sooner, or the steps between that gate and the
@@ -11835,9 +11850,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   (`scripts/e2e_step11_timeline.py`), and uploads the logs, the timeline
   and the Playwright report.
 - **Limits:**
-  - **Non-blocking** (`continue-on-error: true`) until 5 of 5 runs pass
-    with their step 11 timelines recorded; then the line is removed and
-    the job made required. Until then a red `e2e` does not block a merge.
+  - **Non-blocking** (`continue-on-error: true`) until 5 consecutive runs
+    pass with their step 11 timelines recorded; then the line is removed
+    and the job made required. Until then a red `e2e` does not block a
+    merge. **Decided 2026-10-23:** a product failure counts against the
+    run of passes (Dependabot #33's run failed on the upload-list race,
+    the entry at the end of this file), so the count of 5 consecutive
+    passes starts once that fix is merged; #33 is held until then and
+    its next run counts.
   - **Artifacts are not masked.** The logs are uploaded only if none of
     the run's generated values appears in them (`--scan`); the Playwright
     report (traces on failure) holds the run's own access tokens, signed
@@ -11888,9 +11908,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     install).
   - **Step 11** (the entry above): the runner's timing is a new variable
     in a race the spec cannot be changed to avoid.
-- **Status:** merged (#37); run 1 ran out of disk before the E2E, run 2
-  (39980533388) passed. Non-blocking until 5 runs pass with their step 11
-  timelines recorded (1 so far).
+- **Status:** merged (#37); run 1 ran out of disk before the E2E; runs
+  39980533388, 39983007910, 39989695235 and 39991181703 passed;
+  Dependabot #33's run (39983426118) failed on the upload-list race. Non-
+  blocking until 5 consecutive passes, counted from the race's fix.
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub
