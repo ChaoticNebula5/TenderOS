@@ -60,8 +60,8 @@ def test_a_compose_image_without_a_digest_fails(tree: Path):
     _edit(
         tree,
         "docker-compose.yml",
-        "image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6",
-        "image: redis:7-alpine",
+        "image: redis:8.10.1-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79",
+        "image: redis:8-alpine",
     )
     problems = check_pins.check(tree)
     assert any("docker-compose.yml: redis image is not" in p for p in problems)
@@ -72,8 +72,8 @@ def test_a_ci_service_image_that_drifts_from_compose_fails(tree: Path):
     _edit(
         tree,
         "docker-compose.yml",
-        "neo4j:5.26.28-community@sha256:3",
-        "neo4j:5.26.29-community@sha256:3",
+        "neo4j:5.26.31-community@sha256:c",
+        "neo4j:5.26.32-community@sha256:c",
     )
     problems = check_pins.check(tree)
     assert any(
@@ -83,7 +83,7 @@ def test_a_ci_service_image_that_drifts_from_compose_fails(tree: Path):
 
 def test_a_versitygw_run_line_that_drifts_from_compose_fails(tree: Path):
     _edit(
-        tree, ".github/workflows/ci.yml", "versity/versitygw:v1.8.0@", "versity/versitygw:v1.8.1@"
+        tree, ".github/workflows/ci.yml", "versity/versitygw:v1.9.0@", "versity/versitygw:v1.9.1@"
     )
     assert any("VersityGW image other than" in p for p in check_pins.check(tree))
 
@@ -104,7 +104,7 @@ def test_api_and_worker_base_images_that_differ_fail(tree: Path):
 
 
 def test_a_setup_uv_version_that_drifts_from_the_uv_image_fails(tree: Path):
-    _edit(tree, ".github/workflows/ci.yml", 'version: "0.12.3"', 'version: "0.12.4"')
+    _edit(tree, ".github/workflows/ci.yml", 'version: "0.13.5"', 'version: "0.13.6"')
     assert any("setup-uv versions" in p for p in check_pins.check(tree))
 
 
