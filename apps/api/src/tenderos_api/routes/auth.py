@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import auth_service
 
@@ -9,8 +9,8 @@ from tenderos_api.errors import (
     InvalidTokenError,
 )
 from tenderos_api.schemas.auth import (
-    AccessTokenResponse,
     LoginRequest,
+    LogoutRequest,
     MeMembership,
     MeResponse,
     RefreshRequest,
@@ -53,14 +53,27 @@ async def login(body: LoginRequest) -> TokenResponse:
     return TokenResponse(access_token=result.access_token, refresh_token=result.refresh_token)
 
 
-@router.post("/refresh", response_model=AccessTokenResponse)
-async def refresh(body: RefreshRequest) -> AccessTokenResponse:
+# Plan item 34, option 3: every refresh rotates the refresh token, so the
+# answer carries both tokens and the client stores both. The presented
+# refresh token is spent by this call.
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(body: RefreshRequest) -> TokenResponse:
     try:
-        access_token = await auth_service.refresh_access_token(body.refresh_token)
+        tokens = await auth_service.refresh(body.refresh_token)
     except auth_service.InvalidTokenError as exc:
         raise InvalidTokenError() from exc
 
-    return AccessTokenResponse(access_token=access_token)
+    return TokenResponse(access_token=tokens.access_token, refresh_token=tokens.refresh_token)
+
+
+# No access token required: it may already have expired. 204 whatever the
+# token was (unknown, invalid, already revoked), so the answer tells a
+# caller nothing. Revokes the refresh token's family only; access tokens
+# already issued stay valid until they expire.
+@router.post("/logout", status_code=204, response_class=Response)
+async def logout(body: LogoutRequest) -> Response:
+    await auth_service.logout(body.refresh_token)
+    return Response(status_code=204)
 
 
 @router.get("/me", response_model=MeResponse)

@@ -80,7 +80,11 @@ describe("refresh on a 401", () => {
     stubFetch(async (call) => {
       if (call.path === "/auth/refresh") {
         await refreshHeld;
-        return json(200, { access_token: "new-access", token_type: "bearer" });
+        return json(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { id: call.path })
@@ -103,7 +107,11 @@ describe("refresh on a 401", () => {
     const bHeld = new Promise<void>((resolve) => (releaseB = resolve));
     stubFetch(async (call) => {
       if (call.path === "/auth/refresh") {
-        return json(200, { access_token: "new-access", token_type: "bearer" });
+        return json(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
       }
       if (call.headers["Authorization"] === "Bearer new-access")
         return json(200, { id: call.path });
@@ -125,7 +133,11 @@ describe("refresh on a 401", () => {
     setSessionExpiredHandler(expired);
     stubFetch((call) =>
       call.path === "/auth/refresh"
-        ? json(200, { access_token: "new-access", token_type: "bearer" })
+        ? json(200, {
+            access_token: "new-access",
+            refresh_token: "refresh-2",
+            token_type: "bearer",
+          })
         : EXPIRED.clone(),
     );
 
@@ -143,7 +155,11 @@ describe("refresh on a 401", () => {
   it("an idempotent POST is retried with the same Idempotency-Key and the new token", async () => {
     stubFetch((call) => {
       if (call.path === "/auth/refresh") {
-        return json(200, { access_token: "new-access", token_type: "bearer" });
+        return json(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(202, { id: "run-1" })
@@ -165,7 +181,11 @@ describe("refresh on a 401", () => {
   it("an SSE ticket mint that gets a 401 goes through the same refresh", async () => {
     stubFetch((call) => {
       if (call.path === "/auth/refresh") {
-        return json(200, { access_token: "new-access", token_type: "bearer" });
+        return json(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { ticket: "t-1", expires_in_seconds: 30 })
@@ -225,7 +245,11 @@ describe("refresh on a 401", () => {
     stubFetch(async (call) => {
       if (call.path === "/auth/refresh") {
         await refreshHeld;
-        return json(200, { access_token: "new-access", token_type: "bearer" });
+        return json(200, {
+          access_token: "new-access",
+          refresh_token: "refresh-2",
+          token_type: "bearer",
+        });
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { id: call.path })

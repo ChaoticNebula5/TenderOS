@@ -280,11 +280,10 @@ async def test_signed_in_requests_still_work_during_the_outage(
 
 
 async def test_refresh_still_works_during_the_outage(client: TestClient, unreachable_redis):
-    """POST /auth/refresh needs no Redis (auth_service.refresh_access_token
-    decodes the refresh JWT and reads the user from Postgres; there is no
-    refresh-token store) and is not the login path, so it fails open: a
-    client that refreshes keeps its session through the outage. The web app
-    does not call it (KNOWN_LIMITATIONS, blocker 1, limit 1)."""
+    """POST /auth/refresh needs no Redis (auth_service.refresh verifies the
+    refresh JWT and rotates it in Postgres) and is not the login path, so it
+    fails open: a client that refreshes keeps its session through the
+    outage. The web app calls it on a 401 (plan item 34)."""
     registered = client.post(
         "/auth/register",
         json={
@@ -301,6 +300,7 @@ async def test_refresh_still_works_during_the_outage(client: TestClient, unreach
 
     assert response.status_code == 200, response.text
     assert response.json()["access_token"]
+    assert response.json()["refresh_token"] != registered.json()["refresh_token"]
 
 
 async def test_the_outage_is_logged_once_per_interval_not_per_request(

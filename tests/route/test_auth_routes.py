@@ -102,7 +102,12 @@ def test_refresh_returns_a_new_access_token(client: TestClient):
     response = client.post("/auth/refresh", json={"refresh_token": refresh_token})
 
     assert response.status_code == 200, response.text
-    assert response.json()["access_token"]
+    body = response.json()
+    assert body["access_token"]
+    assert body["token_type"] == "bearer"
+    # Plan item 34, option 3: every refresh rotates the refresh token.
+    assert body["refresh_token"]
+    assert body["refresh_token"] != refresh_token
 
 
 def test_refresh_rejects_an_access_token_used_as_a_refresh_token(client: TestClient):
@@ -140,3 +145,83 @@ def test_me_returns_the_authenticated_user_and_their_membership(
 def test_me_rejects_an_unauthenticated_request(client: TestClient):
     response = client.get("/auth/me")
     assert response.status_code in (401, 403), response.text
+
+
+def _register_tokens(client: TestClient) -> dict:
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": f"{uuid.uuid4()}@example.com",
+            "password": "correct horse battery staple 1",
+            "organization_name": "Session Route Test Org",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_a_reused_refresh_token_is_refused_and_ends_the_family(client: TestClient, monkeypatch):
+    """Through HTTP: after the grace window a spent token gets 401, and so
+    does the newest token of its family, because reuse revoked it."""
+    from datetime import timedelta
+
+    from tenderos_backend.domain.services import auth_service
+
+    monkeypatch.setattr(auth_service, "REFRESH_REUSE_GRACE", timedelta(0))
+    first = _register_tokens(client)["refresh_token"]
+    second = client.post("/auth/refresh", json={"refresh_token": first}).json()["refresh_token"]
+
+    reused = client.post("/auth/refresh", json={"refresh_token": first})
+    after = client.post("/auth/refresh", json={"refresh_token": second})
+
+    assert reused.status_code == 401, reused.text
+    assert reused.json()["error"]["code"] == "INVALID_TOKEN"
+    assert after.status_code == 401, after.text
+
+
+def test_logout_returns_204_and_the_refresh_token_then_gets_401(client: TestClient):
+    tokens = _register_tokens(client)
+
+    response = client.post("/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    refused = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert refused.status_code == 401, refused.text
+
+
+def test_logout_needs_no_access_token_and_answers_204_for_any_token(client: TestClient):
+    tokens = _register_tokens(client)
+
+    for token in ("garbage", tokens["access_token"], tokens["refresh_token"]):
+        response = client.post("/auth/logout", json={"refresh_token": token})
+        assert response.status_code == 204, (token[:8], response.text)
+    # Twice for the same token: already revoked, still 204.
+    again = client.post("/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+    assert again.status_code == 204, again.text
+
+
+def test_an_access_token_issued_before_logout_still_works_until_it_expires(client: TestClient):
+    """The accepted limit (KNOWN_LIMITATIONS, the session entry): logout
+    revokes refresh tokens, not access tokens already issued."""
+    tokens = _register_tokens(client)
+    client.post("/auth/logout", json={"refresh_token": tokens["refresh_token"]})
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+
+    assert response.status_code == 200, response.text
+
+
+def test_a_refresh_token_without_a_jti_is_refused(client: TestClient):
+    """A token shaped like every refresh token issued before migration 021."""
+    from datetime import timedelta
+
+    from tenderos_backend.core.security import _create_token
+
+    tokens = _register_tokens(client)
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    legacy = _create_token(uuid.UUID(me.json()["user"]["id"]), "refresh", timedelta(days=7))
+
+    response = client.post("/auth/refresh", json={"refresh_token": legacy})
+
+    assert response.status_code == 401, response.text

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -39,8 +40,31 @@ def create_access_token(user_id: UUID) -> str:
     return _create_token(user_id, "access", timedelta(minutes=settings.jwt_access_minutes))
 
 
-def create_refresh_token(user_id: UUID) -> str:
-    return _create_token(user_id, "refresh", timedelta(days=settings.jwt_refresh_days))
+def refresh_family_expiry() -> datetime:
+    """When a new login's refresh-token family expires. Every token rotated
+    from it keeps this expiry (plan item 34, option 3), so a session ends 7
+    days after login however active it is: an absolute limit, as before."""
+    return datetime.now(UTC) + timedelta(days=settings.jwt_refresh_days)
+
+
+def create_refresh_token(user_id: UUID, token_id: UUID, expires_at: datetime) -> str:
+    """A refresh token whose `jti` is its refresh_tokens row id. `exp` is
+    the family's expiry, passed in, not a fresh 7 days."""
+    payload = {
+        "user_id": str(user_id),
+        "token_type": "refresh",
+        "jti": str(token_id),
+        "iat": datetime.now(UTC),
+        "exp": expires_at,
+    }
+    return jwt.encode(payload, settings.jwt_signing_key, algorithm="HS256")
+
+
+def hash_refresh_token(token: str) -> str:
+    """SHA-256 (hex) of the whole token string, the only form stored. A fast
+    hash is enough: the input is a signed JWT, not a password, so there is
+    nothing short to brute-force."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def decode_token(token: str) -> dict[str, object]:

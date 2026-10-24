@@ -65,8 +65,8 @@ async def test_refresh_issues_new_access_token():
     result = await auth_service.register(
         email="refresh@example.com", password="hunter2", organization_name="Refresh Org"
     )
-    new_access_token = await auth_service.refresh_access_token(result.refresh_token)
-    payload = decode_token(new_access_token)
+    pair = await auth_service.refresh(result.refresh_token)
+    payload = decode_token(pair.access_token)
     assert payload["token_type"] == "access"
     assert payload["user_id"] == str(result.user.id)
 
@@ -76,4 +76,4 @@ async def test_refresh_rejects_an_access_token_used_as_refresh_token():
         email="misuse@example.com", password="hunter2", organization_name="Misuse Org"
     )
     with pytest.raises(auth_service.InvalidTokenError):
-        await auth_service.refresh_access_token(result.access_token)
+        await auth_service.refresh(result.access_token)

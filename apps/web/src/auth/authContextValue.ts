@@ -10,7 +10,7 @@ export interface AuthState {
   // ever becomes a real scenario.
   organizationId: string | null;
   refresh: () => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 // Own file, not AuthContext.tsx: react-refresh/only-export-components

@@ -56,9 +56,11 @@ LOGIN_WINDOW_SECONDS = 60
 # limit cannot be counted, and an unlimited login endpoint is what an
 # attacker who can disrupt Redis would want. Users already signed in keep
 # working for the life of their access token (a JWT verified without
-# Redis). POST /auth/refresh needs no Redis either and fails open, but the
-# web app never calls it, so a web user whose token expires mid-outage
-# must log in and gets the 503.
+# Redis). POST /auth/refresh needs no Redis either (it reads and rotates
+# the refresh token in Postgres) and fails open, and the web app calls it
+# on a 401 (plan item 34), so a signed-in web user keeps working through
+# an outage for the life of the refresh token's family. Only a new sign-in
+# gets the 503.
 REDIS_UNAVAILABLE_ERRORS = (RedisConnectionError, RedisTimeoutError)
 
 LOGIN_PATH = "/auth/login"

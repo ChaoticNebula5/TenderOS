@@ -49,7 +49,7 @@ function AuthHarness({ children }: { children: ReactNode }) {
           meResponse,
           organizationId: meResponse?.memberships[0]?.organization_id ?? null,
           refresh: async () => setMeResponse(MEMBER),
-          logout: () => setMeResponse(null),
+          logout: async () => setMeResponse(null),
         }}
       >
         {children}
