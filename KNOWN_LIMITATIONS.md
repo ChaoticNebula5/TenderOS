@@ -11901,3 +11901,81 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   job that ended before the click, fetches on either side of the click,
   the last workflow event before the fetch);
   the job itself on the pull request.
+
+## [deps/pip-audit-2026-10-24, RESOLVED on the branch] pip-audit: filelock and setuptools advisories published overnight; no Dependabot PR
+
+- **Found:** CI's security job failed on PR #39 (run 40059074368) with no
+  code change: pip-audit reported filelock 3.32.0 (CVE-2026-112940,
+  CVE-2026-112913, CVE-2026-112907, fixed in 4.2.1) and setuptools 83.0.0
+  (GHSA-xmj3-9gf7-h52w, fixed in 84.1.0). Main's last run (16:58 UTC on
+  2026-10-23) had passed; the advisories were published in GitHub's
+  database between 21:44 and 22:28 UTC that day, all reviewed. Reproduced
+  locally on main with `uv run pip-audit`.
+- **Why no Dependabot security PR (checked, 2026-10-24 about 03:45 UTC):**
+  not a cap and not a missing advisory. The advisories are in GitHub's
+  database, the dependency graph lists filelock 3.32.0 and setuptools
+  83.0.0 from `uv.lock`, and Dependabot alerts are enabled, but no alert
+  had been raised for either about five hours after publication (the
+  repository's only Python alert is Thursday's Mako one). A security PR
+  starts from an alert, so no uv security job ran; the last uv job ran at
+  10:27 UTC on 2026-10-23, before the advisories. Inference: GitHub's
+  alert generation had not reached this repository yet. Version updates
+  would not have helped either: both are transitive, and Dependabot's uv
+  version updates bump direct dependencies.
+- **Fixed (uv.lock only):** `uv lock --upgrade-package filelock
+  --upgrade-package setuptools`: filelock 3.32.0 -> 4.2.4, setuptools
+  83.0.0 -> 84.2.1 (latest, released 2026-10-19 and 2026-10-20; the
+  minimum fixes are 4.2.1 and 84.1.0). Nothing else moved; nothing caps
+  either below its fix (virtualenv allows `filelock<5`, torch
+  `setuptools>=77.0.3`).
+- **Who uses them:** our code imports neither. filelock reaches the
+  runtime images through huggingface_hub and torch (sentence-transformers'
+  model cache), plus dev tools (virtualenv, python-discovery, pip-audit's
+  cache); setuptools only through torch, which imports it in
+  `cpp_extension` and the dynamo backend registry, neither on our path.
+  All four app images carry the new versions (checked in each container's
+  `/app/.venv`). huggingface_hub uses only `FileLock(path, timeout=...,
+  mode=0o664)` and `SoftFileLock`; filelock 4's breaking changes are in
+  `ReadWriteLock`, `SoftReadWriteLock`, singletons and timeout types, and
+  4.0.7's owner-mode check accepts 0o664. setuptools 84's breaking changes
+  are in compiler internals and `archive_util`, used only when building.
+- **Proof (2026-10-24):** pip-audit "No known vulnerabilities found"; the
+  torch OSV check 0 advisories; backend suite 821 passed, 5 skipped (only
+  the Starlette warning; no filelock `FutureWarning`); ruff check and mypy
+  clean; the fake stack rebuilt; the E2E passed once (2.5 min), with no
+  filelock warning in any service's log.
+- **Status:** resolved on the branch. Advisory databases change daily, so
+  the security job can fail again with no code change.
+
+## [deps/pip-audit-2026-10-24, RESOLVED on the branch] npm audit: undici 7.0.0 to 7.30.0 (high) in apps/web, through jsdom
+
+- **Found:** CI's security job on PR #40 failed a second way, at `npm
+  audit --audit-level=high` in `apps/web`: undici 7.30.0, high, three
+  advisories (GHSA-4qv8-2p9j-2685, EventSource parser memory;
+  GHSA-f72v-6w45-q472, Subresource Integrity bypass; GHSA-xjj6-f33q-929c,
+  excessive content-encodings). `apps/landing`: 0 vulnerabilities.
+  Reproduced locally.
+- **What pulls it in:** only jsdom 28.1.0 (`undici ^7.21.0`), which vitest
+  loads as the test environment; `dev: true` in the lockfile.
+- **Does it reach the stack:** installed, not loaded (read in code, not
+  observed at runtime). The web image runs `npm ci`, which installs dev
+  dependencies (Vite is one), so undici is in the image's `node_modules`.
+  Nothing the dev server runs imports it: `vite.config.ts` imports
+  `vitest/config`, whose two chunks import only `node:os` and `std-env`;
+  `environment: "jsdom"` there is a string vitest reads when it runs tests;
+  no app source imports jsdom or undici, so nothing is served to the
+  browser. Item 27's static build will drop dev dependencies from what
+  runs entirely.
+- **Fixed (apps/web/package-lock.json only):** `npm audit fix`, no
+  `--force`: undici 7.30.0 -> 7.30.1 (released 2026-10-15, inside jsdom's
+  range); nothing else moved. npm 10.9.9 on this Windows host also dropped
+  the `libc` fields of six optional native packages (rolldown and
+  lightningcss bindings), which npm uses to pick glibc or musl binaries on
+  Linux; that was the host rewriting the file, not the fix, so the commit
+  keeps the original lockfile with only undici's three lines changed. `npm
+  ci` installs from it without rewriting it.
+- **Proof (2026-10-24):** `npm audit` 0 vulnerabilities in both apps;
+  vitest 360 passed; eslint and `tsc -b` clean; both production builds
+  pass; the fake stack rebuilt (the web image carries undici 7.30.1); the
+  E2E passed once (2.7 min).
+- **Status:** resolved on the branch.
