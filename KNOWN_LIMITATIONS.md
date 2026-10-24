@@ -10516,7 +10516,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      keeps its session; but the web app never calls refresh
      (`getRefreshToken()` in `apps/web/src/api/client.ts` has no caller),
      so a web user whose access token expires during the outage must log
-     in again and gets the 503. The outage is logged on the first
+     in again and gets the 503. (Superseded 2026-10-24 by plan item 34: the
+     web app calls refresh on a 401 since option 1, and since option 3
+     refresh rotates the token in Postgres, still with no Redis call; see
+     the session entry near the end of this file.) The outage is logged on the first
      failure, then at most once per 60 s per process with a count of the
      requests it covers (`OutageLog`, `rate_limit.py:72-103`). The login
      screen says "Sign-in is briefly unavailable. Try again in N
@@ -11745,7 +11748,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   handler and formatter; the filter installed after and before uvicorn's
   `dictConfig`; installing twice adds one filter; the pattern's edges).
 
-## [found 2026-10-23 in batch 2b's review; the 15-minute session RESOLVED for the web app in plan item 34; revocation open] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
+## [found 2026-10-23 in batch 2b's review; the 15-minute session RESOLVED for the web app in plan item 34; revocation RESOLVED in option 3 (2026-10-24); access tokens outlive a logout (accepted); the httpOnly cookie waits for item 27] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
 
 - **Resolved for the web app (plan item 34, option 1, decision 0057):**
   `apps/web/src/api/client.ts` now answers a 401 from any route except
@@ -11776,11 +11779,161 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   signed in again (an access token with no refresh token). The answer is
   now dropped when the stored refresh token is no longer the one sent; a
   vitest case reproduces it and failed before the fix.
-- **Still open:** everything below about refresh tokens (no revocation,
-  no rotation, `localStorage`, client-side logout). A session now lasts
-  the refresh token's 7 days instead of 15 minutes, so option 3
-  (server-side rotation and revocation) is the next step before
-  deployment, and option 2 (an `httpOnly` cookie) follows item 27.
+- **Resolved: revocation (plan item 34, option 3, 2026-10-24).** Every
+  issued refresh token has a row in `refresh_tokens` (migration 021):
+  its `jti` as the id, a SHA-256 of the token (never the token), the
+  family (one per login or register), and issued, expires, used and
+  revoked times, why it was revoked and what replaced it.
+  - **Rotation:** every `POST /auth/refresh` marks the presented token
+    used and returns a new one in the same family, so the answer now
+    carries both tokens and the web app stores both. A rotated token keeps
+    the family's expiry: a session still ends 7 days after login however
+    active it is (absolute, as before).
+  - **Reuse detection:** a used token presented again more than 30 s after
+    its use (`REFRESH_REUSE_GRACE`, a design number), or a superseded one
+    at any time, revokes every token of its family (`revoked_reason =
+    'reuse'`) and is a 401; the revocation is committed before the 401 is
+    raised, and a WARNING names the token, family and user ids, never the
+    token.
+  - **The grace window:** a used token presented again within 30 s, whose
+    successor has never been used (a lost response, or two tabs at once),
+    supersedes that successor and gets a new one. A thief replaying within
+    the window gets a token, but the real client's next refresh then
+    presents the superseded one, which is reuse: detection one rotation
+    later.
+  - **The invariant:** at most one live (unused, unrevoked) token per
+    family, enforced by a partial unique index
+    (`uq_refresh_token_live_per_family`) as well as by the code's order of
+    writes. Every refresh and logout first takes a per-family advisory lock
+    (`pg_advisory_xact_lock`), so a family's changes run one at a time. A
+    row lock on the presented token alone would not serialise two
+    different tokens of one family; with the family lock removed, two
+    spent tokens presented together deadlocked (observed, the mutation
+    check below).
+  - **Logout:** `POST /auth/logout` with the refresh token in the body, no
+    access token needed, revokes the family (`'logout'`) and answers 204
+    whatever the token was. The web app's `logout()` calls it, bounded at
+    5 s, then clears storage whether or not the call worked. Other tabs of
+    the same browser share that storage, so they find out at their next
+    request (no token, then the login screen), never through a refused
+    refresh; the live check below showed exactly that. The server-side
+    revocation is what ends a copy of the refresh token held anywhere
+    else. A family is one login in one browser; another device has its
+    own.
+  - **Legacy tokens:** a refresh token issued before migration 021 has no
+    `jti` and is refused: everyone signed in before the deploy logs in
+    once.
+  - **Cross-tab:** the web client refreshes under a Web Lock shared by every
+    tab (`navigator.locks`, name `tenderos-refresh`) and re-reads the stored
+    refresh token after taking it, so a tab that waited uses the token the
+    other tab just stored instead of sending the spent one. A rejected
+    refresh clears storage inside the lock, so a waiting tab never sends a
+    token from a session that has ended (found by the two-tab vitest case).
+    The refresh request is bounded at 10 s (`REFRESH_TIMEOUT_MS`, a design
+    number, added in review): an abort counts as a network failure, so
+    the session is kept, the lock released, and the request that needed
+    the refresh gets its original 401.
+  - **Cleanup:** the outbox dispatcher deletes expired rows in bounded
+    batches on the idempotency cleanup's tick (about once a minute),
+    failures logged and swallowed. One row per login plus one per refresh:
+    about 33 a day for an active 8-hour session at 15-minute tokens (one
+    login and 32 refreshes; estimate). The self-referencing foreign key's
+    referencing side is indexed (`ix_refresh_tokens_replaced_by_id`, found
+    in review): without it each deleted row's `ON DELETE SET NULL` scans
+    the table. Measured on the test database, 50,000 expired rows in chains
+    of 10, one batch of 500: 2,033.1 and 1,982.9 ms without the index, 8.8
+    and 9.8 ms with it (two rounds, same seed, each in a rolled-back
+    transaction).
+- **Observed (live checks, 2026-10-24, fake provider, rebuilt stack,
+  `JWT_ACCESS_MINUTES=1` for the api only through a scratch compose file,
+  not committed; the api recreated without it afterwards):**
+  - **Two tabs:** registered at 10:49:15.9 UTC, a second tab on Talent,
+    75 s later both reloaded in the same instant. Four `GET /auth/me`
+    401s (two per tab, StrictMode's second effect run in the dev
+    server), then **one** `POST /auth/refresh` (200, from tab B) and
+    tab A retried with the token B stored, sending no refresh of its own.
+    No logout. The api log has one "rotated refresh token" line; the
+    family has two rows, the first used and pointing at the second, the
+    second live, nothing revoked.
+  - **Logout:** `logout()` from the page (the app's own `client.ts`
+    imported from the dev server; no screen offers it, item 39, so
+    `AuthContext.logout()` was not exercised live): `POST /auth/logout`
+    204, both tokens cleared, the refresh token held from before the
+    logout replayed: 401. Both rows `revoked_reason = 'logout'`; one INFO
+    line ("2 token(s)"). The second tab, reloaded, landed on `/login`,
+    but because shared storage was empty, not through a refused refresh.
+  - **Reuse:** a new account; its first refresh token held outside the
+    page; the browser rotated at 10:55:13.9; the held token replayed 32 s
+    later: 401, one WARNING with the token, family and user ids. After the
+    browser's access token expired, its own next refresh (with the token
+    that had been live) got 401 and it landed on `/login`, storage
+    cleared. Both rows `revoked_reason = 'reuse'`.
+  - **A harness bug first:** the first reuse attempt kept the held token
+    in a page variable, which the reload erased, so the replay sent no
+    token and got 422; nothing was tested and the family was left as
+    after two rotations. Not counted; redone as above.
+  - **E2E:** passed once on normal settings (2.7 min); one register
+    (201), no refresh during the run; the run's family has one live row,
+    lifetime 7 days and 82 ms (`issued_at` is the database's transaction
+    start, `expires_at` the api host's time after the password hash).
+    Login's request time could not be compared with earlier runs: the
+    access log records no durations.
+- **Accepted limits of option 3:**
+  - **Access tokens outlive a logout.** Logout revokes the refresh family,
+    not the access tokens already issued: one stays valid until its own
+    `exp`, up to `JWT_ACCESS_MINUTES` = 15 (configured), wherever a copy of
+    it is held. The same holds after a reuse revocation: revoking a family
+    ends its refresh tokens, not the access tokens already issued from
+    them. Closing that
+    needs a denylist checked on every request, which brings back the Redis
+    dependency decision 0041 kept out of authenticated requests; not
+    planned. Shortening `JWT_ACCESS_MINUTES` narrows it at the cost of one
+    refresh per expiry. Asserted in a test, so the limit stays visible.
+  - **The refresh token is still in `localStorage`**, readable by any
+    script on the page. It is now single-use: a stolen copy works until
+    either the thief or the user uses the family next, and the other's
+    next refresh is reuse, which ends the family for both. The `httpOnly`
+    cookie (option 2) waits for item 27.
+  - **No Log out control on screen:** `logout()` has no caller in any
+    screen; plan item 39 adds one.
+  - **Without Web Locks** (read in code, corrected in review): two tabs
+    whose access tokens expire together both send the same token T1. The
+    API rotates it for the first (T2), then takes the grace path for the
+    second (T2 superseded, T3 issued). The first answer usually arrives
+    first and is stored, and the second is then dropped by the client's
+    changed-storage check (`requestTokens`), so storage keeps the
+    superseded T2. The next refresh is reuse: the user is logged out once,
+    and the API logs a reuse WARNING. That is the usual outcome, not a
+    rare one. Web Locks exist only in secure contexts (HTTPS; localhost
+    counts), so a deployment that serves the web app over plain HTTP
+    always takes this path; serving it over HTTPS is a deployment item.
+  - **A hung refresh holds the lock for up to 10 s:** other tabs that need
+    a refresh wait that long, then take the lock and refresh themselves.
+  - **A lost response is treated as reuse after 30 s:** a refresh the API
+    completed whose answer never reached the browser (the tab closed
+    mid-refresh, the connection dropped), retried more than 30 s later,
+    presents a spent token. The user is logged out once and the reuse
+    WARNING is a false positive. 30 s is a design number; Okta's default
+    grace period for rotated refresh tokens is the same (configurable 0
+    to 60 s), which is context for the choice, not a measurement. With the
+    fallback above, this makes the reuse WARNING a signal to look at, not
+    a page.
+  - **Clocks:** `expires_at` is the JWT's own `exp`, set on the api host;
+    cleanup compares it with the database clock (decision 0030). A skew
+    of s seconds deletes a row up to s seconds early, so a token in the
+    last seconds of its 7-day family may get a 401 instead of rotating.
+  - **`revoked_reason = 'user'` has no writer:** nothing deactivates a
+    user today. The refresh path already refuses an inactive user's
+    token; a deactivation path, when one exists, should also revoke the
+    user's families (`user_id` is indexed for it).
+  - **The family lock's key is `hashtext(family_id)`:** two families can
+    share a key and then wait on each other briefly; harmless.
+  - **The test that inserts a second live row by hand proves the database
+    enforces the index**, not that the model declares it: the test
+    database keeps objects an earlier `create_all()` made. The schema diff
+    test is what fails when the model loses the index (observed).
+  - **Each refresh now writes:** three statements and one row, under a
+    lock, where it used to read only.
 - **Behaviour before item 34 (read in code, not observed):** the web app never calls
   `POST /auth/refresh`. `getRefreshToken()`
   (`apps/web/src/api/client.ts:18`) has no caller, and the only code that
@@ -11796,9 +11949,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   reached red team and 45.1 min for the last complete live run
   (`docs/eval/b16-scorecard.md:91`, `:37`). Not observed: no fake E2E
   lasts 15 minutes (the longest recorded is 2.7 min).
-- **Refresh tokens:** plain HS256 JWTs (`user_id`, `token_type`, `iat`,
-  `exp`; `core/security.py:27-46`) with no server-side store, no `jti`,
-  no rotation and no revocation. Both tokens sit in `localStorage`
+- **Refresh tokens before option 3 (read in code):** plain HS256 JWTs
+  (`user_id`, `token_type`, `iat`, `exp`; `core/security.py:27-46` at
+  the time) with no server-side store, no `jti`, no rotation and no
+  revocation. Both tokens sit in `localStorage`
   (`client.ts:11-34`), readable by any script on the page. Logout only
   clears `localStorage` (`AuthContext.tsx:40-43`): a refresh token copied
   before logout, or stolen, keeps minting access tokens for
@@ -11809,15 +11963,18 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   `/auth/refresh` itself needs no Redis and fails open
   (`tests/route/test_rate_limit_middleware.py::test_refresh_still_works_during_the_outage`),
   and since item 34 the web app uses it, so a signed-in user now keeps
-  working through a Redis outage for the life of the refresh token.
-- **Risk:** at deployment, a leaked refresh token is a 7-day credential
-  that logout cannot end. (Being logged out in the middle of a run is
-  fixed by item 34.)
+  working through a Redis outage for the life of the refresh token's
+  family. Option 3's rotation is in Postgres only; it adds no Redis call.
+- **Risk:** before option 3, a leaked refresh token was a 7-day credential
+  that logout could not end. Now a leaked one is single-use and ends its
+  family at the next use by either side; what remains is the access-token
+  window after logout (up to 15 minutes) and the `localStorage` exposure
+  above.
 - **Status:** the 15-minute session resolved for the web app (item 34,
-  option 1). Open: server-side rotation with reuse detection (option 3,
-  next, before deployment), then the refresh token in an `httpOnly`
-  cookie once item 27 settles whether the web app and the API share an
-  origin (option 2).
+  option 1); revocation, rotation and reuse detection resolved (option 3).
+  Open: the refresh token in an `httpOnly` cookie once item 27 settles
+  whether the web app and the API share an origin (option 2), and a Log
+  out control on screen (item 39).
 - **Test:** `apps/web/src/api/sessionRefresh.test.tsx` (two parallel 401s
   make one refresh; a 401 after the refresh finished makes none; a 401
   after a successful refresh logs out once, no loop; a retried POST keeps
@@ -11833,6 +11990,48 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   on a retried 401, the network-failure split, the 429 exclusion, the
   stream reconnect, the logout race (before its fix), and the route test
   with one route's dependencies swapped.
+  **Option 3:** `tests/integration/test_refresh_tokens.py` (rotation and
+  the successor link; the family expiry kept; a new family per login;
+  reuse after the window revokes the family, committed; a used token
+  whose successor was used is reuse inside the window; the grace re-issue
+  supersedes the unused successor; a superseded token presented later is
+  reuse; logout revokes the family, also from an older token, and is
+  silent for garbage, unknown, legacy and access tokens; an access token
+  still verifies after logout; a token without `jti` is refused; a hash
+  mismatch and an inactive user are refused; two refreshes racing with one
+  token, five times; six at once plus the live token raced against the
+  first, three times, at most one live token every time; two spent tokens
+  of one family at once, no deadlock; a second live row by hand refused by
+  the index; cleanup only of expired rows, in batches of 2, across a
+  linked chain), `tests/route/test_auth_routes.py` (refresh returns a new
+  refresh token; reuse is a 401 and ends the family over HTTP; logout 204
+  with an empty body, for any token and twice, with no access token; an
+  access token works after logout; a token without `jti` 401),
+  `tests/integration/test_outbox_dispatcher.py` (a failing refresh-token
+  cleanup stops neither the loop nor the idempotency cleanup and reaper),
+  `tests/unit/test_migration_heads.py` (one Alembic head),
+  `apps/web/src/api/refreshRotation.test.tsx` (both tokens stored; no
+  `navigator.locks` falls back; two tabs make one refresh under the lock;
+  a tab that waited while the other's refresh was rejected lands on login
+  with no second refresh; a hung refresh is aborted after 10 s (fake
+  timers) and the waiting tab then refreshes, with the session kept;
+  `logout()` calls the API before clearing, and
+  clears on a network failure, an error status, a hang past the timeout
+  and with no token stored; the auth context's `logout()` calls the API
+  and ends the session). Checked to fail with their mechanism removed (16
+  backend mutations, a planted second Alembic head, and 9 web mutations;
+  each mutated file restored and compared by SHA-256; the refresh timeout
+  added in review):
+  the family lock (deadlock detected), both locks (the partial index's
+  unique violation), the index in the model (schema diff), the grace rule,
+  the supersede, the used-successor check, the commit before the 401, the
+  superseded-is-reuse rule, the kept expiry, marking used, the hash check,
+  logout's revoke, the rotated token in the response, cleanup's expiry
+  filter, the dispatcher's catch and its call, a planted second Alembic
+  head; the web lock, the re-read, storing the rotated token, clearing
+  inside the lock (failed first, before the fix), the refresh timeout (the
+  test times out without it), logout's order, its clear on failure, its
+  timeout, and the context's call.
 
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 

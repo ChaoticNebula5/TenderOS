@@ -30,7 +30,7 @@ function renderShellAt(path: string) {
           meResponse: MEMBER,
           organizationId: "org-1",
           refresh: async () => {},
-          logout: () => {},
+          logout: async () => {},
         }}
       >
         <Routes>

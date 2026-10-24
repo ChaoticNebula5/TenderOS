@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, clearTokens, getAccessToken, me, setSessionExpiredHandler } from "../api/client";
+import {
+  ApiError,
+  clearTokens,
+  getAccessToken,
+  logout as endSession,
+  me,
+  setSessionExpiredHandler,
+} from "../api/client";
 import type { MeResponse } from "../api/client";
 import { retryTransient } from "../api/retryTransient";
 import { AuthContext } from "./authContextValue";
@@ -37,8 +44,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    clearTokens();
+  // Plan item 34, option 3: revokes the session on the server, then clears
+  // the tokens even if that call failed (client.ts, logout()). No screen
+  // offers it yet; a Log out control is plan item 39.
+  const logout = useCallback(async () => {
+    await endSession();
     setMeResponse(null);
   }, []);
 

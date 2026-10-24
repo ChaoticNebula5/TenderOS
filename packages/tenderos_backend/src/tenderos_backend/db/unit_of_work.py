@@ -18,6 +18,7 @@ from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.db.repositories.proposal import ProposalRepository
 from tenderos_backend.db.repositories.readiness import ReadinessRepository
 from tenderos_backend.db.repositories.redteam import RedteamRepository
+from tenderos_backend.db.repositories.refresh_tokens import RefreshTokenRepository
 from tenderos_backend.db.repositories.requirements import RequirementRepository
 from tenderos_backend.db.repositories.talent import TalentRepository
 from tenderos_backend.db.repositories.tenders import TenderRepository
@@ -36,6 +37,7 @@ class UnitOfWork:
         self.tenders: TenderRepository
         self.outbox: OutboxRepository
         self.idempotency: IdempotencyRepository
+        self.refresh_tokens: RefreshTokenRepository
         self.operations: AsyncOperationRepository
         self.audit: AuditRepository
         self.workflow: WorkflowRepository
@@ -60,6 +62,7 @@ class UnitOfWork:
         self.tenders = TenderRepository(self.session)
         self.outbox = OutboxRepository(self.session)
         self.idempotency = IdempotencyRepository(self.session)
+        self.refresh_tokens = RefreshTokenRepository(self.session)
         self.operations = AsyncOperationRepository(self.session)
         self.audit = AuditRepository(self.session)
         self.workflow = WorkflowRepository(self.session)

@@ -490,8 +490,8 @@ decision 4 limits Newsreader to page titles and empty-state headings. The
 top bar shows the **email, not an org name**: `/auth/me` carries no
 organisation name (`MeMembership` is `organization_id` + `role`,
 `apps/web/src/api/client.ts:180-183`). There is **no account menu and no
-Log out** yet: `logout()` exists in the auth context with no UI and no
-tested path (deferred, see below). Inside a tender, the **workflow nav**
+Log out** yet: `logout()` exists in the auth context with no UI (deferred,
+see below). Inside a tender, the **workflow nav**
 (built) gives every tender screen a way back to the dashboard (the
 wordmark and "Bids") and to every other step. The processing screen's old
 dot-separated link row was removed in batch 3. The **tender bar** carries
@@ -545,8 +545,10 @@ rather than keep a status the decision made stale.
   would be a new fetch inside a restyle. Not built; needs an explicit
   decision before any batch adds it.
 - **Log out.** `logout()` (`apps/web/src/auth/authContextValue.ts:13`) has
-  no UI and no tested path. It needs wiring plus a real test before any
-  demo; not part of a restyle batch.
+  no UI. Since plan item 34 option 3 it revokes the session on the server
+  (`POST /auth/logout`) and then clears the tokens, with vitest coverage
+  (`apps/web/src/api/refreshRotation.test.tsx`). The control itself is
+  plan item 39 (a `<button>` in the top bar, before deployment).
 
 **Workflow nav - DECIDED (was TODO(human) 2, option a); built in batch 2**
 (`apps/web/src/shell/TenderLayout.tsx`): a horizontal tab strip under the

@@ -24,10 +24,6 @@ export function setTokens(accessToken: string, refreshToken: string): void {
   localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
 }
 
-export function setAccessToken(accessToken: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-}
-
 export function clearTokens(): void {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
@@ -129,20 +125,82 @@ function expireSession(): void {
 // is dropped, and the session as it now is stays untouched.
 class SessionChangedError extends Error {}
 
-async function requestAccessToken(): Promise<string> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) throw new ApiError(401, { detail: "No refresh token" });
-  const response = await fetch(`${BASE_URL}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
-  const { access_token } = await handleResponse<{ access_token: string }>(response);
+const NO_REFRESH_TOKEN = () => new ApiError(401, { detail: "No refresh token" });
+
+// Plan item 34, option 3: every refresh rotates the refresh token. The
+// answer carries a new one, both are stored, and the one sent is spent: the
+// API treats it as stolen if it comes back after a 30 s grace window.
+//
+// Bounded, because it runs under the refresh lock every tab shares: a hung
+// refresh would otherwise stall refreshing in every tab until this one
+// closed. A design number, not measured. An abort is not an ApiError, so it
+// is handled as a network failure: the session is kept, the lock released,
+// and the request that needed the refresh gets its original 401.
+const REFRESH_TIMEOUT_MS = 10_000;
+
+async function requestTokens(refreshToken: string): Promise<string> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), REFRESH_TIMEOUT_MS);
+  let tokens: { access_token: string; refresh_token: string };
+  try {
+    const response = await fetch(`${BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: abort.signal,
+    });
+    tokens = await handleResponse<{ access_token: string; refresh_token: string }>(response);
+  } catch (err) {
+    // A rejected refresh ends the session. Clearing here, while this tab
+    // still holds the refresh lock, means a tab waiting on the lock reads
+    // the cleared storage; cleared only later (send's expireSession), the
+    // waiting tab could take the lock first and send the spent token again.
+    // Found by the two-tab vitest case.
+    if (refreshWasRejected(err) && getRefreshToken() === refreshToken) clearTokens();
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   // Found in the live check: storing it unconditionally wrote an access
   // token into storage a logout had just emptied, signing the user back in.
   if (getRefreshToken() !== refreshToken) throw new SessionChangedError();
-  setAccessToken(access_token);
-  return access_token;
+  setTokens(tokens.access_token, tokens.refresh_token);
+  return tokens.access_token;
+}
+
+// Every tab of the origin shares localStorage, but the single-flight
+// promise below lives in one tab. So the refresh runs under a Web Lock
+// shared by every tab, and after taking it the tab reads the stored refresh
+// token again: if it is no longer the one this tab read before waiting,
+// another tab has already rotated, and this one uses the access token it
+// stored.
+//
+// Without the lock (navigator.locks missing), two tabs whose access tokens
+// expire together both send the same token T1. The API rotates it for the
+// first (T2), then takes the grace path for the second: T2 superseded, T3
+// issued. The first answer usually arrives first and is stored; the second
+// is then dropped by requestTokens' changed-storage check. Storage keeps
+// the superseded T2, so the next refresh is reuse: the user is logged out
+// once and the API logs a reuse WARNING. That is the usual outcome, not a
+// rare one. Web Locks exist only in secure contexts (HTTPS; localhost
+// counts), so a plain-HTTP deployment always takes this path, as do jsdom
+// and old browsers.
+const REFRESH_LOCK_NAME = "tenderos-refresh";
+
+async function refreshTokens(): Promise<string> {
+  const before = getRefreshToken();
+  if (!before) throw NO_REFRESH_TOKEN();
+  const locks = (navigator as { locks?: LockManager }).locks;
+  if (!locks) return requestTokens(before);
+  return locks.request(REFRESH_LOCK_NAME, async () => {
+    const stored = getRefreshToken();
+    if (stored === before) return requestTokens(before);
+    // Another tab refreshed (or logged in again) while this one waited.
+    // Nothing stored means it logged out: this session is over too.
+    const access = getAccessToken();
+    if (stored === null || access === null) throw NO_REFRESH_TOKEN();
+    return access;
+  });
 }
 
 // sentToken is the token the rejected request carried. If the stored token
@@ -153,7 +211,7 @@ function freshAccessToken(sentToken: string | null): Promise<string> {
   const current = getAccessToken();
   if (current !== null && current !== sentToken) return Promise.resolve(current);
   if (refreshInFlight === null) {
-    refreshInFlight = requestAccessToken().finally(() => {
+    refreshInFlight = refreshTokens().finally(() => {
       refreshInFlight = null;
     });
   }
@@ -305,6 +363,37 @@ export function login(body: LoginRequest): Promise<TokenResponse> {
 
 export function me(): Promise<MeResponse> {
   return apiFetch<MeResponse>("/auth/me");
+}
+
+// Plan item 34, option 3: logout ends the session on the server too. POST
+// /auth/logout revokes the refresh token's whole family and needs no access
+// token, which may already have expired. Other tabs of this browser share
+// localStorage, which is cleared below, so they find out at their next
+// request (no token, then the login screen), not through a refused
+// refresh; the server-side revocation is what ends a copy of the refresh
+// token held anywhere else. The tokens are cleared here whether or not that call
+// worked, and the call is bounded, so neither a failure nor a hung request
+// keeps this browser signed in; a family the API never heard about ends at
+// its own expiry. Access tokens already issued are not revoked: one stays
+// valid until it expires, up to JWT_ACCESS_MINUTES (15).
+const LOGOUT_TIMEOUT_MS = 5_000;
+
+export async function logout(): Promise<void> {
+  const refreshToken = getRefreshToken();
+  try {
+    if (refreshToken) {
+      await fetch(`${BASE_URL}/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
+      });
+    }
+  } catch {
+    // Best effort: a network failure or the timeout still logs out here.
+  } finally {
+    clearTokens();
+  }
 }
 
 // ----------------------------------------------------------------------

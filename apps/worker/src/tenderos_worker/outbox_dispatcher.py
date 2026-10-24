@@ -547,6 +547,23 @@ async def _delete_expired_idempotency_records() -> None:
         logger.exception("idempotency record cleanup failed; will retry on a later tick")
 
 
+async def _delete_expired_refresh_tokens() -> None:
+    """Plan item 34, option 3: one bounded batch of expired refresh-token
+    rows, its own short transaction, on the same cadence and batch size as
+    the idempotency cleanup. One row per login plus one per refresh is
+    about 33 a day for an active 8-hour session at 15-minute access tokens
+    (one login and 32 refreshes; an estimate). A failure is logged and
+    swallowed, and does not skip the other cleanups."""
+    try:
+        async with UnitOfWork() as uow:
+            deleted = await uow.refresh_tokens.delete_expired(batch_size=CLEANUP_BATCH_SIZE)
+            await uow.commit()
+        if deleted:
+            logger.info("deleted %d expired refresh tokens", deleted)
+    except Exception:
+        logger.exception("refresh token cleanup failed; will retry on a later tick")
+
+
 async def _reap_lapsed_operations() -> None:
     """Fail async operations whose worker lease lapsed (WORKER_LOST), then
     those still queued past operation_service.MAX_DISPATCH_WINDOW
@@ -629,6 +646,7 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
             )
         if tick % CLEANUP_EVERY_N_TICKS == 0:
             await _delete_expired_idempotency_records()
+            await _delete_expired_refresh_tokens()
             await _reap_lapsed_operations()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=delay)
