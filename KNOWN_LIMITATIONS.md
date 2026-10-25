@@ -4181,6 +4181,15 @@ edits, not code bugs.
   `hnsw.iterative_scan = relaxed_order`. Nothing in the code sets either
   setting. On the small test tables the planner does not use the index,
   so no test shows it.
+- **Not compared: extensions.** The migrations create two,
+  `pgcrypto` (`001_initial.py:22`) and `vector` (`003_documents.py:27`);
+  the test creates both on the models' side itself and compares neither
+  their presence nor their versions (pgcrypto 1.3, vector 0.8.7 on the
+  migrated test database). Searched and found none of the other kinds
+  the test also does not compare: triggers, functions, views,
+  materialized views, sequences, custom types or enums, and table or
+  column comments (none in any migration's code, and none in a migrated
+  test database's catalog, 2026-10-25).
 - **Tests:** `tests/integration/test_schema_diff.py`,
   `tests/unit/test_model_default_parity.py`.
 
