@@ -1,7 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, BigInteger, CheckConstraint, ForeignKey, Integer, func
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,6 +24,8 @@ class GraphProjectionRun(UUIDPrimaryKeyMixin, Base):
             "status IN ('running','completed','failed')",
             name="ck_graph_projection_run_status",
         ),
+        # 010_graph.py: newest projection first per tender.
+        Index("idx_graph_projection_latest", "tender_id", text("source_state_version DESC")),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

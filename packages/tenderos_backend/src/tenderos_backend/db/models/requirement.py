@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Index,
     UniqueConstraint,
     false,
     func,
@@ -29,6 +30,8 @@ class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             name="ck_requirement_category",
         ),
         UniqueConstraint("tender_id", "content_fingerprint", name="uq_requirement_fingerprint"),
+        # 004_requirements.py
+        Index("idx_requirements_tender_category", "tender_id", "category", "mandatory"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

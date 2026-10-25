@@ -113,6 +113,8 @@ class KnowledgeItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "content_fingerprint",
             name="uq_knowledge_item_fingerprint",
         ),
+        # 005_knowledge.py
+        Index("idx_knowledge_items_org_type", "organization_id", "item_type", "status"),
     )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
@@ -200,6 +202,14 @@ class Employee(Base):
             "employee_code",
             unique=True,
             postgresql_where="employee_code IS NOT NULL",
+        ),
+        # 005_knowledge.py
+        Index(
+            "idx_employees_bid_pool",
+            "organization_id",
+            "eligible_for_bid",
+            "profile_review_status",
+            "availability_status",
         ),
     )
 
@@ -334,6 +344,8 @@ class TenderKnowledgeSelection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UniqueConstraint(
             "tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"
         ),
+        # 005_knowledge.py
+        Index("idx_tender_knowledge_selected", "tender_id", "selected"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

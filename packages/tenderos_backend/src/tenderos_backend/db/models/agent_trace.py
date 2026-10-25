@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,8 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "OR (tender_id IS NULL AND organization_id IS NOT NULL)",
             name="ck_agent_trace_scope",
         ),
+        # 004_requirements.py
+        Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
     )
 
     tender_id: Mapped[uuid.UUID | None] = mapped_column(
