@@ -12,7 +12,9 @@ from sqlalchemy import (
     Index,
     Numeric,
     UniqueConstraint,
+    false,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -43,10 +45,10 @@ class KnowledgeImportBatch(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     source_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
     )
-    status: Mapped[str] = mapped_column(nullable=False, default="queued")
-    total_items: Mapped[int] = mapped_column(nullable=False, default=0)
-    completed_items: Mapped[int] = mapped_column(nullable=False, default=0)
-    failed_items: Mapped[int] = mapped_column(nullable=False, default=0)
+    status: Mapped[str] = mapped_column(nullable=False, default="queued", server_default="queued")
+    total_items: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    completed_items: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    failed_items: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -70,8 +72,10 @@ class KnowledgeImportItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         nullable=False,
     )
     source_ref: Mapped[str] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(nullable=False, default="pending")
-    extracted_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(nullable=False, default="pending", server_default="pending")
+    extracted_payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     target_knowledge_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
@@ -116,7 +120,7 @@ class KnowledgeItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     item_type: Mapped[str] = mapped_column(nullable=False)
     title: Mapped[str] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(nullable=False, default="active")
+    status: Mapped[str] = mapped_column(nullable=False, default="active", server_default="active")
     valid_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     valid_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     source_document_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -128,7 +132,9 @@ class KnowledgeItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # DB column is "metadata" per Part C's DDL - Base.metadata is reserved by
     # SQLAlchemy's declarative machinery, so the Python attribute is
     # metadata_ while the underlying column name stays "metadata".
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default="{}"
+    )
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -211,10 +217,16 @@ class Employee(Base):
     current_title: Mapped[str | None] = mapped_column(nullable=True)
     years_experience: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     professional_location: Mapped[str | None] = mapped_column(nullable=True)
-    availability_status: Mapped[str] = mapped_column(nullable=False, default="unknown")
+    availability_status: Mapped[str] = mapped_column(
+        nullable=False, default="unknown", server_default="unknown"
+    )
     availability_as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
-    eligible_for_bid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    profile_review_status: Mapped[str] = mapped_column(nullable=False, default="needs_review")
+    eligible_for_bid: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    profile_review_status: Mapped[str] = mapped_column(
+        nullable=False, default="needs_review", server_default="needs_review"
+    )
     profile_last_verified_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
@@ -224,7 +236,9 @@ class Employee(Base):
     resume_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
     )
-    parsed_profile: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    parsed_profile: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
 
 class Certification(Base):
@@ -308,7 +322,9 @@ class KnowledgeRelationship(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True
     )
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
-    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
 
 
@@ -326,7 +342,9 @@ class TenderKnowledgeSelection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     knowledge_item_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("knowledge_items.id", ondelete="CASCADE"), nullable=False
     )
-    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    selected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
     selected_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     selected_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True

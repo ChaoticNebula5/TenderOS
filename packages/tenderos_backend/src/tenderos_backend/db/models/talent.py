@@ -1,7 +1,17 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import REAL, TIMESTAMP, Boolean, ForeignKey, Numeric, UniqueConstraint, func
+from sqlalchemy import (
+    REAL,
+    TIMESTAMP,
+    Boolean,
+    ForeignKey,
+    Numeric,
+    UniqueConstraint,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,8 +31,12 @@ class RoleRequirement(UUIDPrimaryKeyMixin, Base):
     )
     role_name: Mapped[str] = mapped_column(nullable=False)
     min_experience_years: Mapped[float | None] = mapped_column(Numeric, nullable=True)
-    required_skills: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    required_certs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    required_skills: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    required_certs: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     source_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_chunks.id"), nullable=True
     )
@@ -60,9 +74,15 @@ class RoleMatch(UUIDPrimaryKeyMixin, Base):
         UUID(as_uuid=True), ForeignKey("knowledge_items.id", ondelete="CASCADE"), nullable=False
     )
     score: Mapped[float | None] = mapped_column(REAL, nullable=True)
-    strengths: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    gaps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    human_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    strengths: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    gaps: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    human_selected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

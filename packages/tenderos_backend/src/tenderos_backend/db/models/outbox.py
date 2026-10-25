@@ -24,8 +24,8 @@ class OutboxEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     aggregate_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(nullable=False, default="pending")
-    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    status: Mapped[str] = mapped_column(nullable=False, default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     available_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

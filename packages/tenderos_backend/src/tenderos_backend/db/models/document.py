@@ -75,8 +75,10 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     mime_type: Mapped[str | None] = mapped_column(nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    parse_status: Mapped[str] = mapped_column(nullable=False, default="uploaded")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    parse_status: Mapped[str] = mapped_column(
+        nullable=False, default="uploaded", server_default="uploaded"
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     supersedes_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
     )

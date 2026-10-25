@@ -8,7 +8,9 @@ from sqlalchemy import (
     ForeignKey,
     Numeric,
     UniqueConstraint,
+    false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -87,10 +89,14 @@ class PricingFinding(UUIDPrimaryKeyMixin, Base):
     item_a_ref: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     item_b_ref: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     delta: Mapped[float | None] = mapped_column(Numeric, nullable=True)
-    severity: Mapped[str] = mapped_column(nullable=False, default="major")
+    severity: Mapped[str] = mapped_column(
+        nullable=False, default="major", server_default=text("'major'")
+    )
     note: Mapped[str] = mapped_column(nullable=False)
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
-    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
