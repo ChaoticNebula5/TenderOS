@@ -1,7 +1,17 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import REAL, TIMESTAMP, Boolean, CheckConstraint, ForeignKey, UniqueConstraint, func
+from sqlalchemy import (
+    REAL,
+    TIMESTAMP,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    UniqueConstraint,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,8 +51,12 @@ class EvidenceLink(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     source_kind: Mapped[str] = mapped_column(nullable=False)
     excerpt: Mapped[str | None] = mapped_column(nullable=True)
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
-    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    validity_status: Mapped[str] = mapped_column(nullable=False, default="unknown")
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    validity_status: Mapped[str] = mapped_column(
+        nullable=False, default="unknown", server_default=text("'unknown'")
+    )
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
 
 
@@ -67,7 +81,9 @@ class ComplianceEntry(UUIDPrimaryKeyMixin, Base):
     status: Mapped[str] = mapped_column(nullable=False)
     reasoning_summary: Mapped[str | None] = mapped_column(nullable=True)
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
-    human_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    human_approved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     last_evaluated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

@@ -18,8 +18,10 @@ class Tender(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     name: Mapped[str] = mapped_column(nullable=False)
     client_name: Mapped[str | None] = mapped_column(nullable=True)
     submission_date: Mapped[date | None] = mapped_column(nullable=True)
-    status: Mapped[str] = mapped_column(nullable=False, default="created")
-    state_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(nullable=False, default="created", server_default="created")
+    state_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )

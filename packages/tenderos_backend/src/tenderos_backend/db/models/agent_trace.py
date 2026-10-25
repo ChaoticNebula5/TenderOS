@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,8 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "OR (tender_id IS NULL AND organization_id IS NOT NULL)",
             name="ck_agent_trace_scope",
         ),
+        # 004_requirements.py
+        Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
     )
 
     tender_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -38,9 +40,15 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     provider: Mapped[str | None] = mapped_column(nullable=True)
     model: Mapped[str | None] = mapped_column(nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(nullable=True)
-    input_refs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    output_refs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    tool_names: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    input_refs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    output_refs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    tool_names: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

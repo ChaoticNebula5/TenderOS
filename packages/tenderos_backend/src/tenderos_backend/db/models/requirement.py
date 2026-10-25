@@ -7,8 +7,11 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Index,
     UniqueConstraint,
+    false,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -27,6 +30,8 @@ class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             name="ck_requirement_category",
         ),
         UniqueConstraint("tender_id", "content_fingerprint", name="uq_requirement_fingerprint"),
+        # 004_requirements.py
+        Index("idx_requirements_tender_category", "tender_id", "category", "mandatory"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(
@@ -36,13 +41,19 @@ class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     requirement_text: Mapped[str] = mapped_column(nullable=False)
     normalized_text: Mapped[str] = mapped_column(nullable=False)
     category: Mapped[str] = mapped_column(nullable=False)
-    mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mandatory: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     source_chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_chunks.id"), nullable=False
     )
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
-    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    human_reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    human_reviewed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     rejected_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -69,14 +80,16 @@ class SubmissionItem(UUIDPrimaryKeyMixin, Base):
         UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(nullable=False)
-    mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mandatory: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
     source_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_chunks.id"), nullable=True
     )
     matched_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
     )
-    status: Mapped[str] = mapped_column(nullable=False, default="missing")
+    status: Mapped[str] = mapped_column(nullable=False, default="missing", server_default="missing")
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
 
 
@@ -100,6 +113,6 @@ class ClarificationItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     question: Mapped[str] = mapped_column(nullable=False)
     reason: Mapped[str | None] = mapped_column(nullable=True)
-    status: Mapped[str] = mapped_column(nullable=False, default="open")
+    status: Mapped[str] = mapped_column(nullable=False, default="open", server_default="open")
     resolution: Mapped[str | None] = mapped_column(nullable=True)
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)

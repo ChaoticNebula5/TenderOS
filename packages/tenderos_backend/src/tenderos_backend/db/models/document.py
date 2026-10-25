@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -75,8 +76,10 @@ class Document(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     mime_type: Mapped[str | None] = mapped_column(nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    parse_status: Mapped[str] = mapped_column(nullable=False, default="uploaded")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    parse_status: Mapped[str] = mapped_column(
+        nullable=False, default="uploaded", server_default="uploaded"
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     supersedes_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
     )
@@ -108,6 +111,20 @@ class DocumentChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk_index"),
         UniqueConstraint("document_id", "content_hash", name="uq_document_chunk_hash"),
+        # 003_documents.py. The full-text index is on the same expression
+        # search_chunks_lexical_for_org queries, so the planner can use it.
+        Index("idx_document_chunks_document", "document_id", "chunk_index"),
+        Index(
+            "idx_document_chunks_fts",
+            text("to_tsvector('english', normalized_text)"),
+            postgresql_using="gin",
+        ),
+        Index(
+            "idx_document_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
     )
 
     document_id: Mapped[uuid.UUID] = mapped_column(

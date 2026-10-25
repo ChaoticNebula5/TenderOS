@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -40,10 +41,14 @@ class RedteamFinding(UUIDPrimaryKeyMixin, Base):
     severity: Mapped[str] = mapped_column(nullable=False)
     finding_text: Mapped[str] = mapped_column(nullable=False)
     rebuttal: Mapped[str | None] = mapped_column(nullable=True)
-    evidence_refs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    evidence_refs: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     violated_condition: Mapped[str] = mapped_column(nullable=False)
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
-    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     resolution_note: Mapped[str | None] = mapped_column(nullable=True)
     # NULL until resolved; 'human' (resolve_finding) or 'system'
     # (auto_retire_undetected_findings) once it is. Lets _persist_draft

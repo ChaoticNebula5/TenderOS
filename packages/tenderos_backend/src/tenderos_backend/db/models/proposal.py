@@ -9,6 +9,8 @@ from sqlalchemy import (
     Integer,
     UniqueConstraint,
     func,
+    text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -31,9 +33,13 @@ class ProposalSection(UUIDPrimaryKeyMixin, Base):
         UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), nullable=False
     )
     section_name: Mapped[str] = mapped_column(nullable=False)
-    content: Mapped[str] = mapped_column(nullable=False, default="")
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    status: Mapped[str] = mapped_column(nullable=False, default="draft")
+    content: Mapped[str] = mapped_column(nullable=False, default="", server_default=text("''"))
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    status: Mapped[str] = mapped_column(
+        nullable=False, default="draft", server_default=text("'draft'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -72,7 +78,9 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
     )
     claim_text: Mapped[str] = mapped_column(nullable=False)
     claim_type: Mapped[str] = mapped_column(nullable=False)
-    is_factual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_factual: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
     # Orthogonal to is_factual, not a replacement - is_factual asks "is this
     # specific and checkable at all"; claim_kind asks "checkable against
     # what we already have (current) or what we're promising for this
@@ -83,8 +91,12 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
     # never silently exempted the way is_factual=false is. This field only
     # changes which bucket a citation-correctness measurement counts a
     # claim into - see KNOWN_LIMITATIONS.md's [B9/B16] entry.
-    claim_kind: Mapped[str] = mapped_column(nullable=False, default="current")
-    grounding_status: Mapped[str] = mapped_column(nullable=False, default="needs_review")
+    claim_kind: Mapped[str] = mapped_column(
+        nullable=False, default="current", server_default="current"
+    )
+    grounding_status: Mapped[str] = mapped_column(
+        nullable=False, default="needs_review", server_default=text("'needs_review'")
+    )
     content_fingerprint: Mapped[str] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()

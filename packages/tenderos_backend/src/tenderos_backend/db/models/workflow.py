@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import TIMESTAMP, CheckConstraint, ForeignKey, Integer, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,7 +22,9 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     langgraph_thread_id: Mapped[str] = mapped_column(nullable=False, unique=True)
     status: Mapped[str] = mapped_column(nullable=False)
-    plan_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plan_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     prompt_bundle_version: Mapped[str] = mapped_column(nullable=False)
     model_config_json: Mapped[dict] = mapped_column("model_config", JSONB, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
@@ -32,7 +34,7 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # retry_budget_remaining (that field is LangGraph-checkpointed state,
     # not a plain column, so nothing outside a running graph.ainvoke()
     # call can read or decrement it).
-    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class WorkflowTask(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -51,12 +53,20 @@ class WorkflowTask(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     task_key: Mapped[str] = mapped_column(nullable=False)
     task_type: Mapped[str] = mapped_column(nullable=False)
     assigned_agent: Mapped[str] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(nullable=False, default="pending")
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    input_refs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    output_refs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    status: Mapped[str] = mapped_column(nullable=False, default="pending", server_default="pending")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    input_refs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    output_refs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2, server_default="2"
+    )
     error_code: Mapped[str | None] = mapped_column(nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
@@ -97,7 +107,7 @@ class ApprovalGate(UUIDPrimaryKeyMixin, Base):
     )
     gate_key: Mapped[str] = mapped_column(nullable=False)
     gate_type: Mapped[str] = mapped_column(nullable=False)
-    status: Mapped[str] = mapped_column(nullable=False, default="pending")
+    status: Mapped[str] = mapped_column(nullable=False, default="pending", server_default="pending")
     request_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     decided_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
