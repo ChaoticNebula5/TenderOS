@@ -1,28 +1,29 @@
-"""Real infrastructure, not a mechanical one-liner - the B16 partial-index
-audit's own named recurrence-prevention candidate (KNOWN_LIMITATIONS.md's
-USED_IN-adjacent concurrency-gaps section): every pytest integration test
-in this project builds its schema via Base.metadata.create_all(), which
-only creates what a model's __table_args__ declares. A constraint added
-via a standalone op.create_index/op.create_check_constraint/... call in a
-migration, with no matching model declaration, is invisible to that
-schema and to every test this project has ever run against it - real,
-enforced in any environment actually migrated via Alembic, silently
-absent everywhere else. Three real instances of exactly this shape were
-found and fixed by hand this session (documents' two partial unique
-indexes, employees' one) - this test is what stops a fourth from ever
-landing unnoticed again.
+"""Every pytest integration test in this project builds its schema with
+Base.metadata.create_all(), which creates only what the models declare.
+Anything a migration creates without a matching model declaration (a
+partial unique index, a CHECK, a NOT NULL, a server default, a plain
+index) is enforced in every database Alembic migrated and absent from the
+one every test runs against. Three partial unique indexes were once found
+in exactly that state by hand (documents' two, employees' one); this test
+stops the next one from landing unnoticed (KNOWN_LIMITATIONS.md).
 
-Builds two REAL, separate scratch databases - one via create_all()
-(mirroring every other integration test's own conftest.py fixture
-exactly), one via a real `alembic upgrade head` - and diffs their
-constraint sets. Deliberately scoped to constraints and unique indexes
-(the shapes that represent a real invariant a test could fail to catch),
-not plain non-unique performance indexes - the same scope line the
-manual audit this test replaces drew explicitly, not an oversight.
+It builds two separate scratch databases, one with create_all() (the same
+steps as tests/integration/conftest.py's fixture) and one with a real
+`alembic upgrade head`, and compares, read from the Postgres catalog:
+- every constraint (primary key, unique, check, foreign key) and its
+  definition;
+- every index, plain ones included, as its full CREATE INDEX definition
+  (name, columns, uniqueness, method, partial predicate);
+- every column's type exactly as Postgres reports it, its nullability
+  (pg_attribute.attnotnull: Postgres 16 keeps NOT NULL there, not in
+  pg_constraint) and its server default as pg_get_expr renders it.
 
-Slower than a typical test (creates two real databases and runs the full
-migration history) - real infrastructure, not a fast unit check, and
-worth the cost for what it closes.
+Nothing is normalized: a VARCHAR column on one side and TEXT on the other
+is a difference, in the column's type and in any CHECK that mentions it.
+Item 40 widened the test from constraints and unique indexes to all four.
+
+Slower than a typical test: it creates two databases and runs the whole
+migration history.
 """
 
 import re
@@ -37,12 +38,36 @@ from tenderos_backend.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# Constraint types worth diffing (pg_constraint.contype): primary key,
-# unique, check, foreign key. Excludes plain non-unique indexes for the
-# same reason the manual audit this test replaces did - they don't
-# represent an invariant a test could fail to catch, only a missed
-# performance optimization.
+# pg_constraint.contype values compared: primary key, unique, check,
+# foreign key. NOT NULL is compared as a column property instead (see
+# _COLUMNS_SQL), and indexes through pg_indexes.
 _CONSTRAINT_TYPES = ("p", "u", "c", "f")
+
+_CONSTRAINTS_SQL = (
+    "SELECT rel.relname, con.contype, con.conname, pg_get_constraintdef(con.oid) "
+    "FROM pg_constraint con "
+    "JOIN pg_class rel ON rel.oid = con.conrelid "
+    "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
+    "WHERE ns.nspname = 'public' AND con.contype = ANY(:types)"
+)
+
+_INDEXES_SQL = "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
+
+# Ordinary and partitioned tables only, user columns only (attnum > 0
+# skips system columns such as ctid), dropped columns skipped.
+_COLUMNS_SQL = (
+    "SELECT rel.relname, att.attname, format_type(att.atttypid, att.atttypmod), "
+    "att.attnotnull, pg_get_expr(def.adbin, def.adrelid) "
+    "FROM pg_attribute att "
+    "JOIN pg_class rel ON rel.oid = att.attrelid "
+    "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
+    "LEFT JOIN pg_attrdef def ON def.adrelid = att.attrelid AND def.adnum = att.attnum "
+    "WHERE ns.nspname = 'public' AND rel.relkind IN ('r', 'p') "
+    "AND att.attnum > 0 AND NOT att.attisdropped"
+)
+
+# Shown in a failure message for something one build has and the other lacks.
+_ABSENT = "<absent>"
 
 
 def _sync_dsn(async_dsn: str, database: str | None = None) -> str:
@@ -78,83 +103,67 @@ def _drop_scratch_database(admin_sync_dsn: str, name: str) -> None:
         engine.dispose()
 
 
-def _normalize_definition(definition: str) -> str:
-    """Strips a real, pre-existing, whole-schema rendering difference
-    that isn't a real invariant difference: every migration file
-    declares its enum-like string columns as `Text`, while the ORM
-    models declare the same columns with a bare `str` type hint, which
-    SQLAlchemy 2's own default type map renders as `VARCHAR` - Postgres
-    then renders the identical CHECK constraint differently depending on
-    which one the column actually is (`status = ANY(ARRAY[...text])` vs
-    `(status)::text = ANY((ARRAY[...varchar])::text[])`), even though
-    unbounded VARCHAR and TEXT enforce identically in Postgres - no real
-    difference in what's actually allowed. Found live, not assumed: this
-    exact pattern showed up on all 32 CHECK constraints in the schema the
-    first time this test compared full definitions instead of just
-    names, none of them a real drift - normalizing it away here keeps
-    this test focused on genuine definitional differences (different
-    allowed values, different predicates, different columns), not this
-    cosmetic one. That whole-schema VARCHAR/TEXT mismatch is itself real
-    and pre-existing (not introduced this session) - named in
-    KNOWN_LIMITATIONS.md, not silently fixed by widening this test's own
-    scope beyond what CodeRabbit actually asked for.
-    """
-    normalized = definition.replace("::character varying", "::text")
-    normalized = re.sub(r"\(([\w.]+)\)::text\b", r"\1", normalized)
-    # (ARRAY[...])::text[] -> ARRAY[...] - the cast trails the closing
-    # paren of the array literal, not sits inside it; a first attempt at
-    # this pattern put ::text[] inside the capture group's own closing
-    # paren, which never matched the real Postgres output at all (caught
-    # by actually rerunning the test against real Postgres, not assumed
-    # correct from writing the regex).
-    normalized = re.sub(r"\((ARRAY\[[^\]]*\])\)::text\[\]", r"\1", normalized)
-    return normalized
+def _schema(sync_dsn: str) -> dict[str, dict[str, str]]:
+    """What one database's catalog says, as {aspect: {object: value}}.
 
-
-def _constraint_names(sync_dsn: str) -> set[tuple[str, str, str, str]]:
-    """(table_name, contype, constraint_name, definition) 4-tuples -
-    contype included so a same-named object that somehow differs in kind
-    between the two builds would still show up as a real difference, not
-    cancel out. The definition (CodeRabbit-caught gap: this used to be a
-    3-tuple with no definition at all) is what actually catches drift
-    under a matching name - a partial unique index or CHECK constraint
-    with the same name but different indexed columns/WHERE predicate/
-    allowed values passed this test before, silently, which defeats the
-    whole point: this session alone twice widened a CHECK constraint's
-    own allowed-values list (ck_approval_gate_type, ck_proposal_claim_
-    kind's sibling additions) - exactly the shape a name-only compare
-    cannot see.
+    The object is a readable name (`table.column`, `table index name`) so a
+    failure message can print it as is; the value is the catalog's own
+    rendering, compared as a plain string. alembic_version is Alembic's
+    bookkeeping table, created only by `alembic upgrade`, so it is left out.
     """
     engine = create_engine(sync_dsn)
     try:
         with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT rel.relname, con.contype, con.conname, "
-                    "pg_get_constraintdef(con.oid) "
-                    "FROM pg_constraint con "
-                    "JOIN pg_class rel ON rel.oid = con.conrelid "
-                    "JOIN pg_namespace ns ON ns.oid = rel.relnamespace "
-                    "WHERE ns.nspname = 'public' AND con.contype = ANY(:types)"
-                ),
-                {"types": list(_CONSTRAINT_TYPES)},
+            constraints = conn.execute(
+                text(_CONSTRAINTS_SQL), {"types": list(_CONSTRAINT_TYPES)}
             ).fetchall()
-            unique_index_rows = conn.execute(
-                text(
-                    "SELECT tablename, 'unique_index', indexname, indexdef FROM pg_indexes "
-                    "WHERE schemaname = 'public' AND indexdef LIKE 'CREATE UNIQUE INDEX%'"
-                )
-            ).fetchall()
-        names = {(r[0], r[1], r[2], _normalize_definition(r[3])) for r in rows} | {
-            (r[0], r[1], r[2], _normalize_definition(r[3])) for r in unique_index_rows
-        }
-        # alembic_version is Alembic's own bookkeeping table (tracks which
-        # migration a database is at) - it's not part of Base.metadata at
-        # all, created only by command.upgrade itself, and legitimately
-        # absent from the ORM/create_all() side. Real, expected, not a gap.
-        return {row for row in names if row[0] != "alembic_version"}
+            indexes = conn.execute(text(_INDEXES_SQL)).fetchall()
+            columns = conn.execute(text(_COLUMNS_SQL)).fetchall()
     finally:
         engine.dispose()
+
+    schema: dict[str, dict[str, str]] = {
+        "constraint": {},
+        "index": {},
+        "column type": {},
+        "column nullability": {},
+        "column default": {},
+    }
+    for table, contype, name, definition in constraints:
+        if table != "alembic_version":
+            schema["constraint"][f"{table} {name} ({contype})"] = definition
+    for table, name, definition in indexes:
+        if table != "alembic_version":
+            schema["index"][f"{table} {name}"] = definition
+    for table, column, column_type, not_null, default in columns:
+        if table == "alembic_version":
+            continue
+        key = f"{table}.{column}"
+        schema["column type"][key] = column_type
+        schema["column nullability"][key] = "NOT NULL" if not_null else "NULL"
+        schema["column default"][key] = "<none>" if default is None else default
+    return schema
+
+
+def _differences(
+    models: dict[str, dict[str, str]], migrations: dict[str, dict[str, str]]
+) -> list[str]:
+    """One line per object whose value differs between the two builds, or
+    that only one build has, with both sides shown."""
+    lines = []
+    for aspect in models:
+        theirs = migrations[aspect]
+        ours = models[aspect]
+        for key in sorted(ours.keys() | theirs.keys()):
+            model_value = ours.get(key, _ABSENT)
+            migration_value = theirs.get(key, _ABSENT)
+            if model_value != migration_value:
+                lines.append(
+                    f"{aspect} {key}:\n"
+                    f"    models:     {model_value}\n"
+                    f"    migrations: {migration_value}"
+                )
+    return lines
 
 
 def test_create_all_schema_matches_a_real_migrated_schema(monkeypatch):
@@ -192,19 +201,13 @@ def test_create_all_schema_matches_a_real_migrated_schema(monkeypatch):
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         command.upgrade(cfg, "head")
 
-        orm_constraints = _constraint_names(orm_sync_dsn)
-        migration_constraints = _constraint_names(migration_sync_dsn)
+        differences = _differences(_schema(orm_sync_dsn), _schema(migration_sync_dsn))
 
-        missing_from_orm = migration_constraints - orm_constraints
-        extra_in_orm = orm_constraints - migration_constraints
-
-        assert not missing_from_orm and not extra_in_orm, (
-            "create_all() and a real `alembic upgrade head` produced different "
-            "constraint sets - this is exactly the gap that let 3 real partial "
-            "unique indexes stay invisible to every test in this project's history "
-            "(KNOWN_LIMITATIONS.md).\n"
-            f"In migrations but missing from create_all(): {sorted(missing_from_orm)}\n"
-            f"In create_all() but not in migrations: {sorted(extra_in_orm)}"
+        assert not differences, (
+            f"create_all() (the models) and `alembic upgrade head` (the migrations) "
+            f"built different schemas, {len(differences)} difference(s). Every "
+            f"integration test runs against the models' schema, so a difference here "
+            f"is something those tests never see (KNOWN_LIMITATIONS.md).\n" + "\n".join(differences)
         )
     finally:
         _drop_scratch_database(admin_sync_dsn, orm_db)

@@ -4016,7 +4016,8 @@ edits, not code bugs.
   dedicated entry immediately below - normalized out of the comparison
   (it isn't a real invariant difference) rather than either silently
   ignored or left failing the test on ~32 constraints that were never
-  actually wrong.
+  actually wrong. (Item 40 later fixed the models and removed the
+  normalization; the test now compares definitions exactly.)
 - **`docs/eval/b16-scorecard.md` carried two real self-contradictions**,
   both from this session's own earlier edits, not new code bugs: (1) the
   reliability-table tally said "9 of 9 fixed or verified, 0 deferred" in
@@ -4033,7 +4034,7 @@ edits, not code bugs.
   "stays unmeasured regardless of how many more runs happen" clause was
   a forward-looking claim invalidated by the same later fix).
 
-## Whole-schema VARCHAR/TEXT mismatch between ORM models and migrations - real, pre-existing, found by strengthening test_schema_diff.py, not fixed this pass
+## Whole-schema VARCHAR/TEXT mismatch between ORM models and migrations - real, pre-existing, found by strengthening test_schema_diff.py - RESOLVED by item 40
 
 - **Discovered:** immediately upon running `test_schema_diff.py`'s own
   strengthened constraint-definition comparison (see the CodeRabbit
@@ -4081,15 +4082,107 @@ edits, not code bugs.
   ~32 constraints that were never really wrong, or silently narrowing
   its own scope back to names-only and losing the real detection power
   this pass just added.
-- **Status:** open, real, named - not a task in progress. If this
-  mismatch is ever worth closing for its own sake (consistency, not
-  correctness), the model-side fix (explicit `Text` on every enum-like
-  string column) is the smaller, more localized change of the two real
-  options.
-- **Test:** none dedicated - `test_schema_diff.py` itself is the
-  detection mechanism for constraint drift in general; this specific
-  gap is normalized out of what it flags, by design, per the reasoning
-  above.
+- **Status:** resolved by plan item 40 (see the next entry). The model
+  side was changed, as this entry recommended: one
+  `type_annotation_map = {str: Text}` on the models' `Base` makes every
+  bare `Mapped[str]` column TEXT, as the migrations declare it. No model
+  column names a length and no migration uses VARCHAR, so nothing meant
+  to stay VARCHAR(n) changed and no migration was needed. The
+  `_normalize_definition` allowance was removed from the test.
+- **Test:** `test_schema_diff.py` compares column types and constraint
+  definitions exactly; a VARCHAR column on either side now fails it.
+
+## [Item 40] The models now build the migrated schema; the schema diff compares indexes, types, nullability and defaults - RESOLVED
+
+- **The gap:** every integration test runs against the schema
+  `Base.metadata.create_all()` builds from the models, while every real
+  database is built by `alembic upgrade head`. `test_schema_diff.py`
+  compared only constraints and unique indexes between the two, so a
+  difference in a plain index, a column type, nullability or a server
+  default passed it unseen.
+- **What the test compares now (read from the Postgres catalog of both
+  builds, nothing normalized):** every primary key, unique, check and
+  foreign-key constraint with its definition; every index, plain ones
+  included, as its full `CREATE INDEX` definition (name, columns,
+  uniqueness, method, operator class, partial predicate); every column's
+  type as `format_type` reports it; its nullability from
+  `pg_attribute.attnotnull` (Postgres 16 keeps NOT NULL there, not in
+  `pg_constraint`); and its server default as `pg_get_expr` renders it.
+  A failure names the table, column or index and shows both sides.
+- **What the widened test found on main (observed, 2026-10-24, the same
+  245 differences on three runs), every one a model-side gap, none in a
+  migration:**
+  - 178 from VARCHAR versus TEXT: 139 column types in 40 tables, plus the
+    37 CHECK constraints and 2 partial-index predicates Postgres renders
+    differently on a VARCHAR column (previous entry).
+  - 58 server defaults the migrations declare and the models did not.
+    Each model already had a Python-side default with the same value, so
+    ORM inserts were unaffected; a raw SQL insert in a test would have
+    failed with a NOT NULL error.
+  - 9 indexes the migrations create and the models did not declare:
+    `idx_document_chunks_embedding_hnsw` (pgvector HNSW),
+    `idx_document_chunks_fts` (GIN full text), and seven plain btree
+    indexes (`idx_agent_traces_tender_time`,
+    `idx_document_chunks_document`, `idx_employees_bid_pool`,
+    `idx_graph_projection_latest`, `idx_knowledge_items_org_type`,
+    `idx_requirements_tender_category`,
+    `idx_tender_knowledge_selected`). The tests never ran with the
+    production vector and full-text indexes.
+  - No nullability difference and nothing present only in the models.
+- **Fixed, model side only, no migration:** the Base's type map (TEXT);
+  the 58 server defaults, each copied from its migration's expression,
+  with the Python default kept so the ORM still sends the value instead
+  of reading it back after every insert; the 9 indexes, with the same
+  columns, order, method and operator class as their migrations.
+- **The two defaults per column:** each of those 58 columns now states
+  its default twice. `tests/unit/test_model_default_parity.py` checks
+  that every column with a scalar Python default (str, bool, int) and a
+  server default has the same value in both: 44 pairs. The 14 JSONB
+  columns whose Python default is a callable (`dict`, `list`) are
+  outside its scope; their server defaults are still compared with the
+  migrations by the schema diff. No column needed an exception.
+- **Mutation checks (observed):** with the drift fixed and no filter,
+  each of these made the widened test fail with the change named, and
+  each file was restored and matched by SHA-256: the `replaced_by_id`
+  index removed (`index refresh_tokens
+  ix_refresh_tokens_replaced_by_id`, models `<absent>`); a type
+  (`tenders.state_version` integer against bigint, which also changes
+  how its default renders, so two lines); a nullability
+  (`users.is_active` NULL against NOT NULL); a server default
+  (`refresh_tokens.issued_at` `<none>` against `now()`). The parity test
+  failed on a changed str, bool and int Python default, one line each.
+- **A second tool agrees:** `alembic check` against a freshly migrated
+  test database reports "No new upgrade operations detected." Against
+  main's models it reported 139 type changes and 9 missing indexes, so
+  it sees two of the three kinds independently; it does not compare
+  server defaults, since `env.py` does not set `compare_server_default`.
+- **Found on the way, local only:** the local `tenderos_test` database
+  had been built by an earlier Alembic round trip (it held
+  `alembic_version` at `021_refresh_tokens`). `create_all()` skips
+  tables that already exist, so local suite runs had been running
+  against the migrated schema, not the models' one; CI's database is
+  fresh, so CI was not affected. For this item each suite run started
+  from an emptied test database, and the catalog was checked after each
+  run to confirm which schema it had. Same family as the "local
+  dev/test environment state" standing pattern above.
+- **Suite time (observed, each on a test database built by
+  `create_all()`):** main 849 passed, 5 skipped, 268.0 s; the final
+  tree 851 passed, 5 skipped, 271.6 s (the two new tests are the parity
+  test's). One run each, so the 3.6 s difference is within run-to-run
+  noise; the test database now maintains the HNSW and GIN indexes on
+  every chunk insert without a visible cost at this data size.
+- **Still open, recorded as plan item 41:** with the HNSW index in
+  place, the organization-filtered nearest-neighbour query
+  (`DocumentRepository.search_chunks_vector_for_org`) can return fewer
+  rows than its LIMIT, because pgvector applies the filter after the
+  index scan. Observed on a scratch database (10,000 chunks in one
+  organization, 100 in another): 1 row of 20 with pgvector's defaults
+  (`hnsw.ef_search` 40, `hnsw.iterative_scan` off), 20 of 20 with
+  `hnsw.iterative_scan = relaxed_order`. Nothing in the code sets either
+  setting. On the small test tables the planner does not use the index,
+  so no test shows it.
+- **Tests:** `tests/integration/test_schema_diff.py`,
+  `tests/unit/test_model_default_parity.py`.
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 
