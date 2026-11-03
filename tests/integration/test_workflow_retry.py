@@ -16,6 +16,7 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_worker import outbox_dispatcher
 from tenderos_worker.jobs.workflow import _RETRY_BUDGET_CEILING, _handle_graph_failure
 from tenderos_worker.settings import settings
 
@@ -79,6 +80,25 @@ async def test_a_retryable_failure_schedules_a_real_rq_job_and_bumps_retry_count
     async with UnitOfWork() as uow:
         run = await uow.workflow.get_run(run_id)
     assert run.retry_count == 1
+
+
+async def test_the_scheduled_retry_gets_the_workflow_jobs_timeout_not_rqs_default():
+    """Phase 4 plan item 44: the retry resumes the graph like any workflow
+    job, so it gets the same 1800 s the dispatcher gives the others. It was
+    enqueued with no job_timeout, so RQ gave it its 180 s default."""
+    org_id, tender_id = await _make_org_and_tender("RetryTimeout")
+    run_id, _task_id = await _make_run_with_failed_task(tender_id)
+
+    assert await _handle_graph_failure(run_id, RateLimitedError("429", retry_after_seconds=1.0))
+
+    [job_id] = _scheduled_retry_job_ids(run_id)
+    connection = Redis.from_url(settings.redis_url)
+    try:
+        job = Queue("workflow", connection=connection).fetch_job(job_id)
+    finally:
+        connection.close()
+    assert job.timeout == 1800
+    assert job.timeout == outbox_dispatcher._QUEUE_TIMEOUTS_SECONDS["workflow"]
 
 
 async def test_a_terminal_failure_schedules_nothing_and_leaves_retry_count_unchanged():

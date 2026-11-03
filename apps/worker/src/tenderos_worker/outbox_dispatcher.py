@@ -4,7 +4,7 @@ import logging
 import random
 import signal
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
@@ -15,6 +15,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from redis.retry import Retry
 from rq import Queue
 from rq.exceptions import DuplicateJobError
+from rq.job import Job
 from sqlalchemy import text
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
@@ -44,7 +45,11 @@ from tenderos_worker.jobs.operations import run_operation_job
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
-from tenderos_worker.jobs.workflow import resume_workflow_job, run_workflow_job
+from tenderos_worker.jobs.workflow import (
+    WORKFLOW_JOB_TIMEOUT_SECONDS,
+    resume_workflow_job,
+    run_workflow_job,
+)
 from tenderos_worker.settings import settings
 from tenderos_worker.worker import OPERATIONS_QUEUE
 
@@ -99,7 +104,7 @@ DEFAULT_QUEUE_NAME = "maintenance"
 # large document is the same "real work takes real time" shape. Anything not
 # listed here keeps RQ's default.
 _QUEUE_TIMEOUTS_SECONDS: dict[str, int] = {
-    "workflow": 1800,
+    "workflow": WORKFLOW_JOB_TIMEOUT_SECONDS,
     "ingestion": 600,
 }
 
@@ -305,7 +310,54 @@ def _operation_requested_dispatch(
     # (worker.OPERATIONS_QUEUE). Its job timeout comes from the operation's
     # kind (_job_timeout_for).
     operation_id = event.payload["operation_id"]
-    return OPERATIONS_QUEUE, run_operation_job, (operation_id,), f"op_{operation_id}"
+    return OPERATIONS_QUEUE, run_operation_job, (operation_id,), operation_job_id(operation_id)
+
+
+def operation_job_id(operation_id: uuid.UUID | str) -> str:
+    """The RQ job id of an operation's job: one per operation, so RQ's
+    unique=True refuses a second enqueue, and the reaper can look it up."""
+    return f"op_{operation_id}"
+
+
+def operation_job_may_run(connection: Redis) -> Callable[[uuid.UUID], Awaitable[bool]]:
+    """Phase 4 plan item 44: whether an operation's RQ job may still run, for
+    the lost-operation reaper.
+
+    No, when RQ has filed it as failed or canceled: operations are enqueued
+    without RQ's Retry (job_id, job_timeout and unique only), so a failed job
+    has no retries left and RQ never runs it again (with retries left RQ
+    requeues or schedules it, never files it as failed: rq/worker/base.py,
+    handle_job_failure; rq/job.py, retry). Checked first, because a failed
+    job's hash stays for a year. Also no, when RQ no longer knows it at all.
+
+    Yes, when its job hash exists or its id is in the operations queue or the
+    started, scheduled, deferred or finished registry. A job between being
+    popped from the queue and entering the started registry still has its
+    hash, so a job about to run is never taken for lost. Any Redis error
+    propagates: the reaper then fails nothing as lost on that tick."""
+    queue = Queue(OPERATIONS_QUEUE, connection=connection)
+    will_never_run = (queue.failed_job_registry, queue.canceled_job_registry)
+    may_still_run = (
+        queue.started_job_registry,
+        queue.scheduled_job_registry,
+        queue.deferred_job_registry,
+        queue.finished_job_registry,
+    )
+
+    def may_run(operation_id: uuid.UUID) -> bool:
+        job_id = operation_job_id(operation_id)
+        if any(job_id in registry for registry in will_never_run):
+            return False
+        if Job.exists(job_id, connection=connection):
+            return True
+        if connection.lpos(queue.key, job_id) is not None:
+            return True
+        return any(job_id in registry for registry in may_still_run)
+
+    async def may_run_off_the_loop(operation_id: uuid.UUID) -> bool:
+        return await asyncio.to_thread(may_run, operation_id)
+
+    return may_run_off_the_loop
 
 
 def _job_timeout_for(event: OutboxEvent, queue_name: str) -> int | None:
@@ -564,13 +616,15 @@ async def _delete_expired_refresh_tokens() -> None:
         logger.exception("refresh token cleanup failed; will retry on a later tick")
 
 
-async def _reap_lapsed_operations() -> None:
+async def _reap_lapsed_operations(connection: Redis) -> None:
     """Fail async operations whose worker lease lapsed (WORKER_LOST), then
-    those still queued past operation_service.MAX_DISPATCH_WINDOW
-    (DISPATCH_FAILED), one bounded batch of each per call, each in its own
-    transaction. Never re-runs them: that would repeat paid LLM calls; the
-    user starts the work again. A failure in either is logged and
-    swallowed, like the idempotency cleanup, and does not skip the other."""
+    queued ones whose RQ job is lost, then queued ones past
+    operation_service.MAX_QUEUED_AGE (both DISPATCH_FAILED), one bounded
+    batch of each per call, each in its own transaction. Never re-runs
+    them: that would repeat paid LLM calls; the user starts the work again.
+    A failure in any is logged and swallowed, like the idempotency cleanup,
+    and does not skip the others: a Redis outage stops only the lost check,
+    never the cap."""
     try:
         reaped = await operation_service.reap_lapsed_operations(batch_size=REAPER_BATCH_SIZE)
         if reaped:
@@ -582,11 +636,24 @@ async def _reap_lapsed_operations() -> None:
     except Exception:
         logger.exception("async operation reaper failed; will retry on a later tick")
     try:
-        stale = await operation_service.reap_stale_queued_operations(batch_size=REAPER_BATCH_SIZE)
+        lost = await operation_service.reap_lost_queued_operations(
+            REAPER_BATCH_SIZE, operation_job_may_run(connection)
+        )
+        if lost:
+            logger.warning(
+                "failed %d queued async operation(s) whose RQ job is gone, failed or canceled: %s",
+                len(lost),
+                ", ".join(str(r) for r in lost),
+            )
+    except Exception:
+        logger.exception("lost-operation reaper failed; will retry on a later tick")
+    try:
+        stale = await operation_service.reap_queued_past_cap(batch_size=REAPER_BATCH_SIZE)
         if stale:
             logger.warning(
-                "failed %d async operation(s) still queued past the dispatch window: %s",
+                "failed %d async operation(s) still queued past the %s cap: %s",
                 len(stale),
+                operation_service.MAX_QUEUED_AGE,
                 ", ".join(str(s) for s in stale),
             )
     except Exception:
@@ -647,7 +714,7 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
         if tick % CLEANUP_EVERY_N_TICKS == 0:
             await _delete_expired_idempotency_records()
             await _delete_expired_refresh_tokens()
-            await _reap_lapsed_operations()
+            await _reap_lapsed_operations(connection)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=delay)
     logger.info("outbox dispatcher stopping after tick %d", tick)

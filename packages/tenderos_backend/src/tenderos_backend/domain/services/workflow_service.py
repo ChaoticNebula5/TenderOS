@@ -6,6 +6,7 @@ from tenderos_backend.core.enums import WorkflowStatus, coarse_status_for
 from tenderos_backend.core.prompts import bundle_version
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.workflow import WorkflowRun, WorkflowTask
+from tenderos_backend.db.repositories.workflow import RunNoLongerActiveError
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_WORKFLOW_RUN,
@@ -15,6 +16,16 @@ from tenderos_backend.domain.events.outbox_events import (
 )
 
 _CANCELLABLE_STATUSES = frozenset({"queued", "running", "waiting_for_human"})
+
+
+_ONE_ACTIVE_RUN_INDEX = "uq_workflow_runs_one_active_per_tender"
+
+
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """The constraint the database reported, from the driver's own error.
+    SQLAlchemy's asyncpg adapter keeps asyncpg's exception as the DBAPI
+    error's __cause__, and asyncpg puts the name on it; None when absent."""
+    return getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
 
 
 class WorkflowRunActiveError(Exception):
@@ -54,14 +65,18 @@ async def create_workflow_run(
                 prompt_bundle_version=bundle_version(),
                 model_config={},
             )
-        except IntegrityError:
+        except IntegrityError as exc:
             # The index refused a second active run (two tabs, or two clicks
             # with their own Idempotency-Keys). No lookup first: the index is
             # the one check, so two concurrent calls cannot both pass it.
-            # The loser's insert waits for the winner's commit, so the
-            # winner is visible to a fresh read. If none is active any more
-            # (it finished in between), or the violation was something
-            # else, the original error stands.
+            # Any other violation is re-raised as it is (plan item 44): with
+            # an active run on the tender, the re-read below would otherwise
+            # report it as that run. The loser's insert waits for the
+            # winner's commit, so the winner is visible to a fresh read; if
+            # none is active any more (it finished in between), the original
+            # error stands.
+            if _violated_constraint(exc) != _ONE_ACTIVE_RUN_INDEX:
+                raise
             await uow.rollback()
             async with UnitOfWork() as reread_uow:
                 active = await reread_uow.workflow.get_active_run_for_tender(tender_id)
@@ -151,10 +166,18 @@ async def sync_run_status(run_id: uuid.UUID, status: WorkflowStatus) -> None:
     (core.enums.coarse_status_for) and writes it - the one place "workflow status
     synchronization" (its own B3 Build-list item) actually happens, so nodes don't
     each re-implement the same open-UoW-and-write dance.
+
+    Plan item 44: a run already completed, failed or cancelled keeps its
+    status (WorkflowRepository.update_run_status refuses in its UPDATE), and
+    RunNoLongerActiveError stops the calling node; the workflow jobs catch
+    it and return quietly. Before, a node still running in a cancelled run's
+    job could write a non-terminal status over "cancelled" and revive it.
     """
     async with UnitOfWork() as uow:
-        await uow.workflow.update_run_status(run_id, coarse_status_for(status))
+        written = await uow.workflow.update_run_status(run_id, coarse_status_for(status))
         await uow.commit()
+    if not written:
+        raise RunNoLongerActiveError(run_id, f"status {status!r}")
 
 
 async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:
@@ -222,7 +245,14 @@ async def cancel_workflow_run(
         if run is None:
             return None
         if run.status in _CANCELLABLE_STATUSES:
-            await uow.workflow.update_run_status(run_id, "cancelled")
+            if not await uow.workflow.update_run_status(run_id, "cancelled"):
+                # It finished between the read and the write: nothing to
+                # cancel (an idempotent no-op, as for a finished run).
+                await uow.rollback()
+                return await get_workflow_run(run_id)
+            # In the same transaction (plan item 44): a gate left pending on
+            # a cancelled run could still be decided.
+            await uow.gates.close_pending_for_run(run_id)
             await uow.audit.create(
                 organization_id=organization_id,
                 actor_type="user",

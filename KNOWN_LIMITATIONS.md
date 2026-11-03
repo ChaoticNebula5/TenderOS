@@ -3402,6 +3402,56 @@ Each entry:
   `test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_active`).
   With no newer run, the write still revives the cancelled run, as
   before. The fix named above is unchanged.
+  **Superseded by plan item 44 (2026-11-03):** the status write now
+  refuses to leave a terminal status before the index is reached, with or
+  without a newer run (the test is now
+  `test_a_write_reviving_a_cancelled_run_is_refused_while_a_newer_run_is_active`).
+  **What the old run's job then does (read in code, plan item 44,
+  2026-11-03; not reproduced end to end):** the node's `IntegrityError`
+  escapes `graph.ainvoke`; the job logs "workflow run ... failed" with a
+  traceback at ERROR, sees the run cancelled, so skips the retry and the
+  "failed" write, and re-raises, so RQ logs a second traceback and puts
+  the job in its failed registry. A gate node commits its gate row
+  before its status write, so a pending gate is left on the cancelled run
+  (deciding it is a no-op: the resume's claim needs `waiting_for_human`).
+  The cancelled run stays cancelled. Worse than failing quietly; the
+  compare-and-set fix (a status write that never leaves `completed`,
+  `failed` or `cancelled`, and a quiet stop in the job when it matches
+  nothing) was proposed for the user's decision, not built.
+  **RESOLVED by plan item 44 (2026-11-03, approved by the user):**
+  - every status write is one conditional UPDATE that refuses to leave
+    `completed`, `failed` or `cancelled`
+    (`WorkflowRepository.update_run_status`); a refused write raises
+    `RunNoLongerActiveError`, and the three workflow jobs catch it, log one
+    INFO line naming the run and what was refused, and return normally (no
+    traceback, no RQ failure, no retry, no "failed" write);
+  - cancelling closes the run's pending gates in the same transaction, as
+    `rejected` with `decision_payload` `{"decision": null, "closed_by":
+    "run_cancelled"}`: every existing check reads a non-pending gate as
+    decided, and a later decision gets `GateAlreadyDecidedError`, never a
+    replay;
+  - opening a gate checks, in the gate's own transaction with the run's row
+    share-locked, that the run is still active; a cancel then either
+    committed first (nothing is opened) or waits and closes the new gate.
+  Observed (`tests/integration/test_cancellation_race.py`, the real
+  `run_workflow` with a one-step graph that cancels mid-flight): a write of
+  "drafting" leaves the run cancelled with no newer run (the old revival)
+  and with a newer run active, each with one INFO line, no WARNING or
+  traceback and no retry scheduled; the real requirement gate node, the
+  cancel landing just after its entry check, opens no gate; cancelling
+  closes a pending gate and a later approve or reject is refused. Each
+  fails under its mutation (no terminal guard: revived, an ERROR logged;
+  no quiet stop: an ERROR traceback; no gate check; no closing).
+  Found by the suite on the way: the first version of the conditional
+  UPDATE expired the in-session run's columns set by SQL, so the cancel
+  route's answer failed with `DetachedInstanceError` (a 500); the run is
+  now reloaded in its session after a write. Two existing tests changed:
+  `test_resume_workflow_does_nothing_once_cancelled_mid_flight` now
+  expects the approval after the cancel to be refused (the gate is
+  closed), and still delivers the resume; the final gate's rerun test
+  puts the run back to `running` between its two direct calls, the state
+  a real replay starts from, since its patched interrupt completes the
+  run on the first call.
 - **CI, schema verification, worker image, and Compose readiness** (major
   findings #23/#24/#25 - CI provisions no service stack but runs all
   tests; integration tests build schema via `Base.metadata.create_all`,
@@ -11216,6 +11266,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      past the window. The fix at scale is more `operations_worker`
      replicas (each RQ worker runs one job at a time; the claim already
      makes concurrent workers safe).
+     **RESOLVED by plan item 44 (2026-11-03):** waiting no longer counts.
+     An operation is failed as lost only when its request was dispatched
+     and RQ no longer knows its job (not in the queue or any registry),
+     and otherwise only past a 6-hour absolute cap
+     (`operation_service.MAX_QUEUED_AGE`); see the item 44 entry.
   2. **RESOLVED 2026-10-16 (Stage 2): tracking did not survive a page
      reload.** The screen kept the operation id in component state only, so
      after a reload the button was enabled while the run continued. Each
@@ -12383,9 +12438,81 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   second run.
 - **How the index meets the cancellation race:** see the note added to
   the "Cancellation-during-execution race, remaining half" bullet.
+- **Narrowed by plan item 44 (2026-11-03):** the unique violation is
+  mapped to `WorkflowRunActiveError` only when the driver names
+  `uq_workflow_runs_one_active_per_tender`; any other `IntegrityError` is
+  re-raised as it is. Before, a different violation on a tender that had
+  an active run was reported as that run (observed:
+  `test_a_different_violation_is_not_reported_as_an_active_run` failed
+  with `WorkflowRunActiveError` before the check).
 - **Tests:** `tests/integration/test_one_active_run_per_tender.py`,
   `tests/route/test_workflow_routes.py`,
   `apps/web/src/routes/UploadAndProcessingStatus.test.tsx`.
+
+## [Item 44, 2026-11-03] One worker per queue; operations are failed only when lost or past a cap - RESOLVED
+
+- **The gap:** one RQ worker served ingestion, workflow, projection,
+  evaluation and maintenance, in that order, one job at a time. Every
+  tender's workflow jobs waited behind each other, an upload's parse
+  waited for a running workflow job (up to 1800 s), and the maintenance
+  consumer waited behind both. Separately, the queued-operation reaper
+  failed any operation queued 60 minutes, even one only waiting its turn
+  behind other tenants' operations.
+- **Topology now (observed in the fake stack, RQ's worker registry):**
+  `workflow_worker` (workflow), `ingestion_worker` (ingestion),
+  `maintenance_worker` (maintenance, projection, evaluation),
+  `operations_worker` (operations), each one job at a time, as before;
+  nothing new runs concurrently, so the single worker's accidental
+  same-tender serialization of workflow jobs is kept (item 44's audit is
+  still a prerequisite to replicas). The stack scripts now pass
+  `--remove-orphans`: the old `worker` container would otherwise keep
+  running and consume every queue (observed: it was still up after the
+  rename until removed by hand).
+- **Memory (observed, fake-provider E2E, `docker stats` every 2 s, 188
+  samples):** idle: workflow_worker 84.0 MiB, ingestion_worker 83.7,
+  maintenance_worker 84.6, operations_worker 462.8 (it preloads the
+  operations module), outbox_dispatcher 498.5, api 504.2; busy peak:
+  569.1, 504.7, 87.8, 466.1, 499.2 and 551.9 MiB. The one worker it
+  replaced measured about 160 MiB idle and 606 to 613 MiB peak. A 2 s
+  sample can miss a shorter peak.
+- **The queued reaper:** an operation is failed as `DISPATCH_FAILED` when
+  its `OperationRequested` event was dispatched and RQ no longer knows its
+  job (no job hash, not in the operations queue, not in any registry:
+  started, scheduled, deferred, finished, failed, canceled), or when it
+  is still queued past `MAX_QUEUED_AGE`, 6 hours, whatever RQ says. A
+  pending event (no job yet; the outbox may be retrying) is never taken
+  for lost. A Redis error stops only the lost check for that tick, never
+  the cap. The cap's reasoning is in `operation_service.py`: 12
+  maximum-length operations waiting ahead, 16 times the outbox's longest
+  retry span, a several-hour outage; and it bounds to 6 hours the one case
+  only it catches, a job RQ holds that will never run (one that failed
+  before claiming stays in the failed registry for a year).
+- **The retry's timeout:** the scheduled `retry_workflow_run_job` got RQ's
+  180 s default (observed: `job.timeout == 180`); it now gets the same
+  1800 s as every workflow job, from one constant.
+- **The step 11 timeline:** "last workflow event" now uses the outbox
+  rows' creation times, exported after the run
+  (`scripts/e2e_outbox_export.sql`, CI's `outbox.tsv`), not the worker's
+  dispatch lines, which waited behind the resume job. Observed locally on
+  the new topology: the last row 0.174 s before the refetch.
+- **Tests:** `tests/integration/test_async_operations.py` (waiting behind
+  another job: not failed; job gone: failed; past the cap: failed; each
+  failing under its mutation, and the old 60-minute rule failing the
+  first), `tests/integration/test_workflow_retry.py`,
+  `tests/unit/test_e2e_step11_timeline.py`.
+- **Changed in review (2026-11-03, `6e30050`): a failed or canceled job
+  is lost too.** RQ keeps a failed job's hash for a year, so the check
+  above counted it alive and its operation waited for the 6-hour cap,
+  blocking that tender from requesting that kind again. Read in code
+  first: operations are enqueued without RQ's Retry (`job_id`,
+  `job_timeout`, `unique` only), and RQ files a job as failed only with no
+  retries left (with retries it requeues or schedules it:
+  `rq/worker/base.py` `handle_job_failure`, `rq/job.py` `retry`), so a job
+  in the failed or canceled registry never runs again. Both are now
+  checked first and mean lost; the cap stays as the last resort.
+  Observed: a job filed as failed, and a canceled one, fail their
+  operation on the next pass; a started job (RQ's own execution record)
+  and a scheduled one are left alone; each case fails under its mutation.
 
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 

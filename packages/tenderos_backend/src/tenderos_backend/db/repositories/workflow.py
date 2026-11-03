@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.workflow import (
     ACTIVE_RUN_STATUSES,
+    TERMINAL_RUN_STATUSES,
     WorkflowRun,
     WorkflowTask,
     WorkflowTaskDependency,
@@ -28,6 +29,17 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_task_failed_idempotency_key,
     workflow_task_failed_payload,
 )
+
+
+class RunNoLongerActiveError(Exception):
+    """A write for a run that is completed, failed or cancelled was refused
+    (plan item 44): a status write, or opening a gate. The workflow jobs
+    catch it, log one INFO line and return normally."""
+
+    def __init__(self, run_id: uuid.UUID, attempted: str) -> None:
+        super().__init__(f"workflow run {run_id} is no longer active; refused {attempted}")
+        self.run_id = run_id
+        self.attempted = attempted
 
 
 class WorkflowRepository:
@@ -109,16 +121,35 @@ class WorkflowRepository:
         )
         return result.scalar_one_or_none()
 
-    async def update_run_status(self, run_id: uuid.UUID, status: str) -> None:
-        run = await self._session.get(WorkflowRun, run_id)
-        if run is None:
-            raise ValueError(f"WorkflowRun {run_id} not found")
-        run.status = status
-        if status == "running" and run.started_at is None:
-            run.started_at = datetime.now(UTC)
-        if status in ("completed", "failed", "cancelled"):
-            run.completed_at = datetime.now(UTC)
-        await self._session.flush()
+    async def update_run_status(self, run_id: uuid.UUID, status: str) -> bool:
+        """Write a run's status, unless it is already completed, failed or
+        cancelled: one conditional UPDATE, so a write racing a cancel can
+        never revive the run (plan item 44, KNOWN_LIMITATIONS' cancellation
+        race). Returns whether it was written; the status event is written
+        only then. Raises ValueError for a run that does not exist."""
+        values: dict = {"status": status}
+        if status == "running":
+            values["started_at"] = func.coalesce(WorkflowRun.started_at, func.now())
+        if status in TERMINAL_RUN_STATUSES:
+            values["completed_at"] = func.now()
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run_id,
+                WorkflowRun.status.not_in(TERMINAL_RUN_STATUSES),
+            )
+            .values(**values)
+            .returning(WorkflowRun.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            if await self._session.get(WorkflowRun, run_id) is None:
+                raise ValueError(f"WorkflowRun {run_id} not found")
+            return False
+        # A run already loaded in this session (sessions do not expire on
+        # commit) is reloaded, so it shows what the database now holds and
+        # can be read after the session closes.
+        await self._session.get(WorkflowRun, run_id, populate_existing=True)
         await self._outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_RUN,
             aggregate_id=run_id,
@@ -126,6 +157,18 @@ class WorkflowRepository:
             payload=workflow_run_status_changed_payload(run_id, status),
             idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
         )
+        return True
+
+    async def is_active_for_update(self, run_id: uuid.UUID) -> bool:
+        """Whether the run is active, holding a share lock on its row until
+        this transaction ends. A cancel's status UPDATE then waits for this
+        transaction, so a gate opened here is one the cancel will see and
+        close; and once a cancel has committed, this returns False."""
+        result = await self._session.execute(
+            select(WorkflowRun.status).where(WorkflowRun.id == run_id).with_for_update(read=True)
+        )
+        status = result.scalar_one_or_none()
+        return status in ACTIVE_RUN_STATUSES
 
     async def claim_queued_run(self, run_id: uuid.UUID) -> bool:
         """Phase 4 blocker 3: move a run from 'queued' to 'running' if, and

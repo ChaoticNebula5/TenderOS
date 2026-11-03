@@ -313,7 +313,7 @@ jobs:
           cache-to: type=gha,scope=e2e-api,mode=max
       - name: Disk after the api build
         run: df -h /
-      - name: Build the worker image (worker, operations_worker, outbox_dispatcher)
+      - name: Build the worker image (the four workers and outbox_dispatcher)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -353,7 +353,7 @@ jobs:
       # fresh runner has no orphaned scheduled jobs to clear.
       - name: Start the stack
         run: |
-          docker compose up -d --no-build migrate api web worker operations_worker outbox_dispatcher
+          docker compose up -d --no-build migrate api web workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher
           test "$(docker inspect -f '{{.State.ExitCode}}' tenderos-migrate-1)" = 0
           df -h /
       - name: Wait for the api and the web app
@@ -362,7 +362,7 @@ jobs:
           timeout 120 bash -c 'until curl -sf http://localhost:5173 > /dev/null; do sleep 3; done'
       - name: Every app service runs the fake provider
         run: |
-          for svc in api worker operations_worker outbox_dispatcher; do
+          for svc in api workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher; do
             provider=$(docker compose exec -T "$svc" printenv LLM_PROVIDER)
             echo "$svc: LLM_PROVIDER=$provider"
             test "$provider" = fake
@@ -388,12 +388,15 @@ jobs:
           mkdir -p e2e-logs
           docker compose ps -a > e2e-logs/ps.txt
           docker compose logs --no-color --timestamps > e2e-logs/compose.log
+          # Plan item 44: the workflow outbox rows' creation times, for the
+          # timeline's "last workflow event" (no payloads).
+          docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q' < scripts/e2e_outbox_export.sql > e2e-logs/outbox.tsv || true
       # $HOST_PYTHON, not `uv run`: inside the project, `uv run` would sync
       # the whole workspace (torch included) first.
       - name: Step 11 timeline
         if: always()
         run: |
-          "$HOST_PYTHON" scripts/e2e_step11_timeline.py e2e-logs/compose.log --json e2e-logs/step11.json | tee -a "$GITHUB_STEP_SUMMARY"
+          "$HOST_PYTHON" scripts/e2e_step11_timeline.py e2e-logs/compose.log --outbox e2e-logs/outbox.tsv --json e2e-logs/step11.json | tee -a "$GITHUB_STEP_SUMMARY"
       # Masking covers the console log, not artifact files: the logs are
       # uploaded only if none of this run's generated values appears in them.
       - name: No generated value in the saved logs

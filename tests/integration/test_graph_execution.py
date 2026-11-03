@@ -452,7 +452,11 @@ async def test_resume_workflow_does_nothing_once_cancelled_mid_flight():
     await workflow_service.cancel_workflow_run(
         run.id, registered.organization.id, registered.user.id
     )
-    await _approve(registered, gate)
+    # Plan item 44: cancelling closed the pending gate, so the approval is
+    # refused outright; a resume delivered anyway (a stale delivery) still
+    # does nothing.
+    with pytest.raises(gate_service.GateAlreadyDecidedError):
+        await _approve(registered, gate)
     await resume_workflow(str(run.id), str(gate.id))
 
     async with UnitOfWork() as uow:

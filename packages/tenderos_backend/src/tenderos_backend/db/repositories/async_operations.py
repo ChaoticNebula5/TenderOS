@@ -1,7 +1,7 @@
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +9,11 @@ from tenderos_backend.db.models.async_operation import (
     ACTIVE_PREDICATE_SQL,
     ACTIVE_STATUSES,
     AsyncOperation,
+)
+from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.domain.events.outbox_events import (
+    AGGREGATE_ASYNC_OPERATION,
+    EVENT_OPERATION_REQUESTED,
 )
 
 # Every time this repository writes or compares is the database's now(), as
@@ -172,6 +177,51 @@ class AsyncOperationRepository:
             .execution_options(synchronize_session=False)
         )
         return result.scalar_one_or_none() is not None
+
+    async def list_dispatched_queued(self, batch_size: int) -> list[uuid.UUID]:
+        """Phase 4 plan item 44: operations still queued whose
+        OperationRequested event the dispatcher has already enqueued
+        (outbox status 'dispatched'), oldest first. Each has had an RQ job;
+        the reaper asks RQ whether it still exists. One whose event is still
+        pending has no job yet (the outbox may be retrying) and is not
+        listed."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        result = await self._session.execute(
+            select(AsyncOperation.id)
+            .join(
+                OutboxEvent,
+                and_(
+                    OutboxEvent.aggregate_type == AGGREGATE_ASYNC_OPERATION,
+                    OutboxEvent.aggregate_id == AsyncOperation.id,
+                    OutboxEvent.event_type == EVENT_OPERATION_REQUESTED,
+                ),
+            )
+            .where(AsyncOperation.status == "queued", OutboxEvent.status == "dispatched")
+            .order_by(AsyncOperation.created_at)
+            .limit(batch_size)
+        )
+        return list(result.scalars().all())
+
+    async def fail_queued(self, operation_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+        """Fail these operations as DISPATCH_FAILED, each only if it is still
+        queued (one a worker claimed meanwhile is left to that worker), and
+        return the ids that changed."""
+        if not operation_ids:
+            return []
+        result = await self._session.execute(
+            update(AsyncOperation)
+            .where(AsyncOperation.id.in_(operation_ids), AsyncOperation.status == "queued")
+            .values(
+                status="failed",
+                error_code=DISPATCH_FAILED,
+                error_message=_DISPATCH_FAILED_MESSAGE,
+                finished_at=func.now(),
+            )
+            .returning(AsyncOperation.id)
+            .execution_options(synchronize_session=False)
+        )
+        return list(result.scalars().all())
 
     async def fail_stale_queued(self, window: timedelta, batch_size: int) -> list[uuid.UUID]:
         """Fail operations still queued more than `window` after they were

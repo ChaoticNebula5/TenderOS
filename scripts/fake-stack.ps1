@@ -10,12 +10,12 @@
     1. starts redis and flushes it (orphaned scheduled RQ jobs from earlier
        runs otherwise fire in one burst on the next worker start - incident
        12),
-    2. builds and force-recreates migrate, api, web, worker,
-       operations_worker and outbox_dispatcher; migrate runs alembic to head
+    2. builds and force-recreates migrate, api, web, the four workers
+       and outbox_dispatcher; migrate runs alembic to head
        and the app services start only once it has exited 0 (compose's
        service_completed_successfully), so a failed migration fails here,
     3. waits for the api health check,
-    4. prints `printenv LLM_PROVIDER` for api, worker, operations_worker and
+    4. prints `printenv LLM_PROVIDER` for api, the four workers and
        outbox_dispatcher,
        and fails unless all four say fake.
   No behaviour change to the stack itself: this only runs the commands that
@@ -39,7 +39,10 @@ try {
     & docker compose @files exec -T redis redis-cli FLUSHALL
     if ($LASTEXITCODE -ne 0) { throw "redis FLUSHALL failed" }
 
-    & docker compose @files up -d --build --force-recreate migrate api web worker operations_worker outbox_dispatcher
+    # --remove-orphans: a container of a service no longer in the compose files
+    # (the single `worker` before plan item 44) would otherwise keep running and
+    # consume every queue it was started with.
+    & docker compose @files up -d --build --force-recreate --remove-orphans migrate api web workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher
     if ($LASTEXITCODE -ne 0) { throw "compose up failed (a failed migration stops it here too: docker compose logs migrate)" }
     $migrateExit = (& docker inspect -f "{{.State.ExitCode}}" tenderos-migrate-1).Trim()
     Write-Host "migrate: exit $migrateExit"
@@ -53,7 +56,7 @@ try {
     if (-not $healthy) { throw "api never became healthy" }
 
     $bad = @()
-    foreach ($svc in @("api", "worker", "operations_worker", "outbox_dispatcher")) {
+    foreach ($svc in @("api", "workflow_worker", "ingestion_worker", "maintenance_worker", "operations_worker", "outbox_dispatcher")) {
         $provider = (& docker compose @files exec -T $svc printenv LLM_PROVIDER | Out-String).Trim()
         Write-Host "${svc}: LLM_PROVIDER=$provider"
         if ($provider -ne "fake") { $bad += $svc }
