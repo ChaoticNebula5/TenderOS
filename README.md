@@ -48,6 +48,7 @@ the backend suite - it drives a real browser against a running
 mocked one, and is not part of `make test`. Locally, start that stack with
 `scripts/fake-stack.ps1` (fake LLM provider). CI runs the same scenario in
 its `e2e` job on every push and pull request, on a fake-provider stack whose
-`.env` is generated from `.env.example` (`scripts/ci_e2e_env.py`); the job is
-non-blocking until its first five runs have passed, and each run's step 11
-timeline is in the job summary (`scripts/e2e_step11_timeline.py`).
+`.env` is generated from `.env.example` (`scripts/ci_e2e_env.py`); a failing
+`e2e` fails the run (since its first five runs on main passed), and each
+run's step 11 timeline is in the job summary
+(`scripts/e2e_step11_timeline.py`).
