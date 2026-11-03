@@ -19,6 +19,7 @@ from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_res
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
 
+from tenderos_api.client_disconnect import client_closed_response, is_client_disconnect
 from tenderos_api.config import settings
 from tenderos_api.errors import (
     APIError,
@@ -315,10 +316,15 @@ async def _catch_unhandled_exceptions(
     The traceback goes to the log; the body carries no internal detail.
     Only the method and path are logged, not the full URL: the SSE route
     carries a live token in its query string.
+
+    A client that disconnected before its body was read is not an error:
+    one INFO line and a 499 (client_disconnect.py).
     """
     try:
         return await call_next(request)
-    except Exception:
+    except Exception as exc:
+        if is_client_disconnect(exc):
+            return client_closed_response(request)
         logger.exception("unhandled error on %s %s", request.method, request.url.path)
         return error_response(InternalServerError())
 
