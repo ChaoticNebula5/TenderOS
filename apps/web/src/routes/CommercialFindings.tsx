@@ -185,7 +185,7 @@ export function CommercialFindings() {
   const openCount = findings.filter((f) => !f.resolved).length;
 
   // Heading and panel always render together, as siblings
-  // (full-flow.spec.ts:56). Above the tables while pending (DESIGN.md
+  // (full-flow.spec.ts (gatePanel())). Above the tables while pending (DESIGN.md
   // Screen patterns, "Gates"), below them otherwise. The panel holds no
   // <table>, so the findings table stays table index 1 either way.
   const gateBlock = (
@@ -213,7 +213,7 @@ export function CommercialFindings() {
       {gateFirst && gateBlock}
 
       {/* E2E contract: BOTH tables always render, documents first, even when
-          empty - full-flow.spec.ts:922 and :1058 reach the findings table by
+          empty - full-flow.spec.ts (step 8, pricing findings) and step 12, resolve findings reach the findings table by
           position, page.locator("table").nth(1). An empty state replaces
           neither table; it sits after it. */}
       <section>
@@ -256,7 +256,7 @@ export function CommercialFindings() {
         )}
       </section>
 
-      {/* :922 counts this tbody's rows one-shot, so it holds data rows only;
+      {/* step 8, pricing findings counts this tbody's rows one-shot, so it holds data rows only;
           :1059-1076 find Resolve inside it and wait for each to be REMOVED
           (count goes down by one), so a resolved row has no button at all. */}
       <section>

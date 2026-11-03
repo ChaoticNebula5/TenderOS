@@ -17,14 +17,16 @@ import "./TenderLayout.css";
 // already fetched; TenderLayout itself fetches nothing. No report, or a
 // report of null, shows no badge at all: an unknown status is left blank,
 // not guessed. It is a <span> (StatusBadge), never <strong>: the readiness
-// page's E2E asserts on its only <strong> (full-flow.spec.ts:1451).
+// page's E2E asserts on its only <strong> (full-flow.spec.ts (step 13, readiness)).
 //
 // Still NOT here (DESIGN.md Layout, "Deferred from batch 2"): tender name
 // and client - no screen fetches the tender today (getTender,
 // api/client.ts:233, has no caller), and a restyle adds no data fetching.
 //
-// Links sit directly in <nav>, no <ul>/<li>: full-flow.spec.ts:1253 counts
-// every <li> on the page and :1258 parses every `ul li` as JSON.
+// Links sit directly in <nav>, no <ul>/<li>. The bar renders before the
+// screen's own <main> (inside <PageContent /> below), so the spec's `main li` and
+// `main ul li` (step 14, knowledge selections) never reach it; keeping it
+// free of lists is still the simpler rule.
 
 const STEPS = [
   { path: "", label: "Documents" },

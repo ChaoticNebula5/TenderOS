@@ -7,7 +7,7 @@ import "./EmptyState.css";
 //
 // The heading is a <p> styled as a heading, not an <h2>/<h3>: the E2E finds
 // gate panels and blocker lists by heading text and sibling position
-// (full-flow.spec.ts:55, :1454), and an extra heading inside a screen's
+// (full-flow.spec.ts (gatePanel()), step 13, readiness), and an extra heading inside a screen's
 // <main> is one more thing those locators could hit. The screen's own <h1>
 // stays the page's real heading.
 

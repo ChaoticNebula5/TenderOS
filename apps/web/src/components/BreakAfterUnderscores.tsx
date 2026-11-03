@@ -5,7 +5,7 @@ import { Fragment } from "react";
 // underscore, so at phone width it wraps at "deselected_ / fact_ / in_use"
 // rather than mid-word or not at all. <wbr> adds no text: the element's
 // textContent stays exactly the input, which full-flow.spec.ts relies on
-// where it reads the red-team category (:1380, :1409 match it exactly).
+// where it reads the red-team category (step 14, knowledge selections match it exactly).
 //
 // Shared since the polish pass; batches 5 and 6 each had a local copy
 // (RedteamFindings' category cell, TalentImportReview's source cell).

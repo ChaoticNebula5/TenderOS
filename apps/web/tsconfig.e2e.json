@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.e2e.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Playwright runs these files under Node (e2e.ps1, CI's e2e job); tsc only checks them */
+    "module": "nodenext",
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting, as tsconfig.node.json */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["e2e", "playwright.config.ts"]
+}

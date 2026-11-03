@@ -15,7 +15,7 @@ import { useOperation } from "./useOperation";
 //   3. settle: once the operation is finished, it awaits the screen's
 //      onFinished (re-read the results, show a failure) BEFORE busy goes
 //      false, so the button is never enabled while the screen still shows
-//      the old results (full-flow.spec.ts:949-953 waits for the button to be
+//      the old results (full-flow.spec.ts (step 9, proposal) waits for the button to be
 //      enabled, then expects a section already visible).
 // busy is true from the click until that settle has finished.
 export function useTenderOperation(

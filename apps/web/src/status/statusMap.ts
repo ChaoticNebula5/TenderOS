@@ -333,8 +333,8 @@ export function describeFinding(resolved: boolean, findingSeverity: string): Sta
     : describeStatus("severity", findingSeverity);
 }
 
-// For a spec that reads a badge's text exactly (full-flow.spec.ts:971 reads
-// "/ unsupported]", :1410 reads "critical"): when the mapped label is just
+// For a spec that reads a badge's text exactly (full-flow.spec.ts (step 10, claim trace) reads
+// "/ unsupported]", step 14, knowledge selections reads "critical"): when the mapped label is just
 // the backend word capitalised, the badge can keep the raw word as its DOM
 // text and let CSS draw it capitalised - the operator reads the label, the
 // DOM keeps the word (the batch 3 parse-badge technique). keepsRawWord says

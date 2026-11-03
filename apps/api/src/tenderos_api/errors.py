@@ -1,5 +1,10 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
+
+from tenderos_api.client_disconnect import client_closed_response
 
 
 class APIError(Exception):
@@ -196,5 +201,15 @@ async def _api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     return error_response(exc)
 
 
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
+    """FastAPI's own handler, except for the 400 FastAPI raises when the
+    client disconnected while it read a route's body parameter
+    (client_disconnect.py)."""
+    if isinstance(exc.__cause__, ClientDisconnect):
+        return client_closed_response(request)
+    return await http_exception_handler(request, exc)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(APIError, _api_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(StarletteHTTPException, _http_exception_handler)  # type: ignore[arg-type]

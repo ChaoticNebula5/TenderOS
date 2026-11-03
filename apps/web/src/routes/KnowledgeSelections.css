@@ -12,7 +12,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The raw impact rows (a spec-forced deviation: full-flow.spec.ts:1258
+/* The raw impact rows (a spec-forced deviation: full-flow.spec.ts (step 14, knowledge selections)
    parses each <li> as JSON). Shown as a sunk well of wrapped data text so
    it reads as raw data rather than prose; Archivo, as everywhere outside
    page titles - no monospace face is in the type system. Long JSON breaks

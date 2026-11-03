@@ -1,8 +1,12 @@
-"""Phase 4 plan item 30: reading the step 11 timeline from compose logs.
+"""Phase 4 plan item 30, as changed by the one-time spec edit: reading the
+live-progress timeline (commercial approval to the open tab's refetch)
+from compose logs.
 
-The log lines below are copied in shape from a real fake-stack run
-(2026-10-23, batch 2b: `docker compose logs --no-color --timestamps api
-worker`), with ids shortened. That run's figures are the first case.
+The lines below are copied from two fake-stack runs on 2026-11-03
+(`docker compose logs --no-color --timestamps api worker`): a passing run
+of the edited spec, and a run with the web client made to ignore stream
+messages, which failed at the live-tab wait. Worker lines are cut after the
+part the script reads.
 """
 
 import importlib.util
@@ -18,167 +22,126 @@ timeline_mod = importlib.util.module_from_spec(_spec)
 sys.modules["e2e_step11_timeline"] = timeline_mod
 _spec.loader.exec_module(timeline_mod)
 
-_WORKER = "worker-1  | {ts} 2026-10-23 00:00:00,000 INFO rq.worker: "
-_API = 'api-1  | {ts} INFO:     172.22.0.1:43396 - "{req} HTTP/1.1" {code}'
-
-
-def _start(ts: str, job: str = "resume_workflow_job") -> str:
-    return _WORKER.format(ts=ts) + (
-        f"Worker 5353: workflow: tenderos_worker.jobs.workflow.{job}('b018', '4480') (resume_b018_4480)"
-    )
-
-
-def _end(ts: str, job: str = "resume_workflow_job") -> str:
-    return _WORKER.format(ts=ts) + (
-        f"Successfully completed tenderos_worker.jobs.workflow.{job}('b018', '4480') "
-        "job in 0:00:07.352589s on worker 5353"
-    )
+_W = "worker-1  | {ts} 2026-11-03 00:00:00,000 INFO rq.worker: "
+_A = 'api-1     | {ts} INFO:     172.18.0.1:43930 - "{req} HTTP/1.1" {code}'
+_RUN = "759d671a-6fb2-4328-8b85-49d53ce88eda"
 
 
 def _api(ts: str, req: str, code: str = "200 OK") -> str:
-    return _API.format(ts=ts, req=req, code=code)
+    return _A.format(ts=ts, req=req, code=code)
 
 
-def _event(ts: str, aggregate: str = "workflow_run", kind: str = "WorkflowRunStatusChanged") -> str:
-    return _WORKER.format(ts=ts) + (
+def _job_start(ts: str) -> str:
+    return _W.format(ts=ts) + (
+        f"Worker 4ccf: workflow: tenderos_worker.jobs.workflow.resume_workflow_job('{_RUN}', 'af29')"
+    )
+
+
+def _job_end(ts: str) -> str:
+    return _W.format(ts=ts) + (
+        f"Successfully completed tenderos_worker.jobs.workflow.resume_workflow_job('{_RUN}', 'af29')"
+    )
+
+
+def _event(ts: str, kind: str = "WorkflowRunStatusChanged") -> str:
+    return _W.format(ts=ts) + (
         "Successfully completed tenderos_worker.jobs.placeholder.process_outbox_event("
-        f"'dc78', '{aggregate}', '{kind}') job in 0:00:00.001190s on worker 5353"
+        f"'0b7c', 'workflow_run', '{kind}') job in 0:00:00.001s"
     )
 
 
-CLICK = _api("2026-10-23T10:57:56.438221604Z", "POST /tenders/49da/redteam/run", "202 Accepted")
-FETCH_BEFORE = _api("2026-10-23T10:57:55.582953870Z", "GET /workflow-runs/b018/tasks")
+_TASKS = f"GET /workflow-runs/{_RUN}/tasks"
+_STREAM = f"GET /workflow-runs/{_RUN}/events/stream?ticket=[redacted]"
+
+# The passing run (final run 1): the resource gate's decision, the live
+# tab's first /tasks and two stream opens, the commercial decision, the
+# resume job and its events, the pushed refetch, then the proposal.
+PASSING = [
+    _api("2026-11-03T08:13:02.127200035Z", "POST /gates/b481/decision"),
+    _event("2026-11-03T08:13:03.132662225Z"),
+    _api("2026-11-03T08:13:12.138715428Z", _TASKS),
+    _api("2026-11-03T08:13:12.144557969Z", _STREAM),
+    _api("2026-11-03T08:13:12.147111009Z", _STREAM),
+    _api("2026-11-03T08:13:12.215788859Z", "POST /gates/af29/decision"),
+    _event("2026-11-03T08:13:13.127613882Z"),
+    _job_start("2026-11-03T08:13:13.135123021Z"),
+    _job_end("2026-11-03T08:13:20.014807375Z"),
+    _event("2026-11-03T08:13:20.070832490Z"),
+    _event("2026-11-03T08:13:20.092039605Z"),
+    _api("2026-11-03T08:13:20.527716543Z", _TASKS),
+    _api("2026-11-03T08:13:21.037647159Z", "POST /tenders/7038/proposal/generate", "202 Accepted"),
+]
 
 
-def test_the_batch_2b_run():
-    log = "\n".join(
-        [
-            _start("2026-10-23T10:57:44.177437621Z"),
-            _end("2026-10-23T10:57:50.661642815Z"),
-            _event("2026-10-23T10:57:54.217175172Z"),
-            _start("2026-10-23T10:57:54.224982706Z"),
-            FETCH_BEFORE,
-            CLICK,
-            _end("2026-10-23T10:58:01.588593016Z"),
-        ]
-    )
+def test_the_passing_run():
+    t = timeline_mod.read_timeline("\n".join(PASSING))
 
-    t = timeline_mod.read_timeline(log)
-
-    assert t.event_before_fetch == "WorkflowRunStatusChanged"
-    assert abs(t.event_before_fetch_seconds - 1.365778) < 1e-6
-    assert t.click == "2026-10-23T10:57:56.438Z"
+    assert t.approval == "2026-11-03T08:13:12.215Z"
+    assert t.refetch == "2026-11-03T08:13:20.527Z"
+    assert abs(t.approval_to_refetch_seconds - 8.311928) < 1e-6
+    assert t.stream_opens_before_approval == 2
+    assert t.stream_opens_between == 0
     assert t.job == "resume_workflow_job"
-    assert t.job_started == "2026-10-23T10:57:54.224Z"
-    assert t.job_ended == "2026-10-23T10:58:01.588Z"
-    assert t.job_running_at_click is True
-    assert abs(t.margin_seconds - 5.150372) < 1e-6
-    assert t.task_fetches_after_click == 0
-    assert abs(t.last_task_fetch_before_click_seconds - 0.855268) < 1e-6
-    assert "no task fetch after the click" in t.note
+    assert t.job_started == "2026-11-03T08:13:13.135Z"
+    assert t.job_ended == "2026-11-03T08:13:20.014Z"
+    assert t.event_before_refetch == "WorkflowRunStatusChanged"
+    assert abs(t.event_before_refetch_seconds - 0.435677) < 1e-6
+    assert t.note == "refetch after a workflow event, no reconnect"
 
 
-def test_a_job_that_ended_before_the_click_gives_a_negative_margin():
-    """Stage 2's failing shape: the workflow's last job ended before the
-    click, so the wait had nothing left to see."""
+def test_the_tabs_own_first_fetch_is_not_the_refetch():
+    """The /tasks answered before the approval is the tab settling."""
+    t = timeline_mod.read_timeline("\n".join(PASSING))
+    assert t.refetch != "2026-11-03T08:13:12.138Z"
+
+
+def test_the_run_with_pushes_ignored_has_no_refetch():
+    """Mutation run 3: the run stopped at the live-tab wait, so there is no
+    proposal generation; the last gate decision is taken as the approval."""
     log = "\n".join(
         [
-            _start("2026-10-16T06:10:25.000000000Z"),
-            _end("2026-10-16T06:10:32.409000000Z"),
-            _api("2026-10-16T06:10:40.858000000Z", "POST /tenders/x/redteam/run", "202 Accepted"),
+            _api("2026-11-03T08:02:43.082157384Z", "POST /gates/3169/decision"),
+            _api("2026-11-03T08:02:53.315204592Z", _TASKS),
+            _api("2026-11-03T08:02:53.319788932Z", _STREAM),
+            _api("2026-11-03T08:02:53.323549206Z", _STREAM),
+            _api("2026-11-03T08:02:53.412404636Z", "POST /gates/3db4/decision"),
+            _job_start("2026-11-03T08:02:54.522276724Z"),
+            _job_end("2026-11-03T08:03:01.600292604Z"),
+            _event("2026-11-03T08:03:01.656859555Z"),
         ]
     )
 
     t = timeline_mod.read_timeline(log)
 
-    assert t.job_running_at_click is False
-    assert abs(t.margin_seconds - (-8.449)) < 1e-6
-    assert "had ended" in t.note
+    assert t.approval == "2026-11-03T08:02:53.412Z"
+    assert t.refetch is None and t.approval_to_refetch_seconds is None
+    assert t.stream_opens_before_approval == 2
+    assert t.job_ended == "2026-11-03T08:03:01.600Z"
+    assert "last gate decision taken as the approval" in t.note
+    assert "no /tasks request after the approval" in t.note
 
 
-def test_a_fetch_after_the_click_is_counted():
-    log = "\n".join(
-        [
-            _start("2026-10-23T10:57:54.224982706Z"),
-            CLICK,
-            _api("2026-10-23T10:57:58.000000000Z", "GET /workflow-runs/b018/tasks"),
-            _api("2026-10-23T10:57:58.100000000Z", "OPTIONS /workflow-runs/b018/tasks"),
-            _end("2026-10-23T10:58:01.588593016Z"),
-        ]
-    )
-
-    t = timeline_mod.read_timeline(log)
-
-    assert t.task_fetches_after_click == 1
-    assert t.last_task_fetch_before_click_seconds is None
-    assert t.note == "job running at the click"
+def test_a_stream_reopened_before_the_refetch_is_flagged():
+    log = PASSING[:9] + [_api("2026-11-03T08:13:15.000000000Z", _STREAM)] + PASSING[9:]
+    t = timeline_mod.read_timeline("\n".join(log))
+    assert t.stream_opens_between == 1
+    assert "may not be a push" in t.note
 
 
-def test_only_workflow_events_up_to_the_fetch_count():
-    """Events after the fetch, and outbox events of other aggregates, are
-    not candidates for having caused it."""
-    log = "\n".join(
-        [
-            _event("2026-10-23T10:57:53.000000000Z", "workflow_task", "WorkflowTaskCompleted"),
-            _event("2026-10-23T10:57:55.000000000Z", "compliance_entry", "ComplianceChanged"),
-            FETCH_BEFORE,
-            _event("2026-10-23T10:57:55.900000000Z"),
-            _start("2026-10-23T10:57:54.224982706Z"),
-            CLICK,
-        ]
-    )
-
-    t = timeline_mod.read_timeline(log)
-
-    assert t.event_before_fetch == "WorkflowTaskCompleted"
-    # 10:57:55.582953 (nanoseconds truncated to microseconds) minus 10:57:53.
-    assert abs(t.event_before_fetch_seconds - 2.582953) < 1e-6
+def test_stream_opens_before_an_earlier_gate_are_not_counted():
+    log = [_api("2026-11-03T08:12:50.000000000Z", _STREAM)] + PASSING
+    t = timeline_mod.read_timeline("\n".join(log))
+    assert t.stream_opens_before_approval == 2
 
 
-def test_no_fetch_before_the_click_reports_no_event():
-    log = "\n".join([_event("2026-10-23T10:57:53.000000000Z"), CLICK])
-    t = timeline_mod.read_timeline(log)
-    assert t.event_before_fetch is None and t.event_before_fetch_seconds is None
-
-
-def test_a_job_still_running_when_the_log_ends():
-    log = "\n".join([_start("2026-10-23T10:57:54.224982706Z"), CLICK])
-
-    t = timeline_mod.read_timeline(log)
-
-    assert t.job_running_at_click is True
-    assert t.margin_seconds is None
-    assert "end is not in the log" in t.note
-
-
-def test_no_click_when_the_run_failed_earlier():
-    t = timeline_mod.read_timeline(_start("2026-10-23T10:57:54.224982706Z"))
-    assert t.click is None and t.note == "no red-team click in the log"
-
-
-def test_other_services_and_other_jobs_are_ignored():
-    log = "\n".join(
-        [
-            # The operations worker's jobs are not workflow jobs.
-            "operations_worker-1  | 2026-10-23T10:57:55.000000000Z 2026-10-23 INFO rq.worker: "
-            "Worker 9: operations: tenderos_worker.jobs.operations.run_operation('x') (op_x)",
-            _start("2026-10-23T10:57:54.224982706Z"),
-            "worker-1  | 2026-10-23T10:57:55.000000000Z 2026-10-23 INFO rq.worker: Successfully "
-            "completed tenderos_worker.jobs.placeholder.process_outbox_event('a') job in 0:00:00.001s",
-            CLICK,
-            _end("2026-10-23T10:58:01.588593016Z"),
-        ]
-    )
-
-    t = timeline_mod.read_timeline(log)
-
-    assert t.job_ended == "2026-10-23T10:58:01.588Z"
+def test_no_gate_decision():
+    t = timeline_mod.read_timeline(_job_start("2026-11-03T08:13:13.135123021Z"))
+    assert t.approval is None
+    assert t.note == "no gate decision in the log, so no commercial approval to read"
 
 
 def test_markdown_has_every_row():
-    log = "\n".join(
-        [_start("2026-10-23T10:57:54.224982706Z"), CLICK, _end("2026-10-23T10:58:01.588593016Z")]
-    )
-    text = timeline_mod.to_markdown(timeline_mod.read_timeline(log))
-    assert "| Margin (job end minus click) | +5.150 s |" in text
-    assert "| Task fetches after the click | 0 |" in text
+    text = timeline_mod.to_markdown(timeline_mod.read_timeline("\n".join(PASSING)))
+    assert "| Approval to refetch | 8.312 s |" in text
+    assert "| Stream opens between approval and refetch | 0 |" in text
+    assert "WorkflowRunStatusChanged, 0.436 s before it" in text

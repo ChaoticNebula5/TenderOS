@@ -131,7 +131,7 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   }
 
   // The panel's root stays a <section>: every gate screen renders its <h2>
-  // and then this <section> as siblings, and full-flow.spec.ts:56 finds the
+  // and then this <section> as siblings, and full-flow.spec.ts (gatePanel()) finds the
   // panel that way (following-sibling::section[1]). Nothing may wrap it.
   //
   // Header: the gate's own status as a badge, decided or not, then the
@@ -150,7 +150,7 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
 
   if (gate.status !== "pending") {
     // Decided: the badge above plus when, in the shared date format. No
-    // <strong> (full-flow.spec.ts:1451 is a strict-mode check on the
+    // <strong> (full-flow.spec.ts (step 13, readiness) is a strict-mode check on the
     // readiness page's only <strong>, and this panel renders there too),
     // no raw ISO string, and no "who": decided_by is a user id, and a name
     // would need a fetch a restyle does not add.
@@ -278,7 +278,7 @@ function GateSummary({ gate }: { gate: GateResponse }) {
       // The readiness verdict - the one place "Ready" may appear
       // (describeReadiness). Blockers stay a list, each with the blocked
       // icon. This <ul> sits inside the panel's <section>, so it is never
-      // the "Blockers" <h2>'s following sibling that full-flow.spec.ts:1455
+      // the "Blockers" <h2>'s following sibling that full-flow.spec.ts (step 13, readiness)
       // reads on the readiness page (that <ul> is Readiness.tsx's own).
       return (
         <div className="gate-summary__readiness">

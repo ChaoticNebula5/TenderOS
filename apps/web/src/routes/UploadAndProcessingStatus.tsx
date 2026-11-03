@@ -239,7 +239,7 @@ export function UploadAndProcessingStatus() {
 
       <section>
         <h2>Documents</h2>
-        {/* Still the page's first file input: full-flow.spec.ts:531 finds it
+        {/* Still the page's first file input: full-flow.spec.ts (step 3, upload) finds it
             by type, not by this label. */}
         <Field label="Upload a document">
           <input type="file" onChange={handleUpload} disabled={uploading} />
@@ -268,7 +268,7 @@ export function UploadAndProcessingStatus() {
                   <tr key={doc.id}>
                     <td>{doc.filename}</td>
                     <td>{doc.doc_type}</td>
-                    {/* Spec-forced: full-flow.spec.ts:558-566 reads this
+                    {/* Spec-forced: full-flow.spec.ts (step 3, upload) reads this
                         cell's textContent and requires exactly "parsed". So
                         the badge's DOM text is the backend word and CSS
                         capitalises it (.parse-status); every parse label in

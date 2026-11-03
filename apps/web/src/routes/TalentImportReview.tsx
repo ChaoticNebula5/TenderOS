@@ -30,23 +30,23 @@ import "./TalentImportReview.css";
 // page refresh) is how progress becomes visible, matching this screen's
 // own polling-free design (B14 owns real-time updates project-wide).
 //
-// Restyle batch 6 - what full-flow.spec.ts reads here (:310-427), and so
+// Restyle batch 6 - what full-flow.spec.ts reads here (setup's résumé import), and so
 // what must not move:
-// - :317, :329 getByLabel("Resumes (multiple files):") - a substring
+// - setup's résumé import getByLabel("Resumes (multiple files):") - a substring
 //   match, colon included - then toBeEnabled(): the native file input
 //   stays, labelled through Field, disabled while an upload is in flight.
 //   All three labels are kept verbatim (decided at plan review).
-// - :344-353 the FIRST <table> on the page is the batches table, and its
+// - setup's résumé import the FIRST <table> on the page is the batches table, and its
 //   row's <td> texts are read by index: [1] status, [2] total, [3]
 //   completed, [4] failed, the numbers through Number(). So the Type cell
 //   stays a <td> (a <th> would shift every index), columns keep this
 //   order, and the three number cells hold the digits and nothing else.
-// - :387 the button "Review items" (substring, strict: one batch).
-// - :388-424 `section` that has a heading "Items" -> `tbody tr`, one row
+// - setup's résumé import the button "Review items" (substring, strict: one batch).
+// - setup's résumé import `section` that has a heading "Items" -> `tbody tr`, one row
 //   per item, each with its own "Approve" button while needs_review. That
 //   locator also matches ANY ancestor section of the heading, so the Items
 //   <section> is a direct child of <main>, never nested.
-// - No skeleton rows in either table: :344 and :397 count `tbody tr` as
+// - No skeleton rows in either table: setup's résumé import and setup's résumé import count `tbody tr` as
 //   "loaded". A table shows aria-busy while its fetch is in flight instead.
 export function TalentImportReview() {
   const { organizationId } = useAuth();

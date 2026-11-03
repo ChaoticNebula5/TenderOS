@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Request } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -315,7 +315,20 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     "resume_tomas_reyes.docx",
   ].map((f) => path.resolve(SYNTHETIC_DIR, f));
   const resumesInput = page.getByLabel("Resumes (multiple files):");
+  // The server's answer is the proof the batch exists; the input's
+  // re-enable below is kept as the UI's own check.
+  const resumeBatchCreated = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "POST" &&
+      new URL(resp.url()).pathname.endsWith("/knowledge/import-batches/resumes"),
+    { timeout: 30_000 },
+  );
   await resumesInput.setInputFiles(resumeFiles);
+  const resumeBatchResponse = await resumeBatchCreated;
+  expect(
+    resumeBatchResponse.ok(),
+    `POST .../knowledge/import-batches/resumes answered ${resumeBatchResponse.status()}`,
+  ).toBe(true);
   // setInputFiles only waits for the input's own DOM value to update -
   // handleResumesUpload's own uploadResumes(...) call is async and still
   // in flight at that point. The input is disabled for exactly its
@@ -583,16 +596,26 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // ------------------------------------------------------------------
   // 4. Wait for extraction
   // ------------------------------------------------------------------
+  // Wait for the server's answer to POST /workflow-runs before navigating
+  // away: navigating cancels a request still in flight, and a cancel that
+  // lands before the API has read the body creates no run, so the gate
+  // below never opens (main's runs 40116721087 and 40163720306). The
+  // button is not the signal: while busy its name is "Starting...", so
+  // "Start processing" counts as hidden the moment it is clicked. The
+  // listener is registered before the click so the response cannot be
+  // missed.
+  const workflowRunCreated = page.waitForResponse(
+    (resp) =>
+      resp.request().method() === "POST" &&
+      new URL(resp.url()).pathname === `/tenders/${tenderId}/workflow-runs`,
+    { timeout: 30_000 },
+  );
   await page.getByRole("button", { name: "Start processing" }).click();
-  // handleStartProcessing awaits createWorkflowRun before setting
-  // workflowRunId, which is what makes the "Start processing" button
-  // disappear (the render switches to the task-list branch) - waiting
-  // for that is what confirms the POST actually completed, before this
-  // test navigates away and risks cancelling it the same way the resume
-  // upload above did.
-  await expect(page.getByRole("button", { name: "Start processing" })).toBeHidden({
-    timeout: 30_000,
-  });
+  const workflowRunResponse = await workflowRunCreated;
+  expect(
+    workflowRunResponse.ok(),
+    `POST /tenders/${tenderId}/workflow-runs answered ${workflowRunResponse.status()}`,
+  ).toBe(true);
   // No route returns "extraction is done" as a boolean - the observable
   // signal this scenario uses is the requirement_review gate opening.
   // B17 Phase 0: waits for the gate panel's Approve button to be PRESENT
@@ -925,8 +948,78 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     "expected the seeded pricing discrepancies to produce real findings",
   ).toBeGreaterThan(0);
   {
+    // Live progress, moved here from step 11 (KNOWN_LIMITATIONS, "E2E step
+    // 11 depends on the workflow still running"). A second tab on the
+    // Upload/Processing screen, settled before the approval: its own first
+    // GET .../tasks has answered and both of its event streams (tasks and
+    // run) have been requested. The tab refetches tasks only after minting a
+    // ticket, on a stream message, or on a reconnect (useEventStream.ts), and
+    // the server sends heartbeats as SSE comments, which raise no message. So
+    // a tasks request after this point, with no new stream request before
+    // it, can only come from an event pushed to the open stream. Approving
+    // the commercial gate resumes the workflow (the revision loop that once
+    // added findings no open screen showed), which writes
+    // WorkflowRunStatusChanged and task events; the manual red team writes
+    // none, which is why this no longer waits on the red-team click.
+    const liveProgressTab = await page.context().newPage();
+    const isTasksRequest = (req: Request) =>
+      req.method() === "GET" && /\/workflow-runs\/[^/]+\/tasks$/.test(req.url());
+    // Every /tasks request the live tab sends before the approval request
+    // goes out, its own after-connect refetch included, is excluded: only a
+    // request that starts after the approval can count as the push.
+    const tasksBeforeApproval = new Set<Request>();
+    let approvalSent = false;
+    let liveTabStreamRequests = 0;
+    let streamRequestsWhenRefetchStarted: number | null = null;
+    const onApprovalRequest = (req: Request) => {
+      if (req.method() === "POST" && /\/gates\/[^/]+\/decision$/.test(req.url())) {
+        approvalSent = true;
+      }
+    };
+    page.on("request", onApprovalRequest);
+    liveProgressTab.on("request", (req) => {
+      if (/\/workflow-runs\/[^/]+\/events\/stream/.test(req.url())) liveTabStreamRequests += 1;
+      if (!isTasksRequest(req)) return;
+      if (!approvalSent) {
+        tasksBeforeApproval.add(req);
+      } else if (streamRequestsWhenRefetchStarted === null) {
+        streamRequestsWhenRefetchStarted = liveTabStreamRequests;
+      }
+    });
+    const liveTabFirstTasks = liveProgressTab.waitForResponse(
+      (resp) => isTasksRequest(resp.request()),
+      { timeout: 30_000 },
+    );
+    await liveProgressTab.goto(`/tenders/${tenderId}`);
+    await liveTabFirstTasks;
+    await expect
+      .poll(() => liveTabStreamRequests, {
+        timeout: 30_000,
+        message: "waiting for the live tab to open its tasks and run event streams",
+      })
+      .toBeGreaterThanOrEqual(2);
+    const streamRequestsBeforeApproval = liveTabStreamRequests;
+    // A response, not just a request: the tab is closed right after, and a
+    // request cancelled by that close would leave no trace on the server.
+    const liveTaskListRefetch = liveProgressTab.waitForResponse(
+      (resp) => isTasksRequest(resp.request()) && !tasksBeforeApproval.has(resp.request()),
+      { timeout: 60_000 },
+    );
+
     const commercialGate = gatePanel(page, "Commercial approval gate");
     await approveGate(commercialGate);
+
+    // Fails (times out), not passes, if no pushed event reaches the open tab.
+    const pushedRefetch = await liveTaskListRefetch;
+    page.off("request", onApprovalRequest);
+    expect(pushedRefetch.ok(), `the live tab's refetch answered ${pushedRefetch.status()}`).toBe(
+      true,
+    );
+    expect(
+      streamRequestsWhenRefetchStarted,
+      "the live tab reconnected its stream before refetching, so the refetch may not be a push",
+    ).toBe(streamRequestsBeforeApproval);
+    await liveProgressTab.close();
   }
 
   // ------------------------------------------------------------------
@@ -1018,14 +1111,8 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // content assertion here pass for the wrong reason, the same
   // unfalsifiable shape this project has been burned by before.
   // ------------------------------------------------------------------
-  const liveProgressTab = await page.context().newPage();
-  await liveProgressTab.goto(`/tenders/${tenderId}`);
-  await liveProgressTab.waitForLoadState("networkidle");
-  const liveTaskListRefetch = liveProgressTab.waitForRequest(
-    (req) => req.method() === "GET" && /\/workflow-runs\/[^/]+\/tasks$/.test(req.url()),
-    { timeout: 60_000 },
-  );
-
+  // The live-progress half of this step now runs at step 8's commercial
+  // approval (above), where a workflow event is certain; see there.
   await page.goto(`/tenders/${tenderId}/redteam`);
   await page.getByRole("button", { name: "Run red team" }).click();
   // Same reasoning as proposal generation above - 5 deterministic checks
@@ -1034,11 +1121,6 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   await expect(page.getByRole("button", { name: "Run red team" })).toBeEnabled({
     timeout: 180_000,
   });
-
-  // Fails (times out), not passes, if the live tab never receives a
-  // push-triggered refetch - the falsifiable half of this assertion.
-  await liveTaskListRefetch;
-  await liveProgressTab.close();
 
   // ------------------------------------------------------------------
   // 12. Resolve seeded issue - decided as "all," not "one" (§7 step 11's
@@ -1237,6 +1319,9 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     // job's real effect (compliance reopening, claim regrounding) is
     // what the downstream assertions below poll for, generously, after
     // the real deselection.
+    // The poll below counts every <li> in <main> as this preview's rows, so
+    // none may exist yet: the confirm above closed the previous panel.
+    await expect(page.locator("main li")).toHaveCount(0);
     await row.getByRole("button", { name: "Preview impact" }).click();
     await expect(page.getByRole("heading", { name: "Impact preview" })).toBeVisible({
       timeout: 30_000,
@@ -1250,12 +1335,12 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
     await expect
       .poll(
         async () =>
-          (tick("poll:impact-preview-rendered"), await page.locator("li").count()) +
+          (tick("poll:impact-preview-rendered"), await page.locator("main li").count()) +
           (await page.getByText("No downstream facts would be affected.").count()),
         { timeout: 60_000 },
       )
       .toBeGreaterThan(0);
-    const impactTexts = await page.locator("ul li").allTextContents();
+    const impactTexts = await page.locator("main ul li").allTextContents();
     const labels = impactTexts.flatMap((t) => {
       try {
         return (JSON.parse(t) as { labels?: string[] }).labels ?? [];
@@ -1448,8 +1533,8 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   // ------------------------------------------------------------------
   await page.goto(`/tenders/${tenderId}/readiness`);
   await page.getByRole("button", { name: "Generate readiness report" }).click();
-  await expect(page.locator("strong")).toBeVisible({ timeout: 30_000 });
-  const readyText = (await page.locator("strong").first().textContent())?.trim();
+  await expect(page.locator("main strong")).toBeVisible({ timeout: 30_000 });
+  const readyText = (await page.locator("main strong").first().textContent())?.trim();
   const blockers = await page
     .locator("h2", { hasText: "Blockers" })
     .locator("xpath=following-sibling::ul[1]/li")

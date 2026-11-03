@@ -77,8 +77,8 @@ export function Login() {
   // The mode switch is two toggle buttons with aria-pressed (plan item 6),
   // replacing `disabled` as a selected-tab marker: a disabled control is
   // skipped by Tab and announced as unavailable, not as selected. They stay
-  // role="button", so full-flow.spec.ts:274's getByRole("button",
-  // { name: "Create organization" }) still finds the switch, and :281 still
+  // role="button", so full-flow.spec.ts (setup's register)'s getByRole("button",
+  // { name: "Create organization" }) still finds the switch, and setup's register still
   // scopes the submit to <form>. Clicking the already-pressed one sets the
   // same mode again - a no-op, as clicking a disabled one was.
   return (

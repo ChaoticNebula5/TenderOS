@@ -25,16 +25,16 @@ import "./RedteamFindings.css";
 // E2E contract (full-flow.spec.ts) - the column order and cell text are
 // fixed, so this screen deviates from DESIGN.md's findings pattern:
 // - the findings table is the page's first table, always rendered, tbody
-//   holding only data rows (:1375, :1405);
-// - cell 0 is the raw finding_category (:1380 compares it trimmed to
-//   "deselected_fact_in_use"; :1409 matches /^deselected_fact_in_use$/);
-// - cell 1's text is the raw severity word (:1410-1416 look for "critical"),
+//   holding only data rows (step 14, knowledge selections);
+// - cell 0 is the raw finding_category (step 14, knowledge selections compares it trimmed to
+//   "deselected_fact_in_use"; step 14, knowledge selections matches /^deselected_fact_in_use$/);
+// - cell 1's text is the raw severity word (step 14, knowledge selections look for "critical"),
 //   so its badge keeps that word in the DOM and CSS capitalises it
 //   (.badge-raw-word) - every severity label is the capitalised word;
-// - cell 3 is exactly "no" or "yes" (:1382, :1395 wait for "no"), so
+// - cell 3 is exactly "no" or "yes" (step 14, knowledge selections wait for "no"), so
 //   resolution is that plain word, not describeFinding's "Resolved" badge;
 // - "Resolve" buttons are counted page-wide and must disappear one by one
-//   (:1083-1101), so a resolved row has none and no other button's name
+//   (step 12, resolve findings), so a resolved row has none and no other button's name
 //   contains "Resolve".
 export function RedteamFindings() {
   const { tenderId } = useParams<{ tenderId: string }>();
@@ -177,7 +177,7 @@ export function RedteamFindings() {
                     {/* Polish pass (P3): a resolved row shows the note it was
                         resolved with (fetched before, never shown). td 4 is
                         not read by the spec, and the note adds no button, so
-                        the page-wide "Resolve" count (:1083, :1088) is
+                        the page-wide "Resolve" count (step 12, resolve findings) is
                         unchanged. */}
                     {finding.resolved && finding.resolution_note && (
                       <p className="redteam__note">{finding.resolution_note}</p>

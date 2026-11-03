@@ -22,14 +22,14 @@ import "./EmployeeProfile.css";
 // full, real profile for an employee who isn't bid-eligible yet, which
 // is exactly the case a reviewer opens this screen for.
 //
-// Restyle batch 6 - what full-flow.spec.ts reads here (:495-498):
-// - :496 ticks the checkbox "Eligible for bid". It exists only once
+// Restyle batch 6 - what full-flow.spec.ts reads here (setup's résumé import):
+// - setup's résumé import ticks the checkbox "Eligible for bid". It exists only once
 //   getEmployee has answered: the load sets the box from the response
 //   (setEligibleForBid below), so a box shown earlier and ticked by the
 //   spec would be reset to false, and Verify would send false.
-// - :497 clicks the button named "Verify" - a substring match, strict, so
+// - setup's résumé import clicks the button named "Verify" - a substring match, strict, so
 //   no other button's name contains "verify".
-// - :498 waits for exactly one element inside a <dl> whose text is exactly
+// - setup's résumé import waits for exactly one element inside a <dl> whose text is exactly
 //   "yes". Bid eligible is a badge whose DOM text is the raw "yes"/"no",
 //   capitalised by CSS (.badge-raw-word, the batch 5 technique), and no
 //   other <dl> value is ever exactly "yes".
@@ -192,7 +192,7 @@ export function EmployeeProfile() {
           <div>
             <dt>Bid eligible</dt>
             {/* The raw "yes"/"no" in the DOM, drawn "Yes"/"No" by CSS
-                (full-flow.spec.ts:498 reads "yes" exactly). Ready when
+                (full-flow.spec.ts (setup's résumé import) reads "yes" exactly). Ready when
                 eligible; Neutral when not, as describeSelected's negative. */}
             <dd className="badge-raw-word">
               <StatusBadge

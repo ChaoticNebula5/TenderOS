@@ -9,7 +9,7 @@ import "./SkeletonRows.css";
 // aria-busy while loading, which is what assistive tech reads.
 //
 // E2E caution for later batches: these ARE `tbody tr` elements while
-// loading. Retrying assertions (toHaveCount, e.g. full-flow.spec.ts:540)
+// loading. Retrying assertions (toHaveCount, e.g. full-flow.spec.ts (step 3, upload))
 // just wait them out, but a one-shot .count() on `table tbody tr` taken
 // mid-load would include them - check each table's locators before
 // adding skeleton rows to it. Batch 2 uses them only on the dashboard,

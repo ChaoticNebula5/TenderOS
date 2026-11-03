@@ -35,7 +35,7 @@ const KNOWLEDGE_STATUSES = ["active", "expired", "archived", "unverified"] as co
 // covers title/status and there's no type-specific detail screen for
 // non-employee items in Part J's 17.
 //
-// Restyle batch 6 - what full-flow.spec.ts reads here: :476-492 count
+// Restyle batch 6 - what full-flow.spec.ts reads here: setup's résumé import count
 // every a[href^="/talent/employees/"] on the page (it must equal the number
 // of employees) and follow each href. So an employee row's title is its
 // ONE link, with the href shape unchanged; no other row, the count line

@@ -4,8 +4,8 @@ import "./Field.css";
 // A labelled form field with the label ABOVE the control (DESIGN.md
 // Components, "Forms and inputs"). The <label> still wraps the control, as
 // it does today, so the control's accessible name stays exactly the label
-// text - which is what getByLabel queries (full-flow.spec.ts:275-277,
-// :510). Any `hint` sits OUTSIDE the <label> for the same reason: text
+// text - which is what getByLabel queries (full-flow.spec.ts (setup's register),
+// step 2, create bid). Any `hint` sits OUTSIDE the <label> for the same reason: text
 // inside it would become part of the name and could change what a
 // substring getByLabel("Password") matches.
 //
