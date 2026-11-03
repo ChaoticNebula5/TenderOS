@@ -51,6 +51,7 @@ vi.mock("../api/client", async (importOriginal) => {
     getWorkflowRun: vi.fn(),
     mintWorkflowEventsTicket: vi.fn(),
     uploadDocument: vi.fn(),
+    createWorkflowRun: vi.fn(),
   };
 });
 
@@ -60,6 +61,7 @@ const listWorkflowTasks = vi.mocked(apiClient.listWorkflowTasks);
 const getWorkflowRun = vi.mocked(apiClient.getWorkflowRun);
 const mintWorkflowEventsTicket = vi.mocked(apiClient.mintWorkflowEventsTicket);
 const uploadDocument = vi.mocked(apiClient.uploadDocument);
+const createWorkflowRun = vi.mocked(apiClient.createWorkflowRun);
 
 beforeEach(() => {
   FakeEventSource.instances = [];
@@ -304,5 +306,54 @@ describe("an upload that lands before the first documents read answers", () => {
     answerReread([{ ...uploaded, parse_status: "parsing" }]);
     await screen.findByText("parsing");
     expect(container.querySelectorAll("table tbody tr")).toHaveLength(1);
+  });
+});
+
+// Phase 4 plan item 43: the server allows one active run per tender. A
+// second Start processing (another tab, or a click from a screen that had
+// not seen the first run) gets a 409 WORKFLOW_RUN_ACTIVE naming that run.
+describe("Start processing when a run is already active", () => {
+  function activeRunConflict(): ApiError {
+    return new ApiError(409, {
+      error: {
+        code: "WORKFLOW_RUN_ACTIVE",
+        message: "This tender already has a workflow run in progress.",
+        details: { active_run_id: "run-1" },
+      },
+    });
+  }
+
+  it("shows the active run as if this click had started it, with no error", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listDocuments.mockResolvedValue([parsedDocument()]);
+    createWorkflowRun.mockRejectedValue(activeRunConflict());
+    getWorkflowRun.mockResolvedValue(activeRun());
+    listWorkflowTasks.mockResolvedValue([task({})]);
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    renderAt("tender-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start processing" }));
+
+    expect(await screen.findByText("Requirement extraction")).toBeInTheDocument();
+    expect(getWorkflowRun).toHaveBeenCalledWith("run-1");
+    expect(listWorkflowTasks).toHaveBeenCalledWith("run-1");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start processing" })).toBeNull();
+  });
+
+  it("still explains a 409 for documents that are not parsed yet", async () => {
+    listWorkflowRuns.mockResolvedValue([]);
+    listDocuments.mockResolvedValue([parsedDocument()]);
+    createWorkflowRun.mockRejectedValue(
+      new ApiError(409, { error: { code: "DOCUMENTS_NOT_READY", message: "x" } }),
+    );
+    renderAt("tender-1");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Start processing" }));
+
+    expect(
+      await screen.findByText("All documents must finish parsing before processing can start."),
+    ).toBeInTheDocument();
+    expect(getWorkflowRun).not.toHaveBeenCalled();
   });
 });
