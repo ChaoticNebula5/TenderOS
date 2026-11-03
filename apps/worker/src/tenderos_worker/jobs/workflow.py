@@ -28,6 +28,13 @@ from tenderos_worker.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Every workflow-queue job's RQ timeout: run, resume, verification,
+# knowledge import, reanalysis (outbox_dispatcher._QUEUE_TIMEOUTS_SECONDS
+# reads this) and the scheduled retry below. One number, so the retry
+# cannot drift from the rest again (plan item 44: it was enqueued with RQ's
+# 180 s default).
+WORKFLOW_JOB_TIMEOUT_SECONDS = 1800
+
 # TenderState.retry_budget_remaining's own seed value (jobs/workflow.py's
 # initial_state below), reused here as a constant ceiling - see
 # _handle_graph_failure's own docstring for why the LIVE countdown lives in
@@ -108,7 +115,12 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
 
     connection = Redis.from_url(settings.redis_url)
     queue = Queue("workflow", connection=connection)
-    queue.enqueue_in(timedelta(seconds=decision.delay_seconds), retry_workflow_run_job, str(run_id))
+    queue.enqueue_in(
+        timedelta(seconds=decision.delay_seconds),
+        retry_workflow_run_job,
+        str(run_id),
+        job_timeout=WORKFLOW_JOB_TIMEOUT_SECONDS,
+    )
     logger.info(
         "workflow run %s: scheduled a retry in %.1fs after %s (task %s, attempt %d/%d)",
         run_id,

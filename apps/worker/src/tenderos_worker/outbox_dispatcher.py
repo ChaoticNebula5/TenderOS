@@ -44,7 +44,11 @@ from tenderos_worker.jobs.operations import run_operation_job
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
 from tenderos_worker.jobs.verification import verify_requirement_job
-from tenderos_worker.jobs.workflow import resume_workflow_job, run_workflow_job
+from tenderos_worker.jobs.workflow import (
+    WORKFLOW_JOB_TIMEOUT_SECONDS,
+    resume_workflow_job,
+    run_workflow_job,
+)
 from tenderos_worker.settings import settings
 from tenderos_worker.worker import OPERATIONS_QUEUE
 
@@ -99,7 +103,7 @@ DEFAULT_QUEUE_NAME = "maintenance"
 # large document is the same "real work takes real time" shape. Anything not
 # listed here keeps RQ's default.
 _QUEUE_TIMEOUTS_SECONDS: dict[str, int] = {
-    "workflow": 1800,
+    "workflow": WORKFLOW_JOB_TIMEOUT_SECONDS,
     "ingestion": 600,
 }
 
