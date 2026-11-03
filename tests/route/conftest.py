@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from neo4j import AsyncGraphDatabase
 from neo4j import AsyncSession as Neo4jSession
 from redis.asyncio import Redis as AsyncRedis
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from tenderos_api import main as api_main
 from tenderos_api import rate_limit
@@ -27,41 +26,13 @@ if sys.platform == "win32":
     # this process, so this stays consistent with the rest of the suite.
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Duplicated from tests/integration/conftest.py rather than imported - pytest's
-# default "prepend" import mode adds each conftest-owning directory to
-# sys.path individually (neither tests/integration/ nor tests/route/ has an
-# __init__.py), so a bare `from tests._x import y` doesn't reliably resolve
-# without also changing sys.path/rootdir config. A ~30-line duplication of a
-# guard/schema fixture that rarely changes, and fails loudly if it drifts, is
-# a smaller risk than fragile cross-directory imports in test infrastructure.
-_TEST_DB_SUFFIX = "_test"
 
-
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def _guard_test_database():
-    engine = create_async_engine(settings.postgres_dsn)
-    async with engine.connect() as conn:
-        db_name = (await conn.execute(text("SELECT current_database()"))).scalar_one()
-    await engine.dispose()
-    if not db_name.endswith(_TEST_DB_SUFFIX):
-        raise RuntimeError(
-            f"refusing to run: connected to database {db_name!r}, which does "
-            f"not look like a test database (must end in {_TEST_DB_SUFFIX!r}). "
-            f"tests/route/ shares the same _clean_tables teardown risk as "
-            f"tests/integration/ - point POSTGRES_DSN at a database ending in "
-            f"'_test' before running pytest. `make test` does this for you."
-        )
-
-
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def _schema(_guard_test_database):
-    engine = create_async_engine(settings.postgres_dsn)
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
-    yield
+@pytest.fixture(scope="session", autouse=True)
+def _schema(_models_schema):
+    # The same guard and rebuild as tests/integration/, from
+    # tests/conftest.py's _models_schema (plan item 42): one session fixture,
+    # so a run of both directories rebuilds once.
+    return
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -117,9 +88,8 @@ async def _get_neo4j_session_no_pooling() -> AsyncIterator[Neo4jSession]:
     # own trigger-route test needed the identical fix (check_graph_
     # contradictions, one of redteam's 5 checks, calls graph_service too) -
     # a second file needing this is what makes a shared conftest fixture
-    # correct rather than premature; unlike _guard_test_database above,
-    # there's no cross-directory import fragility here since both files
-    # already live in tests/route/.
+    # correct rather than premature; both files already live in
+    # tests/route/.
     #
     # graph_projection.driver.driver is a module-level singleton whose
     # connection pool binds to whichever event loop first used it.

@@ -8,7 +8,8 @@ in exactly that state by hand (documents' two, employees' one); this test
 stops the next one from landing unnoticed (KNOWN_LIMITATIONS.md).
 
 It builds two separate scratch databases, one with create_all() (the same
-steps as tests/integration/conftest.py's fixture) and one with a real
+build_from_models() every pytest session's rebuild runs, tests/models_schema.py)
+and one with a real
 `alembic upgrade head`, and compares, read from the Postgres catalog:
 - every constraint (primary key, unique, check, foreign key) and its
   definition;
@@ -32,9 +33,9 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from models_schema import build_from_models
 from sqlalchemy import create_engine, text
 from tenderos_backend.core.config import settings
-from tenderos_backend.db.models import Base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -179,16 +180,16 @@ def test_create_all_schema_matches_a_real_migrated_schema(monkeypatch):
     _create_scratch_database(admin_sync_dsn, orm_db)
     _create_scratch_database(admin_sync_dsn, migration_db)
     try:
-        # ORM side - same two-extension-then-create_all sequence
-        # tests/integration/conftest.py's own _schema fixture uses, so
-        # this test's own "orm side" is exactly what every other
-        # integration test in this suite actually runs against.
+        # ORM side - the same build_from_models() the session's rebuild
+        # runs (tests/models_schema.py), so this test's own "orm side" is
+        # exactly what every other integration test actually runs against.
+        # Called directly, not through rebuild_from_models(): a fresh
+        # scratch database has nothing to drop, and its name does not end
+        # in "_test".
         orm_engine = create_engine(orm_sync_dsn)
         try:
             with orm_engine.begin() as conn:
-                conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                Base.metadata.create_all(conn)
+                build_from_models(conn)
         finally:
             orm_engine.dispose()
 
