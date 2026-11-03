@@ -13,6 +13,7 @@ state change, so a status the web app is told about is always committed.
 """
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -41,21 +42,30 @@ JOB_TIMEOUT_SECONDS: dict[str, int] = {
 }
 LEASE_MARGIN = timedelta(seconds=60)
 
-# Design number, not measured. The longest an operation may stay queued
-# before the reaper fails it as DISPATCH_FAILED. It must outlast the
-# outbox's full retry span, or an event still being retried would lose its
-# operation: 8 attempts with waits of 30, 60, 120, 240, 300, 300 and 300 s
-# are 22.5 minutes at most (outbox_dispatcher.MAX_ATTEMPTS; jitter only
-# shortens them). 60 minutes is about 2.7 times that, and also covers a job
-# already enqueued but waiting behind one full 30-minute operation (the
-# longest job timeout above): since Stage 2 operations have their own
-# "operations" queue and worker, so workflow jobs no longer delay them, but
-# operations still run one at a time. Re-checked for Stage 2; the number
-# stands. A dead-lettered request is failed at once by the
-# dispatcher (fail_undispatched_operation); this window is the backstop for
-# everything else that leaves one queued (a Redis outage longer than the
-# window, which does not use up attempts; a stopped dispatcher or worker).
-MAX_DISPATCH_WINDOW = timedelta(minutes=60)
+# Phase 4 plan item 44. A queued operation is failed as DISPATCH_FAILED in
+# two cases, and waiting is neither of them:
+# - Lost: its OperationRequested event was dispatched (so it had an RQ job)
+#   and RQ no longer knows that job, in the queue or any registry
+#   (reap_lost_queued_operations; the check is the dispatcher's, which owns
+#   the Redis connection). Before, any operation queued for 60 minutes was
+#   failed, even one only waiting its turn behind other tenants' operations,
+#   which run one at a time, up to 30 minutes each.
+# - Past MAX_QUEUED_AGE, whatever RQ says (reap_queued_past_cap): the
+#   backstop for a job RQ still holds that will never run, such as one that
+#   failed before it could claim its operation (kept in RQ's failed registry
+#   for a year), or a request whose dispatch never happens.
+#
+# Design number, not measured: 6 hours. It must not fire on a working
+# system: it is 12 maximum-length operations (30 min) waiting ahead, far
+# deeper than one operations worker should ever be allowed to queue (item
+# 25's replicas are the fix for that), 16 times the outbox's longest retry
+# span (22.5 min: 8 attempts, outbox_dispatcher.MAX_ATTEMPTS), and a
+# several-hour Redis or worker outage. And it bounds the one case only it
+# catches, a job that exists but will never run, to 6 hours rather than
+# forever.
+# A dead-lettered request is still failed at once by the dispatcher
+# (fail_undispatched_operation).
+MAX_QUEUED_AGE = timedelta(hours=6)
 
 
 def lease_for(kind: str) -> timedelta:
@@ -159,13 +169,34 @@ async def reap_lapsed_operations(batch_size: int) -> list[uuid.UUID]:
         return reaped
 
 
-async def reap_stale_queued_operations(batch_size: int) -> list[uuid.UUID]:
-    """Fail operations still queued past MAX_DISPATCH_WINDOW
-    (DISPATCH_FAILED), at most batch_size, each with its status event, so
+async def reap_lost_queued_operations(
+    batch_size: int, job_is_known: Callable[[uuid.UUID], Awaitable[bool]]
+) -> list[uuid.UUID]:
+    """Fail as DISPATCH_FAILED, with their status events, the queued
+    operations whose request was dispatched but whose RQ job RQ no longer
+    knows (`job_is_known` False), at most batch_size checked per call. One
+    still waiting in the queue, or running, is left alone. Run from the
+    outbox dispatcher's loop, which supplies the RQ check."""
+    async with UnitOfWork() as uow:
+        candidates = await uow.operations.list_dispatched_queued(batch_size)
+    lost = [operation_id for operation_id in candidates if not await job_is_known(operation_id)]
+    if not lost:
+        return []
+    async with UnitOfWork() as uow:
+        reaped = await uow.operations.fail_queued(lost)
+        for operation_id in reaped:
+            await _status_event(uow, operation_id, "failed")
+        await uow.commit()
+        return reaped
+
+
+async def reap_queued_past_cap(batch_size: int) -> list[uuid.UUID]:
+    """Fail operations still queued past MAX_QUEUED_AGE (DISPATCH_FAILED),
+    at most batch_size, each with its status event, whatever RQ says, so
     the tender can request that kind of operation again. Run from the
     outbox dispatcher's loop."""
     async with UnitOfWork() as uow:
-        reaped = await uow.operations.fail_stale_queued(MAX_DISPATCH_WINDOW, batch_size)
+        reaped = await uow.operations.fail_stale_queued(MAX_QUEUED_AGE, batch_size)
         for operation_id in reaped:
             await _status_event(uow, operation_id, "failed")
         await uow.commit()

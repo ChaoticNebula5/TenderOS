@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from _helpers import register_org_and_tender
+from redis import Redis
+from rq import Queue
 from sqlalchemy import func, select, update
 from tenderos_backend.agents.llm.client import LLMTimeoutError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
@@ -45,7 +47,10 @@ from tenderos_backend.domain.services import (
 )
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_worker.jobs import operations as operation_jobs
-from tenderos_worker.jobs.operations import run_operation
+from tenderos_worker.jobs.operations import run_operation, run_operation_job
+from tenderos_worker.outbox_dispatcher import operation_job_id, operation_job_known
+from tenderos_worker.settings import settings
+from tenderos_worker.worker import OPERATIONS_QUEUE
 
 pytestmark = pytest.mark.asyncio
 
@@ -302,47 +307,146 @@ async def test_the_reaper_fails_a_lapsed_operation_and_leaves_a_live_one_alone()
     assert await operation_service.reap_lapsed_operations(batch_size=100) == []
 
 
-async def test_the_reaper_fails_an_operation_queued_past_the_window_and_leaves_a_recent_one(
-    monkeypatch,
-):
-    stale_req = await _request("op-reap-stale@example.com")
-    recent_req = await _request("op-reap-recent@example.com")
-    stale_id, recent_id = stale_req.operation.id, recent_req.operation.id
+# --- the queued reapers: lost jobs, and the absolute cap (plan item 44) ------
+#
+# Real RQ on the test Redis: the operations queue has no worker in the test
+# process, so a job enqueued here stays queued, as one waiting behind another
+# tenant's long operation does. The check is the dispatcher's own
+# (outbox_dispatcher.operation_job_known).
 
-    # stale_id was requested a minute past the window ago and never claimed.
+
+@pytest.fixture
+def operations_queue():
+    connection = Redis.from_url(settings.redis_url)
+    queue = Queue(OPERATIONS_QUEUE, connection=connection)
+    enqueued: list[str] = []
+
+    def enqueue(operation_id: uuid.UUID) -> None:
+        job_id = operation_job_id(operation_id)
+        queue.enqueue(run_operation_job, str(operation_id), job_id=job_id)
+        enqueued.append(job_id)
+
+    yield connection, enqueue
+    for job_id in enqueued:
+        job = queue.fetch_job(job_id)
+        if job is not None:
+            job.delete()
+    connection.close()
+
+
+async def _mark_dispatched(operation_id: uuid.UUID) -> None:
     async with UnitOfWork() as uow:
         await uow.session.execute(
-            update(AsyncOperation)
-            .where(AsyncOperation.id == stale_id)
-            .values(
-                created_at=func.now() - operation_service.MAX_DISPATCH_WINDOW - timedelta(minutes=1)
+            update(OutboxEvent)
+            .where(
+                OutboxEvent.aggregate_id == operation_id,
+                OutboxEvent.event_type == EVENT_OPERATION_REQUESTED,
             )
+            .values(status="dispatched")
         )
         await uow.commit()
 
-    reaped = await operation_service.reap_stale_queued_operations(batch_size=100)
 
-    assert reaped == [stale_id]
-    failed = await _reload(stale_id)
+async def _requested_ago(operation_id: uuid.UUID, age: timedelta) -> None:
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(AsyncOperation)
+            .where(AsyncOperation.id == operation_id)
+            .values(created_at=func.now() - age)
+        )
+        await uow.commit()
+
+
+async def test_an_operation_waiting_behind_another_long_job_is_not_failed(operations_queue):
+    """Queued two hours (past the old 60-minute window), its job still in
+    RQ's queue behind another tenant's: it is waiting, not lost."""
+    connection, enqueue = operations_queue
+    ahead = await _request("op-reap-ahead@example.com", kind="proposal_generation")
+    waiting = await _request("op-reap-waiting@example.com")
+    for requested in (ahead, waiting):
+        await _mark_dispatched(requested.operation.id)
+        enqueue(requested.operation.id)
+    await _requested_ago(waiting.operation.id, timedelta(hours=2))
+
+    lost = await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+    capped = await operation_service.reap_queued_past_cap(batch_size=100)
+
+    assert lost == [] and capped == []
+    assert (await _reload(waiting.operation.id)).status == "queued"
+    assert await _statuses_announced(waiting.operation.id) == ["queued"]
+
+
+async def test_an_operation_whose_rq_job_is_gone_is_failed(operations_queue):
+    """Dispatched, but RQ holds no job for it any more (lost between enqueue
+    and start): failed as DISPATCH_FAILED at once, however recent. One whose
+    request is still pending has had no job yet (the outbox may be
+    retrying) and is left alone."""
+    connection, enqueue = operations_queue
+    gone = await _request("op-reap-gone@example.com")
+    pending = await _request("op-reap-pending@example.com")
+    await _mark_dispatched(gone.operation.id)
+    enqueue(gone.operation.id)
+    Queue(OPERATIONS_QUEUE, connection=connection).fetch_job(
+        operation_job_id(gone.operation.id)
+    ).delete()
+
+    reaped = await operation_service.reap_lost_queued_operations(
+        100, operation_job_known(connection)
+    )
+
+    assert reaped == [gone.operation.id]
+    failed = await _reload(gone.operation.id)
     assert failed.status == "failed"
     assert failed.error_code == DISPATCH_FAILED
     assert failed.finished_at is not None
-    assert await _statuses_announced(stale_id) == ["queued", "failed"]
-    assert (await _reload(recent_id)).status == "queued"
+    assert await _statuses_announced(gone.operation.id) == ["queued", "failed"]
+    assert (await _reload(pending.operation.id)).status == "queued"
+    assert (
+        await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+        == []
+    )
+
+
+async def test_an_operation_past_the_cap_is_failed_even_while_rq_holds_its_job(
+    operations_queue, monkeypatch
+):
+    """The backstop: a job RQ still holds but that will never run (say it
+    failed before claiming) cannot keep its operation queued past the cap.
+    A recent one is left alone."""
+    connection, enqueue = operations_queue
+    stale = await _request("op-reap-stale@example.com")
+    recent = await _request("op-reap-recent@example.com")
+    for requested in (stale, recent):
+        await _mark_dispatched(requested.operation.id)
+        enqueue(requested.operation.id)
+    await _requested_ago(
+        stale.operation.id, operation_service.MAX_QUEUED_AGE + timedelta(minutes=1)
+    )
+
+    lost = await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+    capped = await operation_service.reap_queued_past_cap(batch_size=100)
+
+    assert lost == []
+    assert capped == [stale.operation.id]
+    failed = await _reload(stale.operation.id)
+    assert failed.status == "failed"
+    assert failed.error_code == DISPATCH_FAILED
+    assert await _statuses_announced(stale.operation.id) == ["queued", "failed"]
+    assert (await _reload(recent.operation.id)).status == "queued"
 
     # A late delivery of the failed operation does nothing.
     handler = _CountingHandler()
     _replace_redteam_handler(monkeypatch, handler)
-    await run_operation(str(stale_id))
+    await run_operation(str(stale.operation.id))
     assert handler.calls == []
-    assert (await _reload(stale_id)).status == "failed"
+    assert (await _reload(stale.operation.id)).status == "failed"
     # The tender can request a red team again.
     again = await operation_service.request_operation(
         failed.organization_id, failed.tender_id, "redteam_run", failed.requested_by
     )
     assert again.created is True
-    assert again.operation.id != stale_id
-    assert await operation_service.reap_stale_queued_operations(batch_size=100) == []
+    assert again.operation.id != stale.operation.id
+    assert await operation_service.reap_queued_past_cap(batch_size=100) == []
 
 
 async def test_an_llm_timeout_ends_the_operation_failed_with_llm_timeout(monkeypatch):

@@ -454,7 +454,7 @@ async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
         calls["idempotency"].append(batch_size)
         return 0
 
-    async def counted_reaper():
+    async def counted_reaper(connection):
         calls["reaper"].append(1)
 
     monkeypatch.setattr(outbox_dispatcher, "_dispatch_once", no_events)
@@ -716,7 +716,11 @@ async def test_a_reaper_failure_is_logged_and_does_not_escape(monkeypatch, caplo
 
     monkeypatch.setattr(operation_service, "reap_lapsed_operations", broken)
 
-    with caplog.at_level(logging.WARNING, logger=outbox_dispatcher.logger.name):
-        await outbox_dispatcher._reap_lapsed_operations()
+    connection = Redis.from_url(settings.redis_url)
+    try:
+        with caplog.at_level(logging.WARNING, logger=outbox_dispatcher.logger.name):
+            await outbox_dispatcher._reap_lapsed_operations(connection)
+    finally:
+        connection.close()
 
     assert any("reap" in r.getMessage().lower() for r in caplog.records)
