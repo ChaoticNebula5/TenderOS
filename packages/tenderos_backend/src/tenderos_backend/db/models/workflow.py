@@ -22,6 +22,9 @@ from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKey
 # other three are terminal: nothing moves a run out of them on purpose.
 # The web screen's NON_TERMINAL_STATUSES is the same set.
 ACTIVE_RUN_STATUSES = ("queued", "running", "waiting_for_human")
+# Plan item 44 (the cancellation race): nothing moves a run out of these.
+# WorkflowRepository.update_run_status refuses to, in its own UPDATE.
+TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled")
 
 
 class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

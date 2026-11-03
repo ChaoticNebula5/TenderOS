@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.workflow import WorkflowRun
-from tenderos_backend.db.repositories.workflow import WorkflowRepository
+from tenderos_backend.db.repositories.workflow import RunNoLongerActiveError, WorkflowRepository
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import EVENT_WORKFLOW_RUN_CREATED
 from tenderos_backend.domain.services import workflow_service
@@ -129,12 +129,14 @@ async def test_a_tender_whose_run_finished_can_start_another(terminal):
     assert await _counts(tender.id) == (2, 2)
 
 
-async def test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_active():
-    """The known cancellation race (KNOWN_LIMITATIONS, "Cancellation-during-
-    execution race, remaining half"): a node still running in a cancelled
-    run's job can write a non-terminal status over "cancelled". With a newer
-    run active, the index now refuses that write instead of leaving two
-    runs active; the cancelled run stays cancelled."""
+async def test_a_write_reviving_a_cancelled_run_is_refused_while_a_newer_run_is_active():
+    """The cancellation race (KNOWN_LIMITATIONS): a node still running in a
+    cancelled run's job writes a non-terminal status over "cancelled". Item
+    43's index refused it with an IntegrityError when a newer run was
+    active; since item 44 the status write itself refuses to leave a
+    terminal status, before the index is reached, and the cancelled run
+    stays cancelled (tests/integration/test_cancellation_race.py covers the
+    job's quiet stop)."""
     registered, tender = await _ready_tender("revive")
     old = await _start(registered, tender)
     async with UnitOfWork() as uow:
@@ -142,7 +144,7 @@ async def test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_activ
         await uow.commit()
     new = await _start(registered, tender)
 
-    with pytest.raises(IntegrityError, match=_INDEX):
+    with pytest.raises(RunNoLongerActiveError):
         await workflow_service.sync_run_status(old.id, "drafting")
 
     async with UnitOfWork() as uow:

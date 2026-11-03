@@ -4,7 +4,7 @@ import pytest
 from _helpers import make_ready_run_inputs
 from langgraph.graph import END
 from langgraph.types import Send
-from sqlalchemy import select
+from sqlalchemy import select, update
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import workflow_service
@@ -153,6 +153,17 @@ async def test_gate_node_opens_exactly_one_gate_even_when_rerun(
     state = _base_state(run)
 
     first = await node(state)
+    if gate_type == "final_readiness":
+        # The patched interrupt approves at once, so this first call already
+        # completed the run, which a real run cannot do here. A real rerun
+        # of the node is its replay after resume_workflow's claim, with the
+        # run back in "running"; put it there, since a status write never
+        # leaves "completed" (plan item 44).
+        async with UnitOfWork() as uow:
+            await uow.session.execute(
+                update(WorkflowRun).where(WorkflowRun.id == run.id).values(status="running")
+            )
+            await uow.commit()
     second = await node(state)
 
     # compliance_gate_node/resource_selection_gate_node/

@@ -1,10 +1,20 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.workflow import ApprovalGate
+from tenderos_backend.db.repositories.workflow import RunNoLongerActiveError, WorkflowRepository
+
+# Plan item 44: a pending gate of a cancelled run is closed with this
+# status and payload. "rejected" because every existing check reads a gate
+# that is not "pending" as decided (gate_service.record_decision answers a
+# new decision with GateAlreadyDecidedError; the web panel shows it
+# decided). The payload's decision is None, so no later decision is ever
+# taken for a replay of it.
+CLOSED_BY_CANCEL_STATUS = "rejected"
+CLOSED_BY_CANCEL_PAYLOAD = {"decision": None, "closed_by": "run_cancelled"}
 
 
 class GateRepository:
@@ -25,6 +35,13 @@ class GateRepository:
         # caller (requirement_gate_node/final_gate_node) needs that id to
         # build the payload before this row exists - same pattern
         # WorkflowRepository.create_run uses for langgraph_thread_id.
+        #
+        # Plan item 44: only for an active run, checked in this same
+        # transaction with the run's row share-locked, so a cancel either
+        # committed first (nothing is opened) or waits and then closes this
+        # gate with the run's other pending ones.
+        if not await WorkflowRepository(self._session).is_active_for_update(workflow_run_id):
+            raise RunNoLongerActiveError(workflow_run_id, f"opening a {gate_type} gate")
         gate = ApprovalGate(
             id=gate_id,
             tender_id=tender_id,
@@ -54,6 +71,25 @@ class GateRepository:
             select(ApprovalGate)
             .where(ApprovalGate.workflow_run_id == workflow_run_id)
             .order_by(ApprovalGate.requested_at)
+        )
+        return list(result.scalars().all())
+
+    async def close_pending_for_run(self, workflow_run_id: uuid.UUID) -> list[uuid.UUID]:
+        """Close every pending gate of a run (its cancel), and return their
+        ids. One UPDATE; a decided gate is left as it was."""
+        result = await self._session.execute(
+            update(ApprovalGate)
+            .where(
+                ApprovalGate.workflow_run_id == workflow_run_id,
+                ApprovalGate.status == "pending",
+            )
+            .values(
+                status=CLOSED_BY_CANCEL_STATUS,
+                decision_payload=CLOSED_BY_CANCEL_PAYLOAD,
+                decided_at=func.now(),
+            )
+            .returning(ApprovalGate.id)
+            .execution_options(synchronize_session="fetch")
         )
         return list(result.scalars().all())
 

@@ -13,6 +13,7 @@ from rq.timeouts import JobTimeoutException
 from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.workflow_service import (
+    RunNoLongerActiveError,
     claim_run_for_resume,
     claim_run_for_start,
     is_cancelled,
@@ -27,6 +28,18 @@ from tenderos_backend.orchestration.state import TenderState
 from tenderos_worker.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _stop_quietly(exc: RunNoLongerActiveError) -> None:
+    """Plan item 44: the run was completed, failed or cancelled while this
+    job worked on it, and a status write or a gate was refused. That is the
+    run's outcome, not this job's failure: one INFO line, and the job
+    returns normally (no traceback, no RQ failure, no retry, no "failed"
+    write)."""
+    logger.info(
+        "workflow run %s is no longer active; refused %s, job stopped", exc.run_id, exc.attempted
+    )
+
 
 # Every workflow-queue job's RQ timeout: run, resume, verification,
 # knowledge import, reanalysis (outbox_dispatcher._QUEUE_TIMEOUTS_SECONDS
@@ -196,6 +209,9 @@ async def run_workflow(workflow_run_id: str) -> None:
             graph = build_graph(checkpointer)
             await graph.ainvoke(initial_state, config)
         logger.info("workflow run %s paused or completed", run_id)
+    except RunNoLongerActiveError as exc:
+        _stop_quietly(exc)
+        return
     except Exception as exc:
         # Individual specialist nodes mark their own WorkflowTask failed
         # before re-raising (see orchestration/nodes/compliance.py etc.),
@@ -289,6 +305,9 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
             #    the interrupt it was made for.
             resume_command: Command[str] = Command(resume={pending.id: gate.decision_payload})
             await graph.ainvoke(resume_command, config)
+    except RunNoLongerActiveError as exc:
+        _stop_quietly(exc)
+        return
     except Exception as exc:
         # See run_workflow's identical catch above - same gap, same fix,
         # including the re-check of cancellation-during-execution.
@@ -334,6 +353,9 @@ async def retry_workflow_run(workflow_run_id: str) -> None:
             graph = build_graph(checkpointer)
             await graph.ainvoke(None, config)
         logger.info("workflow run %s paused or completed after retry", run_id)
+    except RunNoLongerActiveError as exc:
+        _stop_quietly(exc)
+        return
     except Exception as exc:
         logger.exception("workflow run %s failed again during retry", run_id)
         if not await is_cancelled(run_id):
