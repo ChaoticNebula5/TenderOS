@@ -11,9 +11,10 @@ streams requested), then the commercial-gate approval, which resumes the
 workflow, and the tab's next /tasks request, which only a pushed event can
 cause. This script reports that sequence from the server's side.
 
-Input: `docker compose logs --no-color --timestamps` for api and the workers
-(workflow jobs on workflow_worker, event consumers on maintenance_worker,
-since plan item 44).
+Inputs: `docker compose logs --no-color --timestamps` for api and
+workflow_worker (the workflow worker's own service since plan item 44), and,
+with --outbox, the run's workflow outbox rows exported by
+scripts/e2e_outbox_export.sql.
 - The approval: the api's access line for the last `POST /gates/<id>/decision`
   before the first `POST /tenders/<id>/proposal/generate` (the commercial
   gate is the last gate the spec approves before generating the proposal).
@@ -29,17 +30,22 @@ since plan item 44).
 - The resume job: the first workflow job the worker starts after the
   approval ("workflow: tenderos_worker.jobs.workflow.<job>(" to
   "Successfully completed ...<job>(").
-- Workflow events: the worker's "Successfully completed tenderos_worker.
-  jobs.placeholder.process_outbox_event('<id>', 'workflow_...', '<Type>')"
-  lines. The api's SSE pushes are not logged (it polls the outbox about
-  once a second), so the last such line before the refetch is a proxy for
-  the event pushed to the tab, not the push itself.
+- Workflow events: the outbox rows' own creation times (--outbox). The
+  api's stream polls the outbox table about once a second and pushes what
+  it finds, so the last row written before the refetch is what the tab was
+  told about; the push itself is not logged. Until plan item 44 this used
+  the worker's dispatch line for each row instead, which waits behind
+  whatever job that worker is running: in CI the rows written during the
+  resume job were all dispatched after it (KNOWN_LIMITATIONS, item 44).
+  created_at is the writing transaction's now(), from the same host clock
+  as the log timestamps.
 
 Output: a Markdown table (for the job summary) and, with --json, a JSON
 file. This records, it does not judge: the exit code is 0 whenever the log
 could be read, 2 when it could not.
 
-Run: uv run python scripts/e2e_step11_timeline.py <compose.log> [--json out.json]
+Run: uv run python scripts/e2e_step11_timeline.py <compose.log> [--outbox outbox.tsv]
+     [--json out.json]
 """
 
 import argparse
@@ -59,9 +65,10 @@ _TASKS = re.compile(r'"GET /workflow-runs/[^/ ]+/tasks HTTP')
 _STREAM = re.compile(r'"GET /workflow-runs/[^/ ]+/events/stream')
 _JOB_START = re.compile(r"workflow: tenderos_worker\.jobs\.workflow\.(?P<job>\w+)\(")
 _JOB_END = re.compile(r"Successfully completed tenderos_worker\.jobs\.workflow\.(?P<job>\w+)\(")
-_WORKFLOW_EVENT = re.compile(
-    r"Successfully completed tenderos_worker\.jobs\.placeholder\.process_outbox_event\("
-    r"'[^']*', 'workflow_\w+', '(?P<type>\w+)'\)"
+# One exported outbox row: "<UTC timestamp>\t<aggregate_type>\t<event_type>",
+# the timestamp as Postgres prints a timestamp without time zone.
+_OUTBOX_ROW = re.compile(
+    r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)\t(?P<aggregate>workflow\w*)\t(?P<type>\w+)$"
 )
 
 
@@ -90,14 +97,24 @@ def _iso(moment: datetime | None) -> str | None:
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z") if moment else None
 
 
-def read_timeline(log_text: str) -> Timeline:
+def read_outbox(outbox_text: str) -> list[tuple[datetime, str]]:
+    """(created_at, event_type) for each exported workflow outbox row."""
+    rows = []
+    for raw in outbox_text.splitlines():
+        match = _OUTBOX_ROW.match(raw.strip())
+        if match:
+            rows.append((_parse_ts(match["ts"].replace(" ", "T") + "Z"), match["type"]))
+    return rows
+
+
+def read_timeline(log_text: str, outbox_text: str | None = None) -> Timeline:
     decisions: list[datetime] = []
     proposal: datetime | None = None
     tasks: list[datetime] = []
     streams: list[datetime] = []
     job_starts: list[tuple[datetime, str]] = []
     job_ends: list[tuple[datetime, str]] = []
-    events: list[tuple[datetime, str]] = []
+    events = read_outbox(outbox_text) if outbox_text is not None else []
 
     for raw in log_text.splitlines():
         match = _LINE.match(raw)
@@ -113,10 +130,8 @@ def read_timeline(log_text: str) -> Timeline:
                 tasks.append(moment)
             elif _STREAM.search(msg):
                 streams.append(moment)
-        elif service in ("workflow_worker", "maintenance_worker"):
-            if event := _WORKFLOW_EVENT.search(msg):
-                events.append((moment, event["type"]))
-            elif start := _JOB_START.search(msg):
+        elif service == "workflow_worker":
+            if start := _JOB_START.search(msg):
                 job_starts.append((moment, start["job"]))
             elif end := _JOB_END.search(msg):
                 job_ends.append((moment, end["job"]))
@@ -161,8 +176,10 @@ def read_timeline(log_text: str) -> Timeline:
         note = "no /tasks request after the approval: no push reached the open tab"
     elif between:
         note = "a stream reopened between the approval and the refetch: it may not be a push"
+    elif outbox_text is None:
+        note = "no outbox export given, so no workflow event to read"
     elif event_type is None:
-        note = "no workflow event logged between the approval and the refetch"
+        note = "no workflow outbox row written between the approval and the refetch"
     else:
         note = "refetch after a workflow event, no reconnect"
     if proposal is None:
@@ -200,7 +217,7 @@ def to_markdown(timeline: Timeline) -> str:
         ("Job started", timeline.job_started or "n/a"),
         ("Job ended", timeline.job_ended or "n/a"),
         (
-            "Last workflow event before the refetch (worker log, a proxy for the push)",
+            "Last workflow event before the refetch (outbox row written)",
             "n/a"
             if timeline.event_before_refetch is None
             else f"{timeline.event_before_refetch}, "
@@ -217,14 +234,16 @@ def to_markdown(timeline: Timeline) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("log", type=Path)
+    parser.add_argument("--outbox", type=Path)
     parser.add_argument("--json", type=Path)
     args = parser.parse_args(argv)
     try:
         text = args.log.read_text(encoding="utf-8", errors="replace")
+        outbox = args.outbox.read_text(encoding="utf-8", errors="replace") if args.outbox else None
     except OSError as exc:
-        print(f"could not read {args.log}: {exc}", file=sys.stderr)
+        print(f"could not read an input: {exc}", file=sys.stderr)
         return 2
-    timeline = read_timeline(text)
+    timeline = read_timeline(text, outbox)
     print(to_markdown(timeline))
     if args.json:
         args.json.write_text(json.dumps(asdict(timeline), indent=2) + "\n", encoding="utf-8")
