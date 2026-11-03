@@ -69,6 +69,40 @@ async def test_create_workflow_run_rejects_when_documents_are_not_parsed(
 
     assert response.status_code == 409, response.text
     assert response.json()["error"]["code"] == "DOCUMENTS_NOT_READY"
+    # Only WORKFLOW_RUN_ACTIVE carries details; every other error's body is
+    # unchanged (plan item 43).
+    assert "details" not in response.json()["error"]
+
+
+async def test_a_second_run_while_one_is_active_answers_409_naming_it(
+    client: TestClient, register_actor
+):
+    """Phase 4 plan item 43: a second Start processing, with its own
+    Idempotency-Key (each click mints one), is refused with the active
+    run's id, not a 500 from the unique index and not a second run."""
+    headers, _, org_id = register_actor()
+    tender_id = await _tender_with_parsed_document(client, headers, org_id)
+    first = client.post(
+        f"/tenders/{tender_id}/workflow-runs",
+        headers={**headers, "Idempotency-Key": "first-click"},
+    )
+    assert first.status_code == 202, first.text
+
+    second = client.post(
+        f"/tenders/{tender_id}/workflow-runs",
+        headers={**headers, "Idempotency-Key": "second-click"},
+    )
+
+    assert second.status_code == 409, second.text
+    assert second.json() == {
+        "error": {
+            "code": "WORKFLOW_RUN_ACTIVE",
+            "message": "This tender already has a workflow run in progress.",
+            "details": {"active_run_id": first.json()["id"]},
+        }
+    }
+    runs = client.get(f"/tenders/{tender_id}/workflow-runs", headers=headers).json()
+    assert [run["id"] for run in runs] == [first.json()["id"]]
 
 
 async def test_get_workflow_run_returns_the_real_run(client: TestClient, register_actor):

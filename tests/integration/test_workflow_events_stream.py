@@ -79,9 +79,13 @@ async def test_stream_emits_a_heartbeat_then_a_real_task_created_event():
 
 async def test_stream_ignores_events_from_a_different_run():
     tender_id = await _make_tender("SSE Cross-Run Isolation Test")
+    # One active run per tender (plan item 43): the other run is finished
+    # before the watched one starts; its task event still lands on the
+    # tender's same stream query, which must ignore it by run id.
     async with UnitOfWork() as uow:
-        watched_run = await uow.workflow.create_run(tender_id, "v1", {})
         other_run = await uow.workflow.create_run(tender_id, "v1", {})
+        await uow.workflow.update_run_status(other_run.id, "completed")
+        watched_run = await uow.workflow.create_run(tender_id, "v1", {})
         await uow.commit()
 
     gen = _workflow_progress_stream(watched_run.id)

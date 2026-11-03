@@ -49,6 +49,11 @@ async def _make_user() -> uuid.UUID:
 async def test_sum_cost_for_run_is_scoped_and_coalesces_null_to_zero():
     org_id, tender_id = await _make_org_and_tender("CostSumScoping")
     run_id = await _make_run(tender_id)
+    # One active run per tender (plan item 43): the first run is finished
+    # before the tender's second one starts. The sum is per run either way.
+    async with UnitOfWork() as uow:
+        await uow.workflow.update_run_status(run_id, "completed")
+        await uow.commit()
     other_run_id = await _make_run(tender_id)
 
     async with UnitOfWork() as uow:

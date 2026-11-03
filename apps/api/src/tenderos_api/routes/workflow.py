@@ -8,7 +8,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import tender_service, workflow_service
 
 from tenderos_api.dependencies import require_permission, require_permission_for_sse
-from tenderos_api.errors import DocumentsNotReadyError
+from tenderos_api.errors import DocumentsNotReadyError, WorkflowRunActiveAPIError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.outbox_stream import outbox_event_stream
 from tenderos_api.schemas.workflow import (
@@ -137,6 +137,8 @@ async def create_workflow_run(
         )
     except workflow_service.DocumentsNotReadyError as exc:
         raise DocumentsNotReadyError() from exc
+    except workflow_service.WorkflowRunActiveError as exc:
+        raise WorkflowRunActiveAPIError(str(exc.active_run_id)) from exc
     response = WorkflowRunResponse.model_validate(run, from_attributes=True)
     await idempotency.finalize(202, response.model_dump(mode="json"))
     return response

@@ -10,11 +10,16 @@ on an iterative scan for its own transaction.
 
 Each case runs in one transaction that is rolled back: seed one large and
 one small organization with deterministic random vectors, force the index
-(sequential scans off; on tables this small the planner would otherwise
-skip it and no test would show the problem), call the real method, and
-EXPLAIN the exact statement it sent. The EXPLAIN matters: with sequential
-scans off the planner could instead reach the chunks through the btree
-indexes and return every row without any iterative scan.
+(sequential scans and sorts off; on tables this small the planner would
+otherwise skip it and no test would show the problem), call the real
+method, and EXPLAIN the exact statement it sent. The EXPLAIN matters:
+without the index, the planner reaches the chunks through the btree
+indexes and a sort on distance, and returns every row without any
+iterative scan. Sorts are off as well because, with only sequential scans
+off, that btree path and the HNSW scan cost about the same here (observed
+2026-11-03: 498.81 to 504.40 against 454.98 to 567.43), so the planner
+chose either from run to run and the plan check failed 3 of 3 times in one
+session after passing in others.
 """
 
 import logging
@@ -89,9 +94,10 @@ async def _search_the_small_organization(small_chunks: int):
     event.listen(engine.sync_engine, "before_cursor_execute", _record)
     try:
         async with AsyncSession(engine) as session:
-            # SET LOCAL here as in the method: both end with this
+            # SET LOCAL here as in the method: these end with this
             # transaction, which is rolled back below.
             await session.execute(text("SET LOCAL enable_seqscan = off"))
+            await session.execute(text("SET LOCAL enable_sort = off"))
             await _seed_organization(session, _LARGE_ORGANIZATION_CHUNKS, rng)
             small_org, small_document = await _seed_organization(session, small_chunks, rng)
             await session.execute(text("ANALYZE documents, document_chunks"))

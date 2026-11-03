@@ -15,6 +15,7 @@ class APIError(Exception):
         message: str,
         *,
         headers: dict[str, str] | None = None,
+        details: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
         self.code = code
@@ -22,6 +23,10 @@ class APIError(Exception):
         # Response headers for this error, e.g. Retry-After. Sent by the
         # exception handler below; None for almost every error.
         self.headers = headers
+        # Machine-readable facts a client acts on (the active run's id on
+        # WORKFLOW_RUN_ACTIVE), sent as error.details only when set, so every
+        # other error's body is unchanged.
+        self.details = details
 
 
 class IdempotencyConflictError(APIError):
@@ -125,6 +130,20 @@ class DocumentsNotReadyError(APIError):
         )
 
 
+class WorkflowRunActiveAPIError(APIError):
+    """Phase 4 plan item 43: the tender already has an active run. The id is
+    in error.details.active_run_id, so the screen can show that run as if
+    it had started it."""
+
+    def __init__(self, active_run_id: str) -> None:
+        super().__init__(
+            409,
+            "WORKFLOW_RUN_ACTIVE",
+            "This tender already has a workflow run in progress.",
+            details={"active_run_id": active_run_id},
+        )
+
+
 class IdempotencyKeyRequiredError(APIError):
     def __init__(self) -> None:
         super().__init__(
@@ -190,9 +209,12 @@ def error_response(exc: APIError, headers: dict[str, str] | None = None) -> JSON
     sent, so a middleware returning an error that carries its own headers
     lost them (caught by the login 503's route test).
     """
+    error: dict[str, object] = {"code": exc.code, "message": exc.message}
+    if exc.details is not None:
+        error["details"] = exc.details
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": exc.code, "message": exc.message}},
+        content={"error": error},
         headers=headers if headers is not None else exc.headers,
     )
 

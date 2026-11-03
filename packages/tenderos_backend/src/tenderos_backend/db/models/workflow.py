@@ -1,11 +1,27 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, ForeignKey, Integer, UniqueConstraint, func, text
+from sqlalchemy import (
+    TIMESTAMP,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
+
+# Phase 4 plan item 43: the statuses in which a run is still in progress. A
+# run waiting at a gate is active, and so is one with a retry scheduled (it
+# stays "running" until the retry succeeds or the budget runs out). The
+# other three are terminal: nothing moves a run out of them on purpose.
+# The web screen's NON_TERMINAL_STATUSES is the same set.
+ACTIVE_RUN_STATUSES = ("queued", "running", "waiting_for_human")
 
 
 class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -14,6 +30,18 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         CheckConstraint(
             "status IN ('queued','running','waiting_for_human','completed','failed','cancelled')",
             name="ck_workflow_run_status",
+        ),
+        # At most one active run per tender (plan item 43, migration 022).
+        # A second insert, or a status write that would make a second run
+        # active, fails with a unique violation instead of leaving two runs
+        # working on one tender.
+        Index(
+            "uq_workflow_runs_one_active_per_tender",
+            "tender_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN (" + ", ".join(f"'{s}'" for s in ACTIVE_RUN_STATUSES) + ")"
+            ),
         ),
     )
 

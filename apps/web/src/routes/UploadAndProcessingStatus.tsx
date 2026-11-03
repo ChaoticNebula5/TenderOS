@@ -11,7 +11,7 @@ import {
   uploadDocument,
 } from "../api/client";
 import type { DocumentResponse, WorkflowTaskResponse } from "../api/client";
-import { formatErrorDetail } from "../api/formatErrorDetail";
+import { formatErrorDetail, readEnvelopeCode, readEnvelopeDetail } from "../api/formatErrorDetail";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Field } from "../components/ui/Field";
@@ -175,7 +175,17 @@ export function UploadAndProcessingStatus() {
       setLastRunStatus(null);
       setWorkflowRunId(run.id);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      // Phase 4 plan item 43: another tab (or an earlier click) already
+      // started a run for this tender. Show that run as if this click had
+      // started it: the streams below follow whatever run id is set.
+      const activeRunId =
+        err instanceof ApiError && readEnvelopeCode(err.body) === "WORKFLOW_RUN_ACTIVE"
+          ? readEnvelopeDetail(err.body, "active_run_id")
+          : null;
+      if (activeRunId !== null) {
+        setLastRunStatus(null);
+        setWorkflowRunId(activeRunId);
+      } else if (err instanceof ApiError && err.status === 409) {
         setError("All documents must finish parsing before processing can start.");
       } else {
         setError("Failed to start processing.");

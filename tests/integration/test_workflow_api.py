@@ -350,16 +350,20 @@ async def test_ticket_minted_for_one_run_is_rejected_against_another():
             headers={**headers, "Idempotency-Key": "ticket-scope-a"},
         )
         run_a_id = run_a_resp.json()["id"]
-        run_b_resp = await client.post(
-            f"/tenders/{tender_id}/workflow-runs",
-            headers={**headers, "Idempotency-Key": "ticket-scope-b"},
-        )
-        run_b_id = run_b_resp.json()["id"]
-
         mint_resp = await client.post(
             f"/workflow-runs/{run_a_id}/events/ticket", headers=headers
         )
         ticket = mint_resp.json()["ticket"]
+        # One active run per tender (plan item 43): run A is cancelled
+        # before run B starts. The ticket stays scoped to run A.
+        cancel_resp = await client.post(f"/workflow-runs/{run_a_id}/cancel", headers=headers)
+        assert cancel_resp.status_code == 200, cancel_resp.text
+        run_b_resp = await client.post(
+            f"/tenders/{tender_id}/workflow-runs",
+            headers={**headers, "Idempotency-Key": "ticket-scope-b"},
+        )
+        assert run_b_resp.status_code == 202, run_b_resp.text
+        run_b_id = run_b_resp.json()["id"]
 
         cross_run_resp = await client.get(
             f"/workflow-runs/{run_b_id}/events/stream", params={"ticket": ticket}

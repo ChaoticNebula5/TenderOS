@@ -64,8 +64,20 @@ function readEnvelopeMessage(body: unknown): string | null {
 }
 
 // The code from {"error": {"code": "..."}}, or null for any other shape.
-function readEnvelopeCode(body: unknown): string | null {
+export function readEnvelopeCode(body: unknown): string | null {
   return readEnvelopeField(body, "code");
+}
+
+// One string from {"error": {"details": {...}}}, or null when absent or not
+// a string. Phase 4 plan item 43: WORKFLOW_RUN_ACTIVE carries active_run_id.
+export function readEnvelopeDetail(body: unknown, key: string): string | null {
+  if (typeof body !== "object" || body === null || !("error" in body)) return null;
+  const error = (body as { error: unknown }).error;
+  if (typeof error !== "object" || error === null || !("details" in error)) return null;
+  const details = (error as { details: unknown }).details;
+  if (typeof details !== "object" || details === null || !(key in details)) return null;
+  const value = (details as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : null;
 }
 
 function readEnvelopeField(body: unknown, field: "code" | "message"): string | null {
