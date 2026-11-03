@@ -3402,6 +3402,10 @@ Each entry:
   `test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_active`).
   With no newer run, the write still revives the cancelled run, as
   before. The fix named above is unchanged.
+  **Superseded by plan item 44 (2026-11-03):** the status write now
+  refuses to leave a terminal status before the index is reached, with or
+  without a newer run (the test is now
+  `test_a_write_reviving_a_cancelled_run_is_refused_while_a_newer_run_is_active`).
   **What the old run's job then does (read in code, plan item 44,
   2026-11-03; not reproduced end to end):** the node's `IntegrityError`
   escapes `graph.ainvoke`; the job logs "workflow run ... failed" with a
@@ -3414,6 +3418,40 @@ Each entry:
   compare-and-set fix (a status write that never leaves `completed`,
   `failed` or `cancelled`, and a quiet stop in the job when it matches
   nothing) was proposed for the user's decision, not built.
+  **RESOLVED by plan item 44 (2026-11-03, approved by the user):**
+  - every status write is one conditional UPDATE that refuses to leave
+    `completed`, `failed` or `cancelled`
+    (`WorkflowRepository.update_run_status`); a refused write raises
+    `RunNoLongerActiveError`, and the three workflow jobs catch it, log one
+    INFO line naming the run and what was refused, and return normally (no
+    traceback, no RQ failure, no retry, no "failed" write);
+  - cancelling closes the run's pending gates in the same transaction, as
+    `rejected` with `decision_payload` `{"decision": null, "closed_by":
+    "run_cancelled"}`: every existing check reads a non-pending gate as
+    decided, and a later decision gets `GateAlreadyDecidedError`, never a
+    replay;
+  - opening a gate checks, in the gate's own transaction with the run's row
+    share-locked, that the run is still active; a cancel then either
+    committed first (nothing is opened) or waits and closes the new gate.
+  Observed (`tests/integration/test_cancellation_race.py`, the real
+  `run_workflow` with a one-step graph that cancels mid-flight): a write of
+  "drafting" leaves the run cancelled with no newer run (the old revival)
+  and with a newer run active, each with one INFO line, no WARNING or
+  traceback and no retry scheduled; the real requirement gate node, the
+  cancel landing just after its entry check, opens no gate; cancelling
+  closes a pending gate and a later approve or reject is refused. Each
+  fails under its mutation (no terminal guard: revived, an ERROR logged;
+  no quiet stop: an ERROR traceback; no gate check; no closing).
+  Found by the suite on the way: the first version of the conditional
+  UPDATE expired the in-session run's columns set by SQL, so the cancel
+  route's answer failed with `DetachedInstanceError` (a 500); the run is
+  now reloaded in its session after a write. Two existing tests changed:
+  `test_resume_workflow_does_nothing_once_cancelled_mid_flight` now
+  expects the approval after the cancel to be refused (the gate is
+  closed), and still delivers the resume; the final gate's rerun test
+  puts the run back to `running` between its two direct calls, the state
+  a real replay starts from, since its patched interrupt completes the
+  run on the first call.
 - **CI, schema verification, worker image, and Compose readiness** (major
   findings #23/#24/#25 - CI provisions no service stack but runs all
   tests; integration tests build schema via `Base.metadata.create_all`,
@@ -12462,6 +12500,19 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   failing under its mutation, and the old 60-minute rule failing the
   first), `tests/integration/test_workflow_retry.py`,
   `tests/unit/test_e2e_step11_timeline.py`.
+- **Changed in review (2026-11-03, `6e30050`): a failed or canceled job
+  is lost too.** RQ keeps a failed job's hash for a year, so the check
+  above counted it alive and its operation waited for the 6-hour cap,
+  blocking that tender from requesting that kind again. Read in code
+  first: operations are enqueued without RQ's Retry (`job_id`,
+  `job_timeout`, `unique` only), and RQ files a job as failed only with no
+  retries left (with retries it requeues or schedules it:
+  `rq/worker/base.py` `handle_job_failure`, `rq/job.py` `retry`), so a job
+  in the failed or canceled registry never runs again. Both are now
+  checked first and mean lost; the cap stays as the last resort.
+  Observed: a job filed as failed, and a canceled one, fail their
+  operation on the next pass; a started job (RQ's own execution record)
+  and a scheduled one are left alone; each case fails under its mutation.
 
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 
