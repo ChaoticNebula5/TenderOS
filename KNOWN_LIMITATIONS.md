@@ -3394,6 +3394,14 @@ Each entry:
   `cancelled` - needs either a compare-and-swap on `workflow_runs.status`
   or a cancellation check immediately before every such write, not
   reproduced live here.
+  **Changed by plan item 43 (2026-11-03), still open:** when the tender
+  has a newer active run, the late write now fails on
+  `uq_workflow_runs_one_active_per_tender` (an `IntegrityError` in the
+  old run's job) and the cancelled run stays cancelled, instead of two
+  runs becoming active (observed in
+  `test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_active`).
+  With no newer run, the write still revives the cancelled run, as
+  before. The fix named above is unchanged.
 - **CI, schema verification, worker image, and Compose readiness** (major
   findings #23/#24/#25 - CI provisions no service stack but runs all
   tests; integration tests build schema via `Base.metadata.create_all`,
@@ -4288,6 +4296,14 @@ edits, not code bugs.
 - **Tests:** `tests/integration/test_vector_search_filter.py` (fails
   without the `SET LOCAL`, without the log line, and with the index
   gone).
+- **Test made deterministic (2026-11-03, item 43's branch):** with only
+  sequential scans off, the btree-and-sort path and the HNSW scan cost
+  about the same on the test's data (observed: 498.81 to 504.40 against
+  454.98 to 567.43), so the planner picked either and the plan check
+  failed 3 of 3 times in one session after passing in others. The test
+  now turns sorts off as well; 5 of 5 passed after, and it still fails
+  without the `SET LOCAL` (0 of 20, 0 of 5) and with the index dropped (on
+  the plan).
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 
@@ -12320,6 +12336,56 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** accepted, no fix now: neither loses or duplicates data.
 - **Related, planned:** two tabs that click Start processing at once each
   get a run; nothing on the server stops it (plan item 43).
+  **Resolved by plan item 43 (2026-11-03):** the second gets a 409
+  naming the first, and its screen shows that run; see the item 43 entry
+  below.
+
+## [Item 43, 2026-11-03] At most one active workflow run per tender - RESOLVED
+
+- **The gap:** `create_workflow_run` inserted a run whenever every
+  document was parsed, and each click of Start processing sends a fresh
+  Idempotency-Key, so two tabs, or two clicks from screens that had not
+  seen each other's run, each started a run on one tender.
+- **Active statuses:** `queued`, `running` and `waiting_for_human`
+  (`ACTIVE_RUN_STATUSES`, the screen's `NON_TERMINAL_STATUSES`). A run
+  waiting at a gate is active, and so is one with a retry scheduled: it
+  stays `running` until the retry succeeds or the budget runs out (read
+  in code). `completed`, `failed` and `cancelled` are terminal; nothing
+  moves a run out of them on purpose (read in code; see the cancellation
+  race below for the one way it can happen by accident).
+- **Now:** a partial unique index,
+  `uq_workflow_runs_one_active_per_tender` on `workflow_runs (tender_id)`
+  over the active statuses, on the model and in migration 022. The
+  service does no lookup first; the index is the one check, so two
+  concurrent calls cannot both pass it. On the unique violation it rolls
+  back, re-reads the active run and raises `WorkflowRunActiveError`; the
+  route answers 409 `WORKFLOW_RUN_ACTIVE` with `error.details.active_run_id`.
+  `details` is new in the error envelope and is sent only when set, so
+  every other error's body is unchanged (a route test checks
+  `DOCUMENTS_NOT_READY` has none). The screen, on that code, follows the
+  named run as if this tab had started it; any other 409 keeps the
+  documents message.
+- **Observed (2026-11-03):** two concurrent starts under a barrier, 5 of
+  5: one run, one refusal naming it, one `WorkflowRunCreated` event. A
+  second active run inserted directly fails on the index. After a
+  completed, failed or cancelled run, a new one starts. The route's 409
+  body, exactly. The screen test shows the named run's tasks with no
+  error. Mutations: the index removed, the race makes 2 runs and the
+  second click gets 202; the service's mapping removed, the race test and
+  the route test fail; the route's mapping removed, the route test fails;
+  the screen's branch removed, its test fails. The dev database had 0
+  tenders with two active runs before the migration (107 runs, one per
+  tender).
+- **Existing tests changed:** four tests created two active runs on one
+  tender to test something else (cost per run, the waiver payload, a
+  ticket scoped to one run, stream isolation between runs); each now
+  finishes or cancels the first run, or uses a second tender, before the
+  second run.
+- **How the index meets the cancellation race:** see the note added to
+  the "Cancellation-during-execution race, remaining half" bullet.
+- **Tests:** `tests/integration/test_one_active_run_per_tender.py`,
+  `tests/route/test_workflow_routes.py`,
+  `apps/web/src/routes/UploadAndProcessingStatus.test.tsx`.
 
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 
