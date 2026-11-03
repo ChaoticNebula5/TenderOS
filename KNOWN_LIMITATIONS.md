@@ -12514,7 +12514,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   operation on the next pass; a started job (RQ's own execution record)
   and a scheduled one are left alone; each case fails under its mutation.
 
-## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
+## [Phase 4 item 30, 2026-10-23, blocking since 2026-11-03 after 5 of 5 passed] The golden-path E2E runs in CI on a fake-provider stack
 
 - **Before:** the E2E ran only on the dev laptop, by hand, so no pull
   request met the E2E stop-gate in CI, Dependabot's included.
@@ -12530,14 +12530,22 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   (`scripts/e2e_step11_timeline.py`), and uploads the logs, the timeline
   and the Playwright report.
 - **Limits:**
-  - **Non-blocking** (`continue-on-error: true`) until 5 consecutive runs
-    pass with their step 11 timelines recorded; then the line is removed
-    and the job made required. Until then a red `e2e` does not block a
-    merge. **Decided 2026-10-23:** a product failure counts against the
-    run of passes (Dependabot #33's run failed on the upload-list race,
-    the entry at the end of this file), so the count of 5 consecutive
-    passes starts once that fix is merged; #33 is held until then and
-    its next run counts.
+  - **Blocking since 2026-11-03** (`phase4/e2e-required`): the job-level
+    `continue-on-error: true` is removed, so a failing `e2e` fails the
+    run. It was the only thing making the job non-blocking: no step had
+    `continue-on-error`, and the job has no `if:` and no `needs:`. While
+    it was there, a red `e2e` still left the run green (main's runs for
+    #43, 40116721087, and #44, 40163720306, failed their e2e and
+    concluded success). Main has no branch protection rule and no
+    ruleset (checked 2026-11-03), so no check is required for a merge,
+    this one included; requiring `e2e` (the job's name as GitHub shows
+    it) is a repository setting.
+  - **Earlier, non-blocking** until 5 consecutive runs passed with their
+    step 11 timelines recorded. **Decided 2026-10-23:** a product failure
+    counts against the run of passes (Dependabot #33's run failed on the
+    upload-list race, the entry at the end of this file), so the count of
+    5 consecutive passes started once that fix was merged; the count was
+    restarted from the one-time spec edit's merge (Status below).
   - **Artifacts are not masked.** The logs are uploaded only if none of
     the run's generated values appears in them (`--scan`); the Playwright
     report (traces on failure) holds the run's own access tokens, signed
@@ -12601,6 +12609,25 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   edit on (`apps/web/tsconfig.e2e.json`, referenced from `tsconfig.json`,
   so CI's web job's `npx tsc -b` covers it). Local runs on the final tree:
   3 of 3 passed, 2.6, 3.1 and 3.1 min (2026-11-03, fake provider).
+  **5 of 5 passed (2026-11-03), counted from the spec edit's merge:** main's
+  five consecutive push runs, every job passing in each, each with its
+  step 11 timeline recorded:
+
+  | # | Run | Merge (main) | Started (UTC) | E2E | Approval to refetch |
+  |---|---|---|---|---|---|
+  | 1 | 41617547377 | #48, `ebaeff3` | 2026-11-03 10:14 | 4.1 min | 10.044 s |
+  | 2 | 41626122200 | #50, `9eb9463` | 2026-11-03 11:16 | 4.6 min | 12.012 s |
+  | 3 | 41632548214 | #51, `406899b` | 2026-11-03 12:03 | 3.2 min | 7.960 s |
+  | 4 | 41643808156 | #52, `2a22cee` | 2026-11-03 13:22 | 3.3 min | 10.974 s |
+  | 5 | 41675559313 | #53, `5cd508d` | 2026-11-03 16:34 | 2.8 min | 7.997 s |
+
+  0 stream reopens between the approval and the refetch in all five. Run
+  5, the first on one worker per queue (plan item 44), read the last
+  workflow event from the outbox rows: written 0.716 s before the
+  refetch. Runs 1 to 4 read it by dispatch time on the single worker:
+  9.207 s (run 1) and 7.808 s (run 3) before the refetch, and none found
+  in runs 2 and 4. **The job is blocking from then** (`continue-on-error`
+  removed, above).
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub
