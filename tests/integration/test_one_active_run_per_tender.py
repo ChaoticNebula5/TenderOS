@@ -148,3 +148,33 @@ async def test_a_write_reviving_a_cancelled_run_fails_while_a_newer_run_is_activ
     async with UnitOfWork() as uow:
         assert (await uow.workflow.get_run(old.id)).status == "cancelled"
         assert (await uow.workflow.get_active_run_for_tender(tender.id)).id == new.id
+
+
+async def test_a_different_violation_is_not_reported_as_an_active_run(monkeypatch):
+    """Plan item 44, from item 43: only a violation of the one-active-run
+    index means "a run is already active". Here the tender does have an
+    active run, but the insert fails on another constraint (a status the
+    CHECK refuses, which the partial index does not cover): the driver's
+    error is re-raised as it is, not read as the active run."""
+    registered, tender = await _ready_tender("other-violation")
+    active = await _start(registered, tender)
+
+    async def insert_a_refused_status(self, **kwargs):
+        run = WorkflowRun(
+            tender_id=kwargs["tender_id"],
+            langgraph_thread_id=str(uuid.uuid4()),
+            status="not-a-status",
+            prompt_bundle_version=kwargs["prompt_bundle_version"],
+            model_config_json=kwargs["model_config"],
+        )
+        self._session.add(run)
+        await self._session.flush()
+        return run
+
+    monkeypatch.setattr(WorkflowRepository, "create_run", insert_a_refused_status)
+
+    with pytest.raises(IntegrityError, match="ck_workflow_run_status"):
+        await _start(registered, tender)
+
+    async with UnitOfWork() as uow:
+        assert (await uow.workflow.get_active_run_for_tender(tender.id)).id == active.id

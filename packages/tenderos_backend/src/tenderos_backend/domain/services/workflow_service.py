@@ -17,6 +17,16 @@ from tenderos_backend.domain.events.outbox_events import (
 _CANCELLABLE_STATUSES = frozenset({"queued", "running", "waiting_for_human"})
 
 
+_ONE_ACTIVE_RUN_INDEX = "uq_workflow_runs_one_active_per_tender"
+
+
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """The constraint the database reported, from the driver's own error.
+    SQLAlchemy's asyncpg adapter keeps asyncpg's exception as the DBAPI
+    error's __cause__, and asyncpg puts the name on it; None when absent."""
+    return getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
+
+
 class WorkflowRunActiveError(Exception):
     """Phase 4 plan item 43: the tender already has an active run, so a new
     one was refused (uq_workflow_runs_one_active_per_tender). Carries the
@@ -54,14 +64,18 @@ async def create_workflow_run(
                 prompt_bundle_version=bundle_version(),
                 model_config={},
             )
-        except IntegrityError:
+        except IntegrityError as exc:
             # The index refused a second active run (two tabs, or two clicks
             # with their own Idempotency-Keys). No lookup first: the index is
             # the one check, so two concurrent calls cannot both pass it.
-            # The loser's insert waits for the winner's commit, so the
-            # winner is visible to a fresh read. If none is active any more
-            # (it finished in between), or the violation was something
-            # else, the original error stands.
+            # Any other violation is re-raised as it is (plan item 44): with
+            # an active run on the tender, the re-read below would otherwise
+            # report it as that run. The loser's insert waits for the
+            # winner's commit, so the winner is visible to a fresh read; if
+            # none is active any more (it finished in between), the original
+            # error stands.
+            if _violated_constraint(exc) != _ONE_ACTIVE_RUN_INDEX:
+                raise
             await uow.rollback()
             async with UnitOfWork() as reread_uow:
                 active = await reread_uow.workflow.get_active_run_for_tender(tender_id)
