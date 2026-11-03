@@ -4191,6 +4191,8 @@ edits, not code bugs.
   `hnsw.iterative_scan = relaxed_order`. Nothing in the code sets either
   setting. On the small test tables the planner does not use the index,
   so no test shows it.
+  **Resolved by plan item 41 (2026-11-03)** for searches within
+  `hnsw.max_scan_tuples`; see the item 41 entry below.
 - **Not compared: extensions.** The migrations create two,
   `pgcrypto` (`001_initial.py:22`) and `vector` (`003_documents.py:27`);
   the test creates both on the models' side itself and compares neither
@@ -4244,6 +4246,48 @@ edits, not code bugs.
 - **Tests:** `tests/unit/test_models_schema_guard.py` (fails with the
   guard trusting the setting, the superuser check removed, or the guard
   call removed).
+
+## [Item 41, 2026-11-03] Filtered vector search returns its LIMIT - RESOLVED up to a scan cap, which is accepted
+
+- **The gap:** `DocumentRepository.search_chunks_vector_for_org` orders
+  by `embedding <=> :query` over one HNSW index shared by every
+  organization, and pgvector applies the organization filter after the
+  index scan. With the defaults the scan yields `hnsw.ef_search` (40)
+  candidates from any organization, so a small organization in a large
+  table got few or none of its own chunks (item 40: 1 row of 20).
+- **Now:** the method runs `SET LOCAL hnsw.iterative_scan =
+  relaxed_order` on its own session just before its SELECT, so the scan
+  continues until LIMIT rows pass the filter. `SET LOCAL` ends with the
+  transaction, so it cannot leak to a later query on a pooled
+  connection. Relaxed order may return rows slightly out of distance
+  order; the only caller fuses ranks (RRF) and reranks, so no consumer
+  needs strict order (read in code). When fewer rows than the LIMIT come
+  back, one INFO line records the organization id and both counts, never
+  the query.
+- **Observed (2026-11-03, test database, one rolled-back transaction,
+  sequential scans off, plan checked by EXPLAIN to be the HNSW index
+  scan):** 2,000 chunks in one organization and 30 in another: 20 of 20
+  rows, all the small organization's; with 5 chunks: 5 of 5, and the
+  shortfall logged. Without the `SET LOCAL`: 0 of 20 and 0 of 5. With
+  the index dropped in the transaction, both tests fail on the plan, not
+  on the count (the planner then reaches the chunks through the btree
+  indexes and a sort).
+- **Accepted, not fixed: the scan cap.** An iterative scan stops at
+  `hnsw.max_scan_tuples`, 20,000 by default (pgvector README, read in
+  docs, not observed), and returns what it found with no error. So a
+  very small organization in a very large table can still get few or no
+  rows: roughly 20,000 times its share of all chunks. The shortfall log
+  line shows when that happens.
+- **Design for when it matters (not built):** search a small
+  organization's own chunks exactly, without the index. Count the
+  organization's chunks first; below a threshold, run the same query
+  with the index scan turned off for that transaction (an exact scan of
+  only its rows, through the documents filter), which is cheap because
+  the organization is small; above it, keep the iterative index scan. The
+  threshold comes from measuring both paths, not chosen in advance.
+- **Tests:** `tests/integration/test_vector_search_filter.py` (fails
+  without the `SET LOCAL`, without the log line, and with the index
+  gone).
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 

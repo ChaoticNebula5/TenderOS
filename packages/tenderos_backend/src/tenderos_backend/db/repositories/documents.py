@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -6,6 +7,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentRepository:
@@ -196,7 +199,19 @@ class DocumentRepository:
         Uses idx_document_chunks_embedding_hnsw (003_documents.py). Returns
         cosine distance (0 = identical, 2 = opposite) - the caller inverts
         it to a similarity score for fusion, not this method's concern.
+
+        The HNSW index is shared by every organization, and pgvector applies
+        the organization filter after the index scan: with the defaults it
+        scans hnsw.ef_search (40) nearest chunks of any organization, so a
+        small organization in a large table got few or none of its own
+        (Phase 4 plan item 41, decision 0064). An iterative scan keeps going
+        until LIMIT rows pass the filter, up to hnsw.max_scan_tuples
+        (20,000 by default). relaxed_order may return rows slightly out of
+        distance order; the caller fuses ranks (RRF) and reranks anyway.
+        SET LOCAL ends with the transaction, so it cannot leak to a later
+        query on a pooled connection.
         """
+        await self._session.execute(sa.text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
         distance = DocumentChunk.embedding.cosine_distance(query_embedding)
         result = await self._session.execute(
             select(DocumentChunk, distance)
@@ -207,7 +222,18 @@ class DocumentRepository:
             .order_by(distance)
             .limit(limit)
         )
-        return [(row[0], row[1]) for row in result.all()]
+        rows = [(row[0], row[1]) for row in result.all()]
+        if len(rows) < limit:
+            # Expected when the organization has fewer chunks than the
+            # LIMIT; otherwise the scan cap was reached. Logged either way
+            # so a shortfall is visible; never the query or its text.
+            logger.info(
+                "vector search for organization %s returned %d of %d rows",
+                organization_id,
+                len(rows),
+                limit,
+            )
+        return rows
 
     async def all_parsed_for_tender(self, tender_id: uuid.UUID) -> bool:
         # all() on an empty list is True - guarded explicitly so a tender with
