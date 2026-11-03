@@ -45,24 +45,24 @@ LEASE_MARGIN = timedelta(seconds=60)
 # Phase 4 plan item 44. A queued operation is failed as DISPATCH_FAILED in
 # two cases, and waiting is neither of them:
 # - Lost: its OperationRequested event was dispatched (so it had an RQ job)
-#   and RQ no longer knows that job, in the queue or any registry
-#   (reap_lost_queued_operations; the check is the dispatcher's, which owns
-#   the Redis connection). Before, any operation queued for 60 minutes was
-#   failed, even one only waiting its turn behind other tenants' operations,
-#   which run one at a time, up to 30 minutes each.
+#   and that job will never run: RQ filed it as failed or canceled, or no
+#   longer knows it, in the queue or any registry (reap_lost_queued_operations;
+#   the check is the dispatcher's, which owns the Redis connection).
+#   Before, any operation queued for 60 minutes was failed, even one only
+#   waiting its turn behind other tenants' operations, which run one at a
+#   time, up to 30 minutes each.
 # - Past MAX_QUEUED_AGE, whatever RQ says (reap_queued_past_cap): the
-#   backstop for a job RQ still holds that will never run, such as one that
-#   failed before it could claim its operation (kept in RQ's failed registry
-#   for a year), or a request whose dispatch never happens.
+#   last resort, for anything the lost check cannot see, such as a job RQ
+#   reports finished whose operation was never claimed, or a request whose
+#   dispatch never happens.
 #
 # Design number, not measured: 6 hours. It must not fire on a working
 # system: it is 12 maximum-length operations (30 min) waiting ahead, far
 # deeper than one operations worker should ever be allowed to queue (item
 # 25's replicas are the fix for that), 16 times the outbox's longest retry
 # span (22.5 min: 8 attempts, outbox_dispatcher.MAX_ATTEMPTS), and a
-# several-hour Redis or worker outage. And it bounds the one case only it
-# catches, a job that exists but will never run, to 6 hours rather than
-# forever.
+# several-hour Redis or worker outage. And it bounds what only it catches
+# to 6 hours rather than forever.
 # A dead-lettered request is still failed at once by the dispatcher
 # (fail_undispatched_operation).
 MAX_QUEUED_AGE = timedelta(hours=6)
@@ -170,16 +170,16 @@ async def reap_lapsed_operations(batch_size: int) -> list[uuid.UUID]:
 
 
 async def reap_lost_queued_operations(
-    batch_size: int, job_is_known: Callable[[uuid.UUID], Awaitable[bool]]
+    batch_size: int, job_may_run: Callable[[uuid.UUID], Awaitable[bool]]
 ) -> list[uuid.UUID]:
     """Fail as DISPATCH_FAILED, with their status events, the queued
-    operations whose request was dispatched but whose RQ job RQ no longer
-    knows (`job_is_known` False), at most batch_size checked per call. One
-    still waiting in the queue, or running, is left alone. Run from the
-    outbox dispatcher's loop, which supplies the RQ check."""
+    operations whose request was dispatched but whose RQ job will never run
+    (`job_may_run` False), at most batch_size checked per call. One still
+    waiting in the queue, or running, is left alone. Run from the outbox
+    dispatcher's loop, which supplies the RQ check."""
     async with UnitOfWork() as uow:
         candidates = await uow.operations.list_dispatched_queued(batch_size)
-    lost = [operation_id for operation_id in candidates if not await job_is_known(operation_id)]
+    lost = [operation_id for operation_id in candidates if not await job_may_run(operation_id)]
     if not lost:
         return []
     async with UnitOfWork() as uow:

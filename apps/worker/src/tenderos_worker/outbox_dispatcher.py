@@ -319,36 +319,45 @@ def operation_job_id(operation_id: uuid.UUID | str) -> str:
     return f"op_{operation_id}"
 
 
-def operation_job_known(connection: Redis) -> Callable[[uuid.UUID], Awaitable[bool]]:
-    """Phase 4 plan item 44: whether RQ still knows an operation's job, for
-    the lost-operation reaper. Known means its job hash exists, or its id is
-    in the operations queue or any of the queue's registries (started,
-    scheduled, deferred, finished, failed, canceled). A job between being
+def operation_job_may_run(connection: Redis) -> Callable[[uuid.UUID], Awaitable[bool]]:
+    """Phase 4 plan item 44: whether an operation's RQ job may still run, for
+    the lost-operation reaper.
+
+    No, when RQ has filed it as failed or canceled: operations are enqueued
+    without RQ's Retry (job_id, job_timeout and unique only), so a failed job
+    has no retries left and RQ never runs it again (with retries left RQ
+    requeues or schedules it, never files it as failed: rq/worker/base.py,
+    handle_job_failure; rq/job.py, retry). Checked first, because a failed
+    job's hash stays for a year. Also no, when RQ no longer knows it at all.
+
+    Yes, when its job hash exists or its id is in the operations queue or the
+    started, scheduled, deferred or finished registry. A job between being
     popped from the queue and entering the started registry still has its
-    hash, so a job that is about to run is never taken for lost. Any Redis
-    error propagates: the reaper then fails nothing as lost on that tick."""
+    hash, so a job about to run is never taken for lost. Any Redis error
+    propagates: the reaper then fails nothing as lost on that tick."""
     queue = Queue(OPERATIONS_QUEUE, connection=connection)
-    registries = (
+    will_never_run = (queue.failed_job_registry, queue.canceled_job_registry)
+    may_still_run = (
         queue.started_job_registry,
         queue.scheduled_job_registry,
         queue.deferred_job_registry,
         queue.finished_job_registry,
-        queue.failed_job_registry,
-        queue.canceled_job_registry,
     )
 
-    def known(operation_id: uuid.UUID) -> bool:
+    def may_run(operation_id: uuid.UUID) -> bool:
         job_id = operation_job_id(operation_id)
+        if any(job_id in registry for registry in will_never_run):
+            return False
         if Job.exists(job_id, connection=connection):
             return True
         if connection.lpos(queue.key, job_id) is not None:
             return True
-        return any(job_id in registry for registry in registries)
+        return any(job_id in registry for registry in may_still_run)
 
-    async def known_off_the_loop(operation_id: uuid.UUID) -> bool:
-        return await asyncio.to_thread(known, operation_id)
+    async def may_run_off_the_loop(operation_id: uuid.UUID) -> bool:
+        return await asyncio.to_thread(may_run, operation_id)
 
-    return known_off_the_loop
+    return may_run_off_the_loop
 
 
 def _job_timeout_for(event: OutboxEvent, queue_name: str) -> int | None:
@@ -628,11 +637,11 @@ async def _reap_lapsed_operations(connection: Redis) -> None:
         logger.exception("async operation reaper failed; will retry on a later tick")
     try:
         lost = await operation_service.reap_lost_queued_operations(
-            REAPER_BATCH_SIZE, operation_job_known(connection)
+            REAPER_BATCH_SIZE, operation_job_may_run(connection)
         )
         if lost:
             logger.warning(
-                "failed %d queued async operation(s) whose RQ job is gone: %s",
+                "failed %d queued async operation(s) whose RQ job is gone, failed or canceled: %s",
                 len(lost),
                 ", ".join(str(r) for r in lost),
             )

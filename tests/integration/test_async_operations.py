@@ -21,6 +21,8 @@ import pytest_asyncio
 from _helpers import register_org_and_tender
 from redis import Redis
 from rq import Queue
+from rq.executions import Execution
+from rq.job import JobStatus
 from sqlalchemy import func, select, update
 from tenderos_backend.agents.llm.client import LLMTimeoutError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
@@ -48,7 +50,7 @@ from tenderos_backend.domain.services import (
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_worker.jobs import operations as operation_jobs
 from tenderos_worker.jobs.operations import run_operation, run_operation_job
-from tenderos_worker.outbox_dispatcher import operation_job_id, operation_job_known
+from tenderos_worker.outbox_dispatcher import operation_job_id, operation_job_may_run
 from tenderos_worker.settings import settings
 from tenderos_worker.worker import OPERATIONS_QUEUE
 
@@ -312,7 +314,7 @@ async def test_the_reaper_fails_a_lapsed_operation_and_leaves_a_live_one_alone()
 # Real RQ on the test Redis: the operations queue has no worker in the test
 # process, so a job enqueued here stays queued, as one waiting behind another
 # tenant's long operation does. The check is the dispatcher's own
-# (outbox_dispatcher.operation_job_known).
+# (outbox_dispatcher.operation_job_may_run).
 
 
 @pytest.fixture
@@ -328,6 +330,15 @@ def operations_queue():
 
     yield connection, enqueue
     for job_id in enqueued:
+        for registry in (
+            queue.failed_job_registry,
+            queue.canceled_job_registry,
+            queue.scheduled_job_registry,
+        ):
+            registry.remove(job_id)
+        for key in connection.zrange(queue.started_job_registry.key, 0, -1):
+            if key.decode().startswith(job_id):
+                connection.zrem(queue.started_job_registry.key, key)
         job = queue.fetch_job(job_id)
         if job is not None:
             job.delete()
@@ -368,7 +379,9 @@ async def test_an_operation_waiting_behind_another_long_job_is_not_failed(operat
         enqueue(requested.operation.id)
     await _requested_ago(waiting.operation.id, timedelta(hours=2))
 
-    lost = await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+    lost = await operation_service.reap_lost_queued_operations(
+        100, operation_job_may_run(connection)
+    )
     capped = await operation_service.reap_queued_past_cap(batch_size=100)
 
     assert lost == [] and capped == []
@@ -391,7 +404,7 @@ async def test_an_operation_whose_rq_job_is_gone_is_failed(operations_queue):
     ).delete()
 
     reaped = await operation_service.reap_lost_queued_operations(
-        100, operation_job_known(connection)
+        100, operation_job_may_run(connection)
     )
 
     assert reaped == [gone.operation.id]
@@ -402,9 +415,105 @@ async def test_an_operation_whose_rq_job_is_gone_is_failed(operations_queue):
     assert await _statuses_announced(gone.operation.id) == ["queued", "failed"]
     assert (await _reload(pending.operation.id)).status == "queued"
     assert (
-        await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+        await operation_service.reap_lost_queued_operations(100, operation_job_may_run(connection))
         == []
     )
+
+
+async def _requested_dispatched_and_enqueued(email: str, enqueue) -> uuid.UUID:
+    requested = await _request(email)
+    await _mark_dispatched(requested.operation.id)
+    enqueue(requested.operation.id)
+    return requested.operation.id
+
+
+def _file_as_failed(connection: Redis, operation_id: uuid.UUID) -> None:
+    """What RQ's worker does with a job that raised and has no retries left
+    (rq/worker/base.py, handle_job_failure; rq/job.py, _handle_failure):
+    popped from the queue, marked failed, added to the failed registry."""
+    queue = Queue(OPERATIONS_QUEUE, connection=connection)
+    job = queue.fetch_job(operation_job_id(operation_id))
+    queue.remove(job)
+    job.set_status(JobStatus.FAILED)
+    queue.failed_job_registry.add(job, ttl=3600, exc_string="Traceback: fake failure")
+
+
+async def test_a_job_rq_filed_as_failed_fails_its_operation_on_the_next_tick(operations_queue):
+    """It failed before claiming its operation; operations are enqueued
+    without RQ's Retry, so it will never run. Its hash still exists (kept a
+    year), so only the failed registry tells. A minute old, not six hours."""
+    connection, enqueue = operations_queue
+    operation_id = await _requested_dispatched_and_enqueued("op-reap-failed@example.com", enqueue)
+    _file_as_failed(connection, operation_id)
+
+    reaped = await operation_service.reap_lost_queued_operations(
+        100, operation_job_may_run(connection)
+    )
+
+    assert reaped == [operation_id]
+    assert (await _reload(operation_id)).error_code == DISPATCH_FAILED
+    assert await _statuses_announced(operation_id) == ["queued", "failed"]
+
+
+async def test_a_canceled_job_fails_its_operation_on_the_next_tick(operations_queue):
+    connection, enqueue = operations_queue
+    operation_id = await _requested_dispatched_and_enqueued("op-reap-canceled@example.com", enqueue)
+    Queue(OPERATIONS_QUEUE, connection=connection).fetch_job(
+        operation_job_id(operation_id)
+    ).cancel()
+
+    reaped = await operation_service.reap_lost_queued_operations(
+        100, operation_job_may_run(connection)
+    )
+
+    assert reaped == [operation_id]
+    assert (await _reload(operation_id)).error_code == DISPATCH_FAILED
+
+
+@pytest.mark.parametrize("where", ["started", "scheduled"])
+async def test_a_started_or_scheduled_job_is_left_alone(operations_queue, where):
+    """Started: popped and running (RQ's own Execution record), its claim
+    not yet committed. Scheduled: waiting for its time. Either may still
+    claim its operation."""
+    connection, enqueue = operations_queue
+    queue = Queue(OPERATIONS_QUEUE, connection=connection)
+    if where == "started":
+        operation_id = await _requested_dispatched_and_enqueued(
+            "op-reap-started@example.com", enqueue
+        )
+        job = queue.fetch_job(operation_job_id(operation_id))
+        queue.remove(job)
+        with connection.pipeline() as pipe:
+            Execution.create(job, ttl=600, pipeline=pipe)
+            pipe.execute()
+        assert operation_job_id(operation_id) in queue.started_job_registry
+    else:
+        requested = await _request("op-reap-scheduled@example.com")
+        operation_id = requested.operation.id
+        await _mark_dispatched(operation_id)
+        queue.enqueue_in(
+            timedelta(minutes=5),
+            run_operation_job,
+            str(operation_id),
+            job_id=operation_job_id(operation_id),
+        )
+        assert operation_job_id(operation_id) in queue.scheduled_job_registry
+
+    try:
+        reaped = await operation_service.reap_lost_queued_operations(
+            100, operation_job_may_run(connection)
+        )
+    finally:
+        queue.scheduled_job_registry.remove(operation_job_id(operation_id))
+        for key in connection.zrange(queue.started_job_registry.key, 0, -1):
+            if key.decode().startswith(operation_job_id(operation_id)):
+                connection.zrem(queue.started_job_registry.key, key)
+        stale = queue.fetch_job(operation_job_id(operation_id))
+        if stale is not None:
+            stale.delete()
+
+    assert reaped == []
+    assert (await _reload(operation_id)).status == "queued"
 
 
 async def test_an_operation_past_the_cap_is_failed_even_while_rq_holds_its_job(
@@ -423,7 +532,9 @@ async def test_an_operation_past_the_cap_is_failed_even_while_rq_holds_its_job(
         stale.operation.id, operation_service.MAX_QUEUED_AGE + timedelta(minutes=1)
     )
 
-    lost = await operation_service.reap_lost_queued_operations(100, operation_job_known(connection))
+    lost = await operation_service.reap_lost_queued_operations(
+        100, operation_job_may_run(connection)
+    )
     capped = await operation_service.reap_queued_past_cap(batch_size=100)
 
     assert lost == []
