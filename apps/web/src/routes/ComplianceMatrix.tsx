@@ -22,8 +22,8 @@ import "./ComplianceMatrix.css";
 
 // The override select's choices, in the order the screen has always listed
 // them - db/models/compliance.py:53-56. Each <option>'s VALUE stays the
-// backend word: full-flow.spec.ts:714 compares select.inputValue() against
-// "fully_compliant" and :736 calls selectOption("fully_compliant"), which
+// backend word: full-flow.spec.ts (step 6, compliance) compares select.inputValue() against
+// "fully_compliant" and step 6, compliance calls selectOption("fully_compliant"), which
 // matches by value. Only the visible text goes through the label map
 // (DESIGN.md "The No Raw Enum Rule").
 const COMPLIANCE_STATUSES = [
@@ -127,10 +127,10 @@ export function ComplianceMatrix() {
   const approvedCount = entries.filter((e) => e.human_approved).length;
 
   // Heading and panel always render together, as siblings:
-  // full-flow.spec.ts:56 finds the panel as the heading's following
+  // full-flow.spec.ts (gatePanel()) finds the panel as the heading's following
   // <section>. Above the table while pending (DESIGN.md Screen patterns,
   // "Gates"), below it once decided or not yet open. The panel holds no
-  // <table>, so the matrix stays page.locator("table").first() (:696).
+  // <table>, so the matrix stays page.locator("table").first() (step 6, compliance).
   const gateBlock = (
     <>
       <h2>Compliance review gate</h2>
@@ -161,12 +161,12 @@ export function ComplianceMatrix() {
         </p>
       )}
 
-      {/* E2E contract (full-flow.spec.ts:696-737): this is the page's first
+      {/* E2E contract (full-flow.spec.ts (step 6, compliance)): this is the page's first
           table; tbody holds only data rows (no skeleton or empty-state row -
-          :701 counts them as "loaded"); the first cell is the requirement id
-          (:712); each row has one <select> whose option values are backend
-          words (:714, :736); the row's Approve button is REMOVED, not
-          disabled, once approved (:728, :737 wait for it to hide). */}
+          step 6, compliance counts them as "loaded"); the first cell is the requirement id
+          (step 6, compliance); each row has one <select> whose option values are backend
+          words (step 6, compliance); the row's Approve button is REMOVED, not
+          disabled, once approved (step 6, compliance wait for it to hide). */}
       {/* No stickyLastColumn (measured at 390px, batch 4): pinning the
           actions column left less room between the two sticky columns than
           the Status column (badge plus select) needs, so it could never be

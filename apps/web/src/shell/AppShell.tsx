@@ -8,13 +8,13 @@ import "./AppShell.css";
 //
 // E2E constraints this file must keep (DESIGN.md Restyle batches, and the
 // batch 2 locator audit of e2e/full-flow.spec.ts):
-// - Everything here is OUTSIDE each screen's own <main> (:952 main > section).
-// - No <strong> (:1451 is a strict-mode check on the page's only <strong>).
-// - No <ul>/<li> (:1253 counts every <li> on the page, :1258 reads every
-//   `ul li` as JSON) - links sit directly in <nav>.
+// - Everything here is OUTSIDE each screen's own <main> (step 9 counts
+//   `main > section`; steps 13 and 14 read `main strong`, `main li` and
+//   `main ul li`).
 // - No heading, <section>, <aside>, <table>, <button> or <input>: page-wide
-//   locators look for each of those (:55, :389, :980, :344, :1083, :531).
-// - No link whose name could contain a tender name (:513 on the dashboard).
+//   locators look for each of those (gatePanel(), setup's résumé import,
+//   steps 3, 10 and 12).
+// - No link whose name could contain a tender name (step 2, on the dashboard).
 // AppShell.test.tsx asserts the element rules.
 //
 // The account area shows the signed-in email only: /auth/me carries no

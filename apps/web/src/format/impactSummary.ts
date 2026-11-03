@@ -4,7 +4,7 @@ import type { GraphImpactRow } from "../api/client";
 // ("3 affected: Requirement 2, Compliance 1"), from the rows the preview
 // response already carries - DESIGN.md Screen patterns, "Impact list", in
 // the part the E2E allows: the list itself must stay one raw-JSON <li> per
-// row (full-flow.spec.ts:1258 parses each one), so this summary is the
+// row (full-flow.spec.ts (step 14, knowledge selections) parses each one), so this summary is the
 // readable view and sits outside the list.
 //
 // Rules (decided at batch 4 plan review):
@@ -15,7 +15,7 @@ import type { GraphImpactRow } from "../api/client";
 // - an unrecognised row counts in total but not in byLabel.
 // Ordered by count, highest first, then by label, so the output is stable.
 // The caller renders nothing when total is 0: the empty response already
-// has its own sentence (full-flow.spec.ts:1254).
+// has its own sentence (full-flow.spec.ts (step 14, knowledge selections)).
 
 export interface ImpactSummary {
   total: number;

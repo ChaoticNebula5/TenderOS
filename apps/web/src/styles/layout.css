@@ -127,7 +127,7 @@
 /* A raw identifier (UUID) in a table cell. It may break anywhere, so a
    36-character id does not set the width of a sticky first column at
    390px; the text itself is unchanged (the E2E reads it exactly,
-   full-flow.spec.ts:855). */
+   full-flow.spec.ts (step 7, candidates)). */
 .cell-id {
   min-width: 8rem;
   max-width: 12rem;

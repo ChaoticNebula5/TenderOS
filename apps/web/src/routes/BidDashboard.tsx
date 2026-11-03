@@ -48,7 +48,7 @@ export function BidDashboard() {
 
   // "Create bid" is navigation, so it stays a <Link> (role="link") styled
   // as the primary action. The tender name stays the only link per row:
-  // full-flow.spec.ts:513 finds it with a substring getByRole("link").
+  // full-flow.spec.ts (step 2, create bid) finds it with a substring getByRole("link").
   // "Talent library" moved to the top bar (AppShell, "Talent"). One
   // "Create bid" only - the empty state points at it rather than repeating it.
   return (

@@ -6,7 +6,7 @@ import { useMemo, useRef } from "react";
 // change lands. The read's answer describes the server before the change,
 // and replacing the list with it undoes the change on screen: CI run
 // 39983426118 lost an uploaded document that way and the E2E failed at
-// full-flow.spec.ts:540.
+// full-flow.spec.ts (step 3, upload).
 //
 // One clock orders both kinds of event. A read records when it started; a
 // change records when it landed, per row. When a read answers:

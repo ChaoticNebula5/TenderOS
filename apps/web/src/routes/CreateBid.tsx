@@ -42,8 +42,8 @@ export function CreateBid() {
 
   // Form column capped at --width-form (640px, DESIGN.md Layout "Content
   // width"; plan item 13), replacing the hardcoded 480. Labels keep their
-  // exact text: full-flow.spec.ts:510 fills getByLabel("Name", exact) and
-  // :511 clicks the page's only button named "Create bid".
+  // exact text: full-flow.spec.ts (step 2, create bid) fills getByLabel("Name", exact) and
+  // step 2, create bid clicks the page's only button named "Create bid".
   return (
     <main className="form-column">
       <h1>Create bid</h1>

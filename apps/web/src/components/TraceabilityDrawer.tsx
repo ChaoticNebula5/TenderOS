@@ -29,16 +29,16 @@ import "./TraceabilityDrawer.css";
 // Focus moves to Close on open, Tab and Shift+Tab stay inside, Escape or a
 // click on the scrim closes, and focus returns to `returnFocusTo` (the "Inspect trace" button
 // that opened it). Modal is safe for the E2E: after opening, every locator
-// in full-flow.spec.ts:980-991 is scoped to this <aside>, and the next
-// action on that page is a navigation (:1029) - nothing outside it is
+// in full-flow.spec.ts (step 10, claim trace) is scoped to this <aside>, and the next
+// action on that page is a navigation (step 11, red team) - nothing outside it is
 // touched while it is open.
 //
-// E2E contract: the only <aside> on the page (:980); the "Claim trace"
-// heading renders only once the trace has loaded (:981 waits for it, then
+// E2E contract: the only <aside> on the page (step 10, claim trace); the "Claim trace"
+// heading renders only once the trace has loaded (step 10, claim trace waits for it, then
 // :985-987 read the in-scope result immediately - a heading shown during
 // loading would let that read run before the result exists); the in-scope
-// warning stays role="alert" containing "not cited" (:982); the empty
-// sentence stays verbatim (:983).
+// warning stays role="alert" containing "not cited" (step 10, claim trace); the empty
+// sentence stays verbatim (step 10, claim trace).
 interface TraceabilityDrawerProps {
   claimId: string;
   onClose: () => void;
@@ -153,8 +153,8 @@ export function TraceabilityDrawer({ claimId, onClose, returnFocusTo }: Traceabi
       >
         {/* Polish pass (P5): the heading shares the bar with Close instead of
             sitting under an otherwise empty band. It still renders only once
-            the trace has loaded (:981 waits for it, :985-987 read right
-            after), and stays inside the <aside> (:980). */}
+            the trace has loaded (step 10, claim trace, waits for it and reads right
+            after), and stays inside the <aside> (step 10, claim trace). */}
         <div className="trace-drawer__bar">
           {trace !== null && <h2>Claim trace</h2>}
           <Button variant="quiet" className="trace-drawer__close" onClick={onClose}>

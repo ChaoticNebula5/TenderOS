@@ -150,7 +150,7 @@ export function TeamWorkspace() {
   const selectedRole = roles.find((r) => r.id === selectedRoleId) ?? null;
 
   // Heading and panel always render together, as siblings
-  // (full-flow.spec.ts:56). Above the tables while pending (DESIGN.md
+  // (full-flow.spec.ts (gatePanel())). Above the tables while pending (DESIGN.md
   // Screen patterns, "Gates"), below them otherwise. Either way the
   // Candidates <section> is never the gate heading's FIRST following
   // section: it comes after the panel, or before the heading.
@@ -180,13 +180,13 @@ export function TeamWorkspace() {
 
       {/* Polish pass: the roles table gets its own heading - it sat straight
           under the gate panel with nothing naming it. A plain <h2> in <main>,
-          not a <section>: the spec's "section with heading Candidates" (:827)
-          and the gate's heading-then-section pair (:56) are unaffected, and
+          not a <section>: the spec's "section with heading Candidates" (step 7, candidates)
+          and the gate's heading-then-section pair (gatePanel()) are unaffected, and
           "Roles" contains neither "Candidates" nor the gate's heading text. */}
       <h2>Roles</h2>
-      {/* E2E contract (full-flow.spec.ts:780-795): the page's first table,
-          data rows only in tbody (:785 counts them as "loaded"), role name in
-          the first cell, a "View candidates" button per row (:825). */}
+      {/* E2E contract (full-flow.spec.ts (step 7, candidates)): the page's first table,
+          data rows only in tbody (step 7, candidates counts them as "loaded"), role name in
+          the first cell, a "View candidates" button per row (step 7, candidates). */}
       <TableScroll label="Roles" stickyLastColumn>
         <table className="roles" aria-busy={!rolesLoaded || undefined}>
           <thead>
@@ -220,11 +220,11 @@ export function TeamWorkspace() {
         </EmptyState>
       )}
 
-      {/* E2E contract (full-flow.spec.ts:827-887): a <section> holding the
+      {/* E2E contract (full-flow.spec.ts (step 7, candidates)): a <section> holding the
           "Candidates" heading; tbody rows equal the response's matches
-          (:852); the first cell is EXACTLY the raw employee id (:855 -
+          (step 7, candidates); the first cell is EXACTLY the raw employee id (step 7, candidates -
           toHaveText, so nothing else may sit in that cell); the row's button
-          reads exactly "Select", then "Deselect" (:877-887). */}
+          reads exactly "Select", then "Deselect" (step 7, candidates). */}
       {selectedRoleId && (
         <section className="candidates">
           <h2>Candidates</h2>
@@ -258,7 +258,7 @@ export function TeamWorkspace() {
                     <tr key={match.id}>
                       {/* The employee's name needs a knowledge-item fetch
                           this screen does not make; the spec also reads
-                          this id verbatim (:855). */}
+                          this id verbatim (step 7, candidates). */}
                       <td className="cell-id">{match.employee_knowledge_item_id}</td>
                       <td className="cell-num">{formatPercent(match.score) ?? "Not scored"}</td>
                       <td>

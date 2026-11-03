@@ -142,7 +142,7 @@ export function RequirementRegister() {
   ).length;
 
   // The gate heading and its panel always render together, as siblings:
-  // full-flow.spec.ts:56 finds the panel as the heading's following
+  // full-flow.spec.ts (gatePanel()) finds the panel as the heading's following
   // <section>. While the gate is pending the pair sits above the table - the
   // decision an operator came for is the first thing on screen (DESIGN.md
   // Screen patterns, "Gates") - and below it once decided or not yet open.
@@ -177,7 +177,7 @@ export function RequirementRegister() {
         </p>
       )}
 
-      {/* Column order is fixed by the E2E: full-flow.spec.ts:653 reads the
+      {/* Column order is fixed by the E2E: full-flow.spec.ts (step 5, requirements) reads the
           sixth cell (td index 5, Reviewed) and expects exactly "yes". So no
           column is added before it, and Reviewed stays a plain word even
           though it is a state (DESIGN.md Status badge would make it a

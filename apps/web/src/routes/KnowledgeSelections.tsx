@@ -27,7 +27,7 @@ import "./KnowledgeSelections.css";
 
 // "3 downstream facts affected: Requirement 2, Compliance 1". null when
 // there are no rows: the empty response has its own sentence, which the
-// E2E reads (full-flow.spec.ts:1254).
+// E2E reads (full-flow.spec.ts (step 14, knowledge selections)).
 function impactSummaryText(rows: GraphImpactRow[]): string | null {
   const { total, byLabel } = summarizeImpact(rows);
   if (total === 0) return null;
@@ -161,7 +161,7 @@ export function KnowledgeSelections() {
         </Notice>
       )}
 
-      {/* E2E contract (full-flow.spec.ts:1182-1216, :1320): the page's first
+      {/* E2E contract (full-flow.spec.ts step 14, knowledge selections): the page's first
           table, data rows only in tbody, the item title in the first cell,
           a "Preview impact" button per row. */}
       <TableScroll label="Company knowledge" stickyLastColumn>
@@ -216,13 +216,13 @@ export function KnowledgeSelections() {
         </EmptyState>
       )}
 
-      {/* E2E contract (full-flow.spec.ts:1222-1327): the "Impact preview"
-          heading; :1253 counts every <li> on the page and :1258 JSON.parses
-          every `ul li`, so the list is one <li> per row whose textContent is
+      {/* E2E contract (full-flow.spec.ts step 14, knowledge selections): the "Impact preview"
+          heading; step 14 (knowledge selections) counts every <li> in <main> and
+          JSON.parses every `ul li` there, so the list is one <li> per row whose textContent is
           EXACTLY JSON.stringify(row) (the <code> wrapper adds no text), and
           nothing else on this page is an <li>. The summary is a <p>. The
-          empty sentence is read verbatim (:1254). The confirm label is
-          exactly "Confirm select" / "Confirm deselect" (:1323, :1325). A
+          empty sentence is read verbatim (step 14, knowledge selections). The confirm label is
+          exactly "Confirm select" / "Confirm deselect" (step 14, knowledge selections). A
           spec-forced deviation from DESIGN.md's readable impact list. */}
       {/* Polish pass (P2): the item being previewed is named under the
           heading - a <p>, so the heading's text, every <li> count and the

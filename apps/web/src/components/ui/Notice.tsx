@@ -17,7 +17,7 @@ import "./Notice.css";
 //
 // A <p>, as the notices it replaces are: it keeps the prose measure from
 // index.css and the same element type for anything that queries them
-// (full-flow.spec.ts:982 finds a notice by role="alert").
+// (full-flow.spec.ts (step 10, claim trace) finds a notice by role="alert").
 
 type NoticeVariant = "failed" | "warning" | "info";
 

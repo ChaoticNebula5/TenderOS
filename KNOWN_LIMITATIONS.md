@@ -6636,6 +6636,36 @@ edits, not code bugs.
   against this app should assume every button click that triggers a
   `fetch` needs an explicit post-click wait before any navigation, not
   just the obviously-slow ones.
+- **Second instance (found 2026-10-24 on main's CI, fixed by the one-time
+  spec edit on 2026-11-03):** step 4 clicked "Start processing" and
+  waited for that button to be hidden before navigating to the
+  requirements page, as proof that `POST /tenders/{id}/workflow-runs` had
+  completed. Restyle batch 3 (`7982cf7`, 2026-10-11) gave the button a busy
+  label ("Starting..."): while the request is in flight its accessible name
+  changes, so `getByRole("button", { name: "Start processing" })` matches
+  nothing and `toBeHidden()` passes 3 ms after the click (observed in the
+  trace of run 40116721087). From then on the guard did nothing, and every
+  run raced the navigation against the API's body read: in passing runs
+  the navigation still cut the POST off, but after the body had been read,
+  so the run was created and no access-log line was written (runs
+  40114238925 and 40071971358; 40065648132 logged its POST normally). Main's
+  runs for #43 (40116721087) and #44 (40163720306) lost the race: an
+  unhandled `ClientDisconnect` at `idempotency.py`'s body read, no run, and
+  the requirement gate never opened (7.5 min). Not caused by item 34 or
+  item 40: no refresh, logout or 401 in either run.
+  - **Reproduced deterministically:** with a temporary 3 s sleep before
+    that body read (uncommitted, removed, checked by SHA-256), the
+    unchanged spec failed the same way (9.2 min) and the edited spec
+    passed (2.6 min with only this fix, 2.9 min with the whole edit).
+  - **Fix:** the spec registers `page.waitForResponse` for that POST before
+    the click and asserts a 2xx before it navigates: the server's answer,
+    not a label. The same proof replaced the résumé upload's input
+    re-enable wait. A sweep of every navigation after a request found no
+    other call site resting on a label (the other busy labels are waited
+    on by `toBeEnabled()` for the operation's end, or not at all).
+  - **The disconnect is no longer an unhandled error:** the API now logs a
+    client gone before its body was read as one INFO line with a 499
+    (`client_disconnect.py`), from either body read.
 
 ## [B13] E2E harness bug: `page.reload()` does not wait for React's own data-fetching effects - the one that will bite B14's SSE work
 
@@ -11351,7 +11381,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   stale-tender tests in `ProposalWorkspace.test.tsx` and
   `RedteamFindings.test.tsx` fail without the guard.
 
-## [Phase 4 async operations, Stage 2, 2026-10-16, open, accepted] E2E step 11 depends on the workflow still running when the red team is clicked
+## [Phase 4 async operations, Stage 2, 2026-10-16, RESOLVED 2026-11-03 by the one-time spec edit] E2E step 11 depends on the workflow still running when the red team is clicked
 
 - **Discovered:** Stage 2's first E2E runs failed 3 of 3 at
   `apps/web/e2e/full-flow.spec.ts:1024` (fake provider): the second tab
@@ -11433,8 +11463,32 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   7.5 s; measure that job's own import time before trying it, and give it
   its own E2E runs. Lazy-importing the embedder (follow-up (a)) shortens
   the same job too, by less, so it also needs its own E2E runs.
-- **Status:** open, accepted.
-- **Test:** the E2E itself (2 of 2 green on 2026-10-16 after the fix).
+- **Resolved (the one-time spec edit, 2026-11-03):** the live-progress
+  check moved from the red-team click, which writes no workflow event, to
+  step 8's commercial-gate approval, which resumes the workflow (the
+  revision loop this check was written about). A second tab on the
+  Upload/Processing screen is settled first: its own first `/tasks` has
+  answered and both of its event streams have been requested. Every
+  `/tasks` request it sends before the approval request goes out is
+  excluded, so only a request that starts after the approval can count;
+  the wait is for its response (a request cancelled by closing the tab
+  would leave no trace on the server), and no stream may reopen before it,
+  since a reconnect refetches without a push. Read in code: the tab
+  refetches only after minting a ticket, on a stream message, or on a
+  reconnect, and the server's heartbeats are SSE comments, which raise no
+  message.
+  - **Proven falsifiable (observed):** with the client made to ignore
+    stream messages (a temporary scratch build), the E2E failed 3 runs of 3,
+    each at the live-tab wait after its 60 s.
+  - **Observed passing:** the approval, then the resume job, then the open
+    tab's `GET /tasks` 0.26 s after the job's last write, with no stream
+    reopened in between (2026-11-03).
+  - `scripts/e2e_step11_timeline.py` now reports this sequence (approval,
+    stream opens, the refetch, the resume job, the last workflow event)
+    in CI's job summary.
+- **Status:** resolved; the timing coupling is gone (the check no longer
+  depends on the workflow still running at some click).
+- **Test:** the E2E itself; `tests/unit/test_e2e_step11_timeline.py`.
 
 ## [deps, 2026-10-22, open, accepted; torch automated in batch 1] torch is never audited by pip-audit, nor is native code in the images; check by hand before each release
 
@@ -12135,6 +12189,28 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   test times out without it), logout's order, its clear on failure, its
   timeout, and the context's call.
 
+## [E2E spec edit, 2026-11-03, accepted, no fix now] Leaving a screen during a write hides its outcome; two screens navigate after their write
+
+- **Found:** reviewing whether the web app itself can cut off a write the
+  way the E2E did (read in code). It cannot: nothing aborts a request on
+  an in-app route change (the only aborts are the refresh and logout
+  timeouts), and the app never does a full-page navigation. Only the
+  browser itself, by a reload, closing the tab or a typed URL, cancels a
+  request in flight. Observed on the way: a request cut off before its
+  body is read leaves no idempotency record and no run, so the next click
+  starts cleanly.
+- **Quirk 1:** a write whose screen you leave before it answers still
+  completes on the server, but neither its result nor its error is shown:
+  the screen that would have shown it is gone, and no other screen is
+  told.
+- **Quirk 2:** Create bid and Login call `navigate()` after their await. If
+  the user has moved to another screen while the request was in flight,
+  the answer pulls them to `/` (Create bid) or to their login destination
+  (Login).
+- **Status:** accepted, no fix now: neither loses or duplicates data.
+- **Related, planned:** two tabs that click Start processing at once each
+  get a run; nothing on the server stops it (plan item 43).
+
 ## [Phase 4 item 30, 2026-10-23, non-blocking until 5 runs pass] The golden-path E2E runs in CI on a fake-provider stack
 
 - **Before:** the E2E ran only on the dev laptop, by hand, so no pull
@@ -12213,6 +12289,15 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   39980533388, 39983007910, 39989695235 and 39991181703 passed;
   Dependabot #33's run (39983426118) failed on the upload-list race. Non-
   blocking until 5 consecutive passes, counted from the race's fix.
+  **Restarted 2026-11-03:** main's runs for #43 and #44 failed on step 4's
+  navigation race (the B13 entry's second instance). The one-time spec edit
+  fixed it and step 11's check, so the tally restarts at 0 from the main
+  run after the spec edit merges. The edited spec's blob, `0d6adac6`, is the
+  new frozen reference: the spec is not edited again without the same kind
+  of explicit, recorded decision. The E2E folder is typechecked from this
+  edit on (`apps/web/tsconfig.e2e.json`, referenced from `tsconfig.json`,
+  so CI's web job's `npx tsc -b` covers it). Local runs on the final tree:
+  3 of 3 passed, 2.6, 3.1 and 3.1 min (2026-11-03, fake provider).
 - **Test:** `tests/unit/test_ci_e2e_env.py` (every credential generated,
   the DSN's password matches, an existing `.env` is never overwritten, a
   new placeholder credential is refused, no value printed outside GitHub

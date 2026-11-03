@@ -10,9 +10,11 @@ import type { ButtonVariant } from "./buttonClassName";
 // busy: the action is in flight. It sets aria-busy, swaps in busyLabel
 // (the present participle the screen already shows, "Creating..."), and
 // DISABLES the button. Disabling is load-bearing, not cosmetic: the E2E
-// waits on toBeEnabled() after long actions (full-flow.spec.ts:949, :1034)
-// and on toBeHidden() (:593); a busy-but-enabled button would let those
-// waits pass early.
+// waits on toBeEnabled() after long actions (full-flow.spec.ts steps 9 and 11,
+// proposal and red team); a busy-but-enabled button would let those waits
+// pass early. The busy label also changes the button's accessible name, so a
+// locator by the idle name stops matching the moment it is clicked: the E2E
+// waits for the server's answer before it navigates, never for the label.
 //
 // type defaults to "button", not the browser's "submit", so a Button
 // dropped into a form never submits it by accident; submit buttons say

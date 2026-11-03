@@ -2,7 +2,7 @@
    list (DESIGN.md Screen patterns, "Processing"). */
 
 /* Spec-forced: the parse badge's DOM text is the backend word ("parsed"),
-   because full-flow.spec.ts:558-566 compares that cell's textContent to
+   because full-flow.spec.ts (step 3, upload) compares that cell's textContent to
    "parsed". text-transform changes only what is drawn, not textContent, so
    the operator reads "Parsed" - the same word statusMap.ts's parse labels
    use. */

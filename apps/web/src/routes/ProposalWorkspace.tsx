@@ -31,11 +31,11 @@ import "./ProposalWorkspace.css";
 // selectedClaimId rather than as its own route.
 //
 // E2E contract (full-flow.spec.ts): every proposal section is a <section>
-// that is a DIRECT child of <main> (:952 counts `main > section`), so the
+// that is a DIRECT child of <main> (step 9, proposal counts `main > section`), so the
 // empty state is not a <section> and nothing wraps the sections; each
-// claim is an <li> whose text holds "[type / grounding]" (:971, :974 find
+// claim is an <li> whose text holds "[type / grounding]" (step 10, claim trace find
 // unsupported claims by "/ unsupported]"), with its "Inspect trace" button
-// inside it (:972).
+// inside it (step 10, claim trace).
 export function ProposalWorkspace() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [sections, setSections] = useState<ProposalSectionResponse[]>([]);
@@ -91,8 +91,8 @@ export function ProposalWorkspace() {
 
   // Phase 4 Stage 2: the POST returns 202 and the worker drafts. Generate
   // stays busy until the operation is finished AND the sections (with their
-  // claims) have been re-read: full-flow.spec.ts:949-953 waits for the button
-  // to be enabled, then expects a section visible, and step 10 (:974)
+  // claims) have been re-read: full-flow.spec.ts (step 9, proposal) waits for the button
+  // to be enabled, then expects a section visible, and step 10 (claim trace)
   // counts claim rows at once, without waiting. A generation started before a reload is
   // picked up again on load (useTenderOperation).
   async function handleFinished(operation: OperationResponse) {
@@ -210,7 +210,7 @@ export function ProposalWorkspace() {
                   {/* Polish pass (P4): tag and text in one block, "Inspect
                       trace" on its own line below, instead of trailing a long
                       claim raggedly. The <li> still holds the tag text
-                      "/ unsupported]" and the button (:971-974). */}
+                      "/ unsupported]" and the button (step 10, claim trace). */}
                   <span className="claim__body">
                     <ClaimTag claim={claim} />{" "}
                     <span className="claim__text">{claim.claim_text}</span>
@@ -246,8 +246,8 @@ export function ProposalWorkspace() {
 }
 
 // "[Capability / unsupported]" - the claim's type and grounding. The spec
-// finds unsupported claims by the text "/ unsupported]" (full-flow.spec.ts:
-// 971, :974), so the grounding badge sits inside the brackets with no space
+// finds unsupported claims by the text "/ unsupported]" (full-flow.spec.ts
+// step 10, claim trace), so the grounding badge sits inside the brackets with no space
 // before "]", and where its label is just the backend word capitalised
 // (grounded, unsupported) its DOM text is that word, drawn capitalised by
 // CSS (.badge-raw-word); needs_review and not_required show their mapped

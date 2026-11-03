@@ -8,7 +8,7 @@ import "./StatusBadge.css";
 // statusMap.ts decides both, so a screen writes
 //   <StatusBadge {...describeStatus("gate", gate.status)} />
 //
-// A <span>, never <strong>: full-flow.spec.ts:1451 asserts on the page's
+// A <span>, never <strong>: full-flow.spec.ts (step 13, readiness) asserts on the page's
 // only <strong> (the readiness verdict) in strict mode.
 
 interface StatusBadgeProps {

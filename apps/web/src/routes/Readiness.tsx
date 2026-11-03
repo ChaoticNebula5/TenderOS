@@ -104,13 +104,13 @@ function blockerCount(n: number): string {
 // report: state version N ..." - with no <strong> and never the word
 // "Ready". Only a report generated in this visit (POST, computed now)
 // gets the verdict: <strong>Ready</strong> or <strong>Not ready</strong>,
-// text unchanged. full-flow.spec.ts:1451 waits for that page's only
-// <strong> (strict mode) and :1452 reads its exact text, so the verdict
+// text unchanged. full-flow.spec.ts (step 13, readiness) waits for that page's only
+// <strong> (strict mode) and reads its exact text, so the verdict
 // can only be read from a report the click just generated. Mount
 // behaviour and fetch order are unchanged.
 //
 // :1454-1456 read the "Blockers" <h2> and its following-sibling <ul> of
-// <li>, each holding the blocker message verbatim (:1479). The gate stays
+// <li>, each holding the blocker message verbatim (step 13, readiness). The gate stays
 // BELOW the report (a recorded deviation from DESIGN.md's Gates pattern):
 // its request-time snapshot must not sit above the report being read.
 export function Readiness() {
@@ -122,7 +122,7 @@ export function Readiness() {
   // The mount GET is not cancelled by a Generate click, and Generate is not
   // disabled while it is in flight; if Generate answers first, the late GET
   // must not overwrite the fresh report with the stored one (that would
-  // drop the verdict <strong> the spec reads, full-flow.spec.ts:1451).
+  // drop the verdict <strong> the spec reads, full-flow.spec.ts (step 13, readiness)).
   const generatedThisVisit = useRef(false);
   // Set once GET /readiness has answered (a report or a 404), so the empty
   // state only claims "none yet" after the response says so.
@@ -262,7 +262,7 @@ export function Readiness() {
             <p className="readiness__none">No blockers.</p>
           ) : (
             // Polish pass (P7): one <li> per distinct blocker, its message
-            // verbatim (:1464 looks for the D6 message inside an <li>; :1459
+            // verbatim (step 13, readiness, looks for the D6 message inside an <li> and
             // needs at least one), and how many blockers it stands for.
             <ul className="readiness__blockers">
               {groupBlockers(report.blockers).map((group) => (

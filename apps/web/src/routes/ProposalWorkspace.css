@@ -1,5 +1,5 @@
 /* Proposal workspace - sections, the section text field, the claim list.
-   Sections stay direct children of <main> (full-flow.spec.ts:952), so all
+   Sections stay direct children of <main> (full-flow.spec.ts (step 9, proposal)), so all
    spacing is on the section itself. */
 
 .proposal__actions {
