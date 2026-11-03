@@ -41,8 +41,12 @@ from pathlib import Path
 
 import greenlet
 import pytest
+import pytest_asyncio
+from models_schema import rebuild_from_models
 from sqlalchemy import event
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool, Pool, QueuePool, StaticPool
+from tenderos_backend.core.config import settings
 
 _LEAK_TEXT = "non-checked-in connection"
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -130,3 +134,19 @@ def _freeze_objects_from_before_the_tests():
 def _collect_after_each_test(_freeze_objects_from_before_the_tests):
     yield
     gc.collect()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def _models_schema():
+    # Phase 4 plan item 42: the test database is emptied and built from the
+    # models (tests/models_schema.py, guarded on this same connection). Not
+    # autouse, so unit tests never touch the database: the integration and
+    # route conftests each request it from their own autouse _schema. A
+    # session fixture defined here is one instance for the whole run, so a
+    # run covering both directories rebuilds once, not once per directory.
+    engine = create_async_engine(settings.postgres_dsn)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(rebuild_from_models)
+    finally:
+        await engine.dispose()

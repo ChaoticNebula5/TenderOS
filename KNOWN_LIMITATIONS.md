@@ -4165,6 +4165,16 @@ edits, not code bugs.
   from an emptied test database, and the catalog was checked after each
   run to confirm which schema it had. Same family as the "local
   dev/test environment state" standing pattern above.
+  **Resolved by plan item 42 (2026-11-03):** every pytest session now
+  drops the test database's `public` schema and builds it from the
+  models (see the item 42 entry below). **Correction:** "CI was not
+  affected" was wrong. CI's test job runs `scripts/verify_migrations.py`
+  (upgrade, downgrade, upgrade) on the same `tenderos_test` service
+  database just before `pytest` (`ci.yml`, both steps source
+  `scripts/test-backend.env`; the order seen in run 41613530333's log),
+  so CI's suite also ran on the migrated schema. Since item 40 the two
+  builds match (the schema diff shows nothing), so the difference
+  mattered only before it.
 - **Suite time (observed, each on a test database built by
   `create_all()`):** main 849 passed, 5 skipped, 268.0 s; the final
   tree 851 passed, 5 skipped, 271.6 s (the two new tests are the parity
@@ -4192,6 +4202,48 @@ edits, not code bugs.
   test database's catalog, 2026-10-25).
 - **Tests:** `tests/integration/test_schema_diff.py`,
   `tests/unit/test_model_default_parity.py`.
+
+## [Item 42, 2026-11-03] The test database is built from the models every session - RESOLVED
+
+- **The gap:** `create_all()` skips tables that already exist, so a test
+  database left behind by an Alembic run kept its migrated tables and
+  the suite tested those, not the models'. Found locally in item 40; CI
+  had it too, since its test job runs the migration round trip on the
+  same database just before `pytest` (see item 40's entry).
+- **Now:** a session fixture in `tests/conftest.py`, requested by the
+  integration and route conftests, runs `rebuild_from_models`
+  (`tests/models_schema.py`) once per pytest session, in one
+  transaction: the guard, `DROP SCHEMA public CASCADE`, `CREATE SCHEMA
+  public`, `CREATE EXTENSION pgcrypto`, `CREATE EXTENSION vector`, then
+  `create_all()`. The schema diff's models side uses the same
+  `build_from_models`.
+- **The guard, on the connection that runs the DROP:**
+  `current_database()` must end in `_test`, a rule fixed in the code and
+  never read from the setting that chose the database; and the role must
+  be a superuser (`vector` is not a trusted extension, so only a
+  superuser can create it again). Either refusal raises before anything
+  is dropped. CI's test database is `tenderos_test` (`ci.yml`), which
+  passes.
+- **Observed (local, 2026-11-03):** after an Alembic round trip and a
+  planted `tenders.item42_marker` column, the suite passed (856 passed,
+  5 skipped) and the catalog showed no `alembic_version`, no marker
+  column, new OIDs for LangGraph's four checkpoint tables (recreated on
+  first use by `get_checkpointer()`), and 0 differences against a fresh
+  `build_from_models()` scratch database. With the drop removed, the
+  same sequence still passed its tests while the catalog kept
+  `alembic_version` and the marker (3 differences). Against real
+  Postgres, a database named `item42_guard_scratch` and a non-superuser
+  role on `item42_guard_test` were each refused, their tables intact.
+- **Cost (observed):** the rebuild takes 0.56 to 0.69 s (5 runs). Suite
+  times: main 289.9 s; this change 280.9 and 283.7 s back to back; the
+  difference is within run-to-run noise.
+- **Still open:** `_clean_tables` still opens its own connection from
+  the setting for its row deletes (the B13-prep guard entry's residual).
+  The recreated `public` schema is owned by the test role with no grants
+  to other roles; the suite uses only that role.
+- **Tests:** `tests/unit/test_models_schema_guard.py` (fails with the
+  guard trusting the setting, the superuser check removed, or the guard
+  call removed).
 
 ### No clean owning block named yet - flagged honestly rather than force-fit
 
@@ -4986,6 +5038,12 @@ edits, not code bugs.
   letting the guard read as fully closed when it isn't - the same standard
   this file already holds `evaluate_evidence_coverage`'s "clean" verdict
   correction to.
+  **Partly resolved by plan item 42 (2026-11-03):** the guard is now
+  `check_safe_to_drop` in `tests/models_schema.py`, run on the very
+  connection that then drops and rebuilds the schema, in one
+  transaction; the separate guard fixtures are gone. `_clean_tables`
+  still opens its own connection from the same setting for its row
+  deletes, so this entry's residual remains for those deletes only.
 - **Test:** `_guard_test_database`'s own behavior is verified directly
   (refuses against the dev/live database name, passes against
   `tenderos_test`) - see the environment-traps entry's own "Test" line
@@ -5039,6 +5097,14 @@ edits, not code bugs.
   entry above and B13's own route-test harness verification) - no test
   exists asserting the two copies stay identical, since that would just be
   a second place for the same drift to hide.
+- **Resolved by plan item 42 (2026-11-03):** one copy, in
+  `tests/models_schema.py`, used by both conftests through one session
+  fixture in `tests/conftest.py`. No `tests/__init__.py` or `pythonpath`
+  change was needed: `tests/` is already on `sys.path` because the root
+  conftest lives there (pytest's prepend import mode); the earlier worry
+  was about `from tests._x import y`, which needs the repo root instead.
+  Observed: `tests/conftest.py`, `test_schema_diff.py` and
+  `tests/unit/test_models_schema_guard.py` import it by its bare name.
 
 ---
 
