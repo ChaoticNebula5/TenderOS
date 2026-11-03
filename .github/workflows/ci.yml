@@ -313,7 +313,7 @@ jobs:
           cache-to: type=gha,scope=e2e-api,mode=max
       - name: Disk after the api build
         run: df -h /
-      - name: Build the worker image (worker, operations_worker, outbox_dispatcher)
+      - name: Build the worker image (the four workers and outbox_dispatcher)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -353,7 +353,7 @@ jobs:
       # fresh runner has no orphaned scheduled jobs to clear.
       - name: Start the stack
         run: |
-          docker compose up -d --no-build migrate api web worker operations_worker outbox_dispatcher
+          docker compose up -d --no-build migrate api web workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher
           test "$(docker inspect -f '{{.State.ExitCode}}' tenderos-migrate-1)" = 0
           df -h /
       - name: Wait for the api and the web app
@@ -362,7 +362,7 @@ jobs:
           timeout 120 bash -c 'until curl -sf http://localhost:5173 > /dev/null; do sleep 3; done'
       - name: Every app service runs the fake provider
         run: |
-          for svc in api worker operations_worker outbox_dispatcher; do
+          for svc in api workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher; do
             provider=$(docker compose exec -T "$svc" printenv LLM_PROVIDER)
             echo "$svc: LLM_PROVIDER=$provider"
             test "$provider" = fake

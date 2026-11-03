@@ -94,8 +94,8 @@ services:
 
   # Phase 4 item 4: migrations run once, before anything that uses the
   # schema. A one-shot service on the api image (alembic.ini and the
-  # migrations are in it), which exits 0 at head; api, worker,
-  # operations_worker and outbox_dispatcher start only after it has
+  # migrations are in it), which exits 0 at head; api, the four workers
+  # and outbox_dispatcher start only after it has
   # completed successfully, so a failing migration keeps them all down.
   # Not in the api's own entrypoint: with more than one api replica, each
   # would race to migrate. On a host with a release phase, this command
@@ -157,12 +157,31 @@ services:
       timeout: 5s
       retries: 10
 
-  worker:
+  # Phase 4 plan item 44: one RQ worker per queue, so no queue waits behind
+  # another's job. Each still runs one job at a time, as the single worker
+  # did, so nothing new runs concurrently. Before, one worker served
+  # ingestion, workflow, projection, evaluation and maintenance in that
+  # order: an upload's parse waited for a running workflow job (up to
+  # 1800 s), and the maintenance consumer waited behind both (observed in
+  # CI: an outbox row consumed 9.4 s after it was written). All three use
+  # the worker image; worker.py takes the queue names as arguments.
+  #
+  # Workflow jobs: run, resume, verification, knowledge import, reanalysis
+  # and scheduled retries, each up to 1800 s (outbox_dispatcher.py,
+  # _QUEUE_TIMEOUTS_SECONDS). On SIGTERM, RQ stops taking jobs and lets the
+  # job in progress finish (warm shutdown); it does not requeue it, and a
+  # run whose job is killed stays `running` (the workflow-run reaper is
+  # designed, not built: decision 0035). So the grace period covers the
+  # longest job plus a margin. An idle worker stops in about 2 s
+  # (observed); to stop sooner and accept losing the job in progress,
+  # `docker compose stop -t <seconds> workflow_worker`.
+  workflow_worker:
     restart: unless-stopped
     init: true
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "workflow"]
     env_file: .env
     depends_on:
       postgres:
@@ -171,22 +190,52 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    # Phase 4 item 28. On SIGTERM, RQ stops taking jobs and lets the job in
-    # progress finish (warm shutdown); it does not requeue it. A workflow
-    # job may run up to its 1800 s timeout (outbox_dispatcher.py,
-    # _QUEUE_TIMEOUTS_SECONDS), and a run whose job is killed stays
-    # `running`: the workflow-run reaper is designed, not built (decision
-    # 0035). So the grace period covers the longest job plus a margin. An
-    # idle worker stops in about 2 s (observed), so the wait is only ever
-    # as long as the job in progress; to stop sooner and accept losing that
-    # job, `docker compose stop -t <seconds> worker`.
     stop_grace_period: 31m
+
+  # Document parse and embed, up to 600 s per job (_QUEUE_TIMEOUTS_SECONDS).
+  ingestion_worker:
+    restart: unless-stopped
+    init: true
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "ingestion"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 11m
+
+  # The outbox events with no dedicated consumer (process_outbox_event,
+  # RQ's default 180 s). Also serves projection and evaluation, which have
+  # no producers today, so anything enqueued there later is not stranded.
+  maintenance_worker:
+    restart: unless-stopped
+    init: true
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    command:
+      ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "maintenance", "projection", "evaluation"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 4m
 
   # Phase 4 Stage 2: the worker for async operations (red team, proposal
   # generation, commercial re-validation), listening only to the
   # "operations" queue, so an operation a person clicked never waits behind
-  # a workflow job on the "worker" service above (which does not listen to
-  # it). Same image and env as worker; like worker, no healthcheck.
+  # a workflow job on the workflow_worker service above. Same image and env
+  # as the other workers; like them, no healthcheck.
   # It imports the operations job module once before forking jobs
   # (worker.py, preload_operations_module); BLAS is pinned to one thread so
   # that import adds no thread, and the worker refuses to start if it does
@@ -210,7 +259,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    # Phase 4 item 28: as for worker. An operation's job runs up to 1800 s
+    # Phase 4 item 28: as for workflow_worker. An operation's job runs up to 1800 s
     # (operation_service.JOB_TIMEOUT_SECONDS). A killed one is failed by the
     # dispatcher's reaper as WORKER_LOST, but only once its lease (the job
     # timeout plus 60 s) has lapsed, so killing it early loses the work

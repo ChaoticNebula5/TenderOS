@@ -22,7 +22,10 @@ timeline_mod = importlib.util.module_from_spec(_spec)
 sys.modules["e2e_step11_timeline"] = timeline_mod
 _spec.loader.exec_module(timeline_mod)
 
-_W = "worker-1  | {ts} 2026-11-03 00:00:00,000 INFO rq.worker: "
+# Since plan item 44 the workflow jobs log from workflow_worker and the
+# event consumers from maintenance_worker; the lines are otherwise as copied.
+_W = "workflow_worker-1     | {ts} 2026-11-03 00:00:00,000 INFO rq.worker: "
+_M = "maintenance_worker-1  | {ts} 2026-11-03 00:00:00,000 INFO rq.worker: "
 _A = 'api-1     | {ts} INFO:     172.18.0.1:43930 - "{req} HTTP/1.1" {code}'
 _RUN = "759d671a-6fb2-4328-8b85-49d53ce88eda"
 
@@ -44,7 +47,7 @@ def _job_end(ts: str) -> str:
 
 
 def _event(ts: str, kind: str = "WorkflowRunStatusChanged") -> str:
-    return _W.format(ts=ts) + (
+    return _M.format(ts=ts) + (
         "Successfully completed tenderos_worker.jobs.placeholder.process_outbox_event("
         f"'0b7c', 'workflow_run', '{kind}') job in 0:00:00.001s"
     )

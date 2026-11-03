@@ -11,7 +11,9 @@ streams requested), then the commercial-gate approval, which resumes the
 workflow, and the tab's next /tasks request, which only a pushed event can
 cause. This script reports that sequence from the server's side.
 
-Input: `docker compose logs --no-color --timestamps` for api and worker.
+Input: `docker compose logs --no-color --timestamps` for api and the workers
+(workflow jobs on workflow_worker, event consumers on maintenance_worker,
+since plan item 44).
 - The approval: the api's access line for the last `POST /gates/<id>/decision`
   before the first `POST /tenders/<id>/proposal/generate` (the commercial
   gate is the last gate the spec approves before generating the proposal).
@@ -111,7 +113,7 @@ def read_timeline(log_text: str) -> Timeline:
                 tasks.append(moment)
             elif _STREAM.search(msg):
                 streams.append(moment)
-        elif service == "worker":
+        elif service in ("workflow_worker", "maintenance_worker"):
             if event := _WORKFLOW_EVENT.search(msg):
                 events.append((moment, event["type"]))
             elif start := _JOB_START.search(msg):

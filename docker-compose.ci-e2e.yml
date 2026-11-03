@@ -3,7 +3,7 @@
 # (docker/build-push-action), and loads them under the local tags below.
 # This file points each service at its image, so `docker compose up
 # --no-build` starts the stack without building anything a second time
-# (migrate shares the api image; the two workers and the dispatcher share
+# (migrate shares the api image; the four workers and the dispatcher share
 # the worker image, as their builds already do).
 #
 # Used only with the other three files, through the job's COMPOSE_FILE:
@@ -21,7 +21,9 @@ x-worker-image: &worker-image
 services:
   migrate: *api-image
   api: *api-image
-  worker: *worker-image
+  workflow_worker: *worker-image
+  ingestion_worker: *worker-image
+  maintenance_worker: *worker-image
   operations_worker: *worker-image
   outbox_dispatcher: *worker-image
   web:

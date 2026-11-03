@@ -19,7 +19,7 @@
 # _reject_fake_provider_in_production.
 #
 # Usage: docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
-#        -f docker-compose.e2e-fake.yml up -d --build api web worker operations_worker outbox_dispatcher
+#        -f docker-compose.e2e-fake.yml up -d --build api web workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher
 #
 # B17 Phase 0: every Gemini key is also blanked here, not only the provider
 # switched. `environment:` beats the base file's `env_file: .env`, so a stray
@@ -36,7 +36,11 @@ x-fake-provider: &fake-provider
 services:
   api:
     environment: *fake-provider
-  worker:
+  workflow_worker:
+    environment: *fake-provider
+  ingestion_worker:
+    environment: *fake-provider
+  maintenance_worker:
     environment: *fake-provider
   operations_worker:
     environment: *fake-provider
