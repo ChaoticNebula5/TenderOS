@@ -1,5 +1,7 @@
 import uuid
 
+from sqlalchemy.exc import IntegrityError
+
 from tenderos_backend.core.enums import WorkflowStatus, coarse_status_for
 from tenderos_backend.core.prompts import bundle_version
 from tenderos_backend.db.models.audit import AuditEvent
@@ -13,6 +15,16 @@ from tenderos_backend.domain.events.outbox_events import (
 )
 
 _CANCELLABLE_STATUSES = frozenset({"queued", "running", "waiting_for_human"})
+
+
+class WorkflowRunActiveError(Exception):
+    """Phase 4 plan item 43: the tender already has an active run, so a new
+    one was refused (uq_workflow_runs_one_active_per_tender). Carries the
+    active run's id, so the caller can show that run instead."""
+
+    def __init__(self, active_run_id: uuid.UUID) -> None:
+        super().__init__(f"tender already has an active workflow run {active_run_id}")
+        self.active_run_id = active_run_id
 
 
 class DocumentsNotReadyError(Exception):
@@ -36,11 +48,26 @@ async def create_workflow_run(
         if not await uow.documents.all_parsed_for_tender(tender_id):
             raise DocumentsNotReadyError()
 
-        run = await uow.workflow.create_run(
-            tender_id=tender_id,
-            prompt_bundle_version=bundle_version(),
-            model_config={},
-        )
+        try:
+            run = await uow.workflow.create_run(
+                tender_id=tender_id,
+                prompt_bundle_version=bundle_version(),
+                model_config={},
+            )
+        except IntegrityError:
+            # The index refused a second active run (two tabs, or two clicks
+            # with their own Idempotency-Keys). No lookup first: the index is
+            # the one check, so two concurrent calls cannot both pass it.
+            # The loser's insert waits for the winner's commit, so the
+            # winner is visible to a fresh read. If none is active any more
+            # (it finished in between), or the violation was something
+            # else, the original error stands.
+            await uow.rollback()
+            async with UnitOfWork() as reread_uow:
+                active = await reread_uow.workflow.get_active_run_for_tender(tender_id)
+            if active is None:
+                raise
+            raise WorkflowRunActiveError(active.id) from None
         await uow.outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_RUN,
             aggregate_id=run.id,

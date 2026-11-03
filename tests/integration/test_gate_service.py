@@ -81,10 +81,13 @@ async def _audit_after_for_gate(gate_id: uuid.UUID) -> dict | None:
 
 async def test_waived_decision_is_recorded_distinctly_from_a_normal_one():
     org_id, tender_id = await _org_and_tender("WaiverPersisted")
+    # Each gate opens its own run, and a tender has at most one active run
+    # (plan item 43), so the second gate gets its own tender.
+    waived_org_id, waived_tender_id = await _org_and_tender("WaiverPersistedWaived")
     actor_id = await _make_user()
 
     normal_gate_id = await _open_gate(tender_id, "final_readiness")
-    waived_gate_id = await _open_gate(tender_id, "final_readiness")
+    waived_gate_id = await _open_gate(waived_tender_id, "final_readiness")
 
     fake_blockers = [{"category": "unresolved_mandatory_requirement", "target_id": None}]
 
@@ -97,7 +100,7 @@ async def test_waived_decision_is_recorded_distinctly_from_a_normal_one():
     )
     waived_gate, _ = await gate_service.record_decision(
         gate_id=waived_gate_id,
-        organization_id=org_id,
+        organization_id=waived_org_id,
         decided_by=actor_id,
         decision="approve",
         notes=None,

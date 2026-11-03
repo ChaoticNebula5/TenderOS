@@ -6,6 +6,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.workflow import (
+    ACTIVE_RUN_STATUSES,
     WorkflowRun,
     WorkflowTask,
     WorkflowTaskDependency,
@@ -97,6 +98,16 @@ class WorkflowRepository:
             .order_by(WorkflowRun.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def get_active_run_for_tender(self, tender_id: uuid.UUID) -> WorkflowRun | None:
+        # At most one row, by uq_workflow_runs_one_active_per_tender.
+        result = await self._session.execute(
+            select(WorkflowRun).where(
+                WorkflowRun.tender_id == tender_id,
+                WorkflowRun.status.in_(ACTIVE_RUN_STATUSES),
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def update_run_status(self, run_id: uuid.UUID, status: str) -> None:
         run = await self._session.get(WorkflowRun, run_id)
