@@ -25,6 +25,15 @@
   color: var(--ink-2);
 }
 
+/* Plan item 19: why the last run failed, one sentence on its own line under
+   "Last run" (the start row wraps), the button after it. */
+.processing__last-run-reason {
+  flex-basis: 100%;
+  margin: 0;
+  max-width: 60ch;
+  color: var(--ink-2);
+}
+
 /* A vertical sequence: task type, then its status badge. */
 .task-list {
   margin: 0;

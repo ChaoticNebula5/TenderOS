@@ -477,6 +477,8 @@ export interface WorkflowRunResponse {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  // Plan item 19: why a failed run failed; null for any other run.
+  error_code?: "WORKER_LOST" | "DISPATCH_FAILED" | "JOB_TIMEOUT" | null;
 }
 
 export interface WorkflowTaskResponse {

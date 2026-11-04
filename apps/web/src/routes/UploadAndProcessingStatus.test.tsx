@@ -357,3 +357,63 @@ describe("Start processing when a run is already active", () => {
     expect(getWorkflowRun).not.toHaveBeenCalled();
   });
 });
+
+// Plan item 19: a failed run says why, in one sentence under "Last run",
+// when the backend recorded a reason (WorkflowRunResponse.error_code).
+describe("why the last run failed", () => {
+  const sentences: [NonNullable<WorkflowRunResponse["error_code"]>, string][] = [
+    [
+      "WORKER_LOST",
+      "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.",
+    ],
+    [
+      "DISPATCH_FAILED",
+      "The last run stopped before its next step could start. Start processing again to run it from the beginning.",
+    ],
+    [
+      "JOB_TIMEOUT",
+      "The last run stopped because one step ran past its time limit. Start processing again to run it from the beginning.",
+    ],
+  ];
+
+  it.each(sentences)("shows the %s sentence under Last run", async (code, sentence) => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "failed", error_code: code }]);
+    listDocuments.mockResolvedValue([]);
+    renderAt("tender-1");
+
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByText("Last run")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+  });
+
+  it("adds nothing for a failed run with no recorded reason", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "failed", error_code: null }]);
+    listDocuments.mockResolvedValue([]);
+    const { container } = render(
+      <MemoryRouter initialEntries={["/tenders/tender-1"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<UploadAndProcessingStatus />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Last run")).toBeInTheDocument();
+    expect(container.querySelector(".processing__last-run-reason")).toBeNull();
+  });
+
+  it("shows the reason when the open run ends failed on the stream", async () => {
+    listWorkflowRuns.mockResolvedValue([activeRun()]);
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([]);
+    getWorkflowRun.mockResolvedValue({ ...activeRun(), status: "failed", error_code: "WORKER_LOST" });
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    renderAt("tender-1");
+
+    expect(
+      await screen.findByText(
+        "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+  });
+});
