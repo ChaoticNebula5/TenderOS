@@ -11041,7 +11041,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      repeats its LLM verification call, which costs one real-provider call
      per duplicate. `process_knowledge_document_import`,
      `reanalyze_knowledge_selection_change` and `resume_workflow` have
-     proposed guards, not built: the resume case is the dangerous one, since
+     proposed guards, not built (since built: "Phase 4 consumer guards"
+     below, and plan item 18 for reanalysis): the resume case is the
+     dangerous one, since
      a duplicate `Command(resume=...)` can be consumed by a later gate's
      interrupt (see the blocker 3 report).
   5. **Fixed in this block: a Redis outage no longer strands events.**
@@ -11105,7 +11107,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   growing, capped delays and end failed with an ERROR log) and
   `tests/unit/test_outbox_backoff.py`.
 
-## [Phase 4 consumer guards, 2026-10-13, open, accepted] What each outbox consumer does with a duplicate delivery
+## [Phase 4 consumer guards, 2026-10-13, accepted; limit 1 resolved 2026-11-04] What each outbox consumer does with a duplicate delivery
 
 - **Discovered:** Phase 4 blocker 3 (delivery is at-least-once, see the
   blocker 3 entry above); guards built on `phase4/backend-hardening`.
@@ -11147,17 +11149,44 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      fresh request id, and with `unique=True` that second import was
      silently "already dispatched". It now includes the event id.
 - **Accepted limits:**
-  1. **Not built: `reanalyze_knowledge_selection_change`.** A second
-     delivery repeats the compliance re-evaluation (LLM calls) and the
-     compliance step's unconditional `state_version` bump, which can make
-     the graph projection stale. Proposed design: a small table
-     `reanalysis_claims(tender_id, knowledge_item_id, state_version)` with
-     a unique key, a `status` and a lease, claimed at the start of the job
-     with one `INSERT ... ON CONFLICT DO NOTHING RETURNING` (no row
-     returned: a duplicate, log and return; a lapsed `running` lease: take
-     over with the same conditional UPDATE as
-     `IdempotencyRepository.take_over_expired`), marked `completed` at the
-     end. Needs a migration, so it is a separate change.
+  1. **RESOLVED by plan item 18 (2026-11-04, decision 0036, migration
+     023): `reanalyze_knowledge_selection_change` is guarded.** A second
+     delivery used to repeat the compliance re-evaluation (LLM calls), the
+     compliance step's unconditional `state_version` bump (which can make
+     the graph projection stale) and the graph-contradiction findings.
+     Built as designed:
+     - `reanalysis_claims`, unique on `(tender_id, knowledge_item_id,
+       state_version)`, with `status` (`running`, `completed`), a
+       `claim_token` and a lease (`locked_until`);
+     - the job claims first, in its own committed transaction
+       (`reanalysis_service.claim_reanalysis`): one `INSERT ... ON
+       CONFLICT DO NOTHING RETURNING`, then, if that found a row, a
+       takeover of a `running` claim whose lease lapsed (one conditional
+       UPDATE, the shape of `IdempotencyRepository.take_over_expired`).
+       Neither matching means a duplicate: one INFO line, and the job
+       returns before any work;
+     - marked `completed` at the end, only while the caller's token is
+       current.
+     The lease is 1860 s: the workflow queue's 1800 s job timeout plus the
+     60 s margin (pinned by `tests/unit/test_reanalysis_lease.py`). It
+     starts at the claim, not the enqueue, so waiting in the queue never
+     uses it up. `knowledge_item_id` has no foreign key: the row records a
+     delivery, and must neither block deleting the item nor vanish with it.
+     Observed (`tests/integration/test_reanalysis_guard.py`): two
+     deliveries released together by a barrier, the first insert held
+     open until `pg_locks` showed the second waiting on it, 5 of 5: one
+     ran, one was refused with one INFO line; a redelivery after the first
+     finished is refused; a different `state_version` for the same tender
+     runs; a live lease is not taken over, a completed claim never is, a
+     lapsed lease goes to exactly one of two takers (overlap seen in
+     `pg_locks`), and only the current token completes. Each fails under
+     its mutation (the job ignoring a refused claim, the key without
+     `state_version`, the takeover without its lease or status check,
+     completion without the token, a plain insert, the lease without its
+     margin). **Accepted limit:** a job that raises part-way keeps its
+     claim `running` until the lease lapses, so a re-drive inside those 31
+     minutes is refused (tested). A claim row is kept per selection
+     change, with no cleanup; one row per change is small.
   2. **Two concurrent resumes for the same gate have a narrow window.**
      Resuming re-runs the gate node from its start, and gate nodes set the
      run back to `waiting_for_human` before their `interrupt()` returns,
@@ -11171,8 +11200,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      duplicated.
 - **Risk:** limit 1 can repeat paid LLM calls and re-stale the graph on a
   duplicate reanalysis delivery.
-- **Status:** guards 1-5 built; limit 1 open (designed, not built);
-  limits 2 and 3 accepted.
+- **Status:** guards 1-5 built; limit 1 resolved (plan item 18,
+  2026-11-04); limits 2 and 3 accepted.
 - **Test:** `tests/integration/test_graph_execution.py` (a duplicate
   resume for an earlier gate leaves the next gate pending and the run
   waiting; the genuine resume still works),

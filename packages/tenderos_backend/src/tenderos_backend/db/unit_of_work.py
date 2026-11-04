@@ -17,6 +17,7 @@ from tenderos_backend.db.repositories.organizations import OrganizationRepositor
 from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.db.repositories.proposal import ProposalRepository
 from tenderos_backend.db.repositories.readiness import ReadinessRepository
+from tenderos_backend.db.repositories.reanalysis_claims import ReanalysisClaimRepository
 from tenderos_backend.db.repositories.redteam import RedteamRepository
 from tenderos_backend.db.repositories.refresh_tokens import RefreshTokenRepository
 from tenderos_backend.db.repositories.requirements import RequirementRepository
@@ -52,6 +53,7 @@ class UnitOfWork:
         self.commercial: CommercialRepository
         self.proposal: ProposalRepository
         self.readiness: ReadinessRepository
+        self.reanalysis_claims: ReanalysisClaimRepository
         self.redteam: RedteamRepository
 
     async def __aenter__(self) -> "UnitOfWork":
@@ -77,6 +79,7 @@ class UnitOfWork:
         self.commercial = CommercialRepository(self.session)
         self.proposal = ProposalRepository(self.session)
         self.readiness = ReadinessRepository(self.session)
+        self.reanalysis_claims = ReanalysisClaimRepository(self.session)
         self.redteam = RedteamRepository(self.session)
         return self
 

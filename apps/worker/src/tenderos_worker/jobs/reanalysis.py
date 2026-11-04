@@ -15,7 +15,12 @@ from tenderos_backend.domain.events.outbox_events import (
     proposal_changed_idempotency_key,
     proposal_changed_payload,
 )
-from tenderos_backend.domain.services import graph_service, redteam_checks, redteam_service
+from tenderos_backend.domain.services import (
+    graph_service,
+    reanalysis_service,
+    redteam_checks,
+    redteam_service,
+)
 from tenderos_backend.domain.services.compliance_service import (
     evaluate_compliance_for_requirement,
 )
@@ -136,6 +141,21 @@ async def reanalyze_knowledge_selection_change(
     tid = uuid.UUID(tender_id)
     kid = uuid.UUID(knowledge_item_id)
 
+    # Plan item 18 (decision 0036): the outbox delivers this change at least
+    # once, and every step below repeats on a second delivery (paid
+    # compliance calls, the state_version bump, the findings). Claim the
+    # change first, in its own committed transaction; a delivery that gets
+    # no claim does nothing. A job that raises part-way leaves its claim
+    # running until the lease lapses, then a re-drive can take it over.
+    claim_token = await reanalysis_service.claim_reanalysis(tid, kid, state_version)
+    if claim_token is None:
+        logger.info(
+            "reanalysis skipped: tender=%s knowledge_item=%s state_version=%s already "
+            "claimed by another delivery",
+            tid, kid, state_version,
+        )
+        return
+
     await graph_service.project_tender(tid)
     rows = await graph_service.preview_impact(tid, kid)
     requirement_ids, claim_ids = _affected_ids(rows)
@@ -247,3 +267,11 @@ async def reanalyze_knowledge_selection_change(
         tid, kid, state_version, len(requirement_ids), len(claim_ids),
         len(contradiction_drafts),
     )
+    if not await reanalysis_service.complete_reanalysis(claim_token):
+        # The lease lapsed while this job ran and another delivery took the
+        # claim over; that delivery completes it.
+        logger.warning(
+            "reanalysis: claim for tender=%s knowledge_item=%s state_version=%s was taken "
+            "over before this job finished",
+            tid, kid, state_version,
+        )
