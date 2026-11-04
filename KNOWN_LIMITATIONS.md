@@ -11239,11 +11239,12 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      operator scripts; `scripts/` is in no image. A host runbook item
      (plan item 25).
   4. **`--list` shows the oldest 200 dead letters.**
-- **Test:** `tests/integration/test_outbox_redrive.py` (17 tests: the dry
+- **Test:** `tests/integration/test_outbox_redrive.py` (18 tests: the dry
   run, a reset delivered once by the real dispatcher, each refusal line,
   the conditional reset losing to another, `--list`, the exit statuses,
   the reason, no payload in output or logs, the command run as a process,
-  only the outbox row written).
+  only the outbox row written, and every dispatcher route having its own
+  check, so a route added later cannot be re-driven unchecked).
 
 ## [Phase 4 consumer guards, 2026-10-13, accepted; limit 1 resolved 2026-11-04] What each outbox consumer does with a duplicate delivery
 
