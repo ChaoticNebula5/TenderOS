@@ -124,6 +124,31 @@ class OutboxRepository:
         if result.scalar_one_or_none() is None:
             raise ValueError(f"OutboxEvent {event_id} not found")
 
+    async def list_failed(self, limit: int) -> list[OutboxEvent]:
+        """The dead-lettered events, oldest first (plan item 20's --list)."""
+        result = await self._session.execute(
+            select(OutboxEvent)
+            .where(OutboxEvent.status == "failed")
+            .order_by(OutboxEvent.created_at)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def reset_failed(self, event_id: uuid.UUID) -> bool:
+        """Plan item 20 (decision 0034): put a dead-lettered event back for
+        the dispatcher, with a fresh attempt budget, eligible now. One
+        conditional UPDATE: it matches only while the event is still
+        'failed', so of two operators re-driving the same event, one resets
+        it and the other matches nothing. Returns whether it was reset."""
+        result = await self._session.execute(
+            update(OutboxEvent)
+            .where(OutboxEvent.id == event_id, OutboxEvent.status == "failed")
+            .values(status="pending", attempt_count=0, available_at=func.now())
+            .returning(OutboxEvent.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def mark_failed(self, event_id: uuid.UUID) -> None:
         """Count the last attempt and mark the event 'failed': the dead-letter
         state. get_pending never selects it again (its attempt_count has

@@ -1,7 +1,7 @@
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,6 +78,25 @@ class ReanalysisClaimRepository:
             .execution_options(synchronize_session=False)
         )
         return result.scalar_one_or_none()
+
+    async def get_with_lease(
+        self, tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, state_version: int
+    ) -> tuple[ReanalysisClaim, bool] | None:
+        """The claim for this selection change, if any, and whether its lease
+        is still live on the database clock (plan item 20: the re-drive tool
+        reports what the job's own claim would do, without claiming)."""
+        result = await self._session.execute(
+            select(ReanalysisClaim, ReanalysisClaim.locked_until >= func.now()).where(
+                ReanalysisClaim.tender_id == tender_id,
+                ReanalysisClaim.knowledge_item_id == knowledge_item_id,
+                ReanalysisClaim.state_version == state_version,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        claim, lease_live = row
+        return claim, bool(lease_live)
 
     async def complete(self, claim_token: uuid.UUID) -> bool:
         """Mark the claim completed, only while the caller's token is still
