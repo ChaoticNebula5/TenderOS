@@ -235,16 +235,14 @@ jobs:
   # .env is built from .env.example with values generated for this run
   # (scripts/ci_e2e_env.py), LLM_PROVIDER is fake, every Gemini key blank.
   #
-  # Non-blocking for its first 5 runs (continue-on-error): step 11 of the
-  # spec depends on timing (KNOWN_LIMITATIONS, "E2E step 11 depends on the
-  # workflow still running when the red team is clicked"), and a runner
-  # moves both sides of that race. Every run writes its step 11 timeline to
-  # the job summary and the e2e-logs artifact. Make the job required, and
-  # drop continue-on-error, only after 5 of 5 pass with their timelines
-  # recorded.
+  # Blocking: a failing e2e fails the run. It ran non-blocking
+  # (continue-on-error) until 5 consecutive main runs passed with their
+  # step 11 timelines recorded, counted from the one-time spec edit's merge
+  # (runs 41617547377 to 41675559313, 2026-11-03; KNOWN_LIMITATIONS, item
+  # 30). Step 11 still depends on timing, so every run keeps writing its
+  # timeline to the job summary and the e2e-logs artifact.
   e2e:
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 45
     env:
       COMPOSE_PROJECT_NAME: tenderos
