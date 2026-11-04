@@ -11246,6 +11246,56 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   only the outbox row written, and every dispatcher route having its own
   check, so a route added later cannot be re-driven unchecked).
 
+## [Phase 4 plan item 45, 2026-11-04, resolved; residual accepted] Idle RQ workers quit on a Redis timeout in the Docker Desktop VM
+
+- **Seen (observed, fake stack, Docker Desktop on Windows):** each of the
+  four RQ workers logged "Redis connection timeout, quitting..." 27 to 28
+  times between 08:41 and 12:27 UTC on 2026-11-04, about every 6.5 minutes
+  while idle, and Docker restarted it each time. The outbox dispatcher and
+  the API logged none. RQ catches the `TimeoutError` and logs that one line,
+  so there is no traceback.
+- **Cause (measured):** an idle worker blocks in BLMOVE (one queue, Redis
+  6.2 or later; BLPOP for several queues) for RQ's dequeue timeout,
+  `worker_ttl - 15` = 405 s. RQ gives the client socket 10 s more
+  (`connection_timeout` = 415 s), and the socket timeout runs on the
+  monotonic clock, while Redis times the wait on its wall clock (read in
+  Redis's own source, not in this repo; the numbers below fit it). In the
+  Docker Desktop VM the monotonic clock ran fast: a BLPOP(405) took
+  414.2 s by the container's monotonic clock and 405.1 s by its wall clock,
+  0.8 s short of the 415 s timeout, while the same wait from the Windows
+  host took 405.1 s by both clocks. RQ's margin is about 2.5%; past it the
+  socket times out first, redis-py raises `TimeoutError`, which RQ's
+  dequeue loop does not retry (it retries `ConnectionError`), and the
+  worker quits. The connection settings themselves were right (observed on
+  a live socket: 415 s, keepalive 30/5/3). Probably specific to Docker
+  Desktop on Windows; the drift varies (no quits at all in 22 idle minutes
+  after the stack restarted at 14:02 UTC). Not caused by item 44's split
+  (read in code; the operations worker, older than item 44, quit the same
+  way).
+- **Behaviour (fixed):** the workers' Redis connection gets an explicit
+  socket timeout of RQ's dequeue wait plus 120 s, derived from RQ's
+  `worker_ttl` (`worker.worker_socket_timeout`: 405 + 120 = 525 s). RQ
+  only raises a timeout below its own 415 s, so it keeps 525 s; each worker
+  logs the effective value after RQ's setup ("redis socket timeout 525 s
+  for a 405 s dequeue wait (worker_ttl 420 s)", observed on all four live
+  workers). The API's rate limiter (0.25 s, the login fail-closed path of
+  decision 0041) and the outbox dispatcher (2 s) are unchanged.
+- **A dead Redis still shows:** a Redis that goes away (connection dropped,
+  new ones refused) ends the wait with a `ConnectionError` within seconds
+  (tested: about 1 s), which RQ retries and logs as "could not connect";
+  redis-py's keepalive (30 s idle, 3 probes 5 s apart) ends a connection to
+  a host that has gone silently (read in code).
+- **Accepted limit:**
+  1. **A Redis that keeps the connection but stops answering is noticed
+     after 525 s** of an idle wait, instead of 415 s.
+- **Test:** `tests/integration/test_worker_redis_timeout.py` (a proxy in
+  front of the test Redis holds the empty answer to a blocking wait back
+  12 s, through RQ's real `Worker(...)` and `work()` at a 16 s
+  `worker_ttl`: RQ's own 11 s timeout quits, the fix outlasts it; the
+  effective 525 s on a live socket at the production `worker_ttl`;
+  `worker.main()` building its worker on it and logging it; a Redis that
+  goes away failing the wait at once).
+
 ## [Phase 4 consumer guards, 2026-10-13, accepted; limit 1 resolved 2026-11-04] What each outbox consumer does with a duplicate delivery
 
 - **Discovered:** Phase 4 blocker 3 (delivery is at-least-once, see the
