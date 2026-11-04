@@ -5,6 +5,7 @@ import sys
 
 from redis import Redis
 from rq import Queue, Worker
+from rq.defaults import DEFAULT_WORKER_TTL
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 
@@ -25,6 +26,42 @@ QUEUE_NAMES = ["ingestion", "workflow", "projection", "evaluation", "maintenance
 # The default worker does not listen to it.
 OPERATIONS_QUEUE = "operations"
 KNOWN_QUEUE_NAMES = [*QUEUE_NAMES, OPERATIONS_QUEUE]
+
+
+# Plan item 45. An idle RQ worker blocks in BLPOP for its dequeue timeout
+# (worker_ttl - 15 s, rq/worker/base.py) and Redis answers that wait on its
+# own wall clock. RQ gives the client socket only 10 s more
+# (connection_timeout), and the socket timeout runs on the monotonic clock.
+# Measured in the Docker Desktop VM, that clock ran about 2.3% fast: a
+# BLPOP(405) took 414.2 s by it, 0.8 s short of the 415 s socket timeout,
+# while the wall clock (and the Windows host) counted 405.1 s. Past the
+# margin the socket times out first, redis-py raises TimeoutError, which
+# RQ's dequeue loop does not retry, and the worker quits. 120 s of margin
+# covers drift of about 30% instead of 2.5%. A dead Redis still shows: a
+# reset or closed connection raises ConnectionError at once (RQ retries it
+# and logs "could not connect"), and redis-py's keepalive (30 s idle, 3
+# probes 5 s apart) ends a connection to a host that has gone silently.
+# Only a Redis that keeps the connection but stops answering waits for
+# this timeout.
+WORKER_TTL = DEFAULT_WORKER_TTL
+DEQUEUE_SOCKET_MARGIN_SECONDS = 120
+
+
+def worker_socket_timeout(worker_ttl: int = WORKER_TTL) -> int:
+    """The socket timeout for a worker's Redis connection: RQ's dequeue
+    timeout for this worker_ttl (BaseWorker.dequeue_timeout) plus the
+    margin. RQ only raises a connection's timeout that is below its own
+    connection_timeout (BaseWorker._set_connection), so it keeps this one."""
+    dequeue_timeout = max(1, worker_ttl - 15)
+    return dequeue_timeout + DEQUEUE_SOCKET_MARGIN_SECONDS
+
+
+def worker_connection(redis_url: str, worker_ttl: int = WORKER_TTL) -> Redis:
+    """The Redis connection an RQ worker blocks on, with a socket timeout
+    well past its dequeue wait (see WORKER_TTL's comment). Only the workers
+    use it: the API's rate limiter and the outbox dispatcher keep their own
+    short timeouts."""
+    return Redis.from_url(redis_url, socket_timeout=worker_socket_timeout(worker_ttl))
 
 
 def queue_names_from(argv: list[str]) -> list[str]:
@@ -145,9 +182,17 @@ def main() -> None:
     if OPERATIONS_QUEUE in queue_names:
         # Before the Redis client exists, so its sockets cannot be counted.
         preload_operations_module()
-    connection = Redis.from_url(settings.redis_url)
+    connection = worker_connection(settings.redis_url, WORKER_TTL)
     queues = [Queue(name, connection=connection) for name in queue_names]
-    worker = Worker(queues, connection=connection)
+    worker = Worker(queues, connection=connection, worker_ttl=WORKER_TTL)
+    # After RQ's own setup (Worker.__init__ runs _set_connection), so this is
+    # the timeout the blocking wait really gets (plan item 45).
+    logger.info(
+        "redis socket timeout %s s for a %s s dequeue wait (worker_ttl %s s)",
+        connection.connection_pool.connection_kwargs.get("socket_timeout"),
+        worker.dequeue_timeout,
+        worker.worker_ttl,
+    )
     # with_scheduler=True: B16 Group 1's retry mechanism (jobs/workflow.py's
     # _handle_graph_failure) schedules retries via Queue.enqueue_in, which
     # only ever lands a job in RQ's own scheduled-jobs registry - nothing
