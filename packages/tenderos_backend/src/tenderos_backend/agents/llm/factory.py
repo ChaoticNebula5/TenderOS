@@ -1,3 +1,5 @@
+import logging
+
 from redis.asyncio import Redis as AsyncRedis
 
 from tenderos_backend.agents.llm.client import LLMClient
@@ -26,6 +28,26 @@ from tenderos_backend.core.config import settings
 # state to leak between unrelated jobs) - the two branches are
 # deliberately asymmetric, not an oversight.
 _fake_client = FakeLLMClient()
+
+logger = logging.getLogger(__name__)
+
+
+def log_llm_provider() -> None:
+    """Phase 4 plan item 46: one INFO line naming the provider this process
+    will use, logged once at startup by the same three entrypoints that
+    call install_fake_fallback_responses() (apps/api/main.py, apps/worker/
+    worker.py, apps/worker/outbox_dispatcher.py). Before this nothing said
+    which provider a container was on, so a stack that came up live from
+    .env (2026-11-04) looked exactly like a fake one until its first call.
+    The provider only, never a key.
+    """
+    if settings.llm_provider == "fake":
+        logger.info("llm provider fake: every LLM call is answered by FakeLLMClient")
+    else:
+        logger.info(
+            "llm provider %s: LLM calls go to the live provider and cost money",
+            settings.llm_provider,
+        )
 
 
 def fake_llm_client() -> FakeLLMClient:
