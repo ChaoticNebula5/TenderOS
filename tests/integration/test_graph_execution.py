@@ -422,8 +422,14 @@ async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(
     # 15s fixed backoff for an unclassified exception) by calling the
     # scheduled job's own target function directly, matching
     # test_workflow_retry.py's own established "don't wait for RQ, call
-    # the target directly" convention.
-    await retry_workflow_run(str(run.id))
+    # the target directly" convention. Plan item 19: with the retry's own
+    # number, which the failure handler recorded as the run's current job;
+    # a retry that is not the current job does not start.
+    async with UnitOfWork() as uow:
+        retried_run = await uow.workflow.get_run(run.id)
+    assert retried_run is not None
+    assert retried_run.current_job_id == f"retry_{run.id}_{retried_run.retry_count}"
+    await retry_workflow_run(str(run.id), retried_run.retry_count)
 
     async with UnitOfWork() as uow:
         tasks_after_retry = await uow.workflow.list_tasks(run.id)

@@ -74,6 +74,8 @@ async def test_mark_run_failed_on_timeout_flips_status_and_leaves_a_distinguisha
         run = await uow.workflow.get_run(run_id)
         assert run is not None
         assert run.status == "failed"
+        # Plan item 19: the reason the screen shows under "Last run".
+        assert run.error_code == "JOB_TIMEOUT"
 
         events = await uow.audit.list_for_workflow_run(run_id)
     timeout_events = [e for e in events if e.action == "workflow_run_timed_out"]

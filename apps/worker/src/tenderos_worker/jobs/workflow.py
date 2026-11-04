@@ -18,6 +18,9 @@ from tenderos_backend.domain.services.workflow_service import (
     claim_run_for_start,
     is_cancelled,
     mark_run_failed_on_timeout,
+    resume_job_id,
+    retry_job_id,
+    start_job_id,
     sync_run_status,
 )
 from tenderos_backend.orchestration.checkpoint import get_checkpointer
@@ -55,7 +58,7 @@ WORKFLOW_JOB_TIMEOUT_SECONDS = 1800
 _RETRY_BUDGET_CEILING = 10
 
 
-async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
+async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception, job_id: str | None) -> bool:
     """Shared by run_workflow/resume_workflow/retry_workflow_run's own
     except blocks - major finding #17's real fix (B16 Group 4/1). Returns
     True if a retry was scheduled (caller should NOT mark the run
@@ -83,6 +86,16 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
     THIS attempt stays inspectable in RQ's own failed-job registry (I4:
     "failed jobs remain inspectable") even when a retry is already
     scheduled to fix it.
+
+    Plan item 19: `job_id` is the failing job's own RQ id. The retry is
+    numbered by the reserved retry_count and recorded as the run's current
+    job in the same transaction as the reservation, only while the run is
+    still running under `job_id` (WorkflowRepository.record_retry_job);
+    that commits, and only then is the retry enqueued under that id. So the
+    run reaper always knows which job a run waiting for its retry waits on,
+    and a run reaped or cancelled meanwhile gets no retry. If the enqueue
+    then fails (Redis down), the run names a job RQ never had, and the
+    reaper fails it a minute later: right, since no retry was scheduled.
     """
     async with UnitOfWork() as uow:
         tasks = await uow.workflow.list_tasks(run_id)
@@ -110,21 +123,31 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
         return False
 
     async with UnitOfWork() as uow:
-        reserved = await uow.workflow.try_reserve_retry_budget(
+        retry_number = await uow.workflow.try_reserve_retry_budget(
             run_id, cost=decision.budget_cost, ceiling=_RETRY_BUDGET_CEILING
         )
+        if retry_number is None:
+            # classify_task_failure's own decision above was computed
+            # against a plain read of run.retry_count, taken before this
+            # reservation - correct advice most of the time, but not a
+            # guarantee under real concurrency (two failure handlers for
+            # the same run, racing). The atomic reservation above is the
+            # actual source of truth: if it didn't happen, either this
+            # decision's own read was already stale (a concurrent caller
+            # spent the last unit first) or the run was genuinely already
+            # at the ceiling - either way, do not schedule a retry the
+            # budget doesn't actually cover.
+            return False
+        retry_id = retry_job_id(run_id, retry_number)
+        if not await uow.workflow.record_retry_job(run_id, job_id, retry_id):
+            # Not committed, so the reservation is undone too.
+            logger.info(
+                "workflow run %s: no retry scheduled; the run is no longer running under job %s",
+                run_id,
+                job_id,
+            )
+            return False
         await uow.commit()
-    if not reserved:
-        # classify_task_failure's own decision above was computed against
-        # a plain read of run.retry_count, taken before this reservation -
-        # correct advice most of the time, but not a guarantee under real
-        # concurrency (two failure handlers for the same run, racing).
-        # The atomic reservation above is the actual source of truth: if
-        # it didn't happen, either this decision's own read was already
-        # stale (a concurrent caller spent the last unit first) or the
-        # run was genuinely already at the ceiling - either way, do not
-        # schedule a retry the budget doesn't actually cover.
-        return False
 
     connection = Redis.from_url(settings.redis_url)
     queue = Queue("workflow", connection=connection)
@@ -132,11 +155,14 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception) -> bool:
         timedelta(seconds=decision.delay_seconds),
         retry_workflow_run_job,
         str(run_id),
+        retry_number,
+        job_id=retry_id,
         job_timeout=WORKFLOW_JOB_TIMEOUT_SECONDS,
     )
     logger.info(
-        "workflow run %s: scheduled a retry in %.1fs after %s (task %s, attempt %d/%d)",
+        "workflow run %s: scheduled retry %s in %.1fs after %s (task %s, attempt %d/%d)",
         run_id,
+        retry_id,
         decision.delay_seconds,
         type(exc).__name__,
         failed_task.task_key,
@@ -228,7 +254,7 @@ async def run_workflow(workflow_run_id: str) -> None:
         # Re-checking here, not just before, is what stops "failed" from
         # silently overwriting a real, deliberate cancellation.
         if not await is_cancelled(run_id):
-            retried = await _handle_graph_failure(run_id, exc)
+            retried = await _handle_graph_failure(run_id, exc, start_job_id(run_id))
             if not retried:
                 await sync_run_status(run_id, "failed")
         raise
@@ -291,7 +317,7 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
 
             # 2. Claim the run waiting_for_human -> running, so of two
             #    concurrent resumes for the same gate only one proceeds.
-            if not await claim_run_for_resume(run_id):
+            if not await claim_run_for_resume(run_id, gate.id):
                 logger.info(
                     "workflow run %s: no longer waiting_for_human; another resume for gate %s "
                     "claimed it, not resuming",
@@ -313,13 +339,13 @@ async def resume_workflow(workflow_run_id: str, gate_id: str) -> None:
         # including the re-check of cancellation-during-execution.
         logger.exception("workflow run %s failed while resuming", run_id)
         if not await is_cancelled(run_id):
-            retried = await _handle_graph_failure(run_id, exc)
+            retried = await _handle_graph_failure(run_id, exc, resume_job_id(run_id, gate.id))
             if not retried:
                 await sync_run_status(run_id, "failed")
         raise
 
 
-async def retry_workflow_run(workflow_run_id: str) -> None:
+async def retry_workflow_run(workflow_run_id: str, retry_number: int | None = None) -> None:
     """B16 Group 1/4's real retry mechanism - scheduled by
     _handle_graph_failure via Queue.enqueue_in, never called directly by
     an outbox route. Resumes the SAME LangGraph checkpoint thread with no
@@ -334,6 +360,15 @@ async def retry_workflow_run(workflow_run_id: str) -> None:
     node": no node function is called directly here at all, only the
     compiled graph's own `ainvoke`, the same entry point every other real
     invocation in this file uses.
+
+    Plan item 19: it starts only if the run is still running AND this
+    retry is its current job (`retry_number` gives this job's own id,
+    workflow_service.retry_job_id). A run failed by the timeout path or the
+    run reaper, or cancelled, is not running; before, only "cancelled" was
+    checked, so a retry on a failed run built the graph and made LLM calls
+    until its first status write was refused. A retry enqueued before
+    migration 024 has no number, and matches only a run with no job
+    recorded.
     """
     run_id = uuid.UUID(workflow_run_id)
     async with UnitOfWork() as uow:
@@ -341,8 +376,15 @@ async def retry_workflow_run(workflow_run_id: str) -> None:
     if run is None:
         raise ValueError(f"WorkflowRun {run_id} not found")
 
-    if run.status == "cancelled":
-        logger.info("workflow run %s is cancelled, skipping retry", run_id)
+    own_job_id = retry_job_id(run_id, retry_number) if retry_number is not None else None
+    if run.status != "running" or run.current_job_id != own_job_id:
+        logger.info(
+            "workflow run %s: retry %s not started; the run is %s, its current job %s",
+            run_id,
+            own_job_id,
+            run.status,
+            run.current_job_id,
+        )
         return
 
     config: RunnableConfig = {"configurable": {"thread_id": run.langgraph_thread_id}}
@@ -359,7 +401,7 @@ async def retry_workflow_run(workflow_run_id: str) -> None:
     except Exception as exc:
         logger.exception("workflow run %s failed again during retry", run_id)
         if not await is_cancelled(run_id):
-            retried = await _handle_graph_failure(run_id, exc)
+            retried = await _handle_graph_failure(run_id, exc, own_job_id)
             if not retried:
                 await sync_run_status(run_id, "failed")
         raise
@@ -429,5 +471,5 @@ def resume_workflow_job(workflow_run_id: str, gate_id: str) -> None:
     _run_sync(resume_workflow(workflow_run_id, gate_id), uuid.UUID(workflow_run_id))
 
 
-def retry_workflow_run_job(workflow_run_id: str) -> None:
-    _run_sync(retry_workflow_run(workflow_run_id), uuid.UUID(workflow_run_id))
+def retry_workflow_run_job(workflow_run_id: str, retry_number: int | None = None) -> None:
+    _run_sync(retry_workflow_run(workflow_run_id, retry_number), uuid.UUID(workflow_run_id))

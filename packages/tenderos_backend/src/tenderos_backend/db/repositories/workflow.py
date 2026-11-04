@@ -1,21 +1,28 @@
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.workflow import (
     ACTIVE_RUN_STATUSES,
+    RUN_JOB_TIMEOUT,
     TERMINAL_RUN_STATUSES,
+    ApprovalGate,
     WorkflowRun,
     WorkflowTask,
     WorkflowTaskDependency,
 )
 from tenderos_backend.db.repositories.outbox import OutboxRepository
 from tenderos_backend.domain.events.outbox_events import (
+    AGGREGATE_APPROVAL_GATE,
     AGGREGATE_WORKFLOW_RUN,
     AGGREGATE_WORKFLOW_TASK,
+    EVENT_GATE_DECISION_RECORDED,
+    EVENT_WORKFLOW_RUN_CREATED,
     EVENT_WORKFLOW_RUN_STATUS_CHANGED,
     EVENT_WORKFLOW_TASK_COMPLETED,
     EVENT_WORKFLOW_TASK_CREATED,
@@ -29,6 +36,28 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_task_failed_idempotency_key,
     workflow_task_failed_payload,
 )
+
+
+@dataclass(frozen=True)
+class RunToCheck:
+    """A queued or running run the reaper looks at (plan item 19), with the
+    current job it saw and, for a running run, how long ago that job was
+    recorded (database clock; None for a queued run)."""
+
+    run_id: uuid.UUID
+    status: str
+    current_job_id: str | None
+    job_age: timedelta | None = None
+
+
+@dataclass(frozen=True)
+class RunAtGate:
+    """A run waiting for a human whose latest gate is decided (plan item
+    19's gate-aware rule), with the current job it saw."""
+
+    run_id: uuid.UUID
+    current_job_id: str | None
+    gate_id: uuid.UUID
 
 
 class RunNoLongerActiveError(Exception):
@@ -170,7 +199,7 @@ class WorkflowRepository:
         status = result.scalar_one_or_none()
         return status in ACTIVE_RUN_STATUSES
 
-    async def claim_queued_run(self, run_id: uuid.UUID) -> bool:
+    async def claim_queued_run(self, run_id: uuid.UUID, job_id: str) -> bool:
         """Phase 4 blocker 3: move a run from 'queued' to 'running' if, and
         only if, it is still 'queued'. Returns whether this call made the
         move. The outbox delivers WorkflowRunCreated at least once, so
@@ -184,6 +213,9 @@ class WorkflowRepository:
         'queued' either, so it is never claimed. On success it writes the
         same WorkflowRunStatusChanged outbox event update_run_status does,
         so the progress stream sees the move to running.
+
+        Plan item 19: the same UPDATE records `job_id` (the start job's own
+        id) as the run's current job, for the run reaper.
         """
         result = await self._session.execute(
             sa_update(WorkflowRun)
@@ -191,6 +223,8 @@ class WorkflowRepository:
             .values(
                 status="running",
                 started_at=func.coalesce(WorkflowRun.started_at, func.now()),
+                current_job_id=job_id,
+                current_job_at=func.now(),
             )
             .returning(WorkflowRun.id)
             .execution_options(synchronize_session=False)
@@ -200,18 +234,19 @@ class WorkflowRepository:
             await self._announce_running(run_id)
         return claimed
 
-    async def claim_waiting_run(self, run_id: uuid.UUID) -> bool:
+    async def claim_waiting_run(self, run_id: uuid.UUID, job_id: str) -> bool:
         """Consumer guard for resume_workflow: move a run from
         'waiting_for_human' to 'running' if, and only if, it is still
         waiting. Same compare-and-set shape as claim_queued_run, so of two
         concurrent resumes only one matches. resume_workflow calls this only
         after confirming the thread is paused at the interrupt for the
         decided gate, so a run waiting at a different gate is never flipped
-        to running by a stale resume."""
+        to running by a stale resume. Records `job_id` (the resume job's
+        own id) as the current job, like claim_queued_run."""
         result = await self._session.execute(
             sa_update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.status == "waiting_for_human")
-            .values(status="running")
+            .values(status="running", current_job_id=job_id, current_job_at=func.now())
             .returning(WorkflowRun.id)
             .execution_options(synchronize_session=False)
         )
@@ -245,7 +280,9 @@ class WorkflowRepository:
             raise ValueError(f"WorkflowRun {run_id} not found")
         run.plan_version = plan_version
 
-    async def try_reserve_retry_budget(self, run_id: uuid.UUID, cost: int, ceiling: int) -> bool:
+    async def try_reserve_retry_budget(
+        self, run_id: uuid.UUID, cost: int, ceiling: int
+    ) -> int | None:
         """Replaces the old increment_retry_count, which was a real,
         CodeRabbit-caught instance of this project's own standing
         "sequential retry tested, genuine concurrency untested" pattern -
@@ -263,10 +300,12 @@ class WorkflowRepository:
         locking for this UPDATE, so a concurrent second caller's own
         UPDATE simply blocks until the first commits, then re-evaluates
         the WHERE clause against the NEW value - it cannot see the same
-        stale ceiling-satisfying state twice. Returns whether the
-        reservation actually happened (a row was matched and updated) -
-        callers must treat False as "budget exhausted or already spent by
-        a concurrent caller," not proceed to schedule a retry regardless.
+        stale ceiling-satisfying state twice. Returns the run's new
+        retry_count when the reservation happened (a row was matched and
+        updated), None otherwise - callers must treat None as "budget
+        exhausted or already spent by a concurrent caller," not proceed to
+        schedule a retry regardless. Plan item 19: the new count numbers the
+        retry's RQ job (workflow_service.retry_job_id), unique per retry.
         """
         # .returning() + checking whether a row came back, not .rowcount -
         # AsyncSession.execute()'s own static return type doesn't narrow
@@ -276,10 +315,214 @@ class WorkflowRepository:
             sa_update(WorkflowRun)
             .where(WorkflowRun.id == run_id, WorkflowRun.retry_count + cost <= ceiling)
             .values(retry_count=WorkflowRun.retry_count + cost)
-            .returning(WorkflowRun.id)
+            .returning(WorkflowRun.retry_count)
         )
         await self._session.flush()
+        return result.scalar_one_or_none()
+
+    async def record_retry_job(
+        self, run_id: uuid.UUID, failing_job_id: str | None, retry_job_id: str
+    ) -> bool:
+        """Plan item 19: make `retry_job_id` the run's current job, if, and
+        only if, the run is still running under the job that is failing.
+        Called in the same transaction as the budget reservation, which
+        commits before the retry is enqueued under that id. Returns whether
+        it was recorded; when not (the run was reaped, cancelled or finished
+        meanwhile), no retry may be enqueued.
+
+        One conditional UPDATE, the compare-and-set shape of the claims. IS
+        NOT DISTINCT FROM, so a retry scheduled before migration 024 (no job
+        id of its own, on a run with none recorded) can still schedule the
+        next one."""
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run_id,
+                WorkflowRun.status == "running",
+                WorkflowRun.current_job_id.is_not_distinct_from(failing_job_id),
+            )
+            .values(current_job_id=retry_job_id, current_job_at=func.now())
+            .returning(WorkflowRun.id)
+            .execution_options(synchronize_session=False)
+        )
         return result.scalar_one_or_none() is not None
+
+    async def fail_lost_run(
+        self,
+        run_id: uuid.UUID,
+        status_seen: str,
+        job_id_seen: str | None,
+        error_code: str,
+    ) -> bool:
+        """Plan item 19: fail a run the reaper found lost, with `error_code`,
+        if, and only if, it still has the status and current job the reaper
+        checked. The check (RQ, then this) is not atomic, so the write names
+        what was checked: a claim that moved the run on, or a retry recorded
+        meanwhile, makes it match nothing. `status_seen` is always an active
+        status, so a completed, failed or cancelled run is never touched.
+        Writes the status event only when it matched; returns whether it
+        did."""
+        result = await self._session.execute(
+            sa_update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run_id,
+                WorkflowRun.status == status_seen,
+                WorkflowRun.current_job_id.is_not_distinct_from(job_id_seen),
+            )
+            .values(
+                status="failed",
+                completed_at=func.now(),
+                error_code=error_code,
+                current_job_id=None,
+            )
+            .returning(WorkflowRun.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            return False
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_RUN,
+            aggregate_id=run_id,
+            event_type=EVENT_WORKFLOW_RUN_STATUS_CHANGED,
+            payload=workflow_run_status_changed_payload(run_id, "failed"),
+            idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
+        )
+        return True
+
+    async def list_runs_to_check(self, batch_size: int) -> list[RunToCheck]:
+        """Plan item 19, the reaper's candidates whose RQ job it will ask
+        about, oldest first, at most batch_size of each kind:
+        - queued runs whose WorkflowRunCreated was dispatched (so their
+          start job was enqueued). One whose event is still pending has had
+          no job yet (the outbox may be retrying) and is not listed;
+        - running runs with a recorded current job, with how long ago it
+          was recorded (database clock)."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        queued = await self._session.execute(
+            select(WorkflowRun.id, WorkflowRun.current_job_id)
+            .join(
+                OutboxEvent,
+                and_(
+                    OutboxEvent.aggregate_type == AGGREGATE_WORKFLOW_RUN,
+                    OutboxEvent.aggregate_id == WorkflowRun.id,
+                    OutboxEvent.event_type == EVENT_WORKFLOW_RUN_CREATED,
+                ),
+            )
+            .where(WorkflowRun.status == "queued", OutboxEvent.status == "dispatched")
+            .order_by(WorkflowRun.created_at)
+            .limit(batch_size)
+        )
+        running = await self._session.execute(
+            select(
+                WorkflowRun.id,
+                WorkflowRun.current_job_id,
+                (func.now() - WorkflowRun.current_job_at).label("job_age"),
+            )
+            .where(WorkflowRun.status == "running", WorkflowRun.current_job_id.is_not(None))
+            .order_by(WorkflowRun.current_job_at)
+            .limit(batch_size)
+        )
+        return [
+            RunToCheck(run_id=row.id, status="queued", current_job_id=row.current_job_id)
+            for row in queued
+        ] + [
+            RunToCheck(
+                run_id=row.id,
+                status="running",
+                current_job_id=row.current_job_id,
+                job_age=row.job_age,
+            )
+            for row in running
+        ]
+
+    async def list_waiting_runs_with_a_decided_gate(self, batch_size: int) -> list[RunAtGate]:
+        """Plan item 19, the gate-aware rule's candidates: runs waiting for a
+        human whose latest gate is already decided and whose
+        GateDecisionRecorded was dispatched, so a resume job was enqueued.
+        Normally that job claims the run within moments; the reaper asks RQ
+        whether it still can. Oldest decision first, at most batch_size.
+
+        Only runs with a recorded current job: whether the resume already
+        claimed the run is read from current_job_id, and a run from before
+        migration 024 has none. Such a run may be waiting on purpose (a
+        resume that answered "request changes" ends the run at its gate), so
+        it is left alone. Observed 2026-11-04: a pre-024 dev run waiting
+        after a "request changes" decision, its resume job gone with a
+        Redis flush, was failed by the first build of this rule."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        latest_gate = select(
+            ApprovalGate.id,
+            ApprovalGate.workflow_run_id,
+            ApprovalGate.status,
+            func.row_number()
+            .over(
+                partition_by=ApprovalGate.workflow_run_id,
+                order_by=(ApprovalGate.requested_at.desc(), ApprovalGate.id.desc()),
+            )
+            .label("newest_first"),
+        ).subquery("latest_gate")
+        result = await self._session.execute(
+            select(WorkflowRun.id, WorkflowRun.current_job_id, latest_gate.c.id.label("gate_id"))
+            .join(
+                latest_gate,
+                and_(
+                    latest_gate.c.workflow_run_id == WorkflowRun.id,
+                    latest_gate.c.newest_first == 1,
+                ),
+            )
+            .join(
+                OutboxEvent,
+                and_(
+                    OutboxEvent.aggregate_type == AGGREGATE_APPROVAL_GATE,
+                    OutboxEvent.aggregate_id == latest_gate.c.id,
+                    OutboxEvent.event_type == EVENT_GATE_DECISION_RECORDED,
+                ),
+            )
+            .where(
+                WorkflowRun.status == "waiting_for_human",
+                WorkflowRun.current_job_id.is_not(None),
+                latest_gate.c.status != "pending",
+                OutboxEvent.status == "dispatched",
+            )
+            .order_by(OutboxEvent.dispatched_at)
+            .limit(batch_size)
+        )
+        return [
+            RunAtGate(run_id=row.id, current_job_id=row.current_job_id, gate_id=row.gate_id)
+            for row in result
+        ]
+
+    async def list_runs_past_cap(self, cap: timedelta, batch_size: int) -> list[RunToCheck]:
+        """Plan item 19, the backstop: queued runs created more than `cap`
+        ago, and running runs whose current job was recorded more than `cap`
+        ago (database clock), whatever RQ says, oldest first, at most
+        batch_size of each. A running run's age counts from its current
+        job, not from when it started: a run resumed an hour ago after
+        days at a gate is an hour old here."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        queued = await self._session.execute(
+            select(WorkflowRun.id, WorkflowRun.current_job_id)
+            .where(WorkflowRun.status == "queued", WorkflowRun.created_at < func.now() - cap)
+            .order_by(WorkflowRun.created_at)
+            .limit(batch_size)
+        )
+        job_at = func.coalesce(WorkflowRun.current_job_at, WorkflowRun.created_at)
+        running = await self._session.execute(
+            select(WorkflowRun.id, WorkflowRun.current_job_id)
+            .where(WorkflowRun.status == "running", job_at < func.now() - cap)
+            .order_by(job_at)
+            .limit(batch_size)
+        )
+        return [
+            RunToCheck(run_id=row.id, status="queued", current_job_id=row.current_job_id)
+            for row in queued
+        ] + [
+            RunToCheck(run_id=row.id, status="running", current_job_id=row.current_job_id)
+            for row in running
+        ]
 
     async def mark_failed_if_not_terminal(self, run_id: uuid.UUID) -> bool:
         """Atomic counterpart to update_run_status for exactly one caller:
@@ -296,7 +539,8 @@ class WorkflowRepository:
         window the same way try_reserve_retry_budget's does. Returns
         whether the row was actually moved to "failed" - callers must skip
         writing anything that describes a change that didn't happen (e.g.
-        the audit event) when this returns False.
+        the audit event) when this returns False. Plan item 19: with
+        error_code JOB_TIMEOUT, which the screen explains under "Last run".
         """
         result = await self._session.execute(
             sa_update(WorkflowRun)
@@ -304,7 +548,12 @@ class WorkflowRepository:
                 WorkflowRun.id == run_id,
                 WorkflowRun.status.not_in(("completed", "failed", "cancelled")),
             )
-            .values(status="failed", completed_at=datetime.now(UTC))
+            .values(
+                status="failed",
+                completed_at=datetime.now(UTC),
+                error_code=RUN_JOB_TIMEOUT,
+                current_job_id=None,
+            )
             .returning(WorkflowRun.id)
         )
         await self._session.flush()

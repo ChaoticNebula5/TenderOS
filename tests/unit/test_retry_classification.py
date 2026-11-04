@@ -12,7 +12,10 @@ from tenderos_backend.agents.llm.client import (
     RateLimitedError,
     TransientProviderError,
 )
-from tenderos_backend.orchestration.retry import classify_task_failure
+from tenderos_backend.orchestration.retry import (
+    MAX_PROVIDER_RETRY_AFTER_SECONDS,
+    classify_task_failure,
+)
 
 
 def test_model_not_found_is_always_terminal():
@@ -103,3 +106,18 @@ def test_retry_budget_remaining_ceiling_overrides_an_otherwise_retryable_excepti
         retry_budget_remaining=0,
     )
     assert decision.should_retry is False
+
+
+def test_a_providers_retry_after_is_clamped_to_fifteen_minutes():
+    """Plan item 19 (decision 5): a provider asking for a day gets 15
+    minutes; then, if it is still limiting, the run's retry budget decides.
+    Uncapped, the retry would wait past the run reaper's 6-hour cap and the
+    run would be failed as lost."""
+    decision = classify_task_failure(
+        RateLimitedError("429", retry_after_seconds=86_400.0),
+        attempt_count=1,
+        max_attempts=2,
+        retry_budget_remaining=10,
+    )
+    assert decision.should_retry is True
+    assert decision.delay_seconds == MAX_PROVIDER_RETRY_AFTER_SECONDS == 900.0

@@ -106,9 +106,9 @@ async def test_two_concurrent_deliveries_start_the_graph_exactly_once(
     original_claim = WorkflowRepository.claim_queued_run
     claims: list[bool] = []
 
-    async def claim_together(self, run_id):
+    async def claim_together(self, run_id, job_id):
         await asyncio.wait_for(barrier.wait(), timeout=_WAIT_SECONDS)
-        claimed = await original_claim(self, run_id)
+        claimed = await original_claim(self, run_id, job_id)
         claims.append(claimed)
         return claimed
 

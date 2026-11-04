@@ -3,10 +3,11 @@ import contextlib
 import logging
 import random
 import signal
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from redis import Redis
 from redis.backoff import NoBackoff
@@ -37,7 +38,8 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
-from tenderos_backend.domain.services import operation_service
+from tenderos_backend.domain.services import operation_service, run_reaper
+from tenderos_backend.domain.services.workflow_service import resume_job_id, start_job_id
 
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.knowledge_import import process_knowledge_document_import
@@ -185,7 +187,7 @@ def _workflow_run_created_dispatch(
     # left run_workflow's own except block unreachable when RQ's death-
     # penalty timeout fires. The *_job wrappers own that transition instead.
     workflow_run_id = event.payload["workflow_run_id"]
-    return "workflow", run_workflow_job, (workflow_run_id,), f"workflow-{workflow_run_id}"
+    return "workflow", run_workflow_job, (workflow_run_id,), start_job_id(workflow_run_id)
 
 
 def _gate_decision_recorded_dispatch(
@@ -202,8 +204,10 @@ def _gate_decision_recorded_dispatch(
         # contain hyphens, so dash-joining two of them would be ambiguous to
         # split back apart (RQ job_ids only allow [A-Za-z0-9_-], no colons,
         # per B2's earlier RQ constraint discovery - I3's own examples use
-        # colons, which is invalid either way).
-        f"resume_{workflow_run_id}_{gate_id}",
+        # colons, which is invalid either way). Built by
+        # workflow_service.resume_job_id, which the resume claim and the
+        # run reaper share (plan item 19).
+        resume_job_id(workflow_run_id, gate_id),
     )
 
 
@@ -360,6 +364,102 @@ def operation_job_may_run(connection: Redis) -> Callable[[uuid.UUID], Awaitable[
     return may_run_off_the_loop
 
 
+# Plan item 19, design number, not measured: a started entry past due must
+# still be past due, with the same score, this long after it was first seen
+# before its job counts as abandoned. A live worker that could not heartbeat
+# during a Redis outage heartbeats within 30 s of Redis returning (RQ
+# refreshes the entry every 30 s), which moves the score; a dead worker's
+# score never moves.
+ABANDONED_CONFIRM_SECONDS = 120.0
+
+
+class RunJobInspector:
+    """Plan item 19: what RQ says about a workflow run's job, for the run
+    reaper (domain/services/run_reaper.py). `verdict(job_id)` returns the
+    reason the job will never move its run on, one of run_reaper's JOB_*
+    rules, or None while it may still run.
+
+    Checked in this order:
+    1. RQ's failed or canceled registry: workflow jobs are enqueued without
+       RQ's Retry (the dispatcher and enqueue_in alike), so RQ files a job
+       as failed only when it will never run again (item 44's reading,
+       rq/worker/base.py handle_job_failure). First, because a failed job's
+       hash stays a year.
+    2. RQ's started registry (rq:wip:workflow, members job_id:execution_id,
+       score = the heartbeat's expiry): live if any entry's score is in the
+       future. Past due is only a suspicion, because a live worker cut off
+       from Redis cannot heartbeat either: abandoned only when the entry is
+       still past due with the same score ABANDONED_CONFIRM_SECONDS after it
+       was first seen. The first sighting is kept in this object, so losing
+       it on a restart only delays a reap. Read with ZRANGE, never
+       StartedJobRegistry.get_job_ids(), whose default cleanup moves
+       past-due jobs to the failed registry without that second look.
+    3. RQ's finished registry: the job ended without moving the run on
+       (the current job's last act is the run's status write), and nothing
+       else will.
+    4. The queue list, the scheduled or deferred registry, or a job hash in
+       none of them (popped, not yet started): may still run.
+    5. Otherwise unknown: no hash, in no list or registry.
+
+    Any Redis error propagates: the reaper then fails nothing on that pass.
+    `clock` is injectable so a test can take the second look later.
+    """
+
+    def __init__(self, connection: Redis, clock: Callable[[], float] = time.time) -> None:
+        self._connection = connection
+        self._queue = Queue("workflow", connection=connection)
+        self._clock = clock
+        self._first_seen_past_due: dict[str, tuple[float, float]] = {}
+
+    def _verdict(self, job_id: str) -> str | None:
+        queue = self._queue
+        if job_id in queue.failed_job_registry:
+            self._first_seen_past_due.pop(job_id, None)
+            return run_reaper.JOB_FAILED
+        if job_id in queue.canceled_job_registry:
+            self._first_seen_past_due.pop(job_id, None)
+            return run_reaper.JOB_CANCELED
+
+        now = self._clock()
+        # (member, score) pairs; redis-py types the reply loosely.
+        entries = cast(
+            list[tuple[bytes, float]],
+            self._connection.zrange(queue.started_job_registry.key, 0, -1, withscores=True),
+        )
+        scores = [
+            float(score)
+            for member, score in entries
+            if member.decode().split(":", 1)[0] == job_id
+        ]
+        if scores:
+            if max(scores) > now:
+                self._first_seen_past_due.pop(job_id, None)
+                return None
+            score = max(scores)
+            seen = self._first_seen_past_due.get(job_id)
+            if seen is None or seen[0] != score:
+                self._first_seen_past_due[job_id] = (score, now)
+                return None
+            if now - seen[1] >= ABANDONED_CONFIRM_SECONDS:
+                del self._first_seen_past_due[job_id]
+                return run_reaper.JOB_ABANDONED
+            return None
+        self._first_seen_past_due.pop(job_id, None)
+
+        if job_id in queue.finished_job_registry:
+            return run_reaper.JOB_FINISHED
+        if self._connection.lpos(queue.key, job_id) is not None:
+            return None
+        if job_id in queue.scheduled_job_registry or job_id in queue.deferred_job_registry:
+            return None
+        if Job.exists(job_id, connection=self._connection):
+            return None
+        return run_reaper.JOB_UNKNOWN
+
+    async def verdict(self, job_id: str) -> str | None:
+        return await asyncio.to_thread(self._verdict, job_id)
+
+
 def _job_timeout_for(event: OutboxEvent, queue_name: str) -> int | None:
     """The RQ job timeout for this event's job. An async operation's comes
     from its kind (operation_service.JOB_TIMEOUT_SECONDS), the same number
@@ -496,6 +596,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
             if failed_attempts >= MAX_ATTEMPTS:
                 await uow.outbox.mark_failed(event_id)
                 await _fail_dead_lettered_operation(uow, event)
+                await _fail_dead_lettered_run(uow, event)
                 logger.error(
                     "outbox event %s (%s/%s) failed %d attempts; marked failed "
                     "(dead letter, needs a manual re-drive)",
@@ -536,6 +637,23 @@ async def _fail_dead_lettered_operation(uow: UnitOfWork, event: OutboxEvent) -> 
         logger.error(
             "operation %s failed as DISPATCH_FAILED: its request event %s was dead-lettered",
             operation_id,
+            event.id,
+        )
+
+
+async def _fail_dead_lettered_run(uow: UnitOfWork, event: OutboxEvent) -> None:
+    """Plan item 19: a dead-lettered WorkflowRunCreated or
+    GateDecisionRecorded leaves its run queued, or waiting at a decided
+    gate, for good, and the run holds its tender's one active run (item
+    43). run_reaper.fail_dead_lettered_run fails it as DISPATCH_FAILED in
+    this same transaction; any other event is left alone."""
+    reaped = await run_reaper.fail_dead_lettered_run(uow, event)
+    if reaped is not None:
+        logger.error(
+            "workflow run %s failed as %s: its %s event %s was dead-lettered",
+            reaped.run_id,
+            reaped.error_code,
+            event.event_type,
             event.id,
         )
 
@@ -660,6 +778,35 @@ async def _reap_lapsed_operations(connection: Redis) -> None:
         logger.exception("queued async operation reaper failed; will retry on a later tick")
 
 
+async def _reap_lost_runs(inspector: RunJobInspector) -> None:
+    """Plan item 19: fail workflow runs whose RQ job will never move them
+    on, then runs past run_reaper.MAX_RUN_JOB_AGE, one bounded batch each,
+    each run in its own transaction. Like _reap_lapsed_operations, a
+    failure in either is logged and swallowed and does not skip the other:
+    a Redis outage stops only the RQ rules, never the cap."""
+    try:
+        lost = await run_reaper.reap_lost_runs(REAPER_BATCH_SIZE, inspector.verdict)
+        if lost:
+            logger.warning(
+                "failed %d workflow run(s) whose RQ job will never move them on: %s",
+                len(lost),
+                ", ".join(f"{r.run_id} ({r.error_code}, {r.rule}, job {r.job_id})" for r in lost),
+            )
+    except Exception:
+        logger.exception("workflow run reaper failed; will retry on a later tick")
+    try:
+        capped = await run_reaper.reap_runs_past_cap(REAPER_BATCH_SIZE)
+        if capped:
+            logger.warning(
+                "failed %d workflow run(s) whose current job is older than the %s cap: %s",
+                len(capped),
+                run_reaper.MAX_RUN_JOB_AGE,
+                ", ".join(f"{r.run_id} ({r.error_code}, job {r.job_id})" for r in capped),
+            )
+    except Exception:
+        logger.exception("workflow run cap reaper failed; will retry on a later tick")
+
+
 def _error_backoff_seconds(consecutive_failures: int) -> float:
     return min(POLL_INTERVAL_SECONDS * 2 ** (consecutive_failures - 1), MAX_ERROR_BACKOFF_SECONDS)
 
@@ -683,6 +830,8 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
         stop = asyncio.Event()
     connection = _redis_connection(settings.redis_url)
     queues = _queues(connection)
+    # One for the process: it holds the abandoned check's first sightings.
+    run_jobs = RunJobInspector(connection)
     tick = 0
     consecutive_failures = 0
     while not stop.is_set():
@@ -715,6 +864,7 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
             await _delete_expired_idempotency_records()
             await _delete_expired_refresh_tokens()
             await _reap_lapsed_operations(connection)
+            await _reap_lost_runs(run_jobs)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=delay)
     logger.info("outbox dispatcher stopping after tick %d", tick)

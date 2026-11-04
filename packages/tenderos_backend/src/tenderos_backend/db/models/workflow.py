@@ -26,6 +26,15 @@ ACTIVE_RUN_STATUSES = ("queued", "running", "waiting_for_human")
 # WorkflowRepository.update_run_status refuses to, in its own UPDATE.
 TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled")
 
+# Plan item 19: why a failed run failed, shown under "Last run". The run
+# reaper writes the first two (domain/services/run_reaper.py), the RQ
+# timeout path the third. A run failed any other way (a graph failure with
+# no retry left, a human's reject) has none.
+RUN_WORKER_LOST = "WORKER_LOST"
+RUN_DISPATCH_FAILED = "DISPATCH_FAILED"
+RUN_JOB_TIMEOUT = "JOB_TIMEOUT"
+RUN_ERROR_CODES = (RUN_WORKER_LOST, RUN_DISPATCH_FAILED, RUN_JOB_TIMEOUT)
+
 
 class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "workflow_runs"
@@ -45,6 +54,10 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             postgresql_where=text(
                 "status IN (" + ", ".join(f"'{s}'" for s in ACTIVE_RUN_STATUSES) + ")"
             ),
+        ),
+        CheckConstraint(
+            "error_code IN (" + ",".join(f"'{c}'" for c in RUN_ERROR_CODES) + ")",
+            name="ck_workflow_run_error_code",
         ),
     )
 
@@ -66,6 +79,18 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # not a plain column, so nothing outside a running graph.ainvoke()
     # call can read or decrement it).
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Plan item 19 (migration 024). The RQ job now responsible for moving
+    # this run forward, and when that was recorded (database clock): the
+    # start and resume claims write them in the same UPDATE that moves the
+    # run to running, and so does the scheduling of a retry. The run
+    # reaper (run_reaper.py) asks RQ about this job, never about the last
+    # job to have run: a run waiting for its retry always has a failed job
+    # behind it, kept on purpose (I4).
+    current_job_id: Mapped[str | None] = mapped_column(nullable=True)
+    current_job_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(nullable=True)
 
 
 class WorkflowTask(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
