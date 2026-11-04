@@ -15,6 +15,28 @@
 # waited about 2 s for the refused ::1 attempt (measured 2026-10-24). The
 # containers still reach each other by service name on the compose network;
 # only the host side moves.
+#
+# Phase 4 plan item 46: the stack this file starts never reaches the live
+# LLM provider. The api, the four workers, outbox_dispatcher and migrate get
+# LLM_PROVIDER=fake and every Gemini key blank in `environment:`, which
+# beats `env_file: .env`; the values are literals, with no ${...}, so
+# neither .env nor a variable in the shell changes them. A plain
+# `docker compose up` once came up on the live provider from .env and made
+# 25 requests before it was caught (2026-11-04). The blank keys mean even a
+# `docker compose exec -e LLM_PROVIDER=gemini` has no key to spend with.
+# Live runs only through scripts/real-stack.ps1, which adds
+# docker-compose.live.yml (provider and keys back), a named file CI never
+# uses (scripts/check_ci_stays_fake.py). migrate gets the same: it calls no
+# LLM, but its image holds the whole backend, so a `docker compose run
+# migrate python ...` would otherwise have the live provider and the keys.
+# web reads no .env.
+x-fake-provider: &fake-provider
+  LLM_PROVIDER: "fake"
+  GEMINI_API_KEY: ""
+  COMPLIANCE_GEMINI_API_KEY: ""
+  TALENT_GEMINI_API_KEY: ""
+  COMMERCIAL_GEMINI_API_KEY: ""
+
 services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
@@ -111,6 +133,7 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ["/app/.venv/bin/alembic", "upgrade", "head"]
     env_file: .env
+    environment: *fake-provider
     depends_on:
       postgres:
         condition: service_healthy
@@ -124,6 +147,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     env_file: .env
+    environment: *fake-provider
     ports:
       - "127.0.0.1:8000:8000"
       - "[::1]:8000:8000"
@@ -183,6 +207,7 @@ services:
       dockerfile: apps/worker/Dockerfile
     command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "workflow"]
     env_file: .env
+    environment: *fake-provider
     depends_on:
       postgres:
         condition: service_healthy
@@ -201,6 +226,7 @@ services:
       dockerfile: apps/worker/Dockerfile
     command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "ingestion"]
     env_file: .env
+    environment: *fake-provider
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,6 +248,7 @@ services:
     command:
       ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "maintenance", "projection", "evaluation"]
     env_file: .env
+    environment: *fake-provider
     depends_on:
       postgres:
         condition: service_healthy
@@ -250,6 +277,7 @@ services:
     command: ["/app/.venv/bin/python", "-m", "tenderos_worker.worker", "operations"]
     env_file: .env
     environment:
+      <<: *fake-provider
       OPENBLAS_NUM_THREADS: "1"
       OMP_NUM_THREADS: "1"
     depends_on:
@@ -274,6 +302,7 @@ services:
       dockerfile: apps/worker/Dockerfile
     command: ["/app/.venv/bin/python", "-m", "tenderos_worker.outbox_dispatcher"]
     env_file: .env
+    environment: *fake-provider
     depends_on:
       postgres:
         condition: service_healthy

@@ -9,7 +9,7 @@ Evidence-grounded, human-supervised bid operations platform for IT services and 
 Functional through B13. Run it:
 
 ```
-docker compose up          # full local stack; the one-shot migrate service applies migrations first
+docker compose up          # full local stack on the fake LLM provider; the one-shot migrate service applies migrations first
 uv run pytest               # backend tests
 uv run alembic upgrade head # apply migrations by hand (from the host, with POSTGRES_DSN on localhost:5433)
 npm --prefix apps/web run test:e2e # Playwright golden-path scenario, against a running stack
@@ -17,6 +17,13 @@ npm --prefix apps/web run test:e2e # Playwright golden-path scenario, against a 
 
 The stack's Postgres is published on host port 5433, not 5432, so a native
 PostgreSQL on the host cannot answer in its place.
+
+`docker compose up` never reaches the live LLM provider, whatever `.env`
+says: `docker-compose.yml` sets `LLM_PROVIDER=fake` and blanks every Gemini
+key for the api, the workers and the outbox dispatcher, and each logs its
+provider when it starts. A live session goes only through
+`scripts/real-stack.ps1`, which adds `docker-compose.live.yml` (it costs
+real money); afterwards recreate the stack with `scripts/fake-stack.ps1`.
 
 See the `Makefile` for the equivalent `lint` / `typecheck` / `format` / `test` targets.
 
