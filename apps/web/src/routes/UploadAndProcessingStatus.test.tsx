@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -402,18 +402,34 @@ describe("why the last run failed", () => {
   });
 
   it("shows the reason when the open run ends failed on the stream", async () => {
-    listWorkflowRuns.mockResolvedValue([activeRun()]);
+    const sentence =
+      "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.";
+    const failedRun: WorkflowRunResponse = { ...activeRun(), status: "failed", error_code: "WORKER_LOST" };
+    // Once the stream reports the run failed, the screen clears the run id
+    // and lists the tender's runs again. A real server answers that second
+    // list with the failed run; the first version of this test kept
+    // answering "running", so the screen followed the run back to its task
+    // list and the sentence was gone again (CI run 41811601302). The second
+    // answer is held back so the sentence is first checked with the code
+    // from the stream alone.
+    let answerReread: (runs: WorkflowRunResponse[]) => void = () => {};
+    listWorkflowRuns
+      .mockResolvedValueOnce([activeRun()])
+      .mockReturnValueOnce(new Promise((resolve) => (answerReread = resolve)));
     listDocuments.mockResolvedValue([]);
     listWorkflowTasks.mockResolvedValue([]);
-    getWorkflowRun.mockResolvedValue({ ...activeRun(), status: "failed", error_code: "WORKER_LOST" });
+    getWorkflowRun.mockResolvedValue(failedRun);
     mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
     renderAt("tender-1");
 
-    expect(
-      await screen.findByText(
-        "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.",
-      ),
-    ).toBeInTheDocument();
+    // The second list is sent only after the screen has taken the stream's
+    // failed run and rendered "Last run" for it.
+    await waitFor(() => expect(listWorkflowRuns).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(sentence)).toBeInTheDocument();
+
+    await act(async () => answerReread([failedRun]));
+    expect(screen.getByText(sentence)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+    expect(listWorkflowRuns).toHaveBeenCalledTimes(2);
   });
 });
