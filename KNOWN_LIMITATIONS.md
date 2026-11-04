@@ -11066,13 +11066,20 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      fewer than 8 attempts become eligible again once this is deployed, a
      one-time redelivery of old failures.
   6. **A dead-lettered event needs a manual re-drive.** After its 8th
-     counted failure an event is marked `failed` (`mark_failed`,
-     `packages/tenderos_backend/src/tenderos_backend/db/repositories/outbox.py:127`)
-     and logged at ERROR with its id and event type (`outbox_dispatcher.py:385`),
-     the hook for Phase 3 alerting. Nothing re-drives it automatically. A
-     re-drive tool (reset `status` to `pending`, `attempt_count` to 0 and
-     `available_at` to `now()` for chosen event ids, logged, with a
-     dry-run) is designed, not built.
+     counted failure an event is marked `failed` (`OutboxRepository.mark_failed`)
+     and logged at ERROR with its id and event type
+     (`outbox_dispatcher._dispatch_claimed_event`, "dead letter, needs a
+     manual re-drive"), the hook for Phase 3 alerting. Nothing re-drives it
+     automatically, on purpose: an event that failed 8 times on its own
+     merits would loop. **RESOLVED 2026-11-04 by plan item 19 and plan item 20**
+     (decision 0034): item 19 fails the run of a dead-lettered
+     `WorkflowRunCreated` or `GateDecisionRecorded` as `DISPATCH_FAILED`, so
+     it no longer holds its tender; `scripts/redrive_outbox.py` resets a
+     chosen dead letter (`status` to `pending`, `attempt_count` to 0,
+     `available_at` to `now()`, one conditional UPDATE) after checking
+     that its job would still do something, and otherwise refuses it with
+     one line saying why. Dry run by default; `--apply` needs `--reason`,
+     which the reset's log line carries. See "Plan item 20" below.
   7. **A worker that dies mid-run leaves the run in `running`.** The run
      is claimed `queued` -> `running` before the graph is invoked
      (`apps/worker/src/tenderos_worker/jobs/workflow.py:146`). If the
@@ -11097,12 +11104,13 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      "Plan item 19" below.
 - **Risk:** limit 4's unguarded consumers can repeat paid LLM calls on a
   redelivery, and a duplicate resume could answer the wrong gate. Limit 6
-  leaves a dead-lettered event undelivered until someone re-drives it.
+  leaves a dead-lettered event undelivered until someone re-drives it
+  (now one command, plan item 20).
   Limit 7 left a run shown as running forever after a worker crash
   (resolved by plan item 19).
 - **Status:** limits 1-3 accepted; limit 4 open (guards being built
-  separately); limit 5 fixed; limit 6 accepted, its tool designed,
-  not built; limit 7 resolved 2026-11-04 (plan item 19).
+  separately); limit 5 fixed; limit 6 resolved 2026-11-04 (plan item 20,
+  a manual re-drive by design); limit 7 resolved 2026-11-04 (plan item 19).
 - **Test:** `tests/integration/test_outbox_dispatcher.py` (eligibility on
   the database clock with the host clock 30 s behind, a hung Redis times
   out and the loop keeps running, an existing job id is treated as
@@ -11191,6 +11199,52 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   (the clamp), `apps/web/src/routes/UploadAndProcessingStatus.test.tsx`
   (the sentences). Each mechanism fails its tests when removed (35
   mutations).
+
+## [Phase 4 plan item 20, 2026-11-04, resolved; residuals accepted] A dead-lettered outbox event can be re-driven, and the tool says when it should not be
+
+- **Before (read in code):** a dead-lettered outbox event (`status
+  failed` after its 8th counted failure) needed a hand-written SQL reset.
+  Only an enqueue that raises something other than an infrastructure
+  error counts towards the 8, so a dead letter means the event's route
+  could not handle it (for example a payload it cannot read), not a Redis
+  outage.
+- **Behaviour (fixed):** `scripts/redrive_outbox.py` (the rule in
+  `domain/services/outbox_redrive.py`) resets the outbox row only, in one
+  conditional UPDATE matching only a row still `failed`; the dispatcher
+  delivers it on its next pass through the same route, job id and
+  consumer guard as any delivery. It never enqueues to Redis and never
+  writes a run, operation, claim or document. Before resetting, it reads
+  what the event's job would find and refuses, in one line, an event
+  whose job would do nothing: a run already failed (naming its code, for
+  example `DISPATCH_FAILED` from item 19's dead-letter handling) or
+  finished; a run waiting at a later gate; an operation no longer queued;
+  a reanalysis whose claim completed or whose lease is still live (item
+  18), naming the lease's end; a document already ingested, an import
+  batch completed, a requirement already verified for that event; an
+  unreadable payload; an event that is pending or dispatched. `--list`
+  shows every dead letter with its line; dry run by default; `--apply`
+  needs `--reason`, which each reset's INFO line carries with the event
+  id and type (log only, no audit row: the outbox has no organization).
+  Exit status 0 (all re-driven or would be), 2 (any refused), 1 (error,
+  including a usage error). Output and logs carry ids, event types,
+  statuses and the line, never a payload.
+- **Accepted limits:**
+  1. **Re-driving before the route's fix is deployed dead-letters the
+     event again** after 8 more counted failures (its run or operation is
+     failed again by the same dead-letter path).
+  2. **The check and the reset are two steps.** If the target changes in
+     between, the consumer's own guard stops the job, as for any
+     redelivery: at most one job that does nothing.
+  3. **It runs from a checkout** against `POSTGRES_DSN`, like the other
+     operator scripts; `scripts/` is in no image. A host runbook item
+     (plan item 25).
+  4. **`--list` shows the oldest 200 dead letters.**
+- **Test:** `tests/integration/test_outbox_redrive.py` (18 tests: the dry
+  run, a reset delivered once by the real dispatcher, each refusal line,
+  the conditional reset losing to another, `--list`, the exit statuses,
+  the reason, no payload in output or logs, the command run as a process,
+  only the outbox row written, and every dispatcher route having its own
+  check, so a route added later cannot be re-driven unchecked).
 
 ## [Phase 4 consumer guards, 2026-10-13, accepted; limit 1 resolved 2026-11-04] What each outbox consumer does with a duplicate delivery
 
@@ -11352,7 +11406,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      `OperationStatusChanged` event, and only while it is still queued:
      - when the dispatcher dead-letters its `OperationRequested` event, in
        the same transaction (`_fail_dead_lettered_operation`,
-       `apps/worker/src/tenderos_worker/outbox_dispatcher.py`);
+       `apps/worker/src/tenderos_worker/outbox_dispatcher.py`). Plan item
+       20's re-drive tool refuses that event afterwards ("operation ... is
+       failed (DISPATCH_FAILED): request it again"); it re-drives an
+       `OperationRequested` only while its operation is still queued;
      - as a backstop, the reaper fails any operation still queued 60
        minutes after it was requested
        (`operation_service.MAX_DISPATCH_WINDOW`, a design number). The
@@ -11384,7 +11441,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      An operation is failed as lost only when its request was dispatched
      and RQ no longer knows its job (not in the queue or any registry),
      and otherwise only past a 6-hour absolute cap
-     (`operation_service.MAX_QUEUED_AGE`); see the item 44 entry.
+     (`operation_service.MAX_QUEUED_AGE`); see the item 44 entry. Either
+     way the user requests the operation again: plan item 20's re-drive
+     tool refuses an `OperationRequested` whose operation is no longer
+     queued, rather than start a job its claim would stop.
   2. **RESOLVED 2026-10-16 (Stage 2): tracking did not survive a page
      reload.** The screen kept the operation id in component state only, so
      after a reload the button was enabled while the run continued. Each
