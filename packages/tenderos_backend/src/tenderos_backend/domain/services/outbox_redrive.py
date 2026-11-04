@@ -241,8 +241,9 @@ async def _no_consumer(
     return True, "no consumer acts on this event type"
 
 
-# The dispatcher's routes (outbox_dispatcher._ROUTES); anything else goes to
-# its placeholder job, which acts on nothing.
+# The dispatcher's routes (outbox_dispatcher._ROUTES), one check each; a test
+# keeps the two sets equal. Anything else goes to the dispatcher's
+# placeholder job, which acts on nothing.
 _CHECKS: dict[tuple[str, str], _Check] = {
     (AGGREGATE_WORKFLOW_RUN, EVENT_WORKFLOW_RUN_CREATED): _check_run_created,
     (AGGREGATE_APPROVAL_GATE, EVENT_GATE_DECISION_RECORDED): _check_gate_decision,

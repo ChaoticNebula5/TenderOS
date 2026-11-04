@@ -706,6 +706,15 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
     assert secret not in done.stdout + done.stderr
 
 
+async def test_every_dispatcher_route_has_its_own_check():
+    """The checks mirror the dispatcher's routes. A pair outside the routes
+    goes to the dispatcher's placeholder job, which acts on nothing, so the
+    tool re-drives it as having no consumer; a route added without a check
+    would be re-driven the same way without its guard being read, so the two
+    sets must stay equal (security review of 3ccdbe5)."""
+    assert set(outbox_redrive._CHECKS) == set(outbox_dispatcher._ROUTES)
+
+
 async def test_redrive_writes_only_the_outbox_row(made):
     """The reset touches nothing but the event: a re-driven run keeps its own
     row exactly as it was."""
