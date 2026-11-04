@@ -32,6 +32,21 @@ import "./UploadAndProcessingStatus.css";
 // with identical contents, so React can't tell it's safe to skip.
 const NON_TERMINAL_STATUSES = new Set(["queued", "running", "waiting_for_human"]);
 
+// Plan item 19: the sentence under "Last run" for each reason the backend
+// records on a failed run (WorkflowRunResponse.error_code). Each says only
+// what the code knows (DESIGN.md, Copy rules): the reaper knows the job is
+// gone, not why; DISPATCH_FAILED covers a run that never started and a
+// decided gate that was never resumed; a timeout is one step's, not the
+// run's. A new run always starts from the beginning (no resume route).
+const RUN_ERROR_SENTENCES: Record<string, string> = {
+  WORKER_LOST:
+    "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.",
+  DISPATCH_FAILED:
+    "The last run stopped before its next step could start. Start processing again to run it from the beginning.",
+  JOB_TIMEOUT:
+    "The last run stopped because one step ran past its time limit. Start processing again to run it from the beginning.",
+};
+
 // Screen 7 (Part J). Functional requirement 5: progress via SSE
 // (useEventStream, B14) - was usePolling; that hook's own docstring
 // promised this swap wouldn't need this component to change, and it
@@ -60,6 +75,9 @@ export function UploadAndProcessingStatus() {
   // last time" note, shown next to the "Start processing" button rather
   // than instead of it.
   const [lastRunStatus, setLastRunStatus] = useState<string | null>(null);
+  // Plan item 19: why that last run failed, when the backend recorded a
+  // reason (RUN_ERROR_SENTENCES); null for any other outcome.
+  const [lastRunErrorCode, setLastRunErrorCode] = useState<string | null>(null);
 
   useEffect(() => {
     // workflowRunId/lastRunStatus otherwise carry over from whichever
@@ -70,6 +88,7 @@ export function UploadAndProcessingStatus() {
     // would keep polling and displaying tender A's run.
     setWorkflowRunId(null);
     setLastRunStatus(null);
+    setLastRunErrorCode(null);
   }, [tenderId]);
 
   useEffect(() => {
@@ -90,6 +109,7 @@ export function UploadAndProcessingStatus() {
           // outcome (completed/failed/cancelled), worth showing, but not
           // worth polling since nothing about it will change.
           setLastRunStatus(runs[0].status);
+          setLastRunErrorCode(runs[0].error_code ?? null);
         }
       })
       .catch(() => {
@@ -173,6 +193,7 @@ export function UploadAndProcessingStatus() {
     try {
       const run = await createWorkflowRun(tenderId, crypto.randomUUID());
       setLastRunStatus(null);
+      setLastRunErrorCode(null);
       setWorkflowRunId(run.id);
     } catch (err) {
       // Phase 4 plan item 43: another tab (or an earlier click) already
@@ -184,6 +205,7 @@ export function UploadAndProcessingStatus() {
           : null;
       if (activeRunId !== null) {
         setLastRunStatus(null);
+        setLastRunErrorCode(null);
         setWorkflowRunId(activeRunId);
       } else if (err instanceof ApiError && err.status === 409) {
         setError("All documents must finish parsing before processing can start.");
@@ -230,6 +252,7 @@ export function UploadAndProcessingStatus() {
   useEffect(() => {
     if (activeRun && !NON_TERMINAL_STATUSES.has(activeRun.status)) {
       setLastRunStatus(activeRun.status);
+      setLastRunErrorCode(activeRun.error_code ?? null);
       setWorkflowRunId(null);
     }
   }, [activeRun]);
@@ -315,6 +338,9 @@ export function UploadAndProcessingStatus() {
               <p className="processing__last-run">
                 Last run <StatusBadge {...describeStatus("run", lastRunStatus)} />
               </p>
+            )}
+            {lastRunStatus === "failed" && lastRunErrorCode && RUN_ERROR_SENTENCES[lastRunErrorCode] && (
+              <p className="processing__last-run-reason">{RUN_ERROR_SENTENCES[lastRunErrorCode]}</p>
             )}
             <Button
               variant="primary"

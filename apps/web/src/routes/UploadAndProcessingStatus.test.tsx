@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -355,5 +355,81 @@ describe("Start processing when a run is already active", () => {
       await screen.findByText("All documents must finish parsing before processing can start."),
     ).toBeInTheDocument();
     expect(getWorkflowRun).not.toHaveBeenCalled();
+  });
+});
+
+// Plan item 19: a failed run says why, in one sentence under "Last run",
+// when the backend recorded a reason (WorkflowRunResponse.error_code).
+describe("why the last run failed", () => {
+  const sentences: [NonNullable<WorkflowRunResponse["error_code"]>, string][] = [
+    [
+      "WORKER_LOST",
+      "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.",
+    ],
+    [
+      "DISPATCH_FAILED",
+      "The last run stopped before its next step could start. Start processing again to run it from the beginning.",
+    ],
+    [
+      "JOB_TIMEOUT",
+      "The last run stopped because one step ran past its time limit. Start processing again to run it from the beginning.",
+    ],
+  ];
+
+  it.each(sentences)("shows the %s sentence under Last run", async (code, sentence) => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "failed", error_code: code }]);
+    listDocuments.mockResolvedValue([]);
+    renderAt("tender-1");
+
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByText("Last run")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+  });
+
+  it("adds nothing for a failed run with no recorded reason", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "failed", error_code: null }]);
+    listDocuments.mockResolvedValue([]);
+    const { container } = render(
+      <MemoryRouter initialEntries={["/tenders/tender-1"]}>
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<UploadAndProcessingStatus />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Last run")).toBeInTheDocument();
+    expect(container.querySelector(".processing__last-run-reason")).toBeNull();
+  });
+
+  it("shows the reason when the open run ends failed on the stream", async () => {
+    const sentence =
+      "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.";
+    const failedRun: WorkflowRunResponse = { ...activeRun(), status: "failed", error_code: "WORKER_LOST" };
+    // Once the stream reports the run failed, the screen clears the run id
+    // and lists the tender's runs again. A real server answers that second
+    // list with the failed run; the first version of this test kept
+    // answering "running", so the screen followed the run back to its task
+    // list and the sentence was gone again (CI run 41811601302). The second
+    // answer is held back so the sentence is first checked with the code
+    // from the stream alone.
+    let answerReread: (runs: WorkflowRunResponse[]) => void = () => {};
+    listWorkflowRuns
+      .mockResolvedValueOnce([activeRun()])
+      .mockReturnValueOnce(new Promise((resolve) => (answerReread = resolve)));
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([]);
+    getWorkflowRun.mockResolvedValue(failedRun);
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    renderAt("tender-1");
+
+    // The second list is sent only after the screen has taken the stream's
+    // failed run and rendered "Last run" for it.
+    await waitFor(() => expect(listWorkflowRuns).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(sentence)).toBeInTheDocument();
+
+    await act(async () => answerReread([failedRun]));
+    expect(screen.getByText(sentence)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+    expect(listWorkflowRuns).toHaveBeenCalledTimes(2);
   });
 });

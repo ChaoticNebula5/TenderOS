@@ -91,6 +91,35 @@ async def test_create_workflow_run_succeeds_and_is_idempotent():
         assert second.json()["id"] == first.json()["id"], "replay must return the same run"
 
 
+
+async def test_a_runs_error_code_is_returned_for_the_screen():
+    """Plan item 19 (design test 17, API half): WorkflowRunResponse carries
+    error_code, null for a run with no recorded reason, and the reaper's or
+    the timeout path's code once the run failed with one."""
+    async with await _client() as client:
+        token, tender_id = await _register_and_create_tender(
+            client, "wf-api-error-code@example.com", "WF API Error Code Org"
+        )
+        headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "create-run-error-code"}
+        created = await client.post(f"/tenders/{tender_id}/workflow-runs", headers=headers)
+        assert created.status_code == 202
+        assert created.json()["error_code"] is None
+        run_id = UUID(created.json()["id"])
+
+        async with UnitOfWork() as uow:
+            run = await uow.workflow.get_run(run_id)
+            assert run is not None
+            run.status = "failed"
+            run.error_code = "WORKER_LOST"
+            await uow.commit()
+
+        read = await client.get(f"/workflow-runs/{run_id}", headers=headers)
+        listed = await client.get(f"/tenders/{tender_id}/workflow-runs", headers=headers)
+
+        assert read.status_code == 200
+        assert read.json()["error_code"] == "WORKER_LOST"
+        assert [r["error_code"] for r in listed.json()] == ["WORKER_LOST"]
+
 async def test_create_workflow_run_rejects_a_caller_outside_the_organization():
     # B16 item 3: create_workflow_run was the one genuine gap in
     # workflow.py's own 8 routes - cancel, the SSE stream, and the SSE

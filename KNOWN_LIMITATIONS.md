@@ -11086,13 +11086,23 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      when a failure is caught. A reaper for runs stuck in `running`
      (no task progress for longer than the workflow queue's 1800 s job
      timeout: mark failed or schedule a retry) is designed, not built.
+     **RESOLVED 2026-11-04 by plan item 19**, redesigned: not "no task
+     progress", which would also fail a run only waiting behind another
+     tender's job. Each run records its current RQ job (migration 024),
+     and the dispatcher fails the run when that job will never move it on
+     (RQ's failed, canceled or finished registry, unknown to RQ, or its
+     started entry past due on two looks two minutes apart), with a
+     6-hour backstop. Observed in the fake stack: the workflow worker
+     killed mid-run, the run failed as `WORKER_LOST` 257 s later; see
+     "Plan item 19" below.
 - **Risk:** limit 4's unguarded consumers can repeat paid LLM calls on a
   redelivery, and a duplicate resume could answer the wrong gate. Limit 6
   leaves a dead-lettered event undelivered until someone re-drives it.
-  Limit 7 leaves a run shown as running forever after a worker crash.
+  Limit 7 left a run shown as running forever after a worker crash
+  (resolved by plan item 19).
 - **Status:** limits 1-3 accepted; limit 4 open (guards being built
-  separately); limit 5 fixed; limits 6 and 7 accepted, tools designed,
-  not built.
+  separately); limit 5 fixed; limit 6 accepted, its tool designed,
+  not built; limit 7 resolved 2026-11-04 (plan item 19).
 - **Test:** `tests/integration/test_outbox_dispatcher.py` (eligibility on
   the database clock with the host clock 30 s behind, a hung Redis times
   out and the loop keeps running, an existing job id is treated as
@@ -11106,6 +11116,81 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   error stops the tick after that row, other errors consume attempts with
   growing, capped delays and end failed with an ERROR log) and
   `tests/unit/test_outbox_backoff.py`.
+
+## [Phase 4 plan item 19, 2026-11-04, resolved; residuals accepted] A run whose RQ job is lost no longer stays active
+
+- **Before (read in code):** nothing recorded which RQ job was moving a
+  run forward. A run whose worker was killed mid-job, whose work horse
+  died, or whose retry Redis lost stayed `queued` or `running` forever;
+  a dead-lettered `WorkflowRunCreated` left its run `queued`, and a
+  dead-lettered `GateDecisionRecorded` left it waiting at a decided gate.
+  Since plan item 43 each such run also blocks its tender from starting
+  another (409 `WORKFLOW_RUN_ACTIVE`). A retry job checked only for
+  `cancelled`, so one firing on a failed run built the graph.
+- **Changed:**
+  - `workflow_runs.current_job_id`, `current_job_at` and `error_code`
+    (migration 024, a CHECK on the codes). The start and resume claims,
+    and the scheduling of a retry, record the run's current job in the
+    UPDATE that moves it; the retry is recorded and committed before it
+    is enqueued under that id (`retry_{run}_{n}`).
+  - The dispatcher, about once a minute, fails a run whose current job
+    will never move it on (`domain/services/run_reaper.py`, the RQ check
+    `outbox_dispatcher.RunJobInspector`): running, `WORKER_LOST`; queued
+    with its start job lost, `DISPATCH_FAILED`; waiting at a decided gate
+    whose resume never claimed the run, `DISPATCH_FAILED`; anything
+    queued or running past a 6-hour cap. Dead letters of the two events
+    fail their run in the dead-letter's own transaction. Every fail is
+    one conditional UPDATE naming the status and job it checked.
+  - A retry starts only if the run is running and the retry is its
+    current job. The provider's retry-after is clamped to 15 minutes.
+  - `WorkflowRunResponse.error_code`, and one sentence under "Last run".
+- **Observed (fake stack, 2026-11-04):** the workflow worker killed with
+  a run blocked mid-job; the run failed as `WORKER_LOST` (rule
+  `abandoned`) 257 s after the kill; the restarted worker's own startup
+  maintenance then filed the same job as failed with `AbandonedJobError`.
+- **Limits (accepted):**
+  1. **About 4 minutes to notice a dead worker:** up to 90 s for the
+     started entry to fall past due, two looks 120 s apart, and the
+     reaper's minute. Nothing re-runs a reaped run (paid LLM calls); the
+     user starts processing again, from the beginning (there is no
+     resume route; decision 0035's "existing retry route" was wrong).
+  2. **Runs from before migration 024** have no recorded job: a queued or
+     running one is caught only by the 6-hour cap, and one waiting at a
+     decided gate is never reaped, because nothing tells whether its
+     resume claimed it. Found in the observed check: the first build of
+     the gate rule failed a pre-024 dev run that was waiting on purpose
+     after a "request changes" decision (its resume job gone with a Redis
+     flush); fixed, with a test.
+  3. **A worker killed while a resumed gate replays:** the gate node
+     writes `waiting_for_human` again before the next node writes its own
+     status. A run caught in that window has its resume as current job
+     and is waiting, so neither rule reaps it. A window of a few queries.
+  4. **A zombie judged abandoned** (a worker cut off from Redis for longer
+     than the two looks) may still write domain rows before its next
+     status write or gate is refused (plan item 44's guard). The same
+     residual as the cancellation race.
+  5. **A failure in the replay window above** now fails the run instead of
+     scheduling a retry: retry scheduling requires the run to be running.
+     Only requirement extraction and the three specialists record failed
+     tasks, and all four run while the run is running.
+  6. **Redis persistence** is the image default (snapshots only, read in
+     Redis's documentation, not observed): a Redis crash loses a
+     just-scheduled retry, which the reaper then fails as `WORKER_LOST`.
+     Appendonly persistence is a deployment host item.
+  7. **Test order (pre-existing, found on the way):** running
+     `test_workflow_timeout_handling.py` before `test_outbox_dispatcher.py`
+     in one process fails two dispatcher tests ("attached to a different
+     loop"; the timeout tests call `asyncio.run` themselves). Observed on
+     main's code too. The full suite runs them in the other order.
+- **Test:** `tests/integration/test_run_reaper.py`,
+  `tests/integration/test_workflow_retry.py` (the retry recorded before
+  its enqueue, none once the run is not running under the failing job),
+  `test_workflow_timeout_handling.py` (`JOB_TIMEOUT`),
+  `test_workflow_api.py` (`error_code`), `test_outbox_dispatcher.py`
+  (the reaper is on the loop's cadence), `tests/unit/test_retry_classification.py`
+  (the clamp), `apps/web/src/routes/UploadAndProcessingStatus.test.tsx`
+  (the sentences). Each mechanism fails its tests when removed (35
+  mutations).
 
 ## [Phase 4 consumer guards, 2026-10-13, accepted; limit 1 resolved 2026-11-04] What each outbox consumer does with a duplicate delivery
 
@@ -12050,8 +12135,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   handles SIGTERM itself: the tick in progress finishes and it exits.
   Grace periods (`stop_grace_period`): api 20 s, outbox_dispatcher 30 s,
   worker and operations_worker 31 min. A worker's job can run 1800 s. A
-  killed workflow job leaves its run `running`, since the workflow-run
-  reaper is designed, not built (decision 0035); a killed operation is
+  killed workflow job's run is failed by the dispatcher's run reaper as
+  WORKER_LOST about 4 minutes later (plan item 19; 257 s observed
+  2026-11-04, decision 0035); a killed operation is
   failed by the dispatcher's reaper as WORKER_LOST, but only once its
   lease (job timeout plus 60 s) has lapsed, so killing it early only
   loses the work. An idle worker still stops in seconds; the 31 minutes
@@ -12078,7 +12164,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     shutdown, which was not checked) kills a running job sooner, and the
     two reaper paths above apply. Choosing the host settles this.
   - A job killed anyway is not retried by RQ. Operations are failed by
-    the reaper; workflow runs need decision 0035's reaper.
+    the reaper; workflow runs by the run reaper (plan item 19).
 
 ## [Phase 4 batch 2b, 2026-10-23, resolved for the api; the proxy's log is a deployment item] SSE tickets in the access log
 

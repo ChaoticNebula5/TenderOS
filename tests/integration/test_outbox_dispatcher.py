@@ -441,7 +441,12 @@ async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
 
     monkeypatch.setattr(outbox_dispatcher, "POLL_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr(outbox_dispatcher, "CLEANUP_EVERY_N_TICKS", 1)
-    calls: dict[str, list[int]] = {"refresh": [], "idempotency": [], "reaper": []}
+    calls: dict[str, list[int]] = {
+        "refresh": [],
+        "idempotency": [],
+        "reaper": [],
+        "run_reaper": [],
+    }
 
     async def no_events(queues=None):
         return None
@@ -457,10 +462,17 @@ async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
     async def counted_reaper(connection):
         calls["reaper"].append(1)
 
+    async def counted_run_reaper(inspector):
+        # Plan item 19: the run reaper is on the same cadence, with the
+        # loop's one inspector.
+        assert isinstance(inspector, outbox_dispatcher.RunJobInspector)
+        calls["run_reaper"].append(1)
+
     monkeypatch.setattr(outbox_dispatcher, "_dispatch_once", no_events)
     monkeypatch.setattr(RefreshTokenRepository, "delete_expired", broken_refresh_cleanup)
     monkeypatch.setattr(IdempotencyRepository, "delete_expired", counted_idempotency_cleanup)
     monkeypatch.setattr(outbox_dispatcher, "_reap_lapsed_operations", counted_reaper)
+    monkeypatch.setattr(outbox_dispatcher, "_reap_lost_runs", counted_run_reaper)
 
     await _run_loop_until(lambda: all(len(c) >= 3 for c in calls.values()))
     assert calls["refresh"][0] == outbox_dispatcher.CLEANUP_BATCH_SIZE

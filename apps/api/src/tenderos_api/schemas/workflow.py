@@ -14,6 +14,10 @@ class WorkflowRunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    # Plan item 19: why a failed run failed (WORKER_LOST, DISPATCH_FAILED,
+    # JOB_TIMEOUT), None for any other run. Defaulted so an idempotent
+    # replay of a body cached before this field existed still validates.
+    error_code: str | None = None
 
     model_config = {"from_attributes": True}
 

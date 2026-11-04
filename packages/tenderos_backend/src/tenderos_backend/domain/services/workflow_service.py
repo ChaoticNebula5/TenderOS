@@ -124,23 +124,43 @@ async def list_events(run_id: uuid.UUID) -> list[AuditEvent]:
         return await uow.audit.list_for_workflow_run(run_id)
 
 
+# Plan item 19: the RQ job id of each job that moves a run forward. Every one
+# is built from the job's own arguments, so the job knows its id without
+# asking RQ (the tests call the coroutines directly), the dispatcher enqueues
+# under it, and the run reaper can ask RQ about it. Underscores and dashes
+# only: RQ job ids allow [A-Za-z0-9_-].
+def start_job_id(run_id: uuid.UUID | str) -> str:
+    return f"workflow-{run_id}"
+
+
+def resume_job_id(run_id: uuid.UUID | str, gate_id: uuid.UUID | str) -> str:
+    return f"resume_{run_id}_{gate_id}"
+
+
+def retry_job_id(run_id: uuid.UUID | str, retry_number: int) -> str:
+    """`retry_number` is the run's retry_count once this retry's budget is
+    reserved, so each retry of a run has its own id."""
+    return f"retry_{run_id}_{retry_number}"
+
+
 async def claim_run_for_start(run_id: uuid.UUID) -> bool:
     """Claim a queued run for its first graph invocation (queued -> running,
-    WorkflowRepository.claim_queued_run). Returns False when the run is
-    already running or past it, cancelled, or gone: the caller must not
-    invoke the graph then."""
+    WorkflowRepository.claim_queued_run), recording the start job as its
+    current job. Returns False when the run is already running or past it,
+    cancelled, or gone: the caller must not invoke the graph then."""
     async with UnitOfWork() as uow:
-        claimed = await uow.workflow.claim_queued_run(run_id)
+        claimed = await uow.workflow.claim_queued_run(run_id, start_job_id(run_id))
         await uow.commit()
     return claimed
 
 
-async def claim_run_for_resume(run_id: uuid.UUID) -> bool:
+async def claim_run_for_resume(run_id: uuid.UUID, gate_id: uuid.UUID) -> bool:
     """Claim a run waiting at a gate for its resume (waiting_for_human ->
-    running, WorkflowRepository.claim_waiting_run). Returns False when the
-    run is no longer waiting: the caller must not resume then."""
+    running, WorkflowRepository.claim_waiting_run), recording this gate's
+    resume job as its current job. Returns False when the run is no longer
+    waiting: the caller must not resume then."""
     async with UnitOfWork() as uow:
-        claimed = await uow.workflow.claim_waiting_run(run_id)
+        claimed = await uow.workflow.claim_waiting_run(run_id, resume_job_id(run_id, gate_id))
         await uow.commit()
     return claimed
 
@@ -207,6 +227,9 @@ async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:
     RQ's death penalty fires, and this must never overwrite that "cancelled"
     with "failed" (or back the overwrite with a misleading timeout audit
     event) just because it observed a stale, since-superseded status.
+
+    Plan item 19: the run's error_code is JOB_TIMEOUT, so the screen can say
+    why under "Last run" (the audit event above is not read by any screen).
     """
     async with UnitOfWork() as uow:
         moved = await uow.workflow.mark_failed_if_not_terminal(run_id)

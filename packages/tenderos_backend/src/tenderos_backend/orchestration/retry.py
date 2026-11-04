@@ -27,6 +27,14 @@ _TASK_LEVEL_MAX_BACKOFF_SECONDS = 120.0
 # wasted retry.
 _UNKNOWN_EXCEPTION_DELAY_SECONDS = 15.0
 
+# Phase 4 plan item 19 (decision 5): the provider's own retry-after is
+# honoured up to 15 minutes, never longer. Uncapped, a provider asking for
+# hours would leave the run waiting on a retry nothing bounds but the run
+# reaper's 6-hour cap (run_reaper.MAX_RUN_JOB_AGE), which would then fail it
+# as lost. At 15 minutes the retry fires; if the provider is still limiting,
+# the run's retry budget decides, as for any other failure.
+MAX_PROVIDER_RETRY_AFTER_SECONDS = 15 * 60.0
+
 
 @dataclass(frozen=True)
 class RetryDecision:
@@ -111,7 +119,8 @@ def classify_task_failure(
 
     Decision made, per exception type:
     - `RateLimitedError`: retryable. Honors the provider's own
-      `retry_after_seconds` when Gemini supplied one (the most reliable
+      `retry_after_seconds`, up to MAX_PROVIDER_RETRY_AFTER_SECONDS (plan
+      item 19), when Gemini supplied one (the most reliable
       signal available - it's the provider's own stated quota-reset
       window); falls back to this module's own task-level backoff when
       it didn't. Retrying here is still worth it even though the call
@@ -161,7 +170,10 @@ def classify_task_failure(
         return RetryDecision(should_retry=False)
 
     if isinstance(exc, RateLimitedError):
-        delay = exc.retry_after_seconds or _task_level_backoff(attempt_count)
+        if exc.retry_after_seconds:
+            delay = min(exc.retry_after_seconds, MAX_PROVIDER_RETRY_AFTER_SECONDS)
+        else:
+            delay = _task_level_backoff(attempt_count)
         return RetryDecision(should_retry=True, delay_seconds=delay, budget_cost=1)
 
     if isinstance(exc, TransientProviderError):
