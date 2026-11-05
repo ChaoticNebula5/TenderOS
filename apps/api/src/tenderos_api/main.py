@@ -1,7 +1,8 @@
 import asyncio
 import functools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 import asyncpg
@@ -19,6 +20,7 @@ from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
+from tenderos_backend.graph_projection.driver import close_driver
 
 from tenderos_api.client_disconnect import client_closed_response, is_client_disconnect
 from tenderos_api.config import settings
@@ -84,7 +86,20 @@ log_llm_provider()
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="TenderOS API")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Phase 4 plan item 31: nothing closed graph_projection/driver.py's shared
+    # driver. Neither driver version closes an async driver when it is
+    # collected, so this is the one place its pool gets a clean goodbye.
+    # A closed driver cannot be reused (a DriverError since driver 6), so a
+    # test entering `with TestClient(app)` must patch close_driver, or every
+    # later test using the shared driver fails.
+    yield
+    await close_driver()
+
+
+app = FastAPI(title="TenderOS API", lifespan=_lifespan)
 # Every middleware is registered in ONE block further down ("Middleware
 # order"), after all of them are defined, so the order is read in one
 # place instead of being implied by where each definition sits.

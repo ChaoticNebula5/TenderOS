@@ -50,9 +50,15 @@ asyncio_default_test_loop_scope = "session"
 # the error cannot reach the test: if that happens during a test, pytest
 # reports it as an unraisable exception, which the second line also makes
 # an error; at a test boundary, tests/conftest.py catches it.
+#
+# Phase 4 item 31: the third line does the same for a Neo4j driver or session
+# collected without being closed. Only the driver's own message, not every
+# ResourceWarning. The driver warns from its finalizer, so the error arrives
+# through the unraisable report the second line already fails on.
 filterwarnings = [
     "error::sqlalchemy.exc.SAWarning",
     "error::pytest.PytestUnraisableExceptionWarning",
+    "error:unclosed +Async:ResourceWarning",
 ]
 
 [tool.mypy]

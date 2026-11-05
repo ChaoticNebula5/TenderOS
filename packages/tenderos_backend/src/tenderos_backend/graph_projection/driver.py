@@ -24,15 +24,18 @@ from tenderos_backend.core.config import settings
 #   connect completes in single-digit milliseconds, so 5s is generous
 #   headroom for real jitter (a container restart, a brief network blip)
 #   while cutting a genuine outage's surfacing time from ~30s to ~5s.
-#   connection_acquisition_timeout=10: time waiting for a connection FROM
-#   THE POOL, not the network - can legitimately be hit under real
-#   concurrent load (several requests touching Neo4j at once), not only
-#   an outage, hence a bit more slack than the network-level bound above.
-# Worst case before a Neo4j-touching request fails now: ~15s, down from
-# ~90s (30+60) - real, not just faster on paper: readiness_service.
-# check_freshness's own try/except (B12) is what turns a Neo4j failure
-# into a graceful "readiness degraded" blocker instead of a crash, but it
-# can only do that once the driver actually gives up.
+#   connection_acquisition_timeout=10: since driver 6 this spans everything
+#   needed to get a working connection, whether waiting on a full pool or
+#   opening a new one, so it bounds connection_timeout too. It can
+#   legitimately be hit under real concurrent load (several requests touching
+#   Neo4j at once), not only an outage, hence more slack than the bound above.
+# Worst case before a Neo4j-touching request fails now: 10 s, down from the
+# library defaults' 60 s. Measured on driver 6.4.1 (plan item 31): an
+# unreachable host fails at 5.0 s with ServiceUnavailable, a full pool at its
+# acquisition timeout with ConnectionAcquisitionTimeoutError. Real, not just
+# faster on paper: readiness_service.check_freshness's own try/except (B12) is
+# what turns a Neo4j failure into a graceful "readiness degraded" blocker
+# instead of a crash, but it can only do that once the driver actually gives up.
 #
 # The tradeoff this shortens, stated rather than left implicit: a
 # genuinely slow-but-alive Neo4j under real load (not down, just
