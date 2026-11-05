@@ -13,8 +13,15 @@ on:
 # scripts/check_pins.py, run in the lint job, fails if they drift apart, and
 # if the service images below drift from docker-compose.yml's.
 jobs:
+  # Phase 4 plan item 51. Every job has a timeout, so a hung one fails in minutes
+  # instead of running GitHub's 6-hour limit: the test job on Dependabot #67 ran
+  # 214 minutes before someone cancelled it. The rule: twice the slowest successful
+  # run, rounded up to the next 5 minutes, never under 10, measured over the 60 runs
+  # from 2026-10-24 to 2026-11-05. Raise a limit by the same rule if a job outgrows
+  # it, rather than by guessing.
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -32,6 +39,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -60,6 +68,7 @@ jobs:
   # no secrets and makes no real-provider call.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       JWT_SIGNING_KEY: ci-only-throwaway-jwt-signing-key-not-a-secret
       S3_ACCESS_KEY: changeme
@@ -196,6 +205,7 @@ jobs:
   # No secrets, no services, no backend - pure static checks and unit tests.
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/web
@@ -215,6 +225,7 @@ jobs:
 
   landing:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/landing
@@ -248,7 +259,7 @@ jobs:
   # timeline to the job summary and the e2e-logs artifact.
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
     env:
       COMPOSE_PROJECT_NAME: tenderos
       # Every docker compose command in this job uses all four files. A
@@ -438,6 +449,7 @@ jobs:
   # not flaky.
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
