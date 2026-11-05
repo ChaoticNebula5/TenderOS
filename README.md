@@ -27,6 +27,8 @@ real money); afterwards recreate the stack with `scripts/fake-stack.ps1`.
 
 See the `Makefile` for the equivalent `lint` / `typecheck` / `format` / `test` targets.
 
+To make `git blame` skip mechanical reformat commits, run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once in your clone.
+
 ## Layout
 
 See Build Guide **A4** for the full repository layout and the rationale behind it.
