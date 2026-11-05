@@ -150,3 +150,46 @@ def test_package_managers_that_differ_fail(tree: Path):
     package_manager = json.loads((tree / landing).read_text(encoding="utf-8"))["packageManager"]
     _edit(tree, landing, f'"{package_manager}"', f'"{package_manager}-drift"')
     assert any("packageManager differs" in p for p in check_pins.check(tree))
+
+
+_NO_TIMEOUT_JOB = """
+  planted:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo planted
+"""
+
+
+def test_a_new_job_without_a_timeout_fails(tree: Path):
+    path = tree / _CI
+    path.write_text(path.read_text(encoding="utf-8") + _NO_TIMEOUT_JOB, encoding="utf-8")
+    assert check_pins.check(tree) == [f"{_CI}: job planted has no timeout-minutes"]
+
+
+@pytest.mark.parametrize("job_name", ["lint", "e2e", "security"])
+def test_an_existing_job_that_loses_its_timeout_fails(tree: Path, job_name: str):
+    # First, middle and last, so a check that stops early can't pass.
+    path = tree / _CI
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert job_name in workflow["jobs"]
+    del workflow["jobs"][job_name]["timeout-minutes"]
+    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+    assert f"{_CI}: job {job_name} has no timeout-minutes" in check_pins.check(tree)
+
+
+def test_an_empty_timeout_fails(tree: Path):
+    # `timeout-minutes:` with no value parses as null: present, and no limit.
+    path = tree / _CI
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    workflow["jobs"]["lint"]["timeout-minutes"] = None
+    path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+    assert f"{_CI}: job lint has no timeout-minutes" in check_pins.check(tree)
+
+
+@pytest.mark.parametrize("name", ["other.yml", "other.yaml"])
+def test_a_job_without_a_timeout_in_another_workflow_fails(tree: Path, name: str):
+    other = tree / ".github" / "workflows" / name
+    other.write_text(f"name: Other\non: push\njobs:{_NO_TIMEOUT_JOB}", encoding="utf-8")
+    assert check_pins.check(tree) == [
+        f".github/workflows/{name}: job planted has no timeout-minutes"
+    ]

@@ -18,7 +18,7 @@ jobs:
   # 214 minutes before someone cancelled it. The rule: twice the slowest successful
   # run, rounded up to the next 5 minutes, never under 10, measured over the 60 runs
   # from 2026-10-24 to 2026-11-05. Raise a limit by the same rule if a job outgrows
-  # it, rather than by guessing.
+  # it, rather than by guessing. scripts/check_pins.py fails a job with none.
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10

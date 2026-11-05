@@ -19,6 +19,9 @@ And every reference must be pinned at all: each compose `image:` and each
 Dockerfile `FROM` as `name:tag@sha256:<64 hex>`, each workflow `uses:` as
 `owner/repo@<40 hex>`.
 
+And every job in every workflow must set `timeout-minutes` (Phase 4 plan item
+51), or a new job quietly gets GitHub's 6-hour limit back.
+
 Exit 0 when everything holds, 1 with one line per problem otherwise.
 Run: uv run python scripts/check_pins.py   (CI's lint job runs it)
 """
@@ -78,13 +81,17 @@ def check(root: Path) -> list[str]:
             f"{from_images['apps/api/Dockerfile']} vs {from_images['apps/worker/Dockerfile']}"
         )
 
-    workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
+    # GitHub runs both extensions, so a .yaml file must not escape these checks.
+    workflow_dir = root / ".github" / "workflows"
+    workflows = sorted([*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")])
     setup_uv_versions: set[str] = set()
     node_versions: set[str] = set()
     for workflow_path in workflows:
         label = workflow_path.relative_to(root).as_posix()
         workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
         for job_name, job in workflow.get("jobs", {}).items():
+            if not job.get("timeout-minutes"):
+                problems.append(f"{label}: job {job_name} has no timeout-minutes")
             for service_name, service in (job.get("services") or {}).items():
                 expected = compose_images.get(service_name)
                 if expected is None:
@@ -157,7 +164,10 @@ def main() -> int:
         print(problem)
     if problems:
         return 1
-    print("pins: every image, action and tool version is pinned, and the copies agree")
+    print(
+        "pins: every image, action and tool version is pinned, the copies agree, "
+        "and every job has a timeout"
+    )
     return 0
 
 
