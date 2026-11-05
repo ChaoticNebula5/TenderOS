@@ -1,5 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service
@@ -179,12 +180,43 @@ async def check_commercial_findings(
 # D6's own category names (graph_service.find_contradictions), used
 # verbatim as finding_category - see the plan's Q4 answer for why this
 # project doesn't introduce a second, renamed vocabulary on top of them.
-_GRAPH_TARGET_TYPE: dict[str, str] = {
-    "expired_certification": "compliance_entry",
-    "deselected_fact_in_use": "evidence",
-    "removed_employee_committed": "proposal_claim",
-    "unsupported_grounded_claim": "proposal_claim",
+#
+# target_type names the table target_id is in, so it comes from the row, not
+# from the category: one category can reach different tables, and did carry
+# the wrong label until phase 4 plan item 35 (migration 025 fixed the stored
+# rows). Each relationship type here is written to exactly one label
+# (graph_projection/cypher/relationships.py), which is why `via` is enough to
+# name the table. If one ever gains a second target label, this map would be
+# wrong without complaint; tests/integration/test_redteam_target_type.py looks
+# each id up in the table its label names, and is what would catch that.
+_TARGET_TYPE_BY_VIA: dict[str, str] = {
+    "SUPPORTS": "compliance_entry",
+    "CITED_IN": "proposal_claim",
+    "NAMED_IN": "proposal_claim",
+    "FILLS": "role_requirement",
 }
+
+
+def _graph_target(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The finding's target_type and the node its target_id comes from,
+    decided in one place so the two cannot disagree.
+
+    A row this cannot place is a programming error (a new contradiction
+    query, or a new relationship type), and raises rather than storing a
+    label nothing can dereference. The label is hashed into the finding's
+    identity, so a wrong one is costly to take back.
+    """
+    if row.get("compliance"):
+        return "compliance_entry", row["compliance"]
+    if row.get("claim"):
+        return "proposal_claim", row["claim"]
+    via = row.get("via")
+    if via in _TARGET_TYPE_BY_VIA and row.get("target"):
+        return _TARGET_TYPE_BY_VIA[via], row["target"]
+    raise ValueError(
+        f"cannot place graph contradiction row: category={row.get('category')!r}, "
+        f"via={via!r}, keys={sorted(row)}"
+    )
 
 
 async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindingDraft]:
@@ -209,11 +241,11 @@ async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindin
     drafts: list[RedteamFindingDraft] = []
     for row in rows:
         category = row["category"]
-        node = row.get("compliance") or row.get("claim") or row.get("target") or row.get("fact")
-        target_id = uuid.UUID(node["id"]) if node and node.get("id") else None
+        target_type, node = _graph_target(row)
+        target_id = uuid.UUID(node["id"]) if node.get("id") else None
         drafts.append(
             RedteamFindingDraft(
-                target_type=_GRAPH_TARGET_TYPE.get(category, "unknown"),
+                target_type=target_type,
                 target_id=target_id,
                 finding_category=category,
                 severity=row["severity"],
