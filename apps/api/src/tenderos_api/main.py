@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
 from redis.asyncio import Redis as AsyncRedis
 from starlette.middleware.base import BaseHTTPMiddleware
+from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
@@ -78,6 +79,8 @@ install_access_log_redaction()
 # already documents, right after it, so a fake-provider process is fully
 # ready to answer before it starts serving.
 install_fake_fallback_responses()
+# Phase 4 plan item 46: which provider this process is on, once at start.
+log_llm_provider()
 
 logger = logging.getLogger(__name__)
 

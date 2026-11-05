@@ -7,8 +7,11 @@
 # a fake run unless someone remembered to strip this override back out.
 # Two separate, explicit choices instead: pass this file when the
 # reachability question is what's being answered (free, deterministic,
-# no provider dependency), and docker-compose.e2e.yml alone (or with this
-# file omitted) when a real provider run is what's needed - see
+# no provider dependency), and docker-compose.e2e.yml with
+# docker-compose.live.yml (scripts/real-stack.ps1) when a real provider run
+# is what's needed. (Since Phase 4 plan item 46, docker-compose.yml alone
+# is already fake with blank keys; this file stays, so the fake stack does
+# not depend on the base default and CI's COMPOSE_FILE still names it.) See
 # KNOWN_LIMITATIONS.md's own exit-criteria note: a fake-provider green run
 # proves the scenario/UI/orchestration/gates/SSE reachable; it proves
 # nothing about the provider path, and never substitutes for the one real

@@ -18,6 +18,7 @@ from rq import Queue
 from rq.exceptions import DuplicateJobError
 from rq.job import Job
 from sqlalchemy import text
+from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
@@ -895,6 +896,8 @@ def main() -> None:
     # here too keeps all three real entrypoints identical, matching
     # configure_logging()'s own placement.
     install_fake_fallback_responses()
+    # Phase 4 plan item 46: logged here too, so every app service says it.
+    log_llm_provider()
     asyncio.run(_run_until_terminated())
 
 

@@ -7,6 +7,9 @@
   so it refuses rather than guesses:
     - refuses if docker-compose.e2e-fake.yml (or any file named *fake*) is
       in the compose file list;
+    - refuses unless docker-compose.live.yml is in it (plan item 46:
+      docker-compose.yml alone is the fake provider with blank keys, and
+      this file is the one named step that puts gemini and the keys back);
     - resolves the merged config (`docker compose config`) and refuses if
       LLM_PROVIDER for api, any of the four workers or outbox_dispatcher
       is fake, missing, or anything other than gemini;
@@ -24,7 +27,7 @@
   scripts\real-stack.ps1 -DryRun
 #>
 param(
-    [string[]]$ComposeFiles = @("docker-compose.yml", "docker-compose.e2e.yml"),
+    [string[]]$ComposeFiles = @("docker-compose.yml", "docker-compose.e2e.yml", "docker-compose.live.yml"),
     [switch]$DryRun
 )
 
@@ -39,6 +42,9 @@ $repo = Split-Path -Parent $PSScriptRoot
 $fakeFiles = @($ComposeFiles | Where-Object { $_ -match "fake" })
 if ($fakeFiles.Count -gt 0) {
     throw "REFUSING: a fake overlay is in the compose file list: $($fakeFiles -join ', ')"
+}
+if (-not ($ComposeFiles -contains "docker-compose.live.yml")) {
+    throw "REFUSING: docker-compose.live.yml is not in the compose file list; without it every service is the fake provider with blank keys"
 }
 $files = @()
 foreach ($f in $ComposeFiles) { $files += @("-f", $f) }
@@ -109,6 +115,7 @@ try {
         if ($p -ne "gemini") { throw "running container $svc reports LLM_PROVIDER=$p - stop the stack now" }
     }
     Write-Host "real-provider stack up. Label every number from it real."
+    Write-Host "When the live session is over, recreate the stack with scripts\fake-stack.ps1: these containers stay live, also after a docker compose start or a Docker restart."
 } finally {
     Pop-Location
 }

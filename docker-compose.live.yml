@@ -1,0 +1,49 @@
+# Phase 4 plan item 46: the ONE file that puts the stack on the live LLM
+# provider. docker-compose.yml sets LLM_PROVIDER=fake and blanks every
+# Gemini key for the api, the four workers, outbox_dispatcher and migrate;
+# this overlay sets the provider back to gemini and takes the keys from
+# .env (compose's ${...} substitution reads the project's .env, or the
+# shell).
+# Every call it allows costs real money.
+#
+# Start it only through scripts/real-stack.ps1, which adds this file by
+# default and refuses without it, flushes Redis first (a stale queued job
+# picked up by a live worker would spend budget), and checks every running
+# container afterwards. Typing `-f docker-compose.live.yml` by hand skips
+# those steps. When the live session is over, recreate the stack with
+# scripts/fake-stack.ps1: containers keep the provider they were created
+# with, and `docker compose start` or a Docker restart would bring them
+# back live.
+#
+# Never in CI: scripts/check_ci_stays_fake.py fails the lint job if a
+# workflow, or a script or compose file a workflow uses, names this file.
+#
+# A deployment (host not chosen yet, decision 0043) adds this file or sets
+# LLM_PROVIDER=gemini itself: with the base file alone and
+# APP_ENV=production, B17's guard refuses to start rather than serve fake
+# output (core/config.py, _reject_fake_provider_in_production).
+#
+# GEMINI_API_KEY must be set (`:?` stops compose before anything starts);
+# the three per-agent keys may be empty, and each then falls back to it.
+x-live-provider: &live-provider
+  LLM_PROVIDER: "gemini"
+  GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY must be set in .env for a live run}
+  COMPLIANCE_GEMINI_API_KEY: ${COMPLIANCE_GEMINI_API_KEY:-}
+  TALENT_GEMINI_API_KEY: ${TALENT_GEMINI_API_KEY:-}
+  COMMERCIAL_GEMINI_API_KEY: ${COMMERCIAL_GEMINI_API_KEY:-}
+
+services:
+  migrate:
+    environment: *live-provider
+  api:
+    environment: *live-provider
+  workflow_worker:
+    environment: *live-provider
+  ingestion_worker:
+    environment: *live-provider
+  maintenance_worker:
+    environment: *live-provider
+  operations_worker:
+    environment: *live-provider
+  outbox_dispatcher:
+    environment: *live-provider

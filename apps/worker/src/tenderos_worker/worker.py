@@ -6,6 +6,7 @@ import sys
 from redis import Redis
 from rq import Queue, Worker
 from rq.defaults import DEFAULT_WORKER_TTL
+from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.log_redaction import configure_logging
 
@@ -178,6 +179,8 @@ def main() -> None:
     # B17: a real no-op unless LLM_PROVIDER=fake - see that function's own
     # docstring.
     install_fake_fallback_responses()
+    # Phase 4 plan item 46: which provider this worker is on, once at start.
+    log_llm_provider()
     queue_names = queue_names_from(sys.argv[1:])
     if OPERATIONS_QUEUE in queue_names:
         # Before the Redis client exists, so its sockets cannot be counted.
