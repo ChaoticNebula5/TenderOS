@@ -23,9 +23,8 @@
 #   scripts/restore_review_snapshot.sh backups/<snapshot>.dump --yes [DBNAME]
 # DBNAME defaults to tenderos.
 #
-# Graph rebuild: scripts/rebuild_graph.py is a stub (KNOWN_LIMITATIONS.md),
-# so the projection is rebuilt with scripts/project_all_tenders.py, which
-# calls graph_service.project_tender per tender - deterministic, no LLM.
+# Graph rebuild: the projection is rebuilt with scripts/project_all_tenders.py,
+# which calls graph_service.project_tender per tender - deterministic, no LLM.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1   # Git Bash on Windows: keep /tmp/... container paths literal
 

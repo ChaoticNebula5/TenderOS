@@ -1,11 +1,11 @@
 """B17 Phase 0: rebuild the whole Neo4j projection from Postgres, tender by
 tender, by calling graph_service.project_tender for every tender.
 
-Exists because scripts/rebuild_graph.py is still a 4-line stub that raises
-"not implemented" (KNOWN_LIMITATIONS.md, the pytest/Neo4j isolation entry),
-and the graph is wiped by any `make test` run and is empty after a Postgres
+The graph is wiped by any `make test` run and is empty after a Postgres
 restore. Projection is deterministic and makes no LLM calls (D3: derived
 from relational keys), so this costs nothing to run.
+It deletes nothing shared. scripts/rebuild_graph.py is the one that empties the
+graph first.
 
 Writes Neo4j (the derived store) and each tender's projection-run rows in
 Postgres, exactly as the worker's own project_graph path does. Run it from
