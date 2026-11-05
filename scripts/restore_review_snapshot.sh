@@ -66,8 +66,8 @@ docker compose exec -T postgres rm "/tmp/$NAME"
 echo "restored $SNAPSHOT into $DB"
 
 # 3. Rebuild the graph from the restored Postgres state.
-POSTGRES_DSN="postgresql+asyncpg://$DB_USER:changeme@localhost:5433/$DB" \
-NEO4J_URI=bolt://localhost:7687 \
-REDIS_URL=redis://localhost:6379/0 \
-S3_ENDPOINT_URL=http://localhost:9000 \
+POSTGRES_DSN="postgresql+asyncpg://$DB_USER:changeme@127.0.0.1:5433/$DB" \
+NEO4J_URI=bolt://127.0.0.1:7687 \
+REDIS_URL=redis://127.0.0.1:6379/0 \
+S3_ENDPOINT_URL=http://127.0.0.1:9000 \
   uv run python scripts/project_all_tenders.py

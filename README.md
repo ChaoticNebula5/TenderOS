@@ -11,7 +11,7 @@ Functional through B13. Run it:
 ```
 docker compose up          # full local stack on the fake LLM provider; the one-shot migrate service applies migrations first
 uv run pytest               # backend tests
-uv run alembic upgrade head # apply migrations by hand (from the host, with POSTGRES_DSN on localhost:5433)
+uv run alembic upgrade head # apply migrations by hand (from the host, with POSTGRES_DSN on 127.0.0.1:5433)
 npm --prefix apps/web run test:e2e # Playwright golden-path scenario, against a running stack
 ```
 
@@ -44,7 +44,7 @@ docker exec tenderos-postgres-1 psql -U tenderos -d tenderos -c "CREATE DATABASE
 ```
 
 `make test` points `POSTGRES_DSN`, `REDIS_URL`, `NEO4J_URI`, and
-`S3_ENDPOINT_URL` at `localhost` automatically (`.env`'s own values are the
+`S3_ENDPOINT_URL` at `127.0.0.1` automatically (`.env`'s own values are the
 Docker-internal hostnames the containers use to reach each other, not
 reachable from the host); `uv run pytest` alone does not, and will refuse
 to run against `.env`'s default Postgres DSN.

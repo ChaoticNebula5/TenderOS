@@ -17,14 +17,14 @@ in process listings) and are never printed:
 
 Usage:
     uv run python scripts/migrate_object_store.py \
-        --src-endpoint http://localhost:59200 --src-bucket tenderos \
-        --dst-endpoint http://localhost:9000 --dst-bucket tenderos \
+        --src-endpoint http://127.0.0.1:59200 --src-bucket tenderos \
+        --dst-endpoint http://127.0.0.1:9000 --dst-bucket tenderos \
         [--prefix documents/] [--workers 8] [--dry-run] [--report out.json]
 
     # After a copy: check that every key in a file (one per line) exists at
     # the destination, e.g. the storage_key column of the documents table.
     uv run python scripts/migrate_object_store.py \
-        --dst-endpoint http://localhost:9000 --dst-bucket tenderos --check-keys keys.txt
+        --dst-endpoint http://127.0.0.1:9000 --dst-bucket tenderos --check-keys keys.txt
 
 Exit status is 0 only if every object copied (or skipped) and verified, or,
 with --check-keys, if every listed key exists.

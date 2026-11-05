@@ -36,9 +36,9 @@ proves reachability, not quality.
 
 Usage, from the repo root, against the running stack's published ports:
 
-    POSTGRES_DSN=postgresql+asyncpg://tenderos:changeme@localhost:5433/tenderos \
-    NEO4J_URI=bolt://localhost:7687 REDIS_URL=redis://localhost:6379/0 \
-    S3_ENDPOINT_URL=http://localhost:9000 \
+    POSTGRES_DSN=postgresql+asyncpg://tenderos:changeme@127.0.0.1:5433/tenderos \
+    NEO4J_URI=bolt://127.0.0.1:7687 REDIS_URL=redis://127.0.0.1:6379/0 \
+    S3_ENDPOINT_URL=http://127.0.0.1:9000 \
     uv run python scripts/check_fake_run_invariants.py [TENDER_ID]
 
 With no TENDER_ID, checks the most recently created tender. Exits 1 if any

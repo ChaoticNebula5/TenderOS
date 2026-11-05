@@ -8,7 +8,7 @@ refused, with the reason. Payloads are never printed.
 
 Run it from the repo root against the stack's database:
 
-    POSTGRES_DSN=postgresql+asyncpg://tenderos:...@localhost:5433/tenderos \
+    POSTGRES_DSN=postgresql+asyncpg://tenderos:...@127.0.0.1:5433/tenderos \
     uv run python scripts/redrive_outbox.py --list
     uv run python scripts/redrive_outbox.py --event-id ID [--event-id ID ...]
     uv run python scripts/redrive_outbox.py --event-id ID --apply --reason "parser fix deployed"
