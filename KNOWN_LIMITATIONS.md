@@ -12578,8 +12578,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     either the thief or the user uses the family next, and the other's
     next refresh is reuse, which ends the family for both. The `httpOnly`
     cookie (option 2) waits for item 27.
-  - **No Log out control on screen:** `logout()` has no caller in any
-    screen; plan item 39 adds one.
+  - **A Log out that can't reach the API (plan item 39 built the button):**
+    this browser signs out, but that family stays live until it expires.
   - **Without Web Locks** (read in code, corrected in review): two tabs
     whose access tokens expire together both send the same token T1. The
     API rotates it for the first (T2), then takes the grace path for the
@@ -12657,8 +12657,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** the 15-minute session resolved for the web app (item 34,
   option 1); revocation, rotation and reuse detection resolved (option 3).
   Open: the refresh token in an `httpOnly` cookie once item 27 settles
-  whether the web app and the API share an origin (option 2), and a Log
-  out control on screen (item 39).
+  whether the web app and the API share an origin (option 2). The Log out
+  control on screen is built (item 39).
 - **Test:** `apps/web/src/api/sessionRefresh.test.tsx` (two parallel 401s
   make one refresh; a 401 after the refresh finished makes none; a 401
   after a successful refresh logs out once, no loop; a retried POST keeps
