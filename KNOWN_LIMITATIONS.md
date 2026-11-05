@@ -9981,7 +9981,31 @@ of a third and fourth hand-rolled copy.
 
 ---
 
-## [found during B17 Phase 0, open, deliberately not fixed] Graph-contradiction red-team findings carry the wrong `target_type` for the id they store
+## [B17 Phase 0, RESOLVED by phase 4 plan item 35] Graph-contradiction red-team findings carried the wrong `target_type` for the id they store
+
+- **Fixed:** the label now comes from the row (`redteam_checks._graph_target`):
+  `compliance` and `claim` nodes name their own table, and otherwise the
+  relationship the row was reached through does (`SUPPORTS` to
+  `compliance_entry`, `CITED_IN` and `NAMED_IN` to `proposal_claim`, `FILLS` to
+  `role_requirement`). A row it cannot place raises. Migration 025 relabels
+  stored rows and recomputes their fingerprints together, keeping every id and
+  resolution; its downgrade restores the old labels and fingerprints exactly.
+- **Measured on a copy of the local database:** 261 of 1,611 findings relabelled,
+  in 80 tenders, 0 collisions, 0 unmatched. All 18 `removed_employee_committed`
+  rows there pointed at role requirements, so the "same risk" below was what
+  always happened.
+- **Still true, and accepted:** the label relies on each relationship type going
+  to one node label. A second target label on one would be wrong without
+  complaint; `tests/integration/test_redteam_target_type.py` looks every id up
+  in the table its label names, which is what would catch it.
+- **No CHECK constraint on `target_type`** (decided): it would have to allow the
+  old label for any unmatched row the migration leaves, which defeats it.
+- **A collision is not merged.** If the fixed code ever ran before the migration,
+  the unique constraint fails it and the whole migration rolls back. No finding
+  is ever deleted. Tests: `tests/integration/test_migration_025_redteam_target_type.py`.
+
+The original entry, as found:
+
 
 - **What, read from the code:** `redteam_checks.check_graph_contradictions`
   builds `target_id` from the contradiction row's own node -
@@ -10049,9 +10073,8 @@ of a third and fourth hand-rolled copy.
     and `"compliance_entry"` for gate targets (`:871`, R5) - so a correct
     label would be per-row (`compliance_entry` or `proposal_claim`, or a
     Role type), derived from the node actually stored, not per-category.
-- **Status:** open, not fixed, by decision (B17 Phase 0). Any fix is a
+- **Status at the time:** open, not fixed, by decision (B17 Phase 0). Any fix is a
   contract change (labels plus a fingerprint migration), not a cleanup.
-- **Test:** none yet.
 
 ---
 
