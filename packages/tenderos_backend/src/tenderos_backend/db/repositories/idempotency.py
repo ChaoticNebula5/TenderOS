@@ -11,8 +11,9 @@ from tenderos_backend.db.models.idempotency import IdempotencyRecord
 # host's clock. Callers pass durations (a lease, a retention period), not
 # timestamps, so a clock difference between the API host and Postgres
 # cannot shorten or stretch a lease. Note that Postgres now() is the start
-# time of the current transaction, so each method here is meant to run in
-# its own short UnitOfWork.
+# time of the current transaction, so each method that reads the clock is
+# meant to run in its own short UnitOfWork. complete() and release() do not
+# read it; complete() may run in the route's own transaction (plan item 21).
 
 
 class IdempotencyRepository:

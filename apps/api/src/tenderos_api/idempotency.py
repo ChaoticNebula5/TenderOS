@@ -72,8 +72,8 @@ class IdempotencyContext:
     every method is a no-op), replay (replay_response is set; the route
     returns it and does no work), and claimed (record_id and claim_token are
     set; this request holds the lease and must do the work, then call
-    finalize). Only a claimed context can complete or release a record, and
-    only while its claim_token is still the record's.
+    finalize or finalize_in). Only a claimed context can complete or release
+    a record, and only while its claim_token is still the record's.
     """
 
     active: bool
@@ -97,6 +97,33 @@ class IdempotencyContext:
                 self.operation,
                 self.record_id,
             )
+
+    async def finalize_in(self, uow: UnitOfWork, status_code: int, body: dict) -> None:
+        """Plan item 21, limits 1 and 2: complete the record in the work's own
+        transaction, just before it commits, so the work and "done" are one
+        fact. A crash on either side of that commit leaves both or neither,
+        and an exception after it finds a completed record the release cannot
+        delete, so a retry replays instead of repeating the work.
+
+        A claim that was taken over raises, so the UnitOfWork rolls this
+        request's work back: the new holder is doing it, and keeping both is
+        how one key made two tenders. The answer is the one a retry gets while
+        that holder works; the row lock taken here makes a takeover and this
+        commit take turns, so exactly one of them wins.
+        """
+        if self.record_id is None or self.claim_token is None:
+            return
+        stored = await uow.idempotency.complete(
+            self.record_id, self.claim_token, status_code, body
+        )
+        if not stored:
+            logger.warning(
+                "idempotency %s: claim on record %s was lost before commit "
+                "(lease taken over or record gone); this request's work is rolled back",
+                self.operation,
+                self.record_id,
+            )
+            raise IdempotencyInProgressError(retry_after_seconds=1)
 
     async def release(self) -> None:
         if self.record_id is None or self.claim_token is None:

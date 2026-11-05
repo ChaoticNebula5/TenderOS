@@ -1,6 +1,9 @@
 import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from datetime import timedelta
 from uuid import UUID
@@ -540,37 +543,38 @@ async def test_cancelled_request_releases_the_key(monkeypatch: pytest.MonkeyPatc
         assert await _tender_count(client, org_id, token) == 1
 
 
-@pytest.mark.parametrize("after_finalize", ["raise", "cancel"])
-async def test_a_failure_after_finalize_keeps_the_completed_record(
-    monkeypatch: pytest.MonkeyPatch, after_finalize: str
+@pytest.mark.parametrize("after_commit", ["raise", "cancel"])
+async def test_a_failure_after_the_commit_keeps_the_completed_record(
+    monkeypatch: pytest.MonkeyPatch, after_commit: str
 ):
-    """The dependency releases on any BaseException, cancellation included,
-    so one that arrives after the route has called finalize() still runs the
-    release. release() deletes only an in_progress record
-    (IdempotencyRepository.release), so the completed record must survive
-    and a retry must replay it, not create a second tender."""
-    finalized = asyncio.Event()
-    original_finalize = IdempotencyContext.finalize
+    """Plan item 21, limit 2: the dependency releases on any BaseException,
+    so an exception or a cancellation after create_tender committed still
+    runs the release. The record completed in the tender's own transaction
+    and release() deletes only an in_progress record, so it must survive and
+    a retry must replay it, not create a second tender."""
+    committed = asyncio.Event()
+    original = tender_service.create_tender
 
-    async def finalize_then_fail(self, status_code, body):
-        await original_finalize(self, status_code, body)
-        finalized.set()
-        if after_finalize == "raise":
-            raise RuntimeError("failure after finalize")
+    async def create_then_fail(**kwargs):
+        tender = await original(**kwargs)
+        committed.set()
+        if after_commit == "raise":
+            raise RuntimeError("failure after the commit")
         await asyncio.sleep(_WAIT_SECONDS * 10)  # held here until cancelled
+        return tender
 
-    monkeypatch.setattr(IdempotencyContext, "finalize", finalize_then_fail)
+    monkeypatch.setattr(tender_service, "create_tender", create_then_fail)
     async with await _client() as client:
         token, org_id = await _register_admin(
-            client, f"idem-after-{after_finalize}@example.com", f"Idem After {after_finalize}"
+            client, f"idem-after-{after_commit}@example.com", f"Idem After {after_commit}"
         )
         url = f"/organizations/{org_id}/tenders"
-        body = _tender_body("Finalized Then Failed")
-        headers = _tender_headers(token, "after-finalize-key")
+        body = _tender_body("Committed Then Failed")
+        headers = _tender_headers(token, "after-commit-key")
 
         task = asyncio.create_task(client.post(url, content=body, headers=headers))
-        await asyncio.wait_for(finalized.wait(), timeout=_WAIT_SECONDS)
-        if after_finalize == "raise":
+        await asyncio.wait_for(committed.wait(), timeout=_WAIT_SECONDS)
+        if after_commit == "raise":
             first = await asyncio.wait_for(task, timeout=_WAIT_SECONDS)
             assert first.status_code == 500, first.text
         else:
@@ -578,14 +582,320 @@ async def test_a_failure_after_finalize_keeps_the_completed_record(
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=_WAIT_SECONDS)
 
-        record = await _record(org_id, "after-finalize-key")
+        record = await _record(org_id, "after-commit-key")
         assert record is not None, "the release deleted a completed record"
         assert record.status == "completed"
 
-        monkeypatch.setattr(IdempotencyContext, "finalize", original_finalize)
         retry = await client.post(url, content=body, headers=headers)
         assert retry.status_code == 201, retry.text
         assert retry.json()["id"] == record.response_body["id"]
+        assert await _tender_count(client, org_id, token) == 1
+
+
+async def test_a_release_after_finalize_keeps_the_completed_record():
+    """The six routes that still call finalize() in its own transaction: a
+    failure after it runs the release, which must leave the record."""
+    async with await _client() as client:
+        _, org_id = await _register_admin(client, "idem-fin-rel@example.com", "Idem Fin Rel Org")
+    seeded = await _seed_in_progress(org_id, "fin-rel-key", _tender_body("Fr"), lease_seconds=30)
+    context = IdempotencyContext(
+        active=True, operation=_OPERATION, record_id=seeded.id, claim_token=seeded.claim_token
+    )
+    await context.finalize(201, {"id": "stored"})
+    await context.release()
+
+    record = await _record(org_id, "fin-rel-key")
+    assert record is not None, "the release deleted a completed record"
+    assert record.status == "completed"
+    assert record.response_body == {"id": "stored"}
+
+
+# Plan item 21, limit 1. A real process that dies with os._exit at a chosen
+# point: no release, no `finally`, no rollback from Python, exactly what a
+# crash leaves. Postgres rolls back an open transaction when the connection
+# drops. The route must have reached the point: exit 42, or the test fails.
+# faulthandler ends a stalled child itself and prints where it was: on Windows
+# sys.executable in a venv is a launcher, so subprocess's timeout kills only
+# that, and then waits for ever on the pipes the real interpreter still holds.
+_DIE_MID_REQUEST = """
+import asyncio, faulthandler, os, sys
+faulthandler.dump_traceback_later(170, exit=True)
+from httpx import ASGITransport, AsyncClient
+from tenderos_api.main import app
+from tenderos_backend.domain.services import tender_service
+
+die_at, url, token, key, body = sys.argv[1:6]
+original = tender_service.create_tender
+
+async def dying(**kwargs):
+    store = kwargs.get("before_commit")
+
+    async def store_then_die(uow, tender):
+        if store is not None:
+            await store(uow, tender)
+        if die_at == "before_commit":
+            os._exit(42)
+
+    await original(**{**kwargs, "before_commit": store_then_die})
+    os._exit(42)
+
+tender_service.create_tender = dying
+
+async def main():
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Idempotency-Key": key,
+        "Content-Type": "application/json",
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        await client.post(url, content=body, headers=headers)
+
+asyncio.run(main())
+sys.exit(1)
+"""
+
+
+async def _die_mid_request(die_at: str, url: str, token: str, key: str, body: bytes) -> None:
+    result = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", _DIE_MID_REQUEST, die_at, url, token, key, body.decode()],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 42, result.stderr[-2000:]
+
+
+async def _rows_for_tender_creation(org_id: str) -> tuple[int, int]:
+    """(TenderCreated outbox rows, create_tender audit rows) for this org."""
+    async with UnitOfWork() as uow:
+        outbox = await uow.session.execute(
+            text(
+                "SELECT count(*) FROM outbox_events WHERE event_type = 'TenderCreated' "
+                "AND payload->>'organization_id' = :org"
+            ),
+            {"org": org_id},
+        )
+        audit = await uow.session.execute(
+            text(
+                "SELECT count(*) FROM audit_events WHERE action = 'create_tender' "
+                "AND organization_id = :org"
+            ),
+            {"org": org_id},
+        )
+        return outbox.scalar_one(), audit.scalar_one()
+
+
+async def _lapse_lease(record_id: UUID) -> None:
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            text("UPDATE idempotency_records SET locked_until = now() - interval '1 second' "
+                 "WHERE id = :id"),
+            {"id": record_id},
+        )
+        await uow.commit()
+
+
+async def test_a_process_that_dies_after_the_commit_is_replayed():
+    """Limit 1: the work and "done" are one commit, so a crash right after it
+    leaves a completed record, and the retry replays with no wait and no
+    second tender. Before, this left in_progress, and a retry after the lease
+    created a second tender."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-die-a@example.com", "Idem Die After")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Died After Commit")
+
+        await _die_mid_request("after_commit", url, token, "die-after-key", body)
+
+        record = await _record(org_id, "die-after-key")
+        assert record is not None
+        assert record.status == "completed"
+        assert record.response_status == 201
+
+        retry = await client.post(url, content=body, headers=_tender_headers(token, "die-after-key"))
+        assert retry.status_code == 201, retry.text
+        assert retry.json() == record.response_body
+        assert await _tender_count(client, org_id, token) == 1
+        assert await _rows_for_tender_creation(org_id) == (1, 1)
+
+
+async def test_a_process_that_dies_before_the_commit_leaves_nothing():
+    """Limit 1, the other side: the record completed inside the transaction
+    and the process died before the commit. Nothing of the work exists, the
+    record is still in_progress, a retry waits out the lease, and then the
+    takeover creates the one tender, one outbox event and one audit row."""
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-die-b@example.com", "Idem Die Before")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Died Before Commit")
+        headers = _tender_headers(token, "die-before-key")
+
+        await _die_mid_request("before_commit", url, token, "die-before-key", body)
+
+        assert await _tender_count(client, org_id, token) == 0
+        assert await _rows_for_tender_creation(org_id) == (0, 0)
+        record = await _record(org_id, "die-before-key")
+        assert record is not None
+        assert record.status == "in_progress"
+        assert record.response_body is None
+
+        waiting = await client.post(url, content=body, headers=headers)
+        assert waiting.status_code == 409, waiting.text
+        assert waiting.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
+
+        await _lapse_lease(record.id)
+        retry = await client.post(url, content=body, headers=headers)
+        assert retry.status_code == 201, retry.text
+        assert await _tender_count(client, org_id, token) == 1
+        assert await _rows_for_tender_creation(org_id) == (1, 1)
+        replay = await client.post(url, content=body, headers=headers)
+        assert replay.json() == retry.json()
+
+
+async def test_a_failure_before_the_commit_creates_nothing_and_releases_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An exception at the last step of the transaction, the record already
+    completed in it: everything rolls back together, the release deletes the
+    record, and a retry does the work once."""
+    original = tender_service.create_tender
+    calls = {"n": 0}
+
+    async def fail_first_before_commit(**kwargs):
+        calls["n"] += 1
+        store = kwargs["before_commit"]
+
+        async def store_then_fail(uow, tender):
+            await store(uow, tender)
+            if calls["n"] == 1:
+                raise RuntimeError("failure before the commit")
+
+        return await original(**{**kwargs, "before_commit": store_then_fail})
+
+    monkeypatch.setattr(tender_service, "create_tender", fail_first_before_commit)
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-pre@example.com", "Idem Pre Commit")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Failed Before Commit")
+        headers = _tender_headers(token, "pre-commit-key")
+
+        first = await client.post(url, content=body, headers=headers)
+        assert first.status_code == 500, first.text
+        assert await _tender_count(client, org_id, token) == 0
+        assert await _rows_for_tender_creation(org_id) == (0, 0)
+        assert await _record(org_id, "pre-commit-key") is None
+
+        retry = await client.post(url, content=body, headers=headers)
+        assert retry.status_code == 201, retry.text
+        assert await _tender_count(client, org_id, token) == 1
+        assert await _rows_for_tender_creation(org_id) == (1, 1)
+
+
+async def test_a_request_whose_claim_was_taken_over_rolls_its_work_back(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The request outlived its lease and another took the record over while
+    it worked. It used to keep its tender and only log, so one key made two.
+    Now its work rolls back and it answers what a retry gets while the new
+    holder works."""
+    caplog.set_level(logging.WARNING, logger="tenderos_api.idempotency")
+    original = tender_service.create_tender
+    taken: dict = {}
+
+    async def taken_over_then_work(**kwargs):
+        record = await _record(org_id, "taken-key")
+        assert record is not None
+        await _lapse_lease(record.id)
+        async with UnitOfWork() as uow:
+            taken["record"] = await uow.idempotency.take_over_expired(record.id, _LEASE)
+            await uow.commit()
+        assert taken["record"] is not None
+        return await original(**kwargs)
+
+    monkeypatch.setattr(tender_service, "create_tender", taken_over_then_work)
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-taken@example.com", "Idem Taken Org")
+        response = await client.post(
+            f"/organizations/{org_id}/tenders",
+            content=_tender_body("Taken Over"),
+            headers=_tender_headers(token, "taken-key"),
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "IDEMPOTENCY_IN_PROGRESS"
+        assert response.headers["Retry-After"] == "1"
+
+        assert await _tender_count(client, org_id, token) == 0
+        assert await _rows_for_tender_creation(org_id) == (0, 0)
+        record = await _record(org_id, "taken-key")
+        assert record is not None
+        assert record.status == "in_progress"
+        assert record.claim_token == taken["record"].claim_token
+        assert any("lost before commit" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_takeover_waiting_on_the_row_lock_loses_to_the_commit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The other order of that race: the lease has lapsed, this request has
+    completed the record but not committed, and a takeover arrives. It must
+    wait on the row lock (seen in pg_stat_activity, so the overlap is real),
+    then find the record completed and take nothing."""
+    original = tender_service.create_tender
+    takeover: dict = {}
+
+    async def take_over() -> IdempotencyRecord | None:
+        async with UnitOfWork() as uow:
+            taken = await uow.idempotency.take_over_expired(takeover["record_id"], _LEASE)
+            await uow.commit()
+            return taken
+
+    async def wait_until_blocked() -> None:
+        for _ in range(100):
+            async with UnitOfWork() as uow:
+                waiting = await uow.session.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                        "AND query LIKE 'UPDATE idempotency_records%'"
+                    )
+                )
+                if waiting.scalar_one() > 0:
+                    return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the takeover never waited on the row lock")
+
+    async def race_at_the_commit(**kwargs):
+        record = await _record(org_id, "race-key")
+        assert record is not None
+        takeover["record_id"] = record.id
+        await _lapse_lease(record.id)
+        store = kwargs["before_commit"]
+
+        async def store_then_overlap(uow, tender):
+            await store(uow, tender)
+            takeover["task"] = asyncio.create_task(take_over())
+            await wait_until_blocked()
+            assert not takeover["task"].done()
+
+        return await original(**{**kwargs, "before_commit": store_then_overlap})
+
+    monkeypatch.setattr(tender_service, "create_tender", race_at_the_commit)
+    async with await _client() as client:
+        token, org_id = await _register_admin(client, "idem-race@example.com", "Idem Race Org")
+        url = f"/organizations/{org_id}/tenders"
+        body = _tender_body("Raced The Takeover")
+        headers = _tender_headers(token, "race-key")
+
+        first = await client.post(url, content=body, headers=headers)
+        assert first.status_code == 201, first.text
+        assert await asyncio.wait_for(takeover["task"], timeout=_WAIT_SECONDS) is None
+
+        record = await _record(org_id, "race-key")
+        assert record is not None
+        assert record.status == "completed"
+        replay = await client.post(url, content=body, headers=headers)
+        assert replay.json() == first.json()
         assert await _tender_count(client, org_id, token) == 1
 
 

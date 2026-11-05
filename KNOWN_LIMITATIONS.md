@@ -10911,12 +10911,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      ties "done" to "recorded". Gate decisions are naturally idempotent
      (`gate_service.record_decision` replays an identical decision,
      `domain/services/gate_service.py:37-43`); `create_tender` is not, so
-     this window can create a second tender.
+     this window can create a second tender. **RESOLVED for `create_tender`
+     (plan item 21):** see below.
   2. **An exception after the work committed releases the key.** The yield
      dependency cannot tell "failed before the work" from "failed after it"
      (for example `finalize()` itself failing, or an error building the
      response). It releases either way, and a retry repeats committed work,
-     with the same consequence as limit 1.
+     with the same consequence as limit 1. **RESOLVED for `create_tender`
+     (plan item 21):** see below.
   3. **RESOLVED 2026-10-16 (Phase 4 async operations, Stage 2): proposal
      generation outlasted the lease.** `POST
      /tenders/{id}/proposal/generate` called the LLM inline: 6 section
@@ -10969,23 +10971,58 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      release, which is safe because `IdempotencyRepository.release`
      deletes only a record still `in_progress`: the completed record
      stays and the retry replays it (tested both ways).
-- **Risk:** limits 1 and 2 can duplicate a tender after a crash or a
+- **Limits 1 and 2, `create_tender` (plan item 21, 2026-11-05):** the
+  route completes its record in the tender's own transaction
+  (`IdempotencyContext.finalize_in`, through `tender_service.create_tender`'s
+  `before_commit`), so the tender, its outbox event, its audit row and the
+  replayable response commit as one. A crash after that commit leaves a
+  completed record, and the retry replays with no wait. A crash before it
+  leaves nothing, and the retry waits out the lease and does the work once.
+  An exception after it finds a record `release` cannot delete. New
+  behaviour: a request whose claim was taken over while it worked rolls its
+  own work back and answers 409 `IDEMPOTENCY_IN_PROGRESS`, `Retry-After: 1`;
+  it used to keep its tender and log a warning, which is how one key made
+  two. The lease (60 s) and what counts as lapsed are unchanged.
+- **Limits 1 and 2, the other six routes (accepted):** they still finalize
+  in a separate transaction, so a crash in that window, or an exception
+  after their work committed, still repeats the work on retry. What a repeat
+  does (read in code, none of it observed):
+  - `decide_gate`: nothing; `record_decision` replays an identical decision.
+  - `trigger_graph_projection`: one more projection run; the projection is a
+    rebuild, so the graph ends the same.
+  - `set_knowledge_selection`, `select_candidate`: the same selection, plus
+    one more audit row and one more `state_version` bump, so a report built
+    on the old version reads as stale and is generated again.
+  - `generate_proposal`: the active operation if it is still running, else
+    a second generation, which repeats the LLM spend on a live provider.
+  - `create_workflow_run`: 409 `WORKFLOW_RUN_ACTIVE` naming the first run
+    while it is active (decision 0065), else a second run, which repeats
+    the LLM spend on a live provider.
+  None makes a duplicate business record, which is why `create_tender`
+  came first. The last two are the ones worth doing next; each touches what
+  items 43 and 19 changed, so each gets a design first.
+- **Risk:** on the six routes above, the repeats listed, after a crash or a
   late failure in a narrow window. (Limit 3's duplicate real-provider
   proposal generation was closed in Stage 2.)
 - **Status:** limit 3 resolved (2026-10-16, Stage 2); limits 4 and 6
   resolved in Phase 4 batch 2b; limit 5 resolved by `13414ed` (the
   dispatcher calls `delete_expired`; this line was stale until batch 2b);
-  limits 1 and 2 accepted (plan item 21, planned).
+  limits 1 and 2 resolved for `create_tender` (plan item 21) and accepted
+  for the other six routes.
 - **Test:** `tests/integration/test_idempotency.py` (lease on the database
   clock, release on APIError and on a 500, live lease with Retry-After,
   takeover of an expired and of a NULL lease, exactly one winner between
   concurrent takers, an overtaken original can neither release nor
   finalize, bounded cleanup; batch 2b: a replay answers with a stored 200
   where the route's default is 201, and a request cancelled while it
-  holds the key releases it, so the retry creates the one tender; an
-  exception or a cancellation after `finalize()` leaves the record
-  completed and the retry replays it, one tender). No
-  test covers limits 1 or 2: each needs a crash at a precise point.
+  holds the key releases it, so the retry creates the one tender; item 21:
+  a real process that dies with `os._exit` after the commit is replayed, and
+  one that dies before it leaves no tender, outbox row or audit row, and the
+  retry after the lease does the work once; an exception or a cancellation
+  after the commit leaves the record completed and the retry replays it; an
+  exception before it rolls everything back and releases the key; a request
+  whose claim was taken over rolls its work back; a takeover waiting on the
+  row lock loses to the commit). The other six routes' windows have no test.
   Limit 3's fix:
   `tests/route/test_proposal_routes.py::test_generate_proposal_returns_202_and_the_same_operation_while_active`
   (a same-key retry replays the 202; a second click joins the operation).

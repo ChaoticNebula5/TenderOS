@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import date
 
 from tenderos_backend.db.models.tender import Tender
@@ -17,6 +18,7 @@ async def create_tender(
     created_by: uuid.UUID,
     client_name: str | None = None,
     submission_date: date | None = None,
+    before_commit: Callable[[UnitOfWork, Tender], Awaitable[None]] | None = None,
 ) -> Tender:
     """Create a tender and, in the same transaction, an outbox event announcing it.
 
@@ -24,6 +26,11 @@ async def create_tender(
     a graph-relevant mutation (that list is knowledge selection / evidence /
     compliance / role assignment / proposal claim / amendment impact changes only)
     - so state_version is intentionally left untouched here.
+
+    before_commit (plan item 21) runs last inside the transaction, with the
+    tender flushed: the route completes its idempotency record there, so the
+    tender and its replayable response commit together. If it raises, nothing
+    is created.
     """
     async with UnitOfWork() as uow:
         tender = await uow.tenders.create(
@@ -49,6 +56,8 @@ async def create_tender(
             target_type="tender",
             target_id=tender.id,
         )
+        if before_commit is not None:
+            await before_commit(uow, tender)
         await uow.commit()
         return tender
 
