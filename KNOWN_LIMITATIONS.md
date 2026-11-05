@@ -13044,3 +13044,37 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   answer plus a new row released). Every race test fails with the merge
   replaced by a plain replace, the documents test also on main's screen,
   and the hook's drop test fails without the drop.
+
+## [Phase 4 item 31] Neo4j driver 6: what moved and what stays open
+
+- **Status:** upgraded from 5.28.4 to 6.4.1 (decision 0071). Server stays
+  5.26.31, Bolt 5.8. Same projection, same impact previews and contradictions
+  on a rich fake tender: a dump of all of them is byte-identical on both
+  versions.
+- **Supersedes in `[B12] Neo4j driver has no explicit request timeout`:** the
+  worst case before a Neo4j-touching request fails is now 10 s, not about 15 s,
+  because `connection_acquisition_timeout` now spans everything needed to get a
+  connection.
+- **Fixed by the upgrade:** with Neo4j stopped, `GET .../graph/trace` answered
+  `400 "Cannot resolve address neo4j:7687"`: driver 5 raised `ValueError` for a
+  name that did not resolve, and the route's `except ValueError` is for a bad
+  label. It now answers the catch-all's 500, with the hostname kept private.
+- **Fixed alongside it:** nothing called `close_driver()`, so the API's shared
+  driver was never closed. The API now closes it on shutdown. An unclosed Neo4j
+  driver or session collected during a test now fails that test.
+- **New defaults, kept (read in the driver's source, not observed firing):**
+  - `session.run` retries once, immediately, only when the server marks the
+    error idempotent and the statement failed before running. The driver's
+    PR says the set is admission-control errors only, guaranteed not to have
+    changed any database. Nothing in our logs shows one has fired.
+  - `connection_write_timeout` defaults to 30 s. A write stuck that long now
+    fails instead of waiting indefinitely.
+- **Accepted, open:**
+  - Forked job processes and scripts still do not close the shared driver.
+    RQ's work horse leaves through `os._exit`, so no finalizer runs, and closing
+    it after each job would break an in-process worker's next job, since a
+    closed driver cannot be reused. A script warns at exit, hidden by default,
+    and its SQLAlchemy engine does exactly the same. The OS closes the sockets
+    when the process ends.
+  - The impact route answered 500 in a Neo4j outage on both versions, and the
+    trace route now does too. Whether a 503 would be better is not decided here.
