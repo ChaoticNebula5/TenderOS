@@ -13049,8 +13049,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 
 - **Status:** upgraded from 5.28.4 to 6.4.1 (decision 0071). Server stays
   5.26.31, Bolt 5.8. Same projection, same impact previews and contradictions
-  on a rich fake tender: a dump of all of them is byte-identical on both
-  versions.
+  on one rich tender: a dump of all of them is byte-identical on both versions.
+  That tender is `14cd7584`, real-provider data from 2026-09-01, not fake as
+  this entry first said. Reprojecting calls no LLM.
 - **Supersedes in `[B12] Neo4j driver has no explicit request timeout`:** the
   worst case before a Neo4j-touching request fails is now 10 s, not about 15 s,
   because `connection_acquisition_timeout` now spans everything needed to get a
@@ -13077,4 +13078,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     and its SQLAlchemy engine does exactly the same. The OS closes the sockets
     when the process ends.
   - The impact route answered 500 in a Neo4j outage on both versions, and the
-    trace route now does too. Whether a 503 would be better is not decided here.
+    trace route now does too. Decided 2026-11-05: it stays a 500, and the
+    observability item alerts on readiness instead.
+  - `ensure_constraints()` has no callers, and the stack's Neo4j has 0
+    constraints, so concurrent projections could duplicate nodes. Duplicates
+    have not been observed. Plan item 49.
+  - A test entering `with TestClient(app)` closes the shared driver for every
+    later test, unless it patches `close_driver`. Plan item 49 removes the trap.
