@@ -1,7 +1,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.user import User
+from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import membership_service, tender_service
 
 from tenderos_api.dependencies import require_permission
@@ -24,16 +26,22 @@ async def create_tender(
         _, cached_body = idempotency.replay_response
         return TenderResponse.model_validate(cached_body)
 
+    # Plan item 21: this is the one idempotent route whose work a retry would
+    # repeat as a second business record, so its record completes in the
+    # tender's own transaction rather than in a later one.
+    async def store_response(uow: UnitOfWork, tender: Tender) -> None:
+        stored = TenderResponse.model_validate(tender, from_attributes=True)
+        await idempotency.finalize_in(uow, 201, stored.model_dump(mode="json"))
+
     tender = await tender_service.create_tender(
         organization_id=org_id,
         name=body.name,
         created_by=current_user.id,
         client_name=body.client_name,
         submission_date=body.submission_date,
+        before_commit=store_response,
     )
-    response = TenderResponse.model_validate(tender, from_attributes=True)
-    await idempotency.finalize(201, response.model_dump(mode="json"))
-    return response
+    return TenderResponse.model_validate(tender, from_attributes=True)
 
 
 @router.get("/{org_id}/tenders", response_model=list[TenderResponse])
