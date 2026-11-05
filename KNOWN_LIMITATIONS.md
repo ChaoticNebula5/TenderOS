@@ -9981,7 +9981,31 @@ of a third and fourth hand-rolled copy.
 
 ---
 
-## [found during B17 Phase 0, open, deliberately not fixed] Graph-contradiction red-team findings carry the wrong `target_type` for the id they store
+## [B17 Phase 0, RESOLVED by phase 4 plan item 35] Graph-contradiction red-team findings carried the wrong `target_type` for the id they store
+
+- **Fixed:** the label now comes from the row (`redteam_checks._graph_target`):
+  `compliance` and `claim` nodes name their own table, and otherwise the
+  relationship the row was reached through does (`SUPPORTS` to
+  `compliance_entry`, `CITED_IN` and `NAMED_IN` to `proposal_claim`, `FILLS` to
+  `role_requirement`). A row it cannot place raises. Migration 025 relabels
+  stored rows and recomputes their fingerprints together, keeping every id and
+  resolution; its downgrade restores the old labels and fingerprints exactly.
+- **Measured on a copy of the local database:** 261 of 1,611 findings relabelled,
+  in 80 tenders, 0 collisions, 0 unmatched. All 18 `removed_employee_committed`
+  rows there pointed at role requirements, so the "same risk" below was what
+  always happened.
+- **Still true, and accepted:** the label relies on each relationship type going
+  to one node label. A second target label on one would be wrong without
+  complaint; `tests/integration/test_redteam_target_type.py` looks every id up
+  in the table its label names, which is what would catch it.
+- **No CHECK constraint on `target_type`** (decided): it would have to allow the
+  old label for any unmatched row the migration leaves, which defeats it.
+- **A collision is not merged.** If the fixed code ever ran before the migration,
+  the unique constraint fails it and the whole migration rolls back. No finding
+  is ever deleted. Tests: `tests/integration/test_migration_025_redteam_target_type.py`.
+
+The original entry, as found:
+
 
 - **What, read from the code:** `redteam_checks.check_graph_contradictions`
   builds `target_id` from the contradiction row's own node -
@@ -10049,9 +10073,8 @@ of a third and fourth hand-rolled copy.
     and `"compliance_entry"` for gate targets (`:871`, R5) - so a correct
     label would be per-row (`compliance_entry` or `proposal_claim`, or a
     Role type), derived from the node actually stored, not per-category.
-- **Status:** open, not fixed, by decision (B17 Phase 0). Any fix is a
+- **Status at the time:** open, not fixed, by decision (B17 Phase 0). Any fix is a
   contract change (labels plus a fingerprint migration), not a cleanup.
-- **Test:** none yet.
 
 ---
 
@@ -13049,8 +13072,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 
 - **Status:** upgraded from 5.28.4 to 6.4.1 (decision 0071). Server stays
   5.26.31, Bolt 5.8. Same projection, same impact previews and contradictions
-  on a rich fake tender: a dump of all of them is byte-identical on both
-  versions.
+  on one rich tender: a dump of all of them is byte-identical on both versions.
+  That tender is `14cd7584`, real-provider data from 2026-09-01, not fake as
+  this entry first said. Reprojecting calls no LLM.
 - **Supersedes in `[B12] Neo4j driver has no explicit request timeout`:** the
   worst case before a Neo4j-touching request fails is now 10 s, not about 15 s,
   because `connection_acquisition_timeout` now spans everything needed to get a
@@ -13077,4 +13101,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     and its SQLAlchemy engine does exactly the same. The OS closes the sockets
     when the process ends.
   - The impact route answered 500 in a Neo4j outage on both versions, and the
-    trace route now does too. Whether a 503 would be better is not decided here.
+    trace route now does too. Decided 2026-11-05: it stays a 500, and the
+    observability item alerts on readiness instead.
+  - `ensure_constraints()` has no callers, and the stack's Neo4j has 0
+    constraints, so concurrent projections could duplicate nodes. Duplicates
+    have not been observed. Plan item 49.
+  - A test entering `with TestClient(app)` closes the shared driver for every
+    later test, unless it patches `close_driver`. Plan item 49 removes the trap.

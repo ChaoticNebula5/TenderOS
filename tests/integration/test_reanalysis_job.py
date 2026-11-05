@@ -453,7 +453,10 @@ async def test_reanalyze_knowledge_selection_change_surfaces_deselected_fact_sti
         f"expected exactly one deselected_fact_in_use finding, found {len(matches)} "
         f"(all findings: {[(f.finding_category, f.target_type) for f in findings]})"
     )
-    assert matches[0].target_type == "evidence"
+    # The id is the compliance entry its evidence supports (plan item 35; this
+    # line used to pin the wrong label, "evidence").
+    assert matches[0].target_type == "compliance_entry"
+    assert matches[0].target_id == refetched_entry.id
     assert matches[0].resolved is False
     assert matches[0].severity in ("critical", "major"), (
         "must be D7-coverage-graded via find_contradictions_for_redteam, not left at "
