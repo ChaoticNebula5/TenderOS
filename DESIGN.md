@@ -483,15 +483,34 @@ should not be.
 
 **App shell (built, batch 2).** A 48px top bar (wordmark "TenderOS" in
 Archivo 600 at 16px, linking to the dashboard; "Bids" and "Talent" links;
-the signed-in email) over a content column (`apps/web/src/shell/AppShell.tsx`).
+the signed-in email; a Log out button) over a content column
+(`apps/web/src/shell/AppShell.tsx`).
 The landing sets its wordmark in Newsreader
 (`apps/landing/src/styles/chrome.css:8`); the app does not, because
 decision 4 limits Newsreader to page titles and empty-state headings. The
 top bar shows the **email, not an org name**: `/auth/me` carries no
 organisation name (`MeMembership` is `organization_id` + `role`,
-`apps/web/src/api/client.ts:180-183`). There is **no account menu and no
-Log out** yet: `logout()` exists in the auth context with no UI (deferred,
-see below). Inside a tender, the **workflow nav**
+`apps/web/src/api/client.ts:180-183`). There is **no account menu**.
+
+**Log out (built, plan item 39).** A quiet `Button` beside the email, on every
+signed-in screen. It awaits `logout()`, which can take up to its 5 s bound, and
+while that runs it is disabled, `aria-busy`, and reads "Logging out...": there
+was no existing participle to reuse, and a quiet button at full opacity would
+otherwise show no change at all for 5 s. `RequireAuth` does the landing on
+`/login`, not the button. A deliberate log out carries no `from`, so the next
+login starts at the dashboard; an expired session still returns to its page.
+The tokens clear before the call, so a tab closed during the wait stays signed
+out. A screen that fetches during the wait therefore lands on `/login` early,
+also with no `from`.
+Below the 600px breakpoint the email is hidden, because beside the button it
+could not show enough to be useful (23px at 390px), and the button's accessible
+name carries it: "Log out person@example.com", visible label first (WCAG 2.5.3).
+The button reserves the busy label's width from the start, so nothing moves
+when the label changes. Below 360px the bar's and nav's gaps drop to 12px and
+the button's side padding to 8px, the one local deviation from
+`--button-pad-x`, so the bar keeps one 48px row down to 320px.
+
+Inside a tender, the **workflow nav**
 (built) gives every tender screen a way back to the dashboard (the
 wordmark and "Bids") and to every other step. The processing screen's old
 dot-separated link row was removed in batch 3. The **tender bar** carries
@@ -544,11 +563,6 @@ rather than keep a status the decision made stale.
   (`apps/web/src/api/client.ts:233`), which no screen calls today, so it
   would be a new fetch inside a restyle. Not built; needs an explicit
   decision before any batch adds it.
-- **Log out.** `logout()` (`apps/web/src/auth/authContextValue.ts:13`) has
-  no UI. Since plan item 34 option 3 it revokes the session on the server
-  (`POST /auth/logout`) and then clears the tokens, with vitest coverage
-  (`apps/web/src/api/refreshRotation.test.tsx`). The control itself is
-  plan item 39 (a `<button>` in the top bar, before deployment).
 
 **Workflow nav - DECIDED (was TODO(human) 2, option a); built in batch 2**
 (`apps/web/src/shell/TenderLayout.tsx`): a horizontal tab strip under the
@@ -683,7 +697,8 @@ and is reused; after the polish pass, screen code has 0 inline
   quiet still has no fill, so it stays lighter than secondary. Border
   contrast (WCAG 1.4.11, 3:1), measured from computed styles on every
   screen: 3.44:1 on the page, 3.41:1 raised, 3.37:1 on a hovered row,
-  3.41:1 on a sunk well (computed - no quiet button sits on one).
+  3.41:1 on a sunk well (computed; since plan item 39 the top bar's Log out
+  sits on `--surface-sunk`: border 3.41:1, label 9.10:1).
 
 ### Status badge
 - **Before the restyle (historical):** none. Status is a raw string in a cell (`BidDashboard.tsx:70`,

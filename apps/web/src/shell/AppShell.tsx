@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
+import { Button } from "../components/ui/Button";
 import "./AppShell.css";
 
 // The app shell (DESIGN.md Layout, "App shell"): a 48px top bar over the
@@ -11,19 +13,32 @@ import "./AppShell.css";
 // - Everything here is OUTSIDE each screen's own <main> (step 9 counts
 //   `main > section`; steps 13 and 14 read `main strong`, `main li` and
 //   `main ul li`).
-// - No heading, <section>, <aside>, <table>, <button> or <input>: page-wide
-//   locators look for each of those (gatePanel(), setup's résumé import,
-//   steps 3, 10 and 12).
+// - No heading, <section>, <aside>, <table> or <input>: page-wide locators
+//   look for each of those (gatePanel(), setup's résumé import, steps 3, 10
+//   and 12).
+// - One <button>, Log out, and no other (plan item 39). Every button locator
+//   in the spec has a name, and none of those names is part of "Logging out..."
+//   or "Log out e2e-<suffix>@example.com", the name it has on the spec's user.
 // - No link whose name could contain a tender name (step 2, on the dashboard).
 // AppShell.test.tsx asserts the element rules.
 //
-// The account area shows the signed-in email only: /auth/me carries no
-// organisation name (MeMembership is organization_id + role,
-// api/client.ts:180-183), and Log out is deliberately not wired in this
-// batch (no behaviour change in a restyle).
+// The account area shows the signed-in email, not an organisation name:
+// /auth/me carries none (MeMembership is organization_id + role,
+// api/client.ts:180-183).
 
 export function AppShell() {
-  const { meResponse } = useAuth();
+  const { meResponse, logout } = useAuth();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  // Plan item 39. logout() can take up to 5 s (client.ts) and resolves whether
+  // or not the server call worked. It ends the session, and RequireAuth then
+  // lands on /login: this does not navigate itself, because the router's update
+  // would race RequireAuth's redirect, and the redirect would win.
+  async function handleLogOut() {
+    setLoggingOut(true);
+    await logout();
+    setLoggingOut(false);
+  }
 
   return (
     <div className="app-shell">
@@ -42,7 +57,23 @@ export function AppShell() {
             Talent
           </NavLink>
         </nav>
-        {meResponse && <span className="topbar__account">{meResponse.user.email}</span>}
+        {meResponse && (
+          <div className="topbar__account">
+            <span className="topbar__email">{meResponse.user.email}</span>
+            {/* The email is hidden below 600px, so the button's name says who is
+                signed in. It starts with the visible label (WCAG 2.5.3). */}
+            <Button
+              variant="quiet"
+              className="topbar__logout"
+              aria-label={loggingOut ? undefined : `Log out ${meResponse.user.email}`}
+              busy={loggingOut}
+              busyLabel="Logging out..."
+              onClick={() => void handleLogOut()}
+            >
+              Log out
+            </Button>
+          </div>
+        )}
       </header>
       <Outlet />
     </div>

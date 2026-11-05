@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthProvider } from "../auth/AuthContext";
 import { useAuth } from "../auth/useAuth";
-import { getAccessToken, getRefreshToken, getTender, logout, setTokens } from "./client";
+import {
+  getAccessToken,
+  getRefreshToken,
+  getTender,
+  isLoggingOut,
+  logout,
+  setTokens,
+} from "./client";
 
 // Plan item 34, option 3: the API rotates the refresh token on every
 // refresh, so the client stores both tokens, takes a cross-tab Web Lock
@@ -230,10 +237,12 @@ describe("two tabs", () => {
 });
 
 describe("logout", () => {
-  it("sends the stored refresh token to /auth/logout, then clears both tokens", async () => {
-    let storedDuringCall: string | null = "unset";
+  it("clears both tokens, then sends the refresh token it read to /auth/logout", async () => {
+    let refreshDuringCall: string | null = "unset";
+    let accessDuringCall: string | null = "unset";
     stubFetch(() => {
-      storedDuringCall = getRefreshToken();
+      refreshDuringCall = getRefreshToken();
+      accessDuringCall = getAccessToken();
       return new Response(null, { status: 204 });
     });
 
@@ -241,8 +250,11 @@ describe("logout", () => {
 
     expect(callsTo("/auth/logout")).toHaveLength(1);
     expect(JSON.parse(callsTo("/auth/logout")[0].body!)).toEqual({ refresh_token: "refresh-1" });
-    // Called before the tokens were cleared, not after.
-    expect(storedDuringCall).toBe("refresh-1");
+    // Cleared before the call, not after. The order changed in plan item 39's
+    // review: cleared after it, a tab closed during the wait of up to 5 s left
+    // this browser signed in.
+    expect(refreshDuringCall).toBeNull();
+    expect(accessDuringCall).toBeNull();
     expect(callsTo("/auth/logout")[0].headers["Authorization"]).toBeUndefined();
     expect(getAccessToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
@@ -265,7 +277,43 @@ describe("logout", () => {
     expect(getRefreshToken()).toBeNull();
   });
 
-  it("still clears the tokens when the call hangs, after its timeout", async () => {
+  it("sends the call with keepalive, so it can outlive a closed tab", async () => {
+    let sent: RequestInit | undefined;
+    stubFetch((_call, init) => {
+      sent = init;
+      return new Response(null, { status: 204 });
+    });
+
+    await logout();
+
+    expect(sent?.keepalive).toBe(true);
+    expect(sent?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each<[string, () => Response]>([
+    ["works", () => new Response(null, { status: 204 })],
+    ["answers with an error", () => json(503, { detail: "unavailable" })],
+    [
+      "cannot reach the API",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ])("is logging out only while the call runs, when the call %s", async (_name, answer) => {
+    let duringCall: boolean | null = null;
+    stubFetch(() => {
+      duringCall = isLoggingOut();
+      return answer();
+    });
+    expect(isLoggingOut()).toBe(false);
+
+    await logout();
+
+    expect(duringCall).toBe(true);
+    expect(isLoggingOut()).toBe(false);
+  });
+
+  it("still clears the tokens when the call hangs, ending within its 5 s bound", async () => {
     stubFetch(
       (_call, init) =>
         new Promise<Response>((_resolve, reject) => {
@@ -273,9 +321,13 @@ describe("logout", () => {
         }),
     );
 
+    const started = Date.now();
     await logout();
 
+    expect(Date.now() - started).toBeGreaterThan(4_500);
+    expect(Date.now() - started).toBeLessThan(6_500);
     expect(getRefreshToken()).toBeNull();
+    expect(isLoggingOut()).toBe(false);
   }, 10_000);
 
   it("with no refresh token stored makes no call and still clears", async () => {

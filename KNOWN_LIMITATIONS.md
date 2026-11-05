@@ -12496,8 +12496,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     check below).
   - **Logout:** `POST /auth/logout` with the refresh token in the body, no
     access token needed, revokes the family (`'logout'`) and answers 204
-    whatever the token was. The web app's `logout()` calls it, bounded at
-    5 s, then clears storage whether or not the call worked. Other tabs of
+    whatever the token was. The web app's `logout()` clears storage, then
+    calls it, bounded at 5 s (the order changed in item 39). Other tabs of
     the same browser share that storage, so they find out at their next
     request (no token, then the login screen), never through a refused
     refresh; the live check below showed exactly that. The server-side
@@ -12578,8 +12578,15 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     either the thief or the user uses the family next, and the other's
     next refresh is reuse, which ends the family for both. The `httpOnly`
     cookie (option 2) waits for item 27.
-  - **No Log out control on screen:** `logout()` has no caller in any
-    screen; plan item 39 adds one.
+  - **A Log out that can't reach the API (plan item 39 built the button):**
+    this browser signs out, but that family stays live until it expires.
+  - **A tab closed during Log out (plan item 39):** storage is cleared first,
+    and the call uses `keepalive`. Observed in Chromium only, with the tab
+    closed while a proxy held the CORS preflight: the POST arrived and the
+    family was revoked 10 of 10; the same request without `keepalive`, 0 of
+    10. Not observed: Firefox, Safari, or the whole browser quitting. A
+    browser that drops the call leaves the family live until it expires;
+    this browser stays signed out either way.
   - **Without Web Locks** (read in code, corrected in review): two tabs
     whose access tokens expire together both send the same token T1. The
     API rotates it for the first (T2), then takes the grace path for the
@@ -12657,8 +12664,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Status:** the 15-minute session resolved for the web app (item 34,
   option 1); revocation, rotation and reuse detection resolved (option 3).
   Open: the refresh token in an `httpOnly` cookie once item 27 settles
-  whether the web app and the API share an origin (option 2), and a Log
-  out control on screen (item 39).
+  whether the web app and the API share an origin (option 2). The Log out
+  control on screen is built (item 39).
 - **Test:** `apps/web/src/api/sessionRefresh.test.tsx` (two parallel 401s
   make one refresh; a 401 after the refresh finished makes none; a 401
   after a successful refresh logs out once, no loop; a retried POST keeps

@@ -50,6 +50,7 @@ function AuthHarness({ children }: { children: ReactNode }) {
           organizationId: meResponse?.memberships[0]?.organization_id ?? null,
           refresh: async () => setMeResponse(MEMBER),
           logout: async () => setMeResponse(null),
+          loggedOut: false,
         }}
       >
         {children}
