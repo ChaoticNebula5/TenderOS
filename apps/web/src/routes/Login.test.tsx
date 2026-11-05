@@ -39,6 +39,7 @@ function renderLogin() {
           organizationId: null,
           refresh: async () => {},
           logout: async () => {},
+          loggedOut: false,
         }}
       >
         <Login />

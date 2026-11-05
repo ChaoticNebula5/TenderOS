@@ -11,6 +11,10 @@ export interface AuthState {
   organizationId: string | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
+  // True when the session ended because the user chose to log out, until the
+  // next successful sign-in. RequireAuth reads it: an expired session returns
+  // to its page after logging in, a deliberate log out starts afresh.
+  loggedOut: boolean;
 }
 
 // Own file, not AuthContext.tsx: react-refresh/only-export-components

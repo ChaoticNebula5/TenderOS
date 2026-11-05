@@ -3,7 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./useAuth";
 
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { meResponse } = useAuth();
+  const { meResponse, loggedOut } = useAuth();
   const location = useLocation();
 
   if (meResponse === undefined) {
@@ -19,10 +19,15 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     // but that "somewhere" must include the fragment too: a protected URL
     // opened with one (e.g. a deep link to a specific section) otherwise
     // loses it silently across the login round-trip.
+    //
+    // Not after a deliberate log out (plan item 39): the next person to sign
+    // in may not be this one, and this page may not be theirs.
     return (
       <Navigate
         to="/login"
-        state={{ from: location.pathname + location.search + location.hash }}
+        state={
+          loggedOut ? undefined : { from: location.pathname + location.search + location.hash }
+        }
         replace
       />
     );

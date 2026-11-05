@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MeResponse } from "../api/client";
 import { AuthContext } from "../auth/authContextValue";
@@ -11,7 +12,9 @@ import { TenderLayout } from "./TenderLayout";
 // (DESIGN.md Restyle batches and the batch 2 locator audit). If any of
 // these elements appears in the shell, a spec line that scans the whole
 // page can match it - several of them silently (:1253 / :1258 count and
-// parse every <li>), not with a clear failure.
+// parse every <li>), not with a clear failure. A <button> is the one change:
+// the shell has exactly one, Log out (plan item 39), and every button locator
+// in the spec has a name that isn't part of it.
 
 afterEach(() => {
   cleanup();
@@ -22,7 +25,7 @@ const MEMBER: MeResponse = {
   memberships: [{ organization_id: "org-1", role: "member" }],
 };
 
-function renderShellAt(path: string) {
+function renderShellAt(path: string, logout: () => Promise<void> = async () => {}) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthContext.Provider
@@ -30,7 +33,8 @@ function renderShellAt(path: string) {
           meResponse: MEMBER,
           organizationId: "org-1",
           refresh: async () => {},
-          logout: async () => {},
+          logout,
+          loggedOut: false,
         }}
       >
         <Routes>
@@ -56,7 +60,7 @@ function shellParts(container: HTMLElement): Element[] {
   );
 }
 
-const FORBIDDEN = "strong, ul, li, aside, table, section, h1, h2, h3, h4, h5, h6, button, input";
+const FORBIDDEN = "strong, ul, li, aside, table, section, h1, h2, h3, h4, h5, h6, input";
 
 describe("AppShell", () => {
   it.each(["/", "/tenders/t1", "/tenders/t1/requirements"])(
@@ -67,6 +71,36 @@ describe("AppShell", () => {
       expect(found.map((el) => el.tagName)).toEqual([]);
     },
   );
+
+  it.each(["/", "/tenders/t1", "/tenders/t1/requirements"])(
+    "at %s has one button, Log out, in the top bar beside the email",
+    (path) => {
+      const { container } = renderShellAt(path);
+      const buttons = shellParts(container).flatMap((el) => [...el.querySelectorAll("button")]);
+      expect(buttons.map((el) => el.textContent)).toEqual(["Log out"]);
+
+      const button = screen.getByRole("button", { name: "Log out" });
+      expect(button.closest("header")).not.toBeNull();
+      expect(button.previousElementSibling).toHaveTextContent("person@example.com");
+    },
+  );
+
+  it("disables the button only while logout() runs", async () => {
+    let finish: () => void = () => {};
+    const logout = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    const user = userEvent.setup();
+    renderShellAt("/", logout);
+    expect(screen.getByRole("button", { name: "Log out" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Logging out..." })).toBeDisabled();
+
+    finish();
+
+    expect(await screen.findByRole("button", { name: "Log out" })).toBeEnabled();
+  });
 
   it("keeps the shell outside <main>", () => {
     const { container } = renderShellAt("/tenders/t1/requirements");

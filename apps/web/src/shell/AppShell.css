@@ -18,6 +18,17 @@
   }
 }
 
+/* Below 360px the bar can't hold everything on one line, and the busy label is
+   wider still, so the account area takes its own line rather than pushing the
+   page sideways. */
+@media (max-width: 359px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+    padding-block: var(--space-2);
+  }
+}
+
 .topbar__wordmark {
   color: var(--ink);
   text-decoration: none;
@@ -49,11 +60,19 @@
   text-underline-offset: 6px;
 }
 
-/* Email pushed right; shrinks with an ellipsis at phone width instead of
-   pushing the bar wider than the viewport. */
+/* Email and Log out pushed right. The email shrinks with an ellipsis at phone
+   width instead of pushing the bar wider than the viewport; the button keeps
+   its size. */
 .topbar__account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   min-width: 0;
   margin-left: auto;
+}
+
+.topbar__email {
+  min-width: 0;
   overflow: hidden;
   color: var(--ink-3);
   font-size: var(--text-label);
