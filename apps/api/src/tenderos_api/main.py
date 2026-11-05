@@ -92,9 +92,6 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Phase 4 plan item 31: nothing closed graph_projection/driver.py's shared
     # driver. Neither driver version closes an async driver when it is
     # collected, so this is the one place its pool gets a clean goodbye.
-    # A closed driver cannot be reused (a DriverError since driver 6), so a
-    # test entering `with TestClient(app)` must patch close_driver, or every
-    # later test using the shared driver fails.
     yield
     await close_driver()
 

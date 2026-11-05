@@ -122,7 +122,13 @@ services:
   # Not in the api's own entrypoint: with more than one api replica, each
   # would race to migrate. On a host with a release phase, this command
   # becomes the release command. A second start is a no-op (alembic finds
-  # the database at head).
+  # the database at head, and the constraints use IF NOT EXISTS).
+  #
+  # Phase 4 plan item 49: it also applies Neo4j's uniqueness constraints, after
+  # Alembic. Fails closed: a key that already has two nodes stops the app
+  # services until someone runs scripts/rebuild_graph.py. So it waits for a
+  # healthy Neo4j, and `docker compose up` of any app service won't start one
+  # during a Neo4j outage. One already running keeps running.
   migrate:
     # Phase 4 item 28: Docker's init (tini) is PID 1. It forwards SIGTERM to
     # the program and reaps orphaned child processes; the program then has
@@ -131,11 +137,16 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    command:
+      - sh
+      - -c
+      - /app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints
     env_file: .env
     environment: *fake-provider
     depends_on:
       postgres:
+        condition: service_healthy
+      neo4j:
         condition: service_healthy
 
   api:
