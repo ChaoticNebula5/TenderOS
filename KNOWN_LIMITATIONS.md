@@ -9766,9 +9766,10 @@ of a third and fourth hand-rolled copy.
   shares an RQ namespace with any running worker. Recoverable per tender
   through `graph_service.project_tender(tender_id)` (Part D's "derived and
   rebuildable"; `test_rebuild_from_postgres_after_deleting_neo4j` covers
-  it), but **not** through `scripts/rebuild_graph.py`: that script is a
-  4-line stub that raises "rebuild_graph is not implemented yet (arrives
-  with B10)", checked directly. There is no whole-graph rebuild command. That is also why pytest must never run at the same
+  it), but at the time **not** through `scripts/rebuild_graph.py`, then a
+  4-line stub that raised "rebuild_graph is not implemented yet (arrives
+  with B10)", checked directly. Plan item 49 implemented it (the entry on
+  Neo4j's uniqueness constraints). At the time there was no whole-graph rebuild command. That is also why pytest must never run at the same
   time as a live E2E run.
 - **Redis half resolved (B17 Phase 0, approved config change):** the
   Makefile's `test` target now sets `REDIS_URL=redis://localhost:6379/1`;
@@ -9978,6 +9979,53 @@ of a third and fourth hand-rolled copy.
   batch poll requires one item per uploaded resume, and the item count is
   asserted before the loop). Observed (fake): `loop:import-items` ran 4
   times, was 1.
+
+---
+
+## [Phase 4 plan item 49, RESOLVED, with limits] Neo4j had no uniqueness constraints, and concurrent projections wrote wrong graphs that read as fresh
+
+- **Wrong:** `ensure_constraints()` had no callers, so nothing made the 11 node keys
+  unique, and `MERGE` alone does not stop concurrent transactions creating one node
+  twice. Nothing serialized projections of one tender either, and each deletes that
+  tender's nodes and writes them back in separate statements.
+- **Observed (fake provider, local data, 2026-11-05), no constraints:**
+  - 4 projections of one tender differed from a single projection in 10 of 10
+    rounds, up to 972 nodes against 243 and 3,408 relationships against 213. **All
+    10 passed `check_freshness`,** which only looks at the completion marker.
+  - 4 tenders sharing 40 employees: duplicates in 9 of 10 rounds, up to 80 extra
+    `Employee` nodes.
+- **Fixed:**
+  - The compose `migrate` service applies the 11 constraints after Alembic, and
+    fails closed: a duplicate keeps the app services down.
+  - Each tender's projection takes an advisory lock (class 3402), waiting at most
+    15 s.
+  - Rows in statements touching shared nodes are sorted by key, because constraints
+    make opposite orders deadlock (40 of 60 statements measured, 0 of 60 in one order).
+  - A projection is attempted up to 3 times, on Neo4j's transient errors and the
+    lock timeout only.
+  - `scripts/check_graph_keys.py` reads the graph; `scripts/rebuild_graph.py --yes`
+    wipes it and reprojects from Postgres (154 tenders in 29.1 s).
+- **Still true:**
+  - **Null keys aren't stopped by a constraint.** Key constraints would, but they are
+    Enterprise and our image is Community. The projector only uses `MERGE`, which
+    refuses a null key (observed), so `check_graph_keys.py` covers the rest.
+  - **A Neo4j outage now stops `docker compose up` of any app service,** because
+    `migrate` waits for it. One already running keeps running.
+  - **A second projection of one tender waits its turn,** holding a Postgres
+    connection while it does, for at most about 46 s in all.
+  - **`hashtext()` can map two tenders to one lock key.** They then wait on each
+    other briefly, which is harmless.
+  - **A deadlock remains possible** on statements locking two shared nodes (`HOLDS`,
+    `WORKED_ON`, `DEMONSTRATES`), where sorting can't give one total order. The retry
+    covers it. Not seen.
+  - **Certification, Project and Capability have no nodes in the local data,** so
+    their concurrency behaviour was tested only on seeded rows.
+  - **Timings come from one machine.** Adding a constraint took 2.04 s on 1,000,000
+    nodes, with writes elsewhere unaffected; Neo4j's docs say only that it "can take a
+    while", and one user report describes a long block at over 20 million nodes.
+- **Tests:** `tests/integration/test_graph_constraints.py`,
+  `test_graph_projection_concurrency.py`, `test_graph_key_scripts.py`,
+  `tests/unit/test_advisory_lock_classes.py`, `test_compose_migrate_service.py`.
 
 ---
 
@@ -13103,8 +13151,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - The impact route answered 500 in a Neo4j outage on both versions, and the
     trace route now does too. Decided 2026-11-05: it stays a 500, and the
     observability item alerts on readiness instead.
-  - `ensure_constraints()` has no callers, and the stack's Neo4j has 0
-    constraints, so concurrent projections could duplicate nodes. Duplicates
-    have not been observed. Plan item 49.
-  - A test entering `with TestClient(app)` closes the shared driver for every
-    later test, unless it patches `close_driver`. Plan item 49 removes the trap.
+  - `ensure_constraints()` had no callers, and the stack's Neo4j had 0
+    constraints. **Corrected and resolved (plan item 49):** this first said
+    duplicates had not been observed. They have, and worse; see the entry on Neo4j's uniqueness constraints.
+  - A test entering `with TestClient(app)` closed the shared driver for every
+    later test, unless it patched `close_driver`. **Resolved (plan item 49):**
+    `close_driver()` now clears the driver and the next session builds a fresh one.
