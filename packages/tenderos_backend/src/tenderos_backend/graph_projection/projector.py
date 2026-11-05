@@ -24,6 +24,7 @@ to resolve both endpoints).
 """
 
 import uuid
+from collections.abc import Mapping
 
 from neo4j import AsyncSession as Neo4jSession
 
@@ -57,6 +58,19 @@ class ProjectionIntegrityError(Exception):
     def __init__(self, knowledge_item_id: uuid.UUID, problem: str) -> None:
         self.knowledge_item_id = knowledge_item_id
         super().__init__(f"knowledge_item {knowledge_item_id}: {problem}")
+
+
+def _sorted_rows[Row: Mapping[str, object]](rows: list[Row], *keys: str) -> list[Row]:
+    """The same fixed order in every projection, for statements that touch shared
+    nodes (phase 4 plan item 49).
+
+    Two tenders can write one Employee at once, and MERGE locks as it goes, so
+    two statements meeting the same keys in opposite orders deadlock (40 of 60
+    statements measured, against 0 of 60 in one order). reachable_ids is a set,
+    so these rows have no order of their own. Tender-scoped statements don't
+    need this: the per-tender lock means nobody else writes those nodes.
+    """
+    return sorted(rows, key=lambda row: tuple(str(row[key]) for key in keys))
 
 
 async def project_tender(
@@ -231,10 +245,18 @@ async def project_tender(
         for kid, (item, capability) in capabilities.items()
     ]
 
-    await nodes.merge_employee_nodes(neo4j_session, employee_rows)
-    await nodes.merge_certification_nodes(neo4j_session, certification_rows)
-    await nodes.merge_project_nodes(neo4j_session, project_rows)
-    await nodes.merge_capability_nodes(neo4j_session, capability_rows)
+    await nodes.merge_employee_nodes(
+        neo4j_session, _sorted_rows(employee_rows, "knowledge_item_id")
+    )
+    await nodes.merge_certification_nodes(
+        neo4j_session, _sorted_rows(certification_rows, "knowledge_item_id")
+    )
+    await nodes.merge_project_nodes(
+        neo4j_session, _sorted_rows(project_rows, "knowledge_item_id")
+    )
+    await nodes.merge_capability_nodes(
+        neo4j_session, _sorted_rows(capability_rows, "knowledge_item_id")
+    )
 
     holds_rows = [
         {
@@ -245,7 +267,9 @@ async def project_tender(
         for kid, (_item, cert) in certifications.items()
         if cert.holder_employee_item_id is not None
     ]
-    await relationships.merge_holds(neo4j_session, holds_rows)
+    await relationships.merge_holds(
+        neo4j_session, _sorted_rows(holds_rows, "employee_id", "certification_id")
+    )
 
     org_relationships = await uow.knowledge.list_relationships_for_org(
         tender.organization_id, verified_only=True
@@ -269,8 +293,12 @@ async def project_tender(
             "props": props,
         }
         (worked_on_rows if rel.relationship_type == "WORKED_ON" else demonstrates_rows).append(row)
-    await relationships.merge_worked_on(neo4j_session, worked_on_rows)
-    await relationships.merge_demonstrates(neo4j_session, demonstrates_rows)
+    await relationships.merge_worked_on(
+        neo4j_session, _sorted_rows(worked_on_rows, "employee_id", "project_id")
+    )
+    await relationships.merge_demonstrates(
+        neo4j_session, _sorted_rows(demonstrates_rows, "project_id", "capability_id")
+    )
 
     # ------------------------------------------------------------------
     # Step 5: delete this tender's own tender-scoped subgraph.
@@ -400,7 +428,9 @@ async def project_tender(
         for ev in evidence_links
         if ev.knowledge_item_id is not None
     ]
-    await relationships.merge_provides(neo4j_session, provides_rows)
+    await relationships.merge_provides(
+        neo4j_session, _sorted_rows(provides_rows, "knowledge_item_id", "evidence_id")
+    )
     await relationships.merge_supports(
         neo4j_session,
         [
@@ -438,13 +468,13 @@ async def project_tender(
             for link in links
         ],
     )
+    named_in_rows: list[dict[str, object]] = [
+        {"employee_id": str(link.employee_knowledge_item_id), "claim_id": str(claim_id)}
+        for claim_id, links in claim_employees_by_claim.items()
+        for link in links
+    ]
     await relationships.merge_named_in(
-        neo4j_session,
-        [
-            {"employee_id": str(link.employee_knowledge_item_id), "claim_id": str(claim_id)}
-            for claim_id, links in claim_employees_by_claim.items()
-            for link in links
-        ],
+        neo4j_session, _sorted_rows(named_in_rows, "employee_id", "claim_id")
     )
     await relationships.merge_part_of(
         neo4j_session,
@@ -460,7 +490,9 @@ async def project_tender(
         for m in matches
         if m.human_selected
     ]
-    await relationships.merge_fills(neo4j_session, fills_rows)
+    await relationships.merge_fills(
+        neo4j_session, _sorted_rows(fills_rows, "employee_id", "role_id")
+    )
 
     # ------------------------------------------------------------------
     # Step 8: MERGE persistent USED_IN, including selected=false.
@@ -478,7 +510,9 @@ async def project_tender(
         for sel in selections
         if sel.knowledge_item_id in projected_ids
     ]
-    await relationships.merge_used_in(neo4j_session, used_in_rows)
+    await relationships.merge_used_in(
+        neo4j_session, _sorted_rows(used_in_rows, "knowledge_item_id")
+    )
 
     # ------------------------------------------------------------------
     # Step 9: mark this projection complete - major finding #8's fix. The

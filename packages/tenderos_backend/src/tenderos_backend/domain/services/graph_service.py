@@ -1,10 +1,16 @@
+import asyncio
+import logging
+import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from neo4j.exceptions import TransientError
+
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.graph_projection import GraphProjectionRun
+from tenderos_backend.db.repositories.graph_projection import ProjectionLockTimeoutError
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.graph_projection import queries
 from tenderos_backend.graph_projection.driver import (
@@ -14,6 +20,25 @@ from tenderos_backend.graph_projection.driver import (
 )
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_backend.graph_projection.projector import project_tender as _write_projection
+
+logger = logging.getLogger(__name__)
+
+# Phase 4 plan item 49. Only what can succeed on a second try: what Neo4j itself
+# classifies as transient (DeadlockDetected, which uniqueness constraints make
+# possible when two statements MERGE the same keys in different orders), and
+# running out of patience for this tender's lock. Anything else fails the run
+# at once; that includes EntityNotFound, which the lock is there to prevent, and
+# a Neo4j outage, which a retry a second later would not fix.
+_RETRYABLE = (TransientError, ProjectionLockTimeoutError)
+_PROJECTION_ATTEMPTS = 3
+# How long one attempt waits for this tender's lock. Measured on the local data
+# (2026-11-05): the slowest tender's projection takes 427 to 784 ms, 1,448 ms at
+# worst across all runs, and 12 queued at once finish in 5.18 s. So 15 s is about
+# 10 times the slowest projection seen, and about 3 times a queue far longer than
+# the three callers that can project (the workflow node, the manual route, the
+# reanalysis job) could form. A stuck holder fails a caller in about 46 s at
+# worst: 3 waits plus the pauses.
+_PROJECTION_LOCK_TIMEOUT_MS = 15_000
 
 # get_graph_trace's node_label comes from the API caller (a query param on
 # GET /graph/trace), unlike driver.py's own use of these same label tuples
@@ -69,6 +94,34 @@ class GraphStaleError(Exception):
             )
 
 
+async def _write_projection_with_retry(tender_id: uuid.UUID) -> tuple[int, int]:
+    """One projection, attempted up to _PROJECTION_ATTEMPTS times. Repeating is
+    safe: a projection deletes this tender's nodes and merges everything back.
+
+    Each attempt gets its own transaction, so the lock is released and
+    lock_timeout forgotten before the pause.
+    """
+    for attempt in range(1, _PROJECTION_ATTEMPTS + 1):
+        try:
+            async with UnitOfWork() as uow, get_neo4j_session() as session:
+                await uow.graph_projection.lock_tender_for_projection(
+                    tender_id, _PROJECTION_LOCK_TIMEOUT_MS
+                )
+                return await _write_projection(uow, session, tender_id)
+        except _RETRYABLE as exc:
+            if attempt == _PROJECTION_ATTEMPTS:
+                raise
+            logger.warning(
+                "projection of tender %s attempt %d of %d failed, retrying: %s",
+                tender_id,
+                attempt,
+                _PROJECTION_ATTEMPTS,
+                type(exc).__name__,
+            )
+            await asyncio.sleep(random.uniform(0.1, 0.5) * attempt)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
 async def project_tender(tender_id: uuid.UUID) -> GraphProjectionRun:
     """D3 steps 1-2 and 10-11. Three separate UnitOfWork scopes, each
     committed independently - same "commit as you go, not one giant
@@ -90,8 +143,7 @@ async def project_tender(tender_id: uuid.UUID) -> GraphProjectionRun:
         await uow.commit()
 
     try:
-        async with UnitOfWork() as uow, get_neo4j_session() as session:
-            node_count, relationship_count = await _write_projection(uow, session, tender_id)
+        node_count, relationship_count = await _write_projection_with_retry(tender_id)
     except Exception as exc:
         async with UnitOfWork() as uow:
             await uow.graph_projection.mark_failed(run.id, str(exc))

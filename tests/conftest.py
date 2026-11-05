@@ -47,6 +47,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool, Pool, QueuePool, StaticPool
 from tenderos_backend.core.config import settings
+from tenderos_backend.graph_projection.driver import ensure_constraints
 
 _LEAK_TEXT = "non-checked-in connection"
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -134,6 +135,16 @@ def _freeze_objects_from_before_the_tests():
 def _collect_after_each_test(_freeze_objects_from_before_the_tests):
     yield
     gc.collect()
+
+
+@pytest_asyncio.fixture(scope="session")
+async def _graph_constraints():
+    # Phase 4 plan item 49: Neo4j's constraints, as `migrate` applies them in the
+    # stack, so a fixture writing one key twice fails here as production would.
+    # Requested with _models_schema, by the same conftests. They outlive the run
+    # on the shared Neo4j, which is what the stack wants too; DETACH DELETE
+    # leaves them alone.
+    await ensure_constraints()
 
 
 @pytest_asyncio.fixture(scope="session")

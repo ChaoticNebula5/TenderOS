@@ -1,10 +1,14 @@
-"""Phase 4 plan item 31: who closes a Neo4j driver or session, and what
+"""Phase 4 plan items 31 and 49: who closes a Neo4j driver or session, and what
 happens if nobody does.
 
 Neither driver 5.28 nor 6 closes an async driver or session when it is
 collected: both only warn, and Python hides that warning by default. So the
 API closes its shared driver on shutdown, and pyproject.toml's third
 filterwarnings line turns the warning into a test failure.
+
+close_driver() also clears the shared driver, so the next get_session() builds a
+fresh one and no test has to remember to patch it.
+tests/integration/test_graph_constraints.py does this against a real server.
 
 No test here reaches a server: creating a driver or a session opens no
 connection until the first query.
@@ -42,28 +46,73 @@ def _resource_warnings(seen: list) -> list[str]:
 
 
 def test_api_shutdown_closes_the_shared_driver(monkeypatch):
-    # Patched, not real: closing the real singleton would break every later
-    # test that uses it, because a closed driver cannot be reused.
-    closed: list[str] = []
+    # The real lifespan, not a patched close_driver. monkeypatch puts back
+    # whatever driver this session had, so nothing later is disturbed.
+    shared = _new_driver()
+    monkeypatch.setattr(driver_module, "_driver", shared)
 
-    async def record_close() -> None:
-        closed.append("closed")
-
-    monkeypatch.setattr(api_main, "close_driver", record_close)
     with TestClient(api_main.app):
-        assert closed == [], "must stay open while the app serves"
-    assert closed == ["closed"]
+        assert driver_module._driver is shared, "must stay open while the app serves"
+
+    assert driver_module._driver is None
+    with pytest.raises(DriverError):
+        shared.session()
 
 
 @pytest.mark.asyncio
-async def test_close_driver_closes_the_shared_driver(monkeypatch):
+async def test_close_driver_closes_and_clears_the_shared_driver(monkeypatch):
     shared = _new_driver()
-    monkeypatch.setattr(driver_module, "driver", shared)
+    monkeypatch.setattr(driver_module, "_driver", shared)
 
     await driver_module.close_driver()
 
+    assert driver_module._driver is None
     with pytest.raises(DriverError):
         shared.session()
+
+
+@pytest.mark.asyncio
+async def test_the_next_session_after_a_close_builds_a_fresh_driver(monkeypatch):
+    first = _new_driver()
+    monkeypatch.setattr(driver_module, "_driver", first)
+    await driver_module.close_driver()
+
+    # A real session object on the new driver; nothing connects until a query.
+    async with driver_module.get_session():
+        fresh = driver_module._driver
+        assert fresh is not None and fresh is not first
+    async with driver_module.get_session():
+        assert driver_module._driver is fresh, "reused until the next close"
+    await driver_module.close_driver()
+
+
+@pytest.mark.asyncio
+async def test_closing_with_no_driver_open_does_nothing(monkeypatch, caplog):
+    monkeypatch.setattr(driver_module, "_driver", None)
+
+    await driver_module.close_driver()
+    await driver_module.close_driver()
+
+    assert driver_module._driver is None
+    assert "closing the Neo4j driver failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_close_that_raises_still_clears_the_driver_and_does_not_propagate(
+    monkeypatch, caplog
+):
+    # What a driver last used on a loop that has since closed does, measured on
+    # 6.4.1 (AttributeError), which is what a test's shutdown can run into.
+    class _BrokenDriver:
+        async def close(self) -> None:
+            raise AttributeError("'NoneType' object has no attribute 'send'")
+
+    monkeypatch.setattr(driver_module, "_driver", _BrokenDriver())
+
+    await driver_module.close_driver()
+
+    assert driver_module._driver is None
+    assert "closing the Neo4j driver failed" in caplog.text
 
 
 def test_a_driver_collected_unclosed_fails_the_test(unraisable):

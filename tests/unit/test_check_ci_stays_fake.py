@@ -128,8 +128,8 @@ def test_a_workflow_that_sets_a_live_provider_fails(tree):
         ("operations_worker", "      <<: *fake-provider\n", ""),
         (
             "migrate",
-            '"upgrade", "head"]\n    env_file: .env\n    environment: *fake-provider\n',
-            '"upgrade", "head"]\n    env_file: .env\n',
+            "apply_constraints\n    env_file: .env\n    environment: *fake-provider\n",
+            "apply_constraints\n    env_file: .env\n",
         ),
     ],
 )

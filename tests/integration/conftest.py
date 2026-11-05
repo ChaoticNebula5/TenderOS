@@ -18,7 +18,7 @@ if sys.platform == "win32":
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _schema(_models_schema):
+def _schema(_models_schema, _graph_constraints):
     # The guard and the rebuild from the models live in tests/models_schema.py,
     # run once per session by tests/conftest.py's _models_schema (plan item
     # 42). The guard used to be a fixture here with a connection of its own;

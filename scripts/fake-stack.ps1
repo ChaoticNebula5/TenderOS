@@ -11,7 +11,8 @@
        runs otherwise fire in one burst on the next worker start - incident
        12),
     2. builds and force-recreates migrate, api, web, the four workers
-       and outbox_dispatcher; migrate runs alembic to head
+       and outbox_dispatcher; migrate runs alembic to head and applies
+       Neo4j's constraints,
        and the app services start only once it has exited 0 (compose's
        service_completed_successfully), so a failed migration fails here,
     3. waits for the api health check,

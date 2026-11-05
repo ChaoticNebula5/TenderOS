@@ -28,7 +28,7 @@ if sys.platform == "win32":
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _schema(_models_schema):
+def _schema(_models_schema, _graph_constraints):
     # The same guard and rebuild as tests/integration/, from
     # tests/conftest.py's _models_schema (plan item 42): one session fixture,
     # so a run of both directories rebuilds once.
@@ -91,7 +91,7 @@ async def _get_neo4j_session_no_pooling() -> AsyncIterator[Neo4jSession]:
     # correct rather than premature; both files already live in
     # tests/route/.
     #
-    # graph_projection.driver.driver is a module-level singleton whose
+    # graph_projection/driver.py's shared driver is a module-level singleton whose
     # connection pool binds to whichever event loop first used it.
     # TestClient does not give each TEST its own loop - each individual
     # client.get()/.post() call runs the ASGI app through its own anyio

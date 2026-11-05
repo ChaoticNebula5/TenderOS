@@ -7,9 +7,12 @@ LLM via tool-calling (see the B10 plan's own "Internal graph-query tools"
 interpretation note).
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 from neo4j import AsyncResult, AsyncSession
+
+from tenderos_backend.graph_projection.driver import NODE_KEYS
 
 _TENDER_SCOPED_LABELS = (
     "Tender",
@@ -230,3 +233,65 @@ async def evidence_coverage_rows(
         complianceId=compliance_entry_id,
     )
     return [record.data() async for record in result]
+
+
+@dataclass(frozen=True)
+class LabelKeyCounts:
+    label: str
+    key: str
+    nodes: int
+    duplicated_keys: int
+    null_keys: int
+
+
+@dataclass(frozen=True)
+class GraphKeyReport:
+    labels: list[LabelKeyCounts]
+    outside_labels: dict[str, int]
+
+    @property
+    def total_nodes(self) -> int:
+        return sum(c.nodes for c in self.labels) + sum(self.outside_labels.values())
+
+    @property
+    def clean(self) -> bool:
+        return not self.outside_labels and all(
+            c.duplicated_keys == 0 and c.null_keys == 0 for c in self.labels
+        )
+
+
+async def graph_key_report(session: AsyncSession) -> GraphKeyReport:
+    """Whether every node's key is present and unique, read label by label
+    (phase 4 plan item 49). Null keys are counted on their own because a
+    uniqueness constraint ignores them, and the check is needed at all because
+    creating a constraint stops at the first conflict it finds. Label and key
+    come from driver.NODE_KEYS, never from a caller.
+    """
+    counts = []
+    for label, key in NODE_KEYS.items():
+        result = await session.run(
+            f"MATCH (n:{label}) RETURN count(n) AS nodes, count(n.{key}) AS keyed"
+        )
+        row = await result.single(strict=True)
+        # count(k) skips the group of nodes with no key: those are null_keys.
+        result = await session.run(
+            f"MATCH (n:{label}) WITH n.{key} AS k, count(*) AS c WHERE c > 1 "
+            "RETURN count(k) AS duplicated"
+        )
+        duplicated = await result.single(strict=True)
+        counts.append(
+            LabelKeyCounts(
+                label=label,
+                key=key,
+                nodes=row["nodes"],
+                duplicated_keys=duplicated["duplicated"],
+                null_keys=row["nodes"] - row["keyed"],
+            )
+        )
+    result = await session.run(
+        "MATCH (n) WHERE NOT any(label IN labels(n) WHERE label IN $labels) "
+        "RETURN reduce(s = '', l IN labels(n) | s + ':' + l) AS labels, count(n) AS c",
+        labels=list(NODE_KEYS),
+    )
+    outside = {record["labels"] or "(no label)": record["c"] async for record in result}
+    return GraphKeyReport(labels=counts, outside_labels=outside)

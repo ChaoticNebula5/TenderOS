@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -5,6 +6,8 @@ from neo4j import AsyncDriver, AsyncGraphDatabase
 from neo4j import AsyncSession as Neo4jSession
 
 from tenderos_backend.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Same "module-level singleton, long-lived and pooled" shape as db/session.py's
 # own `engine` - the Neo4j driver is designed to be constructed once and reused
@@ -44,12 +47,25 @@ from tenderos_backend.core.config import settings
 # failure that degrades gracefully (per the try/except above) beats a
 # request silently hanging for up to a minute before doing the same
 # thing.
-driver: AsyncDriver = AsyncGraphDatabase.driver(
-    settings.neo4j_uri,
-    auth=(settings.neo4j_user, settings.neo4j_password),
-    connection_timeout=5,
-    connection_acquisition_timeout=10,
-)
+#
+# Built on first use and cleared by close_driver() (phase 4 plan item 49), so a
+# closed driver is never reused: the next get_session() builds a fresh one.
+_driver: AsyncDriver | None = None
+
+
+def _get_driver() -> AsyncDriver:
+    # No await between the check and the assignment, so one event loop cannot
+    # build two.
+    global _driver
+    if _driver is None:
+        _driver = AsyncGraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password),
+            connection_timeout=5,
+            connection_acquisition_timeout=10,
+        )
+    return _driver
+
 
 # D1's 11 node labels, each keyed by the natural key that makes MERGE
 # idempotent. Tender-scoped labels key on the Postgres row's own UUID (already
@@ -65,31 +81,59 @@ TENDER_SCOPED_LABELS = (
     "ProposalSection",
 )
 SHARED_LABELS = ("Employee", "Certification", "Project", "Capability")
+NODE_KEYS: dict[str, str] = {
+    **dict.fromkeys(TENDER_SCOPED_LABELS, "id"),
+    **dict.fromkeys(SHARED_LABELS, "knowledge_item_id"),
+}
 
 
 @asynccontextmanager
 async def get_session() -> AsyncIterator[Neo4jSession]:
-    async with driver.session(database=settings.neo4j_database) as session:
+    async with _get_driver().session(database=settings.neo4j_database) as session:
         yield session
 
 
+def constraint_name(label: str) -> str:
+    return f"uq_{label.lower()}_{NODE_KEYS[label]}"
+
+
 async def ensure_constraints() -> None:
-    """Idempotent - CREATE CONSTRAINT IF NOT EXISTS is safe to call on every
-    application startup, same as running Alembic migrations against an
-    already-current schema. Called once before the first projection, not on
-    every request.
+    """One uniqueness constraint per node key. Without them MERGE does not stop
+    concurrent transactions creating the same node (phase 4 plan item 49).
+
+    Safe to repeat: IF NOT EXISTS skips what is already there, including after
+    an earlier call failed partway. Run once per deployment by the compose
+    `migrate` service, through apply_constraints.py, before any app service
+    starts. Each result is consumed so that a failure raises at its own statement.
+    Without that the driver still surfaces it, at the next statement or when the
+    session closes (observed on 6.4.1), so this is about where, not whether.
+
+    A key that already has two nodes raises DatabaseError naming the first pair
+    Neo4j found. scripts/check_graph_keys.py lists them all.
     """
     async with get_session() as session:
-        for label in TENDER_SCOPED_LABELS:
-            await session.run(
-                f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
+        for label, key in NODE_KEYS.items():
+            result = await session.run(
+                f"CREATE CONSTRAINT {constraint_name(label)} IF NOT EXISTS "
+                f"FOR (n:{label}) REQUIRE n.{key} IS UNIQUE"
             )
-        for label in SHARED_LABELS:
-            await session.run(
-                f"CREATE CONSTRAINT IF NOT EXISTS FOR (n:{label}) "
-                "REQUIRE n.knowledge_item_id IS UNIQUE"
-            )
+            await result.consume()
 
 
 async def close_driver() -> None:
-    await driver.close()
+    """Close the shared driver, if one is open. Cleared first, so the next
+    get_session() builds a fresh one even if closing fails.
+
+    Closing from an event loop other than the one that used the driver raises
+    AttributeError if that loop has since closed (measured on driver 6.4.1, plan
+    item 49), which is what a test entering `with TestClient(app)` can do. Only
+    logged: this runs at shutdown, and the sockets end with the process.
+    """
+    global _driver
+    closing, _driver = _driver, None
+    if closing is None:
+        return
+    try:
+        await closing.close()
+    except Exception:
+        logger.warning("closing the Neo4j driver failed", exc_info=True)
