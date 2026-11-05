@@ -92,8 +92,8 @@ def test_a_script_a_workflow_runs_that_names_the_live_overlay_fails(tree):
     script.write_text(
         script.read_text(encoding="utf-8") + f"\n# COMPOSE_FILE += {_LIVE}\n", encoding="utf-8"
     )
-    assert (
-        "scripts/ci_e2e_env.py, used by a workflow, names the live compose file" in _problems(tree)
+    assert "scripts/ci_e2e_env.py, used by a workflow, names the live compose file" in _problems(
+        tree
     )
 
 
@@ -111,9 +111,7 @@ def test_a_compose_file_that_includes_the_live_overlay_fails_but_a_comment_does_
 
 def test_an_e2e_compose_file_without_the_fake_overlay_fails(tree):
     _edit(tree, _CI, ":docker-compose.e2e-fake.yml", "")
-    assert (
-        f"{_CI} job e2e: COMPOSE_FILE leaves out docker-compose.e2e-fake.yml" in _problems(tree)
-    )
+    assert f"{_CI} job e2e: COMPOSE_FILE leaves out docker-compose.e2e-fake.yml" in _problems(tree)
 
 
 def test_a_workflow_that_sets_a_live_provider_fails(tree):

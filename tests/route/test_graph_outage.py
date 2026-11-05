@@ -27,7 +27,9 @@ _UNRESOLVABLE_HOST = "no-such-host.invalid"
 
 @asynccontextmanager
 async def _session_on_an_unresolvable_host() -> AsyncIterator:
-    driver = AsyncGraphDatabase.driver(f"bolt://{_UNRESOLVABLE_HOST}:7687", auth=("neo4j", "unused"))
+    driver = AsyncGraphDatabase.driver(
+        f"bolt://{_UNRESOLVABLE_HOST}:7687", auth=("neo4j", "unused")
+    )
     try:
         async with driver.session() as session:
             yield session

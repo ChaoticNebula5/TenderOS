@@ -70,9 +70,7 @@ def _remember_checkout(dbapi_connection, connection_record, connection_proxy) ->
     # frames are read from there. A sync engine has no parent: plain stack.
     parent = greenlet.getcurrent().parent
     frame = (
-        parent.gr_frame
-        if parent is not None and parent.gr_frame is not None
-        else sys._getframe(1)
+        parent.gr_frame if parent is not None and parent.gr_frame is not None else sys._getframe(1)
     )
     # This repo's frames only, innermost twelve, as (file, line, function):
     # cheap to collect on every checkout. Source lines are read only when a

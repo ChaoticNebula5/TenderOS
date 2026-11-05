@@ -101,8 +101,6 @@ def test_non_factual_claim_in_compliance_type_still_not_required():
     requirement_id = uuid.uuid4()
     claim = _claim(is_factual=False, claim_type="compliance")
 
-    result = enforce_claim_grounding(
-        claim, [requirement_id], [], {requirement_id: "non_compliant"}
-    )
+    result = enforce_claim_grounding(claim, [requirement_id], [], {requirement_id: "non_compliant"})
 
     assert result.status == "not_required"

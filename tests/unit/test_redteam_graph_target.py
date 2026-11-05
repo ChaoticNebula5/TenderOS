@@ -36,19 +36,39 @@ async def _drafts(monkeypatch, row):
         ),
         ({"category": "unsupported_grounded_claim", "claim": _NODE}, "proposal_claim"),
         (
-            {"category": "deselected_fact_in_use", "fact": _OTHER, "via": "SUPPORTS", "target": _NODE},
+            {
+                "category": "deselected_fact_in_use",
+                "fact": _OTHER,
+                "via": "SUPPORTS",
+                "target": _NODE,
+            },
             "compliance_entry",
         ),
         (
-            {"category": "deselected_fact_in_use", "fact": _OTHER, "via": "CITED_IN", "target": _NODE},
+            {
+                "category": "deselected_fact_in_use",
+                "fact": _OTHER,
+                "via": "CITED_IN",
+                "target": _NODE,
+            },
             "proposal_claim",
         ),
         (
-            {"category": "removed_employee_committed", "employee": _OTHER, "via": "FILLS", "target": _NODE},
+            {
+                "category": "removed_employee_committed",
+                "employee": _OTHER,
+                "via": "FILLS",
+                "target": _NODE,
+            },
             "role_requirement",
         ),
         (
-            {"category": "removed_employee_committed", "employee": _OTHER, "via": "NAMED_IN", "target": _NODE},
+            {
+                "category": "removed_employee_committed",
+                "employee": _OTHER,
+                "via": "NAMED_IN",
+                "target": _NODE,
+            },
             "proposal_claim",
         ),
     ],

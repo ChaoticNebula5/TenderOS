@@ -125,12 +125,12 @@ async def apply_target_update(
 ) -> None:
     target_type = target_update.get("target_type")
     decision = target_update.get("decision")
-    
+
     if target_type not in _KNOWN_TARGET_TYPES or decision != "approve":
         return
     target_id = uuid.UUID(str(target_update["target_id"]))
-    
-    owning_tender_id  = await _owning_tender_id(target_type, target_id)
+
+    owning_tender_id = await _owning_tender_id(target_type, target_id)
     if owning_tender_id is None or owning_tender_id != gate_tender_id:
         raise TargetOwnershipError(target_type, target_id)
 
@@ -182,7 +182,9 @@ async def apply_target_updates(
             # since the call itself is correct and costs nothing.)
             logger.info(
                 "target ownership verified: type=%s id=%s tender=%s",
-                target_type, target_id, owning_tender_id,
+                target_type,
+                target_id,
+                owning_tender_id,
             )
 
             if target_type == "compliance_entry":

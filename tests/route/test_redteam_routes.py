@@ -59,12 +59,12 @@ async def test_trigger_red_team_queues_an_operation_and_returns_202(
     uuid.UUID(body["operation_id"])
 
 
-async def test_list_redteam_findings_returns_the_real_finding(
-    client: TestClient, register_actor
-):
+async def test_list_redteam_findings_returns_the_real_finding(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Redteam Route Test Bid 2"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Redteam Route Test Bid 2"},
+        headers=headers,
     ).json()
     finding_id = await _seed_finding(tender["id"])
 
@@ -74,12 +74,12 @@ async def test_list_redteam_findings_returns_the_real_finding(
     assert finding_id in [f["id"] for f in response.json()]
 
 
-async def test_resolve_redteam_finding_sets_resolved_and_note(
-    client: TestClient, register_actor
-):
+async def test_resolve_redteam_finding_sets_resolved_and_note(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Redteam Route Test Bid 3"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Redteam Route Test Bid 3"},
+        headers=headers,
     ).json()
     finding_id = await _seed_finding(tender["id"])
 
@@ -94,14 +94,10 @@ async def test_resolve_redteam_finding_sets_resolved_and_note(
     assert response.json()["resolution_note"] == "Evidence added and re-verified."
 
 
-async def test_resolve_redteam_finding_404s_for_an_unknown_id(
-    client: TestClient, register_actor
-):
+async def test_resolve_redteam_finding_404s_for_an_unknown_id(client: TestClient, register_actor):
     headers, _, _org_id = register_actor()
 
-    response = client.post(
-        f"/redteam-findings/{uuid.uuid4()}/resolve", json={}, headers=headers
-    )
+    response = client.post(f"/redteam-findings/{uuid.uuid4()}/resolve", json={}, headers=headers)
 
     assert response.status_code == 404, response.text
 
@@ -112,7 +108,9 @@ async def test_redteam_routes_reject_a_non_member(client: TestClient, register_a
     # member vs. non-member, not a narrower role.
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Redteam Route Test Bid 4"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Redteam Route Test Bid 4"},
+        headers=headers,
     ).json()
     await _seed_finding(tender["id"])
 

@@ -47,9 +47,7 @@ def _fake_client_with_empty_critique() -> FakeLLMClient:
     # critique agent exactly once per run_red_team invocation, so one
     # scripted response per call in this file's tests is enough.
     client = FakeLLMClient()
-    client.script(
-        "redteam_critique", RedteamCritique, [RedteamCritique(findings=[])] * 5
-    )
+    client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])] * 5)
     return client
 
 
@@ -97,7 +95,9 @@ async def _chunk(tender_id: uuid.UUID, label: str) -> uuid.UUID:
         return chunk.id
 
 
-async def _requirement(tender_id: uuid.UUID, chunk_id: uuid.UUID, mandatory: bool = True) -> uuid.UUID:
+async def _requirement(
+    tender_id: uuid.UUID, chunk_id: uuid.UUID, mandatory: bool = True
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.create(
             tender_id=tender_id,
@@ -135,7 +135,9 @@ async def _certification(org_id: uuid.UUID, holder_id: uuid.UUID, valid_until: d
         return knowledge_item.id
 
 
-async def _select(tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, selected: bool = True) -> None:
+async def _select(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, selected: bool = True
+) -> None:
     actor_user_id = await _make_user()
     async with UnitOfWork() as uow:
         await uow.knowledge.upsert_selection(
@@ -173,17 +175,23 @@ async def _compliance_entry(requirement_id: uuid.UUID, evidence_ids: list[uuid.U
         return entry.id
 
 
-async def _role_with_gap_selected(tender_id: uuid.UUID, requirement_id: uuid.UUID, employee_id: uuid.UUID) -> uuid.UUID:
+async def _role_with_gap_selected(
+    tender_id: uuid.UUID, requirement_id: uuid.UUID, employee_id: uuid.UUID
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         role = await uow.talent.create_role_requirement(
-            tender_id=tender_id, role_name="Solution Architect", content_fingerprint=uuid.uuid4().hex
+            tender_id=tender_id,
+            role_name="Solution Architect",
+            content_fingerprint=uuid.uuid4().hex,
         )
         await uow.talent.link_role_requirement_source(role.id, requirement_id)
         match = await uow.talent.create_role_match(
             role_requirement_id=role.id, employee_knowledge_item_id=employee_id
         )
         await uow.talent.update_role_match(
-            match.id, human_selected=True, gaps=[{"criterion": "PMP certification", "status": "missing"}]
+            match.id,
+            human_selected=True,
+            gaps=[{"criterion": "PMP certification", "status": "missing"}],
         )
         await uow.commit()
         return match.id
@@ -421,7 +429,10 @@ async def test_corrected_finding_is_auto_retired_from_the_open_set():
         refetched = await uow.redteam.get(target.id)
     assert refetched is not None, "the row itself must survive, not be deleted"
     assert refetched.resolved is True, "a corrected finding must be retired from the open set"
-    assert refetched.resolution_note is not None and "auto-retired" in refetched.resolution_note.lower()
+    assert (
+        refetched.resolution_note is not None
+        and "auto-retired" in refetched.resolution_note.lower()
+    )
     assert str(target.id) not in second_open_ids
 
 
@@ -498,7 +509,9 @@ async def test_reopened_finding_refreshes_severity_from_the_current_detection():
         findings = await uow.redteam.list_for_tender(tender_id)
     target = next(f for f in findings if f.finding_category == "pricing_mismatch")
     assert target.severity == "major"
-    assert str(target.id) not in critical_ids_pass1, "a major finding must not be in the critical set"
+    assert str(target.id) not in critical_ids_pass1, (
+        "a major finding must not be in the critical set"
+    )
 
     # Fix it (auto-retire), then bring it back at a DIFFERENT, worse severity.
     async with UnitOfWork() as uow:

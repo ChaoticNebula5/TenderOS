@@ -119,9 +119,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'[]'::jsonb"),
         ),
-        sa.Column(
-            "human_selected", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("human_selected", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at",
             sa.TIMESTAMP(timezone=True),

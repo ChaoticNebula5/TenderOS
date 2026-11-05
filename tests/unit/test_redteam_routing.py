@@ -101,7 +101,9 @@ class TestRouteAfterTargetedReplan:
         )
 
     def test_none_target_goes_to_finding_gate(self):
-        assert route_after_targeted_replan(_state(revision_dispatch_target="none")) == "finding_gate"
+        assert (
+            route_after_targeted_replan(_state(revision_dispatch_target="none")) == "finding_gate"
+        )
 
     def test_missing_target_defaults_to_finding_gate(self):
         state = _state()

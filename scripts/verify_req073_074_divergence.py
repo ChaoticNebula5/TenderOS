@@ -46,7 +46,10 @@ DOCS_DIR = REPO_ROOT / "data" / "synthetic" / "tender_a"
 
 _SOURCE_FILES = [
     ("rfp.pdf", "application/pdf"),
-    ("technical_annexure.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    (
+        "technical_annexure.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
 ]
 
 
@@ -101,9 +104,7 @@ async def _run_once(run_index: int) -> dict:
     async with UnitOfWork() as uow:
         chunks = await uow.documents.list_chunks_for_tender(tender.id)
 
-    extraction = await extract_requirements(
-        client, settings.extractor_model, chunks, tender.id
-    )
+    extraction = await extract_requirements(client, settings.extractor_model, chunks, tender.id)
     requirements = await persist_extraction_results(tender.id, extraction.requirements)
 
     one_year = [r for r in requirements if "[REQ-073]" in r.requirement_text]
@@ -117,7 +118,8 @@ async def _run_once(run_index: int) -> dict:
         "req_073_has_one_year": bool(one_year) and "one year" in one_year[0].requirement_text,
         "req_074_present": len(three_years) == 1,
         "req_074_text": three_years[0].requirement_text if three_years else None,
-        "req_074_has_three_years": bool(three_years) and "three years" in three_years[0].requirement_text,
+        "req_074_has_three_years": bool(three_years)
+        and "three years" in three_years[0].requirement_text,
     }
 
 
@@ -153,17 +155,23 @@ async def main() -> int:
         print()
 
     both_ok = [
-        r["req_073_present"] and r["req_073_has_one_year"]
-        and r["req_074_present"] and r["req_074_has_three_years"]
+        r["req_073_present"]
+        and r["req_073_has_one_year"]
+        and r["req_074_present"]
+        and r["req_074_has_three_years"]
         for r in results
     ]
 
     print("=== SUMMARY ===")
     for i, ok in enumerate(both_ok, start=1):
-        print(f"  run {i}: {'BOTH PRESENT, DURATIONS INTACT' if ok else 'FAILED - see detail above'}")
+        print(
+            f"  run {i}: {'BOTH PRESENT, DURATIONS INTACT' if ok else 'FAILED - see detail above'}"
+        )
 
     if all(both_ok):
-        print(f"\nResult: {n_runs}/{n_runs} runs kept both requirements distinct. VERIFIED for this case.")
+        print(
+            f"\nResult: {n_runs}/{n_runs} runs kept both requirements distinct. VERIFIED for this case."
+        )
         return 0
     elif not any(both_ok):
         print(f"\nResult: 0/{n_runs} runs kept both requirements distinct. CONFIRMED DEFECT.")

@@ -77,9 +77,7 @@ def upgrade() -> None:
             ")",
             name="ck_requirement_category",
         ),
-        sa.UniqueConstraint(
-            "tender_id", "content_fingerprint", name="uq_requirement_fingerprint"
-        ),
+        sa.UniqueConstraint("tender_id", "content_fingerprint", name="uq_requirement_fingerprint"),
     )
     op.create_index(
         "idx_requirements_tender_category",
@@ -165,7 +163,6 @@ def upgrade() -> None:
             "tender_id", "content_fingerprint", name="uq_clarification_item_fingerprint"
         ),
     )
-
 
     # E1: every LLM-backed agent "records model, tokens, latency, cost, and
     # tool names" - this table is where that goes. B5 is the first block with

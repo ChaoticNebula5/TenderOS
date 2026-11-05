@@ -111,9 +111,7 @@ async def persist_extraction_results(
                     if r.category == draft.category
                 ]
             )
-            display_code = (
-                f"{_CATEGORY_PREFIX[draft.category]}-{category_count + 1:03d}"
-            )
+            display_code = f"{_CATEGORY_PREFIX[draft.category]}-{category_count + 1:03d}"
 
             created = await uow.requirements.create(
                 tender_id=tender_id,
@@ -215,8 +213,7 @@ async def patch_submission_item(
         # having also changed the document, bumping state_version for a
         # field nothing actually wrote (CodeRabbit-caught).
         materially_changed = status != item.status or (
-            matched_document_id is not None
-            and matched_document_id != item.matched_document_id
+            matched_document_id is not None and matched_document_id != item.matched_document_id
         )
 
         fields: dict[str, object] = {"status": status}

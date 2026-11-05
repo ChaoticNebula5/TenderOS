@@ -54,11 +54,15 @@ def test_sheet1_finds_exactly_its_four_seeded_defects():
 
     assert by_type.count("wrong_total") == 2, f"expected 2 wrong_total findings, got {by_type}"
     assert by_type.count("duplicate_cost") == 1, f"expected 1 duplicate_cost finding, got {by_type}"
-    assert by_type.count("currency_mismatch") == 1, f"expected 1 currency_mismatch finding, got {by_type}"
+    assert by_type.count("currency_mismatch") == 1, (
+        f"expected 1 currency_mismatch finding, got {by_type}"
+    )
     assert len(findings) == 4, f"unexpected extra/missing findings on sheet1: {findings}"
 
     wrong_total_cells = {tuple(f.cell_refs) for f in findings if f.finding_type == "wrong_total"}
-    assert ("B2", "C2", "D2") in wrong_total_cells, "row 2's own wrong total (unit_cost x qty) missed"
+    assert ("B2", "C2", "D2") in wrong_total_cells, (
+        "row 2's own wrong total (unit_cost x qty) missed"
+    )
     assert ("D7",) in wrong_total_cells, "the grand total's own wrong total missed"
 
 
@@ -68,7 +72,9 @@ def test_sheet2_finds_exactly_its_three_within_sheet_seeded_defects():
     by_type = [f.finding_type for f in findings]
 
     assert by_type.count("wrong_total") == 1, f"expected 1 wrong_total finding, got {by_type}"
-    assert by_type.count("needs_human_review") == 1, f"expected 1 needs_human_review finding, got {by_type}"
+    assert by_type.count("needs_human_review") == 1, (
+        f"expected 1 needs_human_review finding, got {by_type}"
+    )
     assert by_type.count("missing_cell") == 1, f"expected 1 missing_cell finding, got {by_type}"
     assert len(findings) == 3, f"unexpected extra/missing findings on sheet2: {findings}"
 

@@ -105,9 +105,7 @@ def upgrade() -> None:
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("reasoning_summary", sa.Text(), nullable=True),
         sa.Column("confidence", sa.REAL(), nullable=True),
-        sa.Column(
-            "human_approved", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("human_approved", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "last_evaluated_at",
             sa.TIMESTAMP(timezone=True),

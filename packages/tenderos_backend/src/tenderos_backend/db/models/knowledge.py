@@ -78,9 +78,7 @@ class KnowledgeImportItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     target_knowledge_item_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey(
-            "knowledge_items.id", ondelete="SET NULL", name="fk_import_item_target"
-        ),
+        ForeignKey("knowledge_items.id", ondelete="SET NULL", name="fk_import_item_target"),
         nullable=True,
     )
     error_code: Mapped[str | None] = mapped_column(nullable=True)
@@ -178,13 +176,11 @@ class Employee(Base):
     __tablename__ = "employees"
     __table_args__ = (
         CheckConstraint(
-            "availability_status IN "
-            "('available','partially_available','unavailable','unknown')",
+            "availability_status IN ('available','partially_available','unavailable','unknown')",
             name="ck_employee_availability_status",
         ),
         CheckConstraint(
-            "profile_review_status IN "
-            "('needs_review','verified','stale','rejected','archived')",
+            "profile_review_status IN ('needs_review','verified','stale','rejected','archived')",
             name="ck_employee_profile_review_status",
         ),
         # Partial unique index, not UniqueConstraint - same reason as
@@ -341,9 +337,7 @@ class KnowledgeRelationship(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 class TenderKnowledgeSelection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "tender_knowledge_selections"
     __table_args__ = (
-        UniqueConstraint(
-            "tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"
-        ),
+        UniqueConstraint("tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"),
         # 005_knowledge.py
         Index("idx_tender_knowledge_selected", "tender_id", "selected"),
     )
@@ -361,9 +355,7 @@ class TenderKnowledgeSelection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     selected_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
-    deselected_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
+    deselected_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     deselected_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )

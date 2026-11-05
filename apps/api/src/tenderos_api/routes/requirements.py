@@ -148,9 +148,7 @@ async def split_requirement(
 # item handling ever needs its own escalation path (e.g. an approver-only
 # override once items feed into a formal sign-off), that's the point to
 # split this into a dedicated RBAC row - not assumed necessary now.
-@router.get(
-    "/tenders/{tender_id}/submission-items", response_model=list[SubmissionItemResponse]
-)
+@router.get("/tenders/{tender_id}/submission-items", response_model=list[SubmissionItemResponse])
 async def list_submission_items(
     tender_id: UUID,
     current_user: User = Depends(require_permission("review_requirements")),

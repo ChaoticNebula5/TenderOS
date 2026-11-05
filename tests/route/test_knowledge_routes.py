@@ -214,10 +214,22 @@ async def test_upload_resumes_creates_one_batch_for_multiple_files(
     response = client.post(
         f"/organizations/{org_id}/knowledge/import-batches/resumes",
         files=[
-            ("files", ("resume1.docx", _docx_bytes(),
-                       "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
-            ("files", ("resume2.docx", _docx_bytes(),
-                       "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+            (
+                "files",
+                (
+                    "resume1.docx",
+                    _docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "resume2.docx",
+                    _docx_bytes(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            ),
         ],
         headers=headers,
     )
@@ -233,8 +245,13 @@ async def test_upload_knowledge_document_returns_202_with_no_body(
 
     response = client.post(
         f"/organizations/{org_id}/knowledge/documents",
-        files={"file": ("capabilities.docx", _docx_bytes(),
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        files={
+            "file": (
+                "capabilities.docx",
+                _docx_bytes(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
         headers=headers,
     )
 
@@ -257,9 +274,7 @@ async def test_list_import_batches_returns_the_real_batch(client: TestClient, re
     assert batch_id in ids
 
 
-async def test_get_import_batch_computes_needs_review_status(
-    client: TestClient, register_actor
-):
+async def test_get_import_batch_computes_needs_review_status(client: TestClient, register_actor):
     headers, user_id, org_id = register_actor()
     batch_id, _item_id = await _seed_needs_review_item(org_id, user_id)
 
@@ -419,9 +434,7 @@ async def test_patch_knowledge_item_updates_title(client: TestClient, register_a
     headers, _, org_id = register_actor()
     item_id = await _seed_employee(org_id)
 
-    response = client.patch(
-        f"/knowledge/{item_id}", json={"title": "Renamed"}, headers=headers
-    )
+    response = client.patch(f"/knowledge/{item_id}", json={"title": "Renamed"}, headers=headers)
 
     assert response.status_code == 200, response.text
     assert response.json()["title"] == "Renamed"
@@ -467,8 +480,13 @@ async def test_replace_employee_resume_creates_a_new_document_version(
 
     response = client.post(
         f"/employees/{item_id}/resume",
-        files={"file": ("resume.docx", _docx_bytes(),
-                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        files={
+            "file": (
+                "resume.docx",
+                _docx_bytes(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
         headers=headers,
     )
 
@@ -497,9 +515,7 @@ async def test_list_knowledge_selections_returns_empty_before_any_selection(
     assert response.json() == []
 
 
-async def test_set_knowledge_selection_persists_and_is_listed(
-    client: TestClient, register_actor
-):
+async def test_set_knowledge_selection_persists_and_is_listed(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Selections Test Bid 2"}, headers=headers
@@ -519,9 +535,7 @@ async def test_set_knowledge_selection_persists_and_is_listed(
     assert item_id in [s["knowledge_item_id"] for s in list_response.json()]
 
 
-async def test_set_knowledge_selection_requires_idempotency_key(
-    client: TestClient, register_actor
-):
+async def test_set_knowledge_selection_requires_idempotency_key(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Selections Test Bid 2b"}, headers=headers

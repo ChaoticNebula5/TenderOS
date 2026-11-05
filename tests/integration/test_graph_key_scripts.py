@@ -105,13 +105,27 @@ async def test_check_passes_a_projected_graph(capsys):
 @pytest.mark.parametrize(
     ("plant", "column", "expected"),
     [
-        ("CREATE (:Employee {knowledge_item_id: 'x'}), (:Employee {knowledge_item_id: 'x'})", "duplicated_keys", 1),
-        ("CREATE (:Capability {knowledge_item_id: 'x'}), (:Capability {knowledge_item_id: 'x'})", "duplicated_keys", 1),
+        (
+            "CREATE (:Employee {knowledge_item_id: 'x'}), (:Employee {knowledge_item_id: 'x'})",
+            "duplicated_keys",
+            1,
+        ),
+        (
+            "CREATE (:Capability {knowledge_item_id: 'x'}), (:Capability {knowledge_item_id: 'x'})",
+            "duplicated_keys",
+            1,
+        ),
         ("CREATE (:Tender {id: 'x'}), (:Tender {id: 'x'})", "duplicated_keys", 1),
         ("CREATE (:Employee {name: 'no key'})", "null_keys", 1),
         ("CREATE (:Tender {name: 'no key'}), (:Tender {name: 'no key'})", "null_keys", 2),
     ],
-    ids=["shared-duplicate", "last-label-duplicate", "tender-duplicate", "null-key", "two-null-keys"],
+    ids=[
+        "shared-duplicate",
+        "last-label-duplicate",
+        "tender-duplicate",
+        "null-key",
+        "two-null-keys",
+    ],
 )
 async def test_check_finds_what_is_wrong(capsys, plant, column, expected):
     await _run(plant)

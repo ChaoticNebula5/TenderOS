@@ -223,7 +223,17 @@ def test_upgrade_relabels_by_table_and_downgrade_restores_every_byte(scratch, mo
             (("expired_certification", "evidence", scratch.entry), {}),
         ],
     )
-    to_entry, to_claim, unmatched, null_target, to_role, already_right, removed_unmatched, other, other2 = ids
+    (
+        to_entry,
+        to_claim,
+        unmatched,
+        null_target,
+        to_role,
+        already_right,
+        removed_unmatched,
+        other,
+        other2,
+    ) = ids
     before = scratch.findings()
 
     logged: list[str] = []

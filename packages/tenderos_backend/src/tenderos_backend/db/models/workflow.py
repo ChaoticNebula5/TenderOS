@@ -87,9 +87,7 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # job to have run: a run waiting for its retry always has a failed job
     # behind it, kept on purpose (I4).
     current_job_id: Mapped[str | None] = mapped_column(nullable=True)
-    current_job_at: Mapped[datetime | None] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
+    current_job_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(nullable=True)
 
 

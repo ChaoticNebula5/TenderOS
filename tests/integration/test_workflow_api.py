@@ -91,7 +91,6 @@ async def test_create_workflow_run_succeeds_and_is_idempotent():
         assert second.json()["id"] == first.json()["id"], "replay must return the same run"
 
 
-
 async def test_a_runs_error_code_is_returned_for_the_screen():
     """Plan item 19 (design test 17, API half): WorkflowRunResponse carries
     error_code, null for a run with no recorded reason, and the reaper's or
@@ -119,6 +118,7 @@ async def test_a_runs_error_code_is_returned_for_the_screen():
         assert read.status_code == 200
         assert read.json()["error_code"] == "WORKER_LOST"
         assert [r["error_code"] for r in listed.json()] == ["WORKER_LOST"]
+
 
 async def test_create_workflow_run_rejects_a_caller_outside_the_organization():
     # B16 item 3: create_workflow_run was the one genuine gap in
@@ -379,9 +379,7 @@ async def test_ticket_minted_for_one_run_is_rejected_against_another():
             headers={**headers, "Idempotency-Key": "ticket-scope-a"},
         )
         run_a_id = run_a_resp.json()["id"]
-        mint_resp = await client.post(
-            f"/workflow-runs/{run_a_id}/events/ticket", headers=headers
-        )
+        mint_resp = await client.post(f"/workflow-runs/{run_a_id}/events/ticket", headers=headers)
         ticket = mint_resp.json()["ticket"]
         # One active run per tender (plan item 43): run A is cancelled
         # before run B starts. The ticket stays scoped to run A.

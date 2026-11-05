@@ -237,17 +237,17 @@ def evaluate_row_arithmetic(row: LogicalRow) -> PricingFindingDraft | None:
         return None
     if row.unit_cost.numeric_value is None or row.quantity.numeric_value is None:
         return None
-    
+
     if row.line_total.formula is not None:
         expected_formula = f"={row.unit_cost.cell_ref}*{row.quantity.cell_ref}"
         normalised_formula = "".join(expected_formula.split()).casefold()
-        
+
         actual = row.line_total.formula
         normalised_actual = "".join(actual.split()).casefold()
-        
+
         if normalised_actual == normalised_formula:
             return None
-        
+
         return PricingFindingDraft(
             finding_type="needs_human_review",
             cell_refs=[row.line_total.cell_ref],
@@ -258,9 +258,7 @@ def evaluate_row_arithmetic(row: LogicalRow) -> PricingFindingDraft | None:
             default_severity="major",
         )
     if row.line_total.numeric_value is not None:
-        expected_value = (
-            row.unit_cost.numeric_value * row.quantity.numeric_value
-        )
+        expected_value = row.unit_cost.numeric_value * row.quantity.numeric_value
         actual_value = row.line_total.numeric_value
         delta = actual_value - expected_value
 
@@ -381,8 +379,7 @@ def check_grand_total(
         actual_value=grand_total.numeric_value,
         delta=delta,
         note=(
-            f"Grand total is {grand_total.numeric_value}, "
-            f"but the line items sum to {expected_sum}."
+            f"Grand total is {grand_total.numeric_value}, but the line items sum to {expected_sum}."
         ),
         default_severity="critical",
     )
@@ -390,9 +387,9 @@ def check_grand_total(
 
 def find_duplicate_costs(rows: list[LogicalRow]) -> list[PricingFindingDraft]:
     findings: list[PricingFindingDraft] = []
-    
+
     for index, row_a in enumerate(rows):
-        for row_b in rows[index + 1:]:
+        for row_b in rows[index + 1 :]:
             row_a_unit_cost = row_a.unit_cost
             row_a_quantity = row_a.quantity
             row_a_line_total = row_a.line_total
@@ -410,7 +407,7 @@ def find_duplicate_costs(rows: list[LogicalRow]) -> list[PricingFindingDraft]:
                 or row_b_line_total is None
             ):
                 continue
-            
+
             if (
                 row_a_unit_cost.numeric_value is None
                 or row_a_quantity.numeric_value is None
@@ -428,13 +425,13 @@ def find_duplicate_costs(rows: list[LogicalRow]) -> list[PricingFindingDraft]:
                 or normalized_description_a != normalized_description_b
             ):
                 continue
-            
+
             if (
                 row_a_unit_cost.numeric_value != row_b_unit_cost.numeric_value
                 or row_a_quantity.numeric_value != row_b_quantity.numeric_value
             ):
                 continue
-            
+
             findings.append(
                 PricingFindingDraft(
                     finding_type="duplicate_cost",
@@ -453,7 +450,6 @@ def find_duplicate_costs(rows: list[LogicalRow]) -> list[PricingFindingDraft]:
                 )
             )
     return findings
-            
 
 
 # ----------------------------------------------------------------------

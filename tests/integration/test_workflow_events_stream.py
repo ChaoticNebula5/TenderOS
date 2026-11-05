@@ -50,7 +50,9 @@ async def test_stream_emits_a_heartbeat_then_a_real_task_created_event():
 
     gen = _workflow_progress_stream(run.id)
     first_chunk = await anext(gen)
-    assert first_chunk == ": heartbeat\n\n", "nothing has happened yet - must not fabricate an event"
+    assert first_chunk == ": heartbeat\n\n", (
+        "nothing has happened yet - must not fabricate an event"
+    )
 
     async with UnitOfWork() as uow:
         task = await uow.workflow.create_task(

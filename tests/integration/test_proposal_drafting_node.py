@@ -31,7 +31,9 @@ async def _make_org_and_tender(name: str) -> tuple[uuid.UUID, uuid.UUID]:
         return org.id, tender.id
 
 
-def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
+def _base_state(
+    tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID
+) -> dict:
     return {
         "tender_id": str(tender_id),
         "organization_id": str(organization_id),
@@ -83,7 +85,9 @@ async def test_node_drafts_company_overview_and_sets_drafting_status(monkeypatch
         run = await uow.workflow.get_run(workflow_run_id)
         sections = await uow.proposal.list_proposal_sections_for_tender(tender_id)
     assert run is not None
-    assert run.status == "running", "drafting maps to the coarse 'running' status, not waiting_for_human"
+    assert run.status == "running", (
+        "drafting maps to the coarse 'running' status, not waiting_for_human"
+    )
     assert [s.section_name for s in sections] == ["Company Overview"]
     assert sections[0].content == "Drafted overview."
 
@@ -100,9 +104,9 @@ async def test_node_swallows_a_drafting_failure_rather_than_raising(monkeypatch)
 
     result = await proposal_drafting_node(_base_state(tender_id, org_id, workflow_run_id))
 
-    assert not result.get(
-        "status"
-    ), "a drafting failure must not propagate - no workflow_tasks row exists for this node to fail against"
+    assert not result.get("status"), (
+        "a drafting failure must not propagate - no workflow_tasks row exists for this node to fail against"
+    )
     # Regression test for the audit's finding #16: this failure used to be
     # invisible outside the logs - a run could reach "ready" with zero
     # proposal sections and nothing in run state said so. degraded_stages

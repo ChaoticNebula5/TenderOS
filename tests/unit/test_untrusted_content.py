@@ -62,6 +62,9 @@ def test_repeated_delimiter_fragments_are_fully_neutralized():
     result = wrap_untrusted_content("chunk_5", malicious)
 
     assert result.count("<<<END_UNTRUSTED_CONTENT>>>") == 1
-    assert "<<<" not in result.split("<<<END_UNTRUSTED_CONTENT>>>")[0].split(
-        "<<<BEGIN_UNTRUSTED_CONTENT:chunk_5>>>", 1
-    )[1]
+    assert (
+        "<<<"
+        not in result.split("<<<END_UNTRUSTED_CONTENT>>>")[0].split(
+            "<<<BEGIN_UNTRUSTED_CONTENT:chunk_5>>>", 1
+        )[1]
+    )

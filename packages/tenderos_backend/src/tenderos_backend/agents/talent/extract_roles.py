@@ -28,9 +28,7 @@ class RequirementRef:
 def _render_prompt(refs: list[RequirementRef]) -> str:
     # B15: requirement_text is tender-document-sourced, same as
     # requirements/extract.py's own chunk text.
-    return "\n\n".join(
-        wrap_untrusted_content(ref.label, ref.requirement_text) for ref in refs
-    )
+    return "\n\n".join(wrap_untrusted_content(ref.label, ref.requirement_text) for ref in refs)
 
 
 async def _write_trace(

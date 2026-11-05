@@ -38,9 +38,7 @@ def _render_batch_prompt(batch: ExtractionBatch) -> str:
     # but the buyer's own RFP is exactly what this function batches). Routed
     # through wrap_untrusted_content instead of the old bare
     # f"[{label}]\n{text}" interpolation - see that module's own docstring.
-    return "\n\n".join(
-        wrap_untrusted_content(ref.label, ref.text) for ref in batch.chunk_refs
-    )
+    return "\n\n".join(wrap_untrusted_content(ref.label, ref.text) for ref in batch.chunk_refs)
 
 
 def _resolve_mandatory(llm_mandatory: bool, classification: MandatoryClassification) -> bool:

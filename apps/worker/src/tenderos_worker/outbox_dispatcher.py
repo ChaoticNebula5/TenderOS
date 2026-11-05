@@ -428,9 +428,7 @@ class RunJobInspector:
             self._connection.zrange(queue.started_job_registry.key, 0, -1, withscores=True),
         )
         scores = [
-            float(score)
-            for member, score in entries
-            if member.decode().split(":", 1)[0] == job_id
+            float(score) for member, score in entries if member.decode().split(":", 1)[0] == job_id
         ]
         if scores:
             if max(scores) > now:

@@ -63,7 +63,9 @@ async def test_list_roles_returns_the_real_role(client: TestClient, register_act
 async def test_list_matches_returns_the_real_match(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 2"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 2"},
+        headers=headers,
     ).json()
     role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
 
@@ -77,7 +79,9 @@ async def test_list_matches_returns_the_real_match(client: TestClient, register_
 async def test_select_candidate_marks_human_selected(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 3"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 3"},
+        headers=headers,
     ).json()
     role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
 
@@ -94,7 +98,9 @@ async def test_select_candidate_marks_human_selected(client: TestClient, registe
 async def test_select_candidate_requires_idempotency_key(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 4"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 4"},
+        headers=headers,
     ).json()
     role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
 
@@ -113,7 +119,9 @@ async def test_select_candidate_can_deselect_without_deleting_the_match(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 5"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 5"},
+        headers=headers,
     ).json()
     role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
     client.post(
@@ -141,7 +149,9 @@ async def test_select_candidate_404s_for_an_employee_with_no_match_row(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 6"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 6"},
+        headers=headers,
     ).json()
     role_id, _employee_id = await _role_with_candidate(tender["id"], org_id)
 
@@ -198,7 +208,9 @@ async def test_talent_routes_reject_a_role_outside_select_resource(
     # member but not in that set.
     admin_headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Talent Route Test Bid 7"}, headers=admin_headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Talent Route Test Bid 7"},
+        headers=admin_headers,
     ).json()
     role_id, _employee_id = await _role_with_candidate(tender["id"], org_id)
 

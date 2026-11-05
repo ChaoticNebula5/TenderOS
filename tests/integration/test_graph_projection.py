@@ -52,9 +52,7 @@ async def _make_user() -> uuid.UUID:
     # constraint, unlike the looser columns other integration tests' own
     # actor_user_id=uuid.uuid4() shortcuts get away with.
     async with UnitOfWork() as uow:
-        user = await uow.users.create(
-            email=f"{uuid.uuid4().hex}@example.test", password_hash="x"
-        )
+        user = await uow.users.create(email=f"{uuid.uuid4().hex}@example.test", password_hash="x")
         await uow.commit()
         return user.id
 
@@ -64,7 +62,9 @@ async def _org_and_tender(name: str) -> tuple[uuid.UUID, uuid.UUID]:
         org = Organization(name=f"{name} Org")
         session.add(org)
         await session.flush()
-        tender = Tender(organization_id=org.id, name=f"{name} Tender", submission_date=date(2026, 12, 1))
+        tender = Tender(
+            organization_id=org.id, name=f"{name} Tender", submission_date=date(2026, 12, 1)
+        )
         session.add(tender)
         await session.flush()
         await session.commit()
@@ -94,7 +94,9 @@ async def _chunk(tender_id: uuid.UUID, label: str) -> uuid.UUID:
         return chunk.id
 
 
-async def _requirement(tender_id: uuid.UUID, chunk_id: uuid.UUID, category: str = "experience") -> uuid.UUID:
+async def _requirement(
+    tender_id: uuid.UUID, chunk_id: uuid.UUID, category: str = "experience"
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.create(
             tender_id=tender_id,
@@ -137,7 +139,9 @@ async def _certification(
         return knowledge_item.id
 
 
-async def _select(tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, selected: bool = True) -> None:
+async def _select(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, selected: bool = True
+) -> None:
     actor_user_id = await _make_user()
     async with UnitOfWork() as uow:
         await uow.knowledge.upsert_selection(
@@ -199,7 +203,9 @@ async def _role_with_match(
 ) -> tuple[uuid.UUID, uuid.UUID]:
     async with UnitOfWork() as uow:
         role = await uow.talent.create_role_requirement(
-            tender_id=tender_id, role_name="Solution Architect", content_fingerprint=uuid.uuid4().hex
+            tender_id=tender_id,
+            role_name="Solution Architect",
+            content_fingerprint=uuid.uuid4().hex,
         )
         await uow.talent.link_role_requirement_source(role.id, requirement_id)
         match = await uow.talent.create_role_match(
@@ -220,7 +226,9 @@ async def _proposal_claim(
     grounding_status: str = "grounded",
 ) -> uuid.UUID:
     async with UnitOfWork() as uow:
-        section = await uow.proposal.create_proposal_section(tender_id=tender_id, section_name=section_name)
+        section = await uow.proposal.create_proposal_section(
+            tender_id=tender_id, section_name=section_name
+        )
         claim = await uow.proposal.create_proposal_claim(
             section_id=section.id,
             claim_text="Sample claim text.",
@@ -413,8 +421,12 @@ async def test_alternate_evidence_remains_compliance_not_broken():
     requirement_id = await _requirement(tender_id, chunk_id)
     employee_id = await _employee(org_id, "Employee A")
     await _select(tender_id, employee_id)
-    good_evidence_id = await _evidence_link(tender_id, employee_id, verified=True, validity_status="valid")
-    bad_evidence_id = await _evidence_link(tender_id, None, verified=False, validity_status="invalid")
+    good_evidence_id = await _evidence_link(
+        tender_id, employee_id, verified=True, validity_status="valid"
+    )
+    bad_evidence_id = await _evidence_link(
+        tender_id, None, verified=False, validity_status="invalid"
+    )
     entry_id = await _compliance_entry(requirement_id, [good_evidence_id, bad_evidence_id])
 
     await graph_service.project_tender(tender_id)
@@ -433,7 +445,9 @@ async def test_no_alternate_evidence_requires_reevaluation():
     requirement_id = await _requirement(tender_id, chunk_id)
     employee_id = await _employee(org_id, "Employee B")
     await _select(tender_id, employee_id, selected=False)  # deselected - disqualifies the only path
-    only_evidence_id = await _evidence_link(tender_id, employee_id, verified=True, validity_status="valid")
+    only_evidence_id = await _evidence_link(
+        tender_id, employee_id, verified=True, validity_status="valid"
+    )
     entry_id = await _compliance_entry(requirement_id, [only_evidence_id])
 
     await graph_service.project_tender(tender_id)
@@ -553,14 +567,18 @@ async def test_no_extra_facts_every_node_traces_to_postgres():
     await graph_service.project_tender(tender_id)
 
     async with UnitOfWork() as uow:
-        real_requirement_ids = {str(r.id) for r in await uow.requirements.list_for_tender(tender_id, include_rejected=True)}
+        real_requirement_ids = {
+            str(r.id)
+            for r in await uow.requirements.list_for_tender(tender_id, include_rejected=True)
+        }
         real_evidence_ids = {
             str(e.id) for e in await uow.compliance.list_evidence_links_for_tender(tender_id)
         }
 
     async with get_neo4j_session() as session:
         req_result = await session.run(
-            "MATCH (n:Requirement {tender_id: $tenderId}) RETURN n.id AS id", tenderId=str(tender_id)
+            "MATCH (n:Requirement {tender_id: $tenderId}) RETURN n.id AS id",
+            tenderId=str(tender_id),
         )
         graph_requirement_ids = {record["id"] async for record in req_result}
 

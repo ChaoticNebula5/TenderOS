@@ -113,9 +113,7 @@ class IdempotencyContext:
         """
         if self.record_id is None or self.claim_token is None:
             return
-        stored = await uow.idempotency.complete(
-            self.record_id, self.claim_token, status_code, body
-        )
+        stored = await uow.idempotency.complete(self.record_id, self.claim_token, status_code, body)
         if not stored:
             logger.warning(
                 "idempotency %s: claim on record %s was lost before commit "

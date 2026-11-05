@@ -91,9 +91,7 @@ class GraphProjectionRepository:
         await self._session.flush()
         return run
 
-    async def get_latest_completed_run(
-        self, tender_id: uuid.UUID
-    ) -> GraphProjectionRun | None:
+    async def get_latest_completed_run(self, tender_id: uuid.UUID) -> GraphProjectionRun | None:
         # The freshness invariant (Build Guide, "Graph freshness invariant")
         # compares tenders.state_version against the LATEST SUCCESSFUL run's
         # source_state_version - a 'running' or 'failed' run must never count

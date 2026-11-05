@@ -83,14 +83,18 @@ def test_unknown_availability_strips_llm_claimed_availability_strength():
 
     result = enforce_gap_visibility(scoring, signals)
 
-    assert result.strengths == [], "an availability claim must not survive when availability is unknown"
+    assert result.strengths == [], (
+        "an availability claim must not survive when availability is unknown"
+    )
     assert any(g["criterion"] == "availability" and g["status"] == "unknown" for g in result.gaps)
 
 
 def test_unknown_availability_strips_a_strength_phrased_without_the_word_available():
     scoring = CandidateScoring(
         score=0.9,
-        strengths=[TalentStrength(criterion="Ready to start immediately", evidence_ref="evidence_1")],
+        strengths=[
+            TalentStrength(criterion="Ready to start immediately", evidence_ref="evidence_1")
+        ],
         gaps=[],
     )
     signals = _signals(availability_unknown=True)
@@ -123,5 +127,7 @@ def test_known_availability_does_not_touch_strengths_or_add_a_gap():
 
     result = enforce_gap_visibility(scoring, signals)
 
-    assert result.strengths == [{"criterion": "Available immediately", "evidence_ref": "evidence_1"}]
+    assert result.strengths == [
+        {"criterion": "Available immediately", "evidence_ref": "evidence_1"}
+    ]
     assert not any(g["criterion"] == "availability" for g in result.gaps)

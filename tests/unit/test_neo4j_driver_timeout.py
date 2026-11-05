@@ -44,8 +44,7 @@ async def test_connection_timeout_bounds_a_real_unreachable_host():
         # scheduling jitter - the real claim is "bounded, not the ~30s
         # library default," not "exactly 5.0s to the millisecond."
         assert elapsed < 15, (
-            f"expected the driver to give up well under the old ~30s default, "
-            f"took {elapsed:.1f}s"
+            f"expected the driver to give up well under the old ~30s default, took {elapsed:.1f}s"
         )
     finally:
         await driver.close()

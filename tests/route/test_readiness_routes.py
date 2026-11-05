@@ -26,7 +26,9 @@ async def test_get_readiness_404s_before_any_report_has_been_generated(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Readiness Route Test Bid"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Readiness Route Test Bid"},
+        headers=headers,
     ).json()
 
     response = client.get(f"/tenders/{tender['id']}/readiness", headers=headers)
@@ -64,9 +66,7 @@ async def test_get_readiness_returns_the_generated_report(client: TestClient, re
         json={"name": "Readiness Route Test Bid 3"},
         headers=headers,
     ).json()
-    generated = client.post(
-        f"/tenders/{tender['id']}/readiness/generate", headers=headers
-    ).json()
+    generated = client.post(f"/tenders/{tender['id']}/readiness/generate", headers=headers).json()
 
     response = client.get(f"/tenders/{tender['id']}/readiness", headers=headers)
 
@@ -100,7 +100,9 @@ async def test_generate_readiness_rejects_a_role_outside_generate_readiness(
     # Same role IS allowed to view - confirms the two actions are genuinely
     # different gates, not both narrow or both wide by accident.
     view_response = client.get(f"/tenders/{tender['id']}/readiness", headers=member_headers)
-    assert view_response.status_code == 404, view_response.text  # allowed through RBAC, no report yet
+    assert view_response.status_code == 404, (
+        view_response.text
+    )  # allowed through RBAC, no report yet
 
 
 async def test_readiness_routes_reject_a_caller_outside_the_organization(

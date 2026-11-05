@@ -206,10 +206,9 @@ def test_the_worker_entry_point_builds_its_worker_on_the_longer_timeout(monkeypa
     [worker] = built
     assert worker.worker_ttl == worker_module.WORKER_TTL
     assert worker.connection.connection_pool.connection_kwargs["socket_timeout"] == 525
-    assert (
-        "redis socket timeout 525 s for a 405 s dequeue wait (worker_ttl 420 s)"
-        in [r.getMessage() for r in caplog.records]
-    )
+    assert "redis socket timeout 525 s for a 405 s dequeue wait (worker_ttl 420 s)" in [
+        r.getMessage() for r in caplog.records
+    ]
     worker.connection.close()
 
 

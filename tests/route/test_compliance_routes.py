@@ -67,13 +67,17 @@ async def _requirement_and_compliance_entry(
         return str(requirement.id), str(entry.id)
 
 
-async def _make_tender_with_document(client: TestClient, headers: dict, org_id: str) -> tuple[str, str]:
+async def _make_tender_with_document(
+    client: TestClient, headers: dict, org_id: str
+) -> tuple[str, str]:
     """A tender plus a real Document row (via the real upload route) -
     requirements need a real source_chunk_id, which needs a real document
     to attach to. No parsing/worker involved - the chunk itself is built
     directly by the test helpers above."""
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Compliance Route Test Bid"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Compliance Route Test Bid"},
+        headers=headers,
     ).json()
     document = docx.Document()
     document.add_paragraph("Placeholder RFP content.")

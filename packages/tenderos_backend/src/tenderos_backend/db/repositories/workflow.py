@@ -633,9 +633,7 @@ class WorkflowRepository:
             aggregate_type=AGGREGATE_WORKFLOW_TASK,
             aggregate_id=task_id,
             event_type=EVENT_WORKFLOW_TASK_COMPLETED,
-            payload=workflow_task_completed_payload(
-                task.workflow_run_id, task_id, task.task_type
-            ),
+            payload=workflow_task_completed_payload(task.workflow_run_id, task_id, task.task_type),
             idempotency_key=workflow_task_completed_idempotency_key(task_id),
         )
 

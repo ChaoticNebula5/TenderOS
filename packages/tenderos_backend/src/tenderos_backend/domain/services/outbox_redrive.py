@@ -255,9 +255,7 @@ _CHECKS: dict[tuple[str, str], _Check] = {
 }
 
 
-async def _assess(
-    uow: UnitOfWork, event: OutboxEvent, ctx: RedriveContext
-) -> tuple[bool, str]:
+async def _assess(uow: UnitOfWork, event: OutboxEvent, ctx: RedriveContext) -> tuple[bool, str]:
     """Whether this existing event may be re-driven, and the reason."""
     if event.status == "pending":
         return False, (

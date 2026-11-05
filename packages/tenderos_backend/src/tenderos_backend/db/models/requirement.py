@@ -71,9 +71,7 @@ class SubmissionItem(UUIDPrimaryKeyMixin, Base):
             "status IN ('missing','present','needs_review','not_applicable')",
             name="ck_submission_item_status",
         ),
-        UniqueConstraint(
-            "tender_id", "content_fingerprint", name="uq_submission_item_fingerprint"
-        ),
+        UniqueConstraint("tender_id", "content_fingerprint", name="uq_submission_item_fingerprint"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

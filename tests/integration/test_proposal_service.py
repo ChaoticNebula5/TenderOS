@@ -120,10 +120,14 @@ async def test_facts_from_compliance_only_includes_human_approved_entries():
     # after, unchanged" proof that refactor doesn't change - run before AND
     # after the refactor with no edits.
     org_id, tender_id = await _make_org_and_tender("Grounded Context Test")
-    requirement_id, _ = await _make_approved_requirement_with_evidence(org_id=org_id, tender_id=tender_id)
+    requirement_id, _ = await _make_approved_requirement_with_evidence(
+        org_id=org_id, tender_id=tender_id
+    )
 
     async with UnitOfWork() as uow:
-        facts = await proposal_service._facts_from_compliance(uow, tender_id, frozenset({"experience"}))
+        facts = await proposal_service._facts_from_compliance(
+            uow, tender_id, frozenset({"experience"})
+        )
 
     requirement_facts = [f for f in facts if f.kind == "requirement"]
     evidence_facts = [f for f in facts if f.kind == "evidence"]
@@ -163,7 +167,9 @@ async def test_facts_from_compliance_excludes_unapproved_entries():
         await uow.commit()
 
     async with UnitOfWork() as uow:
-        facts = await proposal_service._facts_from_compliance(uow, tender_id, frozenset({"experience"}))
+        facts = await proposal_service._facts_from_compliance(
+            uow, tender_id, frozenset({"experience"})
+        )
 
     assert facts == []
 
@@ -309,7 +315,9 @@ async def test_persist_section_and_claims_retry_does_not_duplicate_claims():
         tender_id, "Company Overview", draft, [], {}
     )
 
-    assert first.id == second.id, "identical retry must reuse the same 'draft'-status section, not fork a new version"
+    assert first.id == second.id, (
+        "identical retry must reuse the same 'draft'-status section, not fork a new version"
+    )
     async with UnitOfWork() as uow:
         claims = await uow.proposal.list_proposal_claims_for_section(second.id)
     assert len(claims) == 1, "retry must not duplicate the same claim"
@@ -338,7 +346,9 @@ async def test_persist_section_and_claims_bumps_state_version_only_on_real_chang
     await proposal_service.persist_section_and_claims(tender_id, "Company Overview", draft, [], {})
     async with UnitOfWork() as uow:
         after_second = (await uow.tenders.get(tender_id)).state_version
-    assert after_second == after_first, "a pure retry with nothing changed must not bump state_version again"
+    assert after_second == after_first, (
+        "a pure retry with nothing changed must not bump state_version again"
+    )
 
 
 async def test_factual_claim_in_company_overview_with_no_evidence_is_unsupported_not_not_required():

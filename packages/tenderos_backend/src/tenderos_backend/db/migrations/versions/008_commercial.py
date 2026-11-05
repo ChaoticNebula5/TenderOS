@@ -66,9 +66,7 @@ def upgrade() -> None:
         sa.Column("formula", sa.Text(), nullable=True),
         sa.Column("currency", sa.Text(), nullable=True),
         sa.Column("content_fingerprint", sa.Text(), nullable=False),
-        sa.UniqueConstraint(
-            "pricing_document_id", "cell_ref", name="uq_pricing_line_item_cell"
-        ),
+        sa.UniqueConstraint("pricing_document_id", "cell_ref", name="uq_pricing_line_item_cell"),
         sa.UniqueConstraint(
             "pricing_document_id", "content_fingerprint", name="uq_pricing_line_item_fingerprint"
         ),

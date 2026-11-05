@@ -83,15 +83,16 @@ async def test_patch_requirement_confirm_sets_human_reviewed():
     document_id, chunk_id = await _make_chunk_id(tender_id, org_id)
     draft = RequirementDraft(
         requirement_text="[REQ-002] The bidder must submit three references.",
-        category="experience", mandatory=True,
-        source_chunk_id=chunk_id, document_id=document_id, confidence=0.8,
+        category="experience",
+        mandatory=True,
+        source_chunk_id=chunk_id,
+        document_id=document_id,
+        confidence=0.8,
     )
     [requirement] = await requirement_service.persist_extraction_results(tender_id, [draft])
     assert requirement.human_reviewed is False
 
-    updated = await requirement_service.patch_requirement(
-        requirement.id, org_id, uuid.uuid4()
-    )
+    updated = await requirement_service.patch_requirement(requirement.id, org_id, uuid.uuid4())
 
     assert updated.human_reviewed is True
     assert updated.rejected_at is None
@@ -102,8 +103,11 @@ async def test_patch_requirement_reject_soft_deletes_and_is_excluded_by_default(
     document_id, chunk_id = await _make_chunk_id(tender_id, org_id)
     draft = RequirementDraft(
         requirement_text="[REQ-003] The bidder must be registered in this jurisdiction.",
-        category="eligibility", mandatory=True,
-        source_chunk_id=chunk_id, document_id=document_id, confidence=0.7,
+        category="eligibility",
+        mandatory=True,
+        source_chunk_id=chunk_id,
+        document_id=document_id,
+        confidence=0.7,
     )
     [requirement] = await requirement_service.persist_extraction_results(tender_id, [draft])
 
@@ -128,13 +132,19 @@ async def test_merge_requirements_creates_one_and_deletes_originals():
     drafts = [
         RequirementDraft(
             requirement_text="[REQ-004] The vendor shall provide onsite support.",
-            category="technical", mandatory=True,
-            source_chunk_id=chunk_id, document_id=document_id, confidence=0.6,
+            category="technical",
+            mandatory=True,
+            source_chunk_id=chunk_id,
+            document_id=document_id,
+            confidence=0.6,
         ),
         RequirementDraft(
             requirement_text="[REQ-005] The vendor shall also provide phone support.",
-            category="technical", mandatory=True,
-            source_chunk_id=chunk_id, document_id=document_id, confidence=0.6,
+            category="technical",
+            mandatory=True,
+            source_chunk_id=chunk_id,
+            document_id=document_id,
+            confidence=0.6,
         ),
     ]
     originals = await requirement_service.persist_extraction_results(tender_id, drafts)
@@ -166,8 +176,11 @@ async def test_merge_requirements_rejects_cross_tender_ids():
         [
             RequirementDraft(
                 requirement_text="[REQ-006] Tender A requirement.",
-                category="other", mandatory=False,
-                source_chunk_id=chunk_id, document_id=document_id, confidence=0.5,
+                category="other",
+                mandatory=False,
+                source_chunk_id=chunk_id,
+                document_id=document_id,
+                confidence=0.5,
             )
         ],
     )
@@ -176,8 +189,11 @@ async def test_merge_requirements_rejects_cross_tender_ids():
         [
             RequirementDraft(
                 requirement_text="[REQ-007] Tender B requirement.",
-                category="other", mandatory=False,
-                source_chunk_id=chunk_id_b, document_id=document_id_b, confidence=0.5,
+                category="other",
+                mandatory=False,
+                source_chunk_id=chunk_id_b,
+                document_id=document_id_b,
+                confidence=0.5,
             )
         ],
     )
@@ -196,8 +212,11 @@ async def test_split_requirement_creates_multiple_and_deletes_original():
         [
             RequirementDraft(
                 requirement_text="[REQ-008] Bidders must submit A and must submit B.",
-                category="submission", mandatory=True,
-                source_chunk_id=chunk_id, document_id=document_id, confidence=0.7,
+                category="submission",
+                mandatory=True,
+                source_chunk_id=chunk_id,
+                document_id=document_id,
+                confidence=0.7,
             )
         ],
     )
@@ -228,8 +247,11 @@ async def test_request_verification_writes_an_outbox_event():
         [
             RequirementDraft(
                 requirement_text="[REQ-009] The bidder shall comply with data protection law.",
-                category="security", mandatory=True,
-                source_chunk_id=chunk_id, document_id=document_id, confidence=0.9,
+                category="security",
+                mandatory=True,
+                source_chunk_id=chunk_id,
+                document_id=document_id,
+                confidence=0.9,
             )
         ],
     )

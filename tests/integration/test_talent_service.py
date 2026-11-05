@@ -200,7 +200,9 @@ async def test_set_candidate_selection_rejects_a_role_outside_the_authorized_org
     this now, not an injected argument.
     """
     registered_a = await register(
-        email=f"{uuid.uuid4().hex}@example.test", password="hunter2hunter2", organization_name="Role Auth Org A"
+        email=f"{uuid.uuid4().hex}@example.test",
+        password="hunter2hunter2",
+        organization_name="Role Auth Org A",
     )
     org_b, tender_b = await _make_org_and_tender("Role Auth Org B")
     employee_b = await _make_employee(org_b, "Org B Candidate")
@@ -214,14 +216,14 @@ async def test_set_candidate_selection_rejects_a_role_outside_the_authorized_org
         await uow.commit()
 
     with pytest.raises(CrossOrganizationRoleError):
-        await set_candidate_selection(
-            role_b.id, employee_b, registered_a.user.id, selected=True
-        )
+        await set_candidate_selection(role_b.id, employee_b, registered_a.user.id, selected=True)
 
     async with UnitOfWork() as uow:
         match = await uow.talent.get_role_match_by_candidate(role_b.id, employee_b)
     assert match is not None
-    assert match.human_selected is False, "a caller not authorized for org B must not select its candidate"
+    assert match.human_selected is False, (
+        "a caller not authorized for org B must not select its candidate"
+    )
 
 
 async def test_deselect_candidate_does_not_delete_the_role_match_row():

@@ -55,9 +55,7 @@ class RedteamEvalReport:
     false_positive_categories: set[str] = field(default_factory=set)
 
 
-async def evaluate_redteam(
-    tender_id: uuid.UUID, seeded: list[SeededDefect]
-) -> RedteamEvalReport:
+async def evaluate_redteam(tender_id: uuid.UUID, seeded: list[SeededDefect]) -> RedteamEvalReport:
     """Recall against a tender that's already been seeded with known
     defects (via direct repository construction, per the plan's Q4
     answer) and already run through red_team_node/redteam_service.run_red_team
@@ -80,19 +78,13 @@ async def evaluate_redteam(
 
     critical_seeded = seeded_categories & _CRITICAL_CATEGORIES
     critical_detected = detected_categories & _CRITICAL_CATEGORIES
-    critical_recall = (
-        len(critical_detected) / len(critical_seeded) if critical_seeded else 1.0
-    )
-    overall_recall = (
-        len(detected_categories) / len(seeded_categories) if seeded_categories else 1.0
-    )
+    critical_recall = len(critical_detected) / len(critical_seeded) if critical_seeded else 1.0
+    overall_recall = len(detected_categories) / len(seeded_categories) if seeded_categories else 1.0
 
     false_positive_categories = {
         f.finding_category for f in findings if f.finding_category not in REQUIRED_CATEGORIES
     }
-    false_positive_count = sum(
-        1 for f in findings if f.finding_category not in REQUIRED_CATEGORIES
-    )
+    false_positive_count = sum(1 for f in findings if f.finding_category not in REQUIRED_CATEGORIES)
 
     return RedteamEvalReport(
         critical_recall=critical_recall,

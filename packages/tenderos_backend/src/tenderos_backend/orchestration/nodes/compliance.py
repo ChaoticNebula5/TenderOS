@@ -72,9 +72,7 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
                 )
                 evaluated += 1
             except Exception:
-                logger.exception(
-                    "compliance analysis failed for requirement %s", requirement.id
-                )
+                logger.exception("compliance analysis failed for requirement %s", requirement.id)
 
         if requirements and evaluated == 0:
             # Every requirement in a non-empty batch failed - a completed

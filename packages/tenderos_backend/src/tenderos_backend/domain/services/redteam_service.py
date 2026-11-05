@@ -36,8 +36,11 @@ class FindingTenderMissingError(Exception):
 
 
 def finding_fingerprint(
-    tender_id: uuid.UUID, target_type: str, target_id: uuid.UUID | None,
-    finding_category: str, violated_condition: str,
+    tender_id: uuid.UUID,
+    target_type: str,
+    target_id: uuid.UUID | None,
+    finding_category: str,
+    violated_condition: str,
 ) -> str:
     # E8: "Finding identity is based on the violated condition, not
     # free-text wording" - same _fingerprint(*parts) shape pricing_checks.py
@@ -64,7 +67,10 @@ async def persist_finding_draft(
     every other open finding it never even looked at.
     """
     fingerprint = finding_fingerprint(
-        tender_id, draft.target_type, draft.target_id, draft.finding_category,
+        tender_id,
+        draft.target_type,
+        draft.target_id,
+        draft.finding_category,
         draft.violated_condition,
     )
     existing = await uow.redteam.get_by_fingerprint(tender_id, fingerprint)
@@ -98,9 +104,9 @@ async def persist_finding_draft(
     )
 
 
-async def _claims_for_critique(uow: UnitOfWork, tender_id: uuid.UUID) -> tuple[
-    list[ClaimForCritique], dict[str, uuid.UUID]
-]:
+async def _claims_for_critique(
+    uow: UnitOfWork, tender_id: uuid.UUID
+) -> tuple[list[ClaimForCritique], dict[str, uuid.UUID]]:
     sections = await uow.proposal.list_proposal_sections_for_tender(tender_id)
     claims_for_critique: list[ClaimForCritique] = []
     label_to_id: dict[str, uuid.UUID] = {}
@@ -163,8 +169,12 @@ async def run_red_team(
     drafts.extend(await redteam_checks.check_graph_contradictions(tender_id))
 
     critique = await critique_proposal(
-        client, model, claims_for_critique, tender_id,
-        workflow_run_id=workflow_run_id, task_id=task_id,
+        client,
+        model,
+        claims_for_critique,
+        tender_id,
+        workflow_run_id=workflow_run_id,
+        task_id=task_id,
     )
     for finding in critique.findings:
         target_id = label_to_id.get(finding.target_claim_label)
@@ -201,8 +211,11 @@ async def run_red_team(
         # finding_ids, which list_open_for_tender feeds).
         still_detected_fingerprints = {
             finding_fingerprint(
-                tender_id, draft.target_type, draft.target_id,
-                draft.finding_category, draft.violated_condition,
+                tender_id,
+                draft.target_type,
+                draft.target_id,
+                draft.finding_category,
+                draft.violated_condition,
             )
             for draft in drafts
         }

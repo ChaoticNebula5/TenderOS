@@ -71,7 +71,9 @@ async def test_login_has_its_own_tighter_limit(client: TestClient, monkeypatch, 
     assert third.json()["error"]["code"] == "RATE_LIMITED"
 
 
-async def test_options_preflight_is_never_rate_limited(client: TestClient, monkeypatch, _cleanup_redis):
+async def test_options_preflight_is_never_rate_limited(
+    client: TestClient, monkeypatch, _cleanup_redis
+):
     """B16 correction - OPTIONS used to be counted like any other request
     (confirmed live: a real E2E run's own CORS preflight got a real 429
     on a request the bypass header should have covered but reliably

@@ -24,9 +24,7 @@ class AuditEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # created this column bare (workflow_runs didn't exist yet in B2).
     workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey(
-            "workflow_runs.id", ondelete="SET NULL", name="fk_audit_events_workflow_run_id"
-        ),
+        ForeignKey("workflow_runs.id", ondelete="SET NULL", name="fk_audit_events_workflow_run_id"),
         nullable=True,
     )
     actor_type: Mapped[str] = mapped_column(nullable=False)

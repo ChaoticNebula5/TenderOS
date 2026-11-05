@@ -108,9 +108,7 @@ def parse_certifications(content: bytes) -> list[CertificationRow]:
                 employee_ref=_cell(row, "employee"),
                 name=name,
                 issuer=_cell(row, "issuer"),
-                issue_date=_parse_date_cell(
-                    _raw_cell(row, "issue date"), row_number, "Issue Date"
-                ),
+                issue_date=_parse_date_cell(_raw_cell(row, "issue date"), row_number, "Issue Date"),
                 expiry_date=_parse_date_cell(
                     _raw_cell(row, "expiry date"), row_number, "Expiry Date"
                 ),

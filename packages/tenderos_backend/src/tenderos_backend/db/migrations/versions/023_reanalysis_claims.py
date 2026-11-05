@@ -64,9 +64,7 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "tender_id", "knowledge_item_id", "state_version", name="uq_reanalysis_claim"
         ),
-        sa.CheckConstraint(
-            "status IN ('running','completed')", name="ck_reanalysis_claim_status"
-        ),
+        sa.CheckConstraint("status IN ('running','completed')", name="ck_reanalysis_claim_status"),
         sa.CheckConstraint(
             "(status = 'completed') = (completed_at IS NOT NULL)",
             name="ck_reanalysis_claim_completed_pair",

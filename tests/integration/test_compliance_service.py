@@ -159,7 +159,9 @@ async def test_persist_compliance_decision_is_idempotent_on_retry():
     first = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
     second = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
 
-    assert first.id == second.id, "a retried compliance decision must update in place, not duplicate"
+    assert first.id == second.id, (
+        "a retried compliance decision must update in place, not duplicate"
+    )
     async with UnitOfWork() as uow:
         entries = await uow.compliance.list_compliance_entries_for_tender(tender_id)
     assert len(entries) == 1
@@ -288,7 +290,9 @@ async def test_persist_compliance_decision_clears_stale_approval_on_material_sta
         confidence=0.9,
         reasoning_summary="No longer compliant - evidence expired.",
     )
-    revised_sufficiency = SufficiencyResult(status="non_compliant", downgraded=False, reason="expired")
+    revised_sufficiency = SufficiencyResult(
+        status="non_compliant", downgraded=False, reason="expired"
+    )
     reevaluated = await persist_compliance_decision(
         requirement_id, revised_proposal, revised_sufficiency, []
     )

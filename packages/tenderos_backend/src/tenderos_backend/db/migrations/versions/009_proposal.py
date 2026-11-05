@@ -91,9 +91,7 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.CheckConstraint(
-            "claim_type IN ("
-            "'capability','experience','team','compliance','commercial','other'"
-            ")",
+            "claim_type IN ('capability','experience','team','compliance','commercial','other')",
             name="ck_proposal_claim_type",
         ),
         sa.CheckConstraint(

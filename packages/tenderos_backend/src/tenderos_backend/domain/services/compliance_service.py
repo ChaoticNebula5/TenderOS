@@ -199,33 +199,28 @@ def enforce_evidence_sufficiency(
         )
 
     sufficient_evidence = [
-        evidence for evidence in materialized_evidence
-        if evidence.verified and evidence.validity_status=="valid"
+        evidence
+        for evidence in materialized_evidence
+        if evidence.verified and evidence.validity_status == "valid"
     ]
-    
+
     if not sufficient_evidence:
         if not materialized_evidence:
             reason = "no materialized supporting evidence was available"
         else:
             rejected_details = ", ".join(
-               f"{e.id}: verified={e.verified}, validity={e.validity_status}" 
-               for e in materialized_evidence
+                f"{e.id}: verified={e.verified}, validity={e.validity_status}"
+                for e in materialized_evidence
             )
             reason = f"all supporting evidence was insufficient: {rejected_details}"
-        
-        return SufficiencyResult(
-            status="evidence_unavailable",
-            downgraded=True,
-            reason=reason
-        )
-        
-    all_evidence_sufficient = (len(sufficient_evidence) == len(materialized_evidence))
+
+        return SufficiencyResult(status="evidence_unavailable", downgraded=True, reason=reason)
+
+    all_evidence_sufficient = len(sufficient_evidence) == len(materialized_evidence)
     if proposal.status == "fully_compliant" and not all_evidence_sufficient:
         sufficient_ids = ", ".join(str(e.id) for e in sufficient_evidence)
         insufficient_ids = ", ".join(
-            str(e.id)
-            for e in materialized_evidence
-            if e not in sufficient_evidence
+            str(e.id) for e in materialized_evidence if e not in sufficient_evidence
         )
         return SufficiencyResult(
             status="partially_compliant",
@@ -234,7 +229,7 @@ def enforce_evidence_sufficiency(
                 f"only part of the cited evidence was verified and valid; "
                 f"sufficient=[{sufficient_ids}], "
                 f"insufficient=[{insufficient_ids}]"
-            )
+            ),
         )
     sufficient_ids = ", ".join(str(e.id) for e in sufficient_evidence)
 

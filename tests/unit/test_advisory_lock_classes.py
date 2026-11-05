@@ -23,7 +23,9 @@ def _lock_classes() -> list[tuple[str, str, int]]:
             if ".venv" in path.parts or "node_modules" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8")
-            found += [(path.name, name, int(value)) for name, value in _CLASS_ASSIGNMENT.findall(text)]
+            found += [
+                (path.name, name, int(value)) for name, value in _CLASS_ASSIGNMENT.findall(text)
+            ]
     return found
 
 
@@ -48,7 +50,9 @@ def test_every_advisory_lock_call_uses_the_two_key_form_with_a_class():
         for path in (REPO_ROOT / root).rglob("*.py"):
             if ".venv" in path.parts or "node_modules" in path.parts:
                 continue
-            calls += re.findall(r"pg_(?:try_)?advisory\w*\(([^)]*\)?)", path.read_text(encoding="utf-8"))
+            calls += re.findall(
+                r"pg_(?:try_)?advisory\w*\(([^)]*\)?)", path.read_text(encoding="utf-8")
+            )
 
     assert calls, "the search found no advisory lock calls"
     assert all(call.startswith(":lock_class,") for call in calls), calls
