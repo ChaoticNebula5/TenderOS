@@ -1137,12 +1137,26 @@ Each entry:
       decision, not fixed here:** per-job retry is already bounded and
       terminal, so that specific concern is already closed - the real gap
       is that orphaned *scheduled* entries have no TTL and accumulate
-      indefinitely across resets, paid off as one serial burst whenever a
-      worker with scheduling next starts. Matters specifically for Phase 4
-      (single VM, one long-lived worker process) - a demo box whose data
-      gets reset periodically without an equivalent Redis reset will
-      accumulate the same backlog for real, not just in a dev environment
-      reusing volumes.
+      across resets only while no scheduler runs for that queue, paid off
+      as one serial burst whenever a worker with scheduling next starts.
+      With a worker up, each fires within its delay, at most 15 minutes
+      (the clamp in `orchestration/retry.py`, read in code). **RESOLVED in
+      Phase 4 plan item 22 (2026-11-05, decision 0070):** a retry is orphaned
+      if its run's row is gone, its run is not running, or its run's current
+      job is not this retry; age alone never counts. A missing row now logs
+      one WARNING and returns, with no failure record; before, it raised, and
+      the record lasted 365 days (observed). Item 19's guard already dropped
+      the other two (observed). Every scheduled retry carries a TTL of the run
+      cap plus 1 hour (7 hours), derived from `MAX_RUN_JOB_AGE`; past it RQ's
+      scheduler skips the job at no cost (observed). **Accepted:** a retry
+      younger than that still costs about 8 s when it fires, because the
+      forked job process imports `jobs.workflow` (8.6 to 9.4 s measured; plan
+      item 48), so a burst can still delay the workflow queue, though not
+      uploads, since item 44. No sweep was added. **Changed for a real run:**
+      if the worker and the dispatcher are both down for over 7 hours, the
+      retry is gone and the cap fails the run; the user starts a new run
+      (there is no retry route). Test:
+      `tests/integration/test_orphaned_retries.py`.
   13. **A partial `docker compose` command silently drops every `-f`
       override, and the containers come up looking healthy with the wrong
       configuration - classified by consequence, matching incident 1's own

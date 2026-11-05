@@ -12,6 +12,7 @@ from rq import Queue
 from rq.timeouts import JobTimeoutException
 from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import run_reaper
 from tenderos_backend.domain.services.workflow_service import (
     RunNoLongerActiveError,
     claim_run_for_resume,
@@ -56,6 +57,18 @@ WORKFLOW_JOB_TIMEOUT_SECONDS = 1800
 # _handle_graph_failure's own docstring for why the LIVE countdown lives in
 # WorkflowRun.retry_count instead of that LangGraph-checkpointed field.
 _RETRY_BUDGET_CEILING = 10
+# Plan item 22: a scheduled retry outlasts the run cap by this much, so RQ's
+# TTL can only ever drop a retry whose run the cap has already failed. It
+# bounds an orphaned retry left in Redis (a run gone in a reset, a worker
+# stopped for days), which the scheduler then skips at no cost. Age alone
+# never makes a retry orphaned before that: while the run can still be
+# waiting on it, it stays. A design number, not measured.
+_RETRY_TTL_MARGIN = timedelta(hours=1)
+
+
+def retry_job_ttl_seconds() -> int:
+    """RQ's ttl for a scheduled retry: the run cap plus _RETRY_TTL_MARGIN."""
+    return int((run_reaper.MAX_RUN_JOB_AGE + _RETRY_TTL_MARGIN).total_seconds())
 
 
 async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception, job_id: str | None) -> bool:
@@ -96,6 +109,9 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception, job_id: str |
     and a run reaped or cancelled meanwhile gets no retry. If the enqueue
     then fails (Redis down), the run names a job RQ never had, and the
     reaper fails it a minute later: right, since no retry was scheduled.
+
+    Plan item 22: the retry carries a TTL (retry_job_ttl_seconds). Once it
+    lapses RQ's scheduler skips the job and removes its id, so it never runs.
     """
     async with UnitOfWork() as uow:
         tasks = await uow.workflow.list_tasks(run_id)
@@ -158,6 +174,7 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception, job_id: str |
         retry_number,
         job_id=retry_id,
         job_timeout=WORKFLOW_JOB_TIMEOUT_SECONDS,
+        ttl=retry_job_ttl_seconds(),
     )
     logger.info(
         "workflow run %s: scheduled retry %s in %.1fs after %s (task %s, attempt %d/%d)",
@@ -369,14 +386,27 @@ async def retry_workflow_run(workflow_run_id: str, retry_number: int | None = No
     until its first status write was refused. A retry enqueued before
     migration 024 has no number, and matches only a run with no job
     recorded.
+
+    Plan item 22: those two checks and this one are the orphan rule. A retry
+    is orphaned if its run's row is gone, its run is not running, or its
+    run's current job is not this retry; age alone never counts. A missing
+    row (a database reset or restore; no code path deletes one) logs one
+    WARNING and returns. It used to raise, which logged an ERROR for a job
+    with nothing to fix and kept a failure record in Redis for a year.
     """
     run_id = uuid.UUID(workflow_run_id)
     async with UnitOfWork() as uow:
         run = await uow.workflow.get_run(run_id)
-    if run is None:
-        raise ValueError(f"WorkflowRun {run_id} not found")
 
     own_job_id = retry_job_id(run_id, retry_number) if retry_number is not None else None
+    if run is None:
+        logger.warning(
+            "workflow run %s: retry %s not started; the run no longer exists",
+            run_id,
+            own_job_id,
+        )
+        return
+
     if run.status != "running" or run.current_job_id != own_job_id:
         logger.info(
             "workflow run %s: retry %s not started; the run is %s, its current job %s",
