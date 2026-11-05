@@ -19,7 +19,7 @@ typecheck:
 # on the host, where those hostnames don't resolve. POSTGRES_DSN was the
 # only one overridden here; any test touching Neo4j/Redis/S3 directly
 # (tests/integration/test_graph_projection.py and others) would hang on
-# an unresolvable host instead of running. Same localhost swap as
+# an unresolvable host instead of running. Same loopback swap as
 # POSTGRES_DSN's, one per service, ports unchanged (docker-compose.yml
 # publishes each on its container-internal port number).
 #
