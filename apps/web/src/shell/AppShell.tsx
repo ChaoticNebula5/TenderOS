@@ -17,8 +17,8 @@ import "./AppShell.css";
 //   look for each of those (gatePanel(), setup's résumé import, steps 3, 10
 //   and 12).
 // - One <button>, Log out, and no other (plan item 39). Every button locator
-//   in the spec has a name, and none of those names is part of "Log out" or
-//   "Logging out...".
+//   in the spec has a name, and none of those names is part of "Logging out..."
+//   or "Log out e2e-<suffix>@example.com", the name it has on the spec's user.
 // - No link whose name could contain a tender name (step 2, on the dashboard).
 // AppShell.test.tsx asserts the element rules.
 //
@@ -60,8 +60,12 @@ export function AppShell() {
         {meResponse && (
           <div className="topbar__account">
             <span className="topbar__email">{meResponse.user.email}</span>
+            {/* The email is hidden below 600px, so the button's name says who is
+                signed in. It starts with the visible label (WCAG 2.5.3). */}
             <Button
               variant="quiet"
+              className="topbar__logout"
+              aria-label={loggingOut ? undefined : `Log out ${meResponse.user.email}`}
               busy={loggingOut}
               busyLabel="Logging out..."
               onClick={() => void handleLogOut()}

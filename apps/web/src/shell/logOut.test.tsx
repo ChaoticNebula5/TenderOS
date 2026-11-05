@@ -126,12 +126,14 @@ function renderSignedInAt(path: string) {
   );
 }
 
-const logOutButton = () => screen.findByRole("button", { name: "Log out" });
+// The button's name is "Log out <email>" (AppShell.test.tsx pins it).
+const LOG_OUT = /^Log out/;
+const logOutButton = () => screen.findByRole("button", { name: LOG_OUT });
 
 async function expectOnLoginSignedOut() {
   expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
   expect(screen.getByTestId("path")).toHaveTextContent("/login");
-  expect(screen.queryByRole("button", { name: "Log out" })).toBeNull();
+  expect(screen.queryByRole("button", { name: LOG_OUT })).toBeNull();
   expect(screen.queryByText("person@example.com")).toBeNull();
   expect(getAccessToken()).toBeNull();
   expect(getRefreshToken()).toBeNull();

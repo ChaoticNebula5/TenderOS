@@ -159,6 +159,8 @@
   /* App shell (DESIGN.md Layout): 48px top bar; page gutter 16px at phone
      width (DESIGN.md "Responsive (390px)"), 24px from 600px up. */
   --topbar-height: 48px;
+  /* The width of "Logging out..." in the button's font, measured (plan item 39). */
+  --topbar-logout-label-width: 6.3em;
   --gutter: 16px;
   --gutter-wide: 24px;
 

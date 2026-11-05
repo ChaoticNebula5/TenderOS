@@ -60,6 +60,9 @@ function shellParts(container: HTMLElement): Element[] {
   );
 }
 
+// The name also says who is signed in; the test below pins all of it.
+const LOG_OUT = /^Log out/;
+
 const FORBIDDEN = "strong, ul, li, aside, table, section, h1, h2, h3, h4, h5, h6, input";
 
 describe("AppShell", () => {
@@ -79,27 +82,45 @@ describe("AppShell", () => {
       const buttons = shellParts(container).flatMap((el) => [...el.querySelectorAll("button")]);
       expect(buttons.map((el) => el.textContent)).toEqual(["Log out"]);
 
-      const button = screen.getByRole("button", { name: "Log out" });
+      const button = screen.getByRole("button", { name: LOG_OUT });
       expect(button.closest("header")).not.toBeNull();
       expect(button.previousElementSibling).toHaveTextContent("person@example.com");
     },
   );
+
+  it("names who is signed in on the button, starting with its visible label", async () => {
+    let finish: () => void = () => {};
+    const user = userEvent.setup();
+    renderShellAt("/", () => new Promise<void>((resolve) => (finish = resolve)));
+
+    const button = screen.getByRole("button", { name: "Log out person@example.com" });
+    expect(button).toHaveTextContent(/^Log out$/);
+
+    // While it runs, the name is what the button shows.
+    await user.click(button);
+    const busy = screen.getByRole("button", { name: "Logging out..." });
+    expect(busy).not.toHaveAttribute("aria-label");
+
+    finish();
+
+    expect(await screen.findByRole("button", { name: "Log out person@example.com" })).toBeEnabled();
+  });
 
   it("disables the button only while logout() runs", async () => {
     let finish: () => void = () => {};
     const logout = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
     const user = userEvent.setup();
     renderShellAt("/", logout);
-    expect(screen.getByRole("button", { name: "Log out" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: LOG_OUT })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "Log out" }));
+    await user.click(screen.getByRole("button", { name: LOG_OUT }));
 
     expect(logout).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Logging out..." })).toBeDisabled();
 
     finish();
 
-    expect(await screen.findByRole("button", { name: "Log out" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: LOG_OUT })).toBeEnabled();
   });
 
   it("keeps the shell outside <main>", () => {

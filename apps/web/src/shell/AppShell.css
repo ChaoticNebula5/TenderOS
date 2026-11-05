@@ -18,17 +18,6 @@
   }
 }
 
-/* Below 360px the bar can't hold everything on one line, and the busy label is
-   wider still, so the account area takes its own line rather than pushing the
-   page sideways. */
-@media (max-width: 359px) {
-  .topbar {
-    flex-wrap: wrap;
-    row-gap: var(--space-1);
-    padding-block: var(--space-2);
-  }
-}
-
 .topbar__wordmark {
   color: var(--ink);
   text-decoration: none;
@@ -60,9 +49,8 @@
   text-underline-offset: 6px;
 }
 
-/* Email and Log out pushed right. The email shrinks with an ellipsis at phone
-   width instead of pushing the bar wider than the viewport; the button keeps
-   its size. */
+/* Email and Log out pushed right. A long email shrinks with an ellipsis instead
+   of pushing the bar wider than the viewport. */
 .topbar__account {
   display: flex;
   align-items: center;
@@ -78,4 +66,32 @@
   font-size: var(--text-label);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Room for "Logging out..." from the start, so nothing moves when the label
+   changes. The label's own width, in em so it follows the font size, plus the
+   button's padding and 1px borders. */
+.topbar__logout {
+  min-width: calc(var(--topbar-logout-label-width) + 2 * var(--button-pad-x) + 2px);
+}
+
+/* DESIGN.md's phone breakpoint. Below it the email can't show enough to be
+   useful: at 390px it had 23px beside the button. The button's name carries it
+   instead (AppShell.tsx). */
+@media (max-width: 599.98px) {
+  .topbar__email {
+    display: none;
+  }
+}
+
+/* Keeps one row down to 320px: the bar needs 355px at the normal spacing. */
+@media (max-width: 359.98px) {
+  .topbar,
+  .topbar__nav {
+    gap: var(--space-3);
+  }
+
+  .topbar__logout {
+    --button-pad-x: var(--space-2);
+  }
 }

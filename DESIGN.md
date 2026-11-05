@@ -502,9 +502,13 @@ login starts at the dashboard; an expired session still returns to its page.
 The tokens clear before the call, so a tab closed during the wait stays signed
 out. A screen that fetches during the wait therefore lands on `/login` early,
 also with no `from`.
-The email shrinks first at phone width. Below 360px the account area takes a
-second line, the bar's one exception to 48px, because the busy label can't fit
-on the first.
+Below the 600px breakpoint the email is hidden, because beside the button it
+could not show enough to be useful (23px at 390px), and the button's accessible
+name carries it: "Log out person@example.com", visible label first (WCAG 2.5.3).
+The button reserves the busy label's width from the start, so nothing moves
+when the label changes. Below 360px the bar's and nav's gaps drop to 12px and
+the button's side padding to 8px, the one local deviation from
+`--button-pad-x`, so the bar keeps one 48px row down to 320px.
 
 Inside a tender, the **workflow nav**
 (built) gives every tender screen a way back to the dashboard (the
