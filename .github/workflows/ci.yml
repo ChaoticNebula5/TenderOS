@@ -29,6 +29,7 @@ jobs:
           version: "0.13.5"
       - run: uv sync
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - name: Image, action and tool versions are pinned and agree
         run: uv run python scripts/check_pins.py
       # Phase 4 plan item 46: no job reaches the live LLM provider's compose
