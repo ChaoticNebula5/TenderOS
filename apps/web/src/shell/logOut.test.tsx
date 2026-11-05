@@ -58,6 +58,10 @@ beforeEach(() => {
       }
       if (sessionExpired) return json(401, { detail: "Invalid or expired token" });
       if (path === "/auth/me") {
+        // As the API does: no token, no answer.
+        if (!(init?.headers as Record<string, string>)["Authorization"]) {
+          return json(401, { detail: "Not authenticated" });
+        }
         return json(200, {
           user: { id: "u1", email: "person@example.com", display_name: null, is_active: true },
           memberships: [{ organization_id: "org-1", role: "member" }],
@@ -166,10 +170,12 @@ describe("the Log out button", () => {
     const busy = await screen.findByRole("button", { name: "Logging out..." });
     expect(busy).toBeDisabled();
     expect(busy).toHaveAttribute("aria-busy", "true");
-    // Still waiting: on the same screen, still signed in, tokens untouched.
+    // Still waiting, on the same screen. The tokens are already gone, so a tab
+    // closed now stays signed out (plan item 39's review).
     expect(screen.getByText("tender screen")).toBeInTheDocument();
     expect(screen.getByTestId("path")).toHaveTextContent("/tenders/t1");
-    expect(getRefreshToken()).toBe("refresh-1");
+    expect(getAccessToken()).toBeNull();
+    expect(getRefreshToken()).toBeNull();
 
     // A second click while it runs sends nothing more.
     await user.click(busy);
@@ -230,25 +236,83 @@ describe("the Log out button", () => {
     expect(screen.getByTestId("path")).not.toHaveTextContent("/tenders");
   });
 
-  it("leaves an expired session's return to its page working, even after a log out", async () => {
+  it("sends a screen polling during the wait to login with no page to return to", async () => {
+    let answer: (response: Response) => void = () => {};
+    answerLogout = () => new Promise<Response>((resolve) => (answer = resolve));
     const user = userEvent.setup();
-    renderSignedInAt("/");
+    renderSignedInAt("/tenders/t1");
     await user.click(await logOutButton());
-    await expectOnLoginSignedOut();
-    await logInThroughTheForm(user);
+    expect(await screen.findByRole("button", { name: "Logging out..." })).toBeDisabled();
 
-    // Same AuthProvider throughout: signed in again, on to a tender, and the
-    // session expires there.
-    await user.click(await screen.findByRole("link", { name: "open the tender" }));
-    sessionExpired = true;
-    await user.click(await screen.findByRole("button", { name: "make a request" }));
+    // The screen's next poll, with storage already empty.
+    await user.click(screen.getByRole("button", { name: "make a request" }));
+
+    // On login while the call is still out, and nothing tried to refresh.
     expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
     expect(screen.getByTestId("path")).toHaveTextContent("/login");
-    sessionExpired = false;
+    expect(callsTo("/auth/refresh")).toHaveLength(0);
+
+    answer(new Response(null, { status: 204 }));
+    await expectOnLoginSignedOut();
 
     await logInThroughTheForm(user);
 
-    expect(await screen.findByText("tender screen")).toBeInTheDocument();
-    expect(screen.getByTestId("path")).toHaveTextContent("/tenders/t1");
+    expect(await screen.findByText("dashboard screen")).toBeInTheDocument();
+    expect(screen.getByTestId("path")).not.toHaveTextContent("/tenders");
   });
+
+  it("keeps a session signed in during the wait when the old call ends", async () => {
+    let answer: (response: Response) => void = () => {};
+    answerLogout = () => new Promise<Response>((resolve) => (answer = resolve));
+    const user = userEvent.setup();
+    renderSignedInAt("/tenders/t1");
+    await user.click(await logOutButton());
+    await user.click(await screen.findByRole("button", { name: "make a request" }));
+    await screen.findByRole("heading", { name: "TenderOS" });
+
+    await logInThroughTheForm(user);
+    expect(await screen.findByText("dashboard screen")).toBeInTheDocument();
+
+    answer(new Response(null, { status: 204 }));
+
+    // Give the old logout() every chance to end the new session.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText("dashboard screen")).toBeInTheDocument();
+    expect(screen.getByText("person@example.com")).toBeInTheDocument();
+    expect(getRefreshToken()).toBe("refresh-2");
+  });
+
+  it.each<[string, () => Response]>([
+    ["worked", () => new Response(null, { status: 204 })],
+    [
+      "failed",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ])(
+    "leaves an expired session's return to its page working, after a log out that %s",
+    async (_name, logoutAnswer) => {
+      answerLogout = logoutAnswer;
+      const user = userEvent.setup();
+      renderSignedInAt("/");
+      await user.click(await logOutButton());
+      await expectOnLoginSignedOut();
+      await logInThroughTheForm(user);
+
+      // Same AuthProvider throughout: signed in again, on to a tender, and the
+      // session expires there.
+      await user.click(await screen.findByRole("link", { name: "open the tender" }));
+      sessionExpired = true;
+      await user.click(await screen.findByRole("button", { name: "make a request" }));
+      expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
+      expect(screen.getByTestId("path")).toHaveTextContent("/login");
+      sessionExpired = false;
+
+      await logInThroughTheForm(user);
+
+      expect(await screen.findByText("tender screen")).toBeInTheDocument();
+      expect(screen.getByTestId("path")).toHaveTextContent("/tenders/t1");
+    },
+  );
 });

@@ -110,7 +110,7 @@ let sessionExpiredHandler: (() => void) | null = null;
 
 // AuthProvider registers this, so a session that cannot be refreshed
 // reaches the screens: it nulls meResponse and RequireAuth redirects to
-// /login with the current location as `from`.
+// /login with the current location as `from`, unless logout() is running.
 export function setSessionExpiredHandler(handler: (() => void) | null): void {
   sessionExpiredHandler = handler;
 }
@@ -371,28 +371,45 @@ export function me(): Promise<MeResponse> {
 // localStorage, which is cleared below, so they find out at their next
 // request (no token, then the login screen), not through a refused
 // refresh; the server-side revocation is what ends a copy of the refresh
-// token held anywhere else. The tokens are cleared here whether or not that call
-// worked, and the call is bounded, so neither a failure nor a hung request
-// keeps this browser signed in; a family the API never heard about ends at
-// its own expiry. Access tokens already issued are not revoked: one stays
-// valid until it expires, up to JWT_ACCESS_MINUTES (15).
+// token held anywhere else. A family the API never heard about ends at its
+// own expiry. Access tokens already issued are not revoked: one stays valid
+// until it expires, up to JWT_ACCESS_MINUTES (15).
+//
+// The tokens are cleared BEFORE the call (plan item 39's review; they used to
+// be cleared after it), so a tab closed during the wait stays signed out.
+// keepalive asks the browser to finish the request after the tab has gone, so
+// the revocation can still reach the API (KNOWN_LIMITATIONS.md says how far
+// that was observed). The call is bounded, and the caller still waits for it.
 const LOGOUT_TIMEOUT_MS = 5_000;
+
+// True while logout() runs. Storage is already empty by then, so a screen
+// polling during the wait gets a 401 and expires the session. AuthProvider
+// reads this to treat that expiry as the deliberate log out it is, with no
+// page to return to.
+let loggingOut = false;
+
+export function isLoggingOut(): boolean {
+  return loggingOut;
+}
 
 export async function logout(): Promise<void> {
   const refreshToken = getRefreshToken();
+  clearTokens();
+  loggingOut = true;
   try {
     if (refreshToken) {
       await fetch(`${BASE_URL}/auth/logout`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        keepalive: true,
         signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
       });
     }
   } catch {
     // Best effort: a network failure or the timeout still logs out here.
   } finally {
-    clearTokens();
+    loggingOut = false;
   }
 }
 

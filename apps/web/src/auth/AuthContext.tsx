@@ -4,6 +4,7 @@ import {
   ApiError,
   clearTokens,
   getAccessToken,
+  isLoggingOut,
   logout as endSession,
   me,
   setSessionExpiredHandler,
@@ -46,11 +47,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Plan item 34, option 3: revokes the session on the server, then clears
-  // the tokens even if that call failed (client.ts, logout()). The top bar's
+  // Plan item 34, option 3: clears the tokens, then revokes the session on the
+  // server, whether or not that call works (client.ts, logout()). The top bar's
   // Log out button calls it (plan item 39).
+  //
+  // Tokens in storage after the wait mean a poll landed the user on /login
+  // during it and they signed in again: that new session is theirs to keep.
   const logout = useCallback(async () => {
     await endSession();
+    if (getAccessToken()) return;
     setLoggedOut(true);
     setMeResponse(null);
   }, []);
@@ -63,9 +68,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // its own; this runs only when that fails (the refresh token rejected, or
   // a 401 again with the new token). client.ts has already cleared the
   // tokens; nulling meResponse makes RequireAuth redirect to /login with
-  // the current location as `from`, so the user returns to it.
+  // the current location as `from`, so the user returns to it. Not while
+  // logout() runs: a screen polling during its wait lands here too, and that
+  // is a deliberate log out, with no page to return to (plan item 39).
   useEffect(() => {
-    setSessionExpiredHandler(() => setMeResponse(null));
+    setSessionExpiredHandler(() => {
+      setLoggedOut(isLoggingOut());
+      setMeResponse(null);
+    });
     return () => setSessionExpiredHandler(null);
   }, []);
 

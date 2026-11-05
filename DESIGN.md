@@ -499,6 +499,9 @@ was no existing participle to reuse, and a quiet button at full opacity would
 otherwise show no change at all for 5 s. `RequireAuth` does the landing on
 `/login`, not the button. A deliberate log out carries no `from`, so the next
 login starts at the dashboard; an expired session still returns to its page.
+The tokens clear before the call, so a tab closed during the wait stays signed
+out. A screen that fetches during the wait therefore lands on `/login` early,
+also with no `from`.
 The email shrinks first at phone width. Below 360px the account area takes a
 second line, the bar's one exception to 48px, because the busy label can't fit
 on the first.
