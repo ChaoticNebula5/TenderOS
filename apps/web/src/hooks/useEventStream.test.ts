@@ -59,6 +59,23 @@ describe("useEventStream", () => {
     expect(url).not.toContain("access_token");
   });
 
+  it("reads the resource again once the stream opens (plan item 54)", async () => {
+    // The read sent before the stream opened answered with the old state;
+    // the change landed before the server fixed the stream's starting set,
+    // so no message will ever announce it. Only the read on open shows it.
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    const states = ["before the change", "after the change"];
+    let reads = 0;
+    const changing = async () => states[Math.min(reads++, states.length - 1)];
+
+    const { result } = renderHook(() => useEventStream(changing, "run-6", true));
+
+    await waitFor(() => expect(result.current.data).toBe("before the change"));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    FakeEventSource.instances[0]!.onopen?.();
+    await waitFor(() => expect(result.current.data).toBe("after the change"));
+  });
+
   it("a 401 minting the ticket surfaces as error and does not retry", async () => {
     mintWorkflowEventsTicket.mockRejectedValue(new ApiError(401, { detail: "expired session" }));
 

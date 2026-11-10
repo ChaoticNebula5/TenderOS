@@ -10,7 +10,7 @@ from tenderos_backend.domain.services import tender_service, workflow_service
 from tenderos_api.dependencies import require_permission, require_permission_for_sse
 from tenderos_api.errors import DocumentsNotReadyError, WorkflowRunActiveAPIError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
-from tenderos_api.outbox_stream import outbox_event_stream
+from tenderos_api.outbox_stream import open_outbox_event_stream
 from tenderos_api.schemas.workflow import (
     AuditEventResponse,
     SSETicketResponse,
@@ -56,7 +56,7 @@ def _workflow_message(event: OutboxEvent) -> dict:
     }
 
 
-def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
+async def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
     """The run's progress stream: the four workflow event types for this
     run, as G13's dotted wire names. The polling loop itself lives in
     tenderos_api/outbox_stream.py (moved there in Phase 4 so async
@@ -69,8 +69,11 @@ def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
     container, not this API process). Routing through it would add a
     second, unnecessary cross-process hop on top of its own 5s floor, real
     latency this stream's "no manual reload" purpose can't absorb.
+
+    Awaited by the route before the response starts: plan item 54's
+    starting set of event ids is read here (see open_outbox_event_stream).
     """
-    return outbox_event_stream(
+    return await open_outbox_event_stream(
         event_types=_WORKFLOW_PROGRESS_EVENT_TYPES,
         payload_key="workflow_run_id",
         resource_id=run_id,
@@ -83,7 +86,7 @@ async def stream_workflow_events(
     run_id: UUID, current_user: User = Depends(require_permission_for_sse("view_workflow"))
 ) -> StreamingResponse:
     return StreamingResponse(
-        _workflow_progress_stream(run_id),
+        await _workflow_progress_stream(run_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

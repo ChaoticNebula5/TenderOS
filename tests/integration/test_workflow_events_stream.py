@@ -48,7 +48,7 @@ async def test_stream_emits_a_heartbeat_then_a_real_task_created_event():
         run = await uow.workflow.create_run(tender_id, "v1", {})
         await uow.commit()
 
-    gen = _workflow_progress_stream(run.id)
+    gen = await _workflow_progress_stream(run.id)
     first_chunk = await anext(gen)
     assert first_chunk == ": heartbeat\n\n", (
         "nothing has happened yet - must not fabricate an event"
@@ -90,7 +90,7 @@ async def test_stream_ignores_events_from_a_different_run():
         watched_run = await uow.workflow.create_run(tender_id, "v1", {})
         await uow.commit()
 
-    gen = _workflow_progress_stream(watched_run.id)
+    gen = await _workflow_progress_stream(watched_run.id)
     first_chunk = await anext(gen)
     assert first_chunk == ": heartbeat\n\n"
 
