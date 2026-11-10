@@ -102,7 +102,7 @@ jobs:
           --health-cmd "pg_isready -U tenderos -d tenderos_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
-        image: redis:8.10.1-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79
+        image: redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80
         ports:
           - 6379:6379
         options: >-
@@ -136,7 +136,7 @@ jobs:
           docker run -d --name s3 -p 9000:9000 -v s3_data:/data \
             -e ROOT_ACCESS_KEY_ID=changeme -e ROOT_SECRET_ACCESS_KEY=changeme \
             -e VGW_PORT=":9000" \
-            versity/versitygw:v1.9.0@sha256:eb7f786fcd91e72194e48fcf1ac16302d686bf8e3a71434bdbc067a6efd3fdc7 \
+            versity/versitygw:v1.10.0@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316 \
             --health /health posix /data
           timeout 30 bash -c 'until curl -sf http://localhost:9000/health; do sleep 1; done'
       - run: uv sync
