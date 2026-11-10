@@ -148,10 +148,7 @@ export function useEventStreamFor<T>(
           setError(err);
           return;
         }
-        retryTimeout = setTimeout(
-          () => void openStream(mintAttempt + 1),
-          1000 * 2 ** mintAttempt,
-        );
+        retryTimeout = setTimeout(() => void openStream(mintAttempt + 1), 1000 * 2 ** mintAttempt);
         return;
       }
       if (cancelled) return;

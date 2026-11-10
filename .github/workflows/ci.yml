@@ -222,6 +222,9 @@ jobs:
       - run: npm ci
       - run: npx tsc -b
       - run: npm run lint
+      # prettier --check (package.json's "format"); apps/web/.prettierignore
+      # keeps tokens.css out. Landing has no prettier yet (plan item 37).
+      - run: npm run format
       - run: npm test
 
   landing:
