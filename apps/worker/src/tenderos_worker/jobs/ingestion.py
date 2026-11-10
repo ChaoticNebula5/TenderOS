@@ -107,9 +107,7 @@ async def _persist_chunks(
                 embedding=embedding,
             )
 
-    stale_ids = [
-        chunk.id for chunk in existing_by_hash.values() if chunk.id not in reused_ids
-    ]
+    stale_ids = [chunk.id for chunk in existing_by_hash.values() if chunk.id not in reused_ids]
     await uow.documents.delete_chunks(stale_ids)
 
 

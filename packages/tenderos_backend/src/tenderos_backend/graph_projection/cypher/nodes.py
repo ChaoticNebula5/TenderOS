@@ -14,9 +14,7 @@ from neo4j import AsyncSession
 
 async def merge_tender_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:Tender {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:Tender {id: row.id}) SET n += row",
         rows=rows,
     )
 
@@ -49,54 +47,42 @@ async def mark_projection_complete(session: AsyncSession, tender_id: str) -> Non
 
 async def merge_requirement_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:Requirement {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:Requirement {id: row.id}) SET n += row",
         rows=rows,
     )
 
 
 async def merge_evidence_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:Evidence {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:Evidence {id: row.id}) SET n += row",
         rows=rows,
     )
 
 
 async def merge_compliance_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:Compliance {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:Compliance {id: row.id}) SET n += row",
         rows=rows,
     )
 
 
 async def merge_role_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:Role {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:Role {id: row.id}) SET n += row",
         rows=rows,
     )
 
 
 async def merge_proposal_claim_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:ProposalClaim {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:ProposalClaim {id: row.id}) SET n += row",
         rows=rows,
     )
 
 
 async def merge_proposal_section_nodes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
     await session.run(
-        "UNWIND $rows AS row "
-        "MERGE (n:ProposalSection {id: row.id}) "
-        "SET n += row",
+        "UNWIND $rows AS row MERGE (n:ProposalSection {id: row.id}) SET n += row",
         rows=rows,
     )
 

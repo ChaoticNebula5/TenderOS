@@ -17,9 +17,7 @@ router = APIRouter(tags=["commercial"])
 _RESOLVE = "resolve_commercial_finding"
 
 
-@router.get(
-    "/tenders/{tender_id}/pricing-documents", response_model=list[PricingDocumentResponse]
-)
+@router.get("/tenders/{tender_id}/pricing-documents", response_model=list[PricingDocumentResponse])
 async def list_pricing_documents(
     tender_id: UUID, current_user: User = Depends(require_permission(_RESOLVE))
 ) -> list[PricingDocumentResponse]:

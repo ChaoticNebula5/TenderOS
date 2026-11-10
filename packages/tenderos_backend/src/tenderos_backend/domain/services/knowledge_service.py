@@ -1397,7 +1397,9 @@ async def set_knowledge_selection(
         ):
             logger.warning(
                 "unauthorized knowledge selection attempt: actor=%s tender=%s (org=%s)",
-                actor_user_id, tender_id, tender.organization_id,
+                actor_user_id,
+                tender_id,
+                tender.organization_id,
             )
             raise CrossOrganizationTenderError()
         knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
@@ -1425,8 +1427,11 @@ async def set_knowledge_selection(
             logger.warning(
                 "cross-organization knowledge selection attempt: actor=%s "
                 "tender=%s (org=%s) knowledge_item=%s (org=%s)",
-                actor_user_id, tender_id, tender.organization_id,
-                knowledge_item_id, knowledge_item.organization_id,
+                actor_user_id,
+                tender_id,
+                tender.organization_id,
+                knowledge_item_id,
+                knowledge_item.organization_id,
             )
             raise CrossOrganizationKnowledgeItemError()
 

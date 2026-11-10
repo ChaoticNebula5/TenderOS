@@ -88,7 +88,9 @@ async def test_a_second_call_changes_nothing(clean_graph):
 
 async def test_the_constraints_refuse_a_second_node_with_one_key(clean_graph):
     with pytest.raises(ConstraintError):
-        await _run("CREATE (:Employee {knowledge_item_id: 'x'}), (:Employee {knowledge_item_id: 'x'})")
+        await _run(
+            "CREATE (:Employee {knowledge_item_id: 'x'}), (:Employee {knowledge_item_id: 'x'})"
+        )
 
 
 @pytest.mark.parametrize("label", _FIRST_MIDDLE_LAST)
@@ -109,7 +111,9 @@ async def test_a_duplicate_planted_on_any_label_fails_and_names_it(clean_graph, 
 
 async def test_a_failed_call_finishes_on_the_next_try_once_the_duplicate_is_gone(clean_graph):
     await _drop_all_constraints()
-    await _run("CREATE (:Employee {knowledge_item_id: 'dup'}), (:Employee {knowledge_item_id: 'dup'})")
+    await _run(
+        "CREATE (:Employee {knowledge_item_id: 'dup'}), (:Employee {knowledge_item_id: 'dup'})"
+    )
     with pytest.raises(DatabaseError):
         await ensure_constraints()
     assert 0 < len(await _constraints()) < 11, "statements before the conflict have applied"
@@ -122,7 +126,9 @@ async def test_a_failed_call_finishes_on_the_next_try_once_the_duplicate_is_gone
 
 async def test_apply_constraints_fails_closed_on_a_duplicate(clean_graph, capsys):
     await _drop_all_constraints()
-    await _run("CREATE (:Capability {knowledge_item_id: 'dup'}), (:Capability {knowledge_item_id: 'dup'})")
+    await _run(
+        "CREATE (:Capability {knowledge_item_id: 'dup'}), (:Capability {knowledge_item_id: 'dup'})"
+    )
 
     code = await apply_constraints.run()
 

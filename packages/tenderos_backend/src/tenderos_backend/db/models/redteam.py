@@ -27,9 +27,7 @@ class RedteamFinding(UUIDPrimaryKeyMixin, Base):
             "resolution_source IN ('system','human')",
             name="ck_redteam_finding_resolution_source",
         ),
-        UniqueConstraint(
-            "tender_id", "content_fingerprint", name="uq_redteam_finding_fingerprint"
-        ),
+        UniqueConstraint("tender_id", "content_fingerprint", name="uq_redteam_finding_fingerprint"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

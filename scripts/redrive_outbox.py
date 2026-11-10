@@ -102,7 +102,7 @@ async def run(argv: list[str]) -> int:
         print(f"{len(results)} dead-lettered event(s)")
         return EXIT_OK
     if not args.apply:
-        print("dry run: nothing written (--apply --reason \"...\" to re-drive)")
+        print('dry run: nothing written (--apply --reason "..." to re-drive)')
     return EXIT_REFUSED if any(r.refused for r in results) else EXIT_OK
 
 

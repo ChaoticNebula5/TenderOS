@@ -154,9 +154,7 @@ async def test_verify_returns_202_without_running_the_llm_inline():
         )
         headers = {"Authorization": f"Bearer {token}"}
 
-        resp = await client.post(
-            f"/requirements/{requirements[0]['id']}/verify", headers=headers
-        )
+        resp = await client.post(f"/requirements/{requirements[0]['id']}/verify", headers=headers)
         assert resp.status_code == 202
         # line 538: no LLM call inside the request - verified is still false,
         # the real work is left for the worker via the outbox.
@@ -266,9 +264,7 @@ async def test_requirements_routes_reject_a_caller_outside_the_organization():
         )
         outsider_headers = {"Authorization": f"Bearer {outsider.json()['access_token']}"}
 
-        list_resp = await client.get(
-            f"/tenders/{tender_id}/requirements", headers=outsider_headers
-        )
+        list_resp = await client.get(f"/tenders/{tender_id}/requirements", headers=outsider_headers)
         assert list_resp.status_code == 403, list_resp.text
 
         patch_resp = await client.patch(

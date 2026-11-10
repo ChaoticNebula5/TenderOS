@@ -87,7 +87,9 @@ async def _make_candidate(org_id: uuid.UUID) -> uuid.UUID:
         return knowledge_item.id
 
 
-def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
+def _base_state(
+    tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID
+) -> dict:
     return {
         "tender_id": str(tender_id),
         "organization_id": str(organization_id),
@@ -176,7 +178,9 @@ async def test_node_extracts_one_role_and_scores_one_candidate(monkeypatch):
 
     assert result == {"completed_task_ids": [str(task_id)]}
     async with UnitOfWork() as uow:
-        task = await uow.workflow.get_task_by_key(workflow_run_id, f"talent_analysis:{workflow_run_id}")
+        task = await uow.workflow.get_task_by_key(
+            workflow_run_id, f"talent_analysis:{workflow_run_id}"
+        )
         roles = await uow.talent.list_role_requirements_for_tender(tender_id)
     assert task is not None
     assert task.status == "completed"

@@ -215,9 +215,7 @@ async def _compute_candidate_talent_signals(
         # boundary (not fuzzy similarity) - reused here rather than
         # inventing a second matching heuristic for the same class of
         # problem.
-        match = next(
-            (item for item in cert_items if required.lower() in item.title.lower()), None
-        )
+        match = next((item for item in cert_items if required.lower() in item.title.lower()), None)
         if match is None:
             cert_findings.append(
                 CertFinding(required_cert=required, matched=False, validity_status="unverified")
@@ -258,9 +256,7 @@ async def _gather_candidate_evidence(
             knowledge_item_id=employee.knowledge_item_id,
             source_kind="employee",
             excerpt=(
-                f"{employee.current_title or 'Role unspecified'}, "
-                f"{years} "
-                "years of experience."
+                f"{employee.current_title or 'Role unspecified'}, {years} years of experience."
             ),
         )
     ]
@@ -388,46 +384,30 @@ def _mentions_availability(criterion: str) -> bool:
 def enforce_gap_visibility(
     scoring: CandidateScoring, signals: CandidateTalentSignals
 ) -> EnforcedScoring:
-    strengths = [
-        strength.model_dump()
-        for strength in scoring.strengths
-    ]
-    gaps = [
-        gap.model_dump()
-        for gap in scoring.gaps
-    ]
-    enforced_notes : list[str] = []
-    
-    existing_gap_criteria = {
-        gap["criterion"].strip().casefold()
-        for gap in gaps
-    }
-    
+    strengths = [strength.model_dump() for strength in scoring.strengths]
+    gaps = [gap.model_dump() for gap in scoring.gaps]
+    enforced_notes: list[str] = []
+
+    existing_gap_criteria = {gap["criterion"].strip().casefold() for gap in gaps}
+
     for finding in signals.cert_findings:
         if finding.validity_status == "valid":
             continue
-        
+
         normalized_criterion = finding.required_cert.strip().casefold()
         if normalized_criterion in existing_gap_criteria:
             continue
-        
-        gaps.append({
-            "criterion": finding.required_cert,
-            "status": finding.validity_status
-        })
-        
+
+        gaps.append({"criterion": finding.required_cert, "status": finding.validity_status})
+
         existing_gap_criteria.add(normalized_criterion)
         enforced_notes.append(
-            f"Added {finding.validity_status} certification gap: "
-            f"{finding.required_cert}"
+            f"Added {finding.validity_status} certification gap: {finding.required_cert}"
         )
-        
+
     profile_criterion = "profile currency"
 
-    if (
-        signals.profile_stale_or_unreviewed
-        and profile_criterion not in existing_gap_criteria
-    ):
+    if signals.profile_stale_or_unreviewed and profile_criterion not in existing_gap_criteria:
         gaps.append(
             {
                 "criterion": profile_criterion,
@@ -440,7 +420,7 @@ def enforce_gap_visibility(
         )
     if signals.availability_unknown:
         retained_strengths: list[dict] = []
-        
+
         for strength in strengths:
             if _mentions_availability(strength["criterion"]):
                 enforced_notes.append(
@@ -450,7 +430,7 @@ def enforce_gap_visibility(
                 continue
             retained_strengths.append(strength)
         strengths = retained_strengths
-        
+
         availability_criterion = "availability"
 
         if availability_criterion not in existing_gap_criteria:
@@ -461,20 +441,18 @@ def enforce_gap_visibility(
                 }
             )
             existing_gap_criteria.add(availability_criterion)
-            enforced_notes.append(
-                "Added availability gap because availability is unknown"
-            )
+            enforced_notes.append("Added availability gap because availability is unknown")
     return EnforcedScoring(
         strengths=strengths,
         gaps=gaps,
         enforced_notes=enforced_notes,
     )
-            
 
 
 # ----------------------------------------------------------------------
 # Candidate matching / scoring
 # ----------------------------------------------------------------------
+
 
 async def find_candidate_pool(organization_id: uuid.UUID) -> list[Employee]:
     async with UnitOfWork() as uow:
@@ -618,7 +596,9 @@ async def set_candidate_selection(
             logger.warning(
                 "unauthorized role-candidate selection attempt: actor=%s "
                 "role_requirement=%s (org=%s)",
-                actor_user_id, role_requirement_id, tender.organization_id,
+                actor_user_id,
+                role_requirement_id,
+                tender.organization_id,
             )
             raise CrossOrganizationRoleError()
         match = await uow.talent.get_role_match_by_candidate(

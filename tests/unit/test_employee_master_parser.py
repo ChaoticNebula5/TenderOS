@@ -15,8 +15,7 @@ def _csv_bytes(text: str) -> bytes:
 
 def test_parse_employee_master_csv_parses_a_valid_csv():
     content = _csv_bytes(
-        "Employee Code,Name,Role,Status\r\n"
-        "EMP-01,Dana Whitfield,Senior Engineer,active\r\n"
+        "Employee Code,Name,Role,Status\r\nEMP-01,Dana Whitfield,Senior Engineer,active\r\n"
     )
 
     rows = parse_employee_master_csv(content)

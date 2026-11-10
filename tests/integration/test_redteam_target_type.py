@@ -283,7 +283,9 @@ async def test_after_the_migration_a_pass_adds_no_row_and_keeps_a_human_resoluti
     assert kept.resolved is True
     assert kept.resolution_source == "human"
     assert kept.resolution_note == "accepted, the lead stays on"
-    still_open = [f for f in after if f.finding_category in _GRAPH_CATEGORIES and f.id != resolved_id]
+    still_open = [
+        f for f in after if f.finding_category in _GRAPH_CATEGORIES and f.id != resolved_id
+    ]
     assert still_open and all(f.resolved is False for f in still_open), (
         "the pass must have re-detected these, not retired them as gone"
     )

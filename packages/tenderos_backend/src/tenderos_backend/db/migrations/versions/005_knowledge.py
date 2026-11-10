@@ -116,9 +116,7 @@ def upgrade() -> None:
         ),
         sa.Column("source_ref", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="pending"),
-        sa.Column(
-            "extracted_payload", postgresql.JSONB(), nullable=False, server_default="{}"
-        ),
+        sa.Column("extracted_payload", postgresql.JSONB(), nullable=False, server_default="{}"),
         # FK to knowledge_items added below, after that table exists.
         sa.Column("target_knowledge_item_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("error_code", sa.Text(), nullable=True),
@@ -139,9 +137,7 @@ def upgrade() -> None:
             "status IN ('pending','extracted','needs_review','approved','rejected','failed')",
             name="ck_knowledge_import_item_status",
         ),
-        sa.UniqueConstraint(
-            "batch_id", "source_ref", name="uq_knowledge_import_item_source_ref"
-        ),
+        sa.UniqueConstraint("batch_id", "source_ref", name="uq_knowledge_import_item_source_ref"),
     )
 
     op.create_table(
@@ -242,9 +238,7 @@ def upgrade() -> None:
         sa.Column("current_title", sa.Text(), nullable=True),
         sa.Column("years_experience", sa.Numeric(), nullable=True),
         sa.Column("professional_location", sa.Text(), nullable=True),
-        sa.Column(
-            "availability_status", sa.Text(), nullable=False, server_default="unknown"
-        ),
+        sa.Column("availability_status", sa.Text(), nullable=False, server_default="unknown"),
         sa.Column("availability_as_of", sa.Date(), nullable=True),
         sa.Column("eligible_for_bid", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
@@ -265,13 +259,11 @@ def upgrade() -> None:
         ),
         sa.Column("parsed_profile", postgresql.JSONB(), nullable=False, server_default="{}"),
         sa.CheckConstraint(
-            "availability_status IN "
-            "('available','partially_available','unavailable','unknown')",
+            "availability_status IN ('available','partially_available','unavailable','unknown')",
             name="ck_employee_availability_status",
         ),
         sa.CheckConstraint(
-            "profile_review_status IN "
-            "('needs_review','verified','stale','rejected','archived')",
+            "profile_review_status IN ('needs_review','verified','stale','rejected','archived')",
             name="ck_employee_profile_review_status",
         ),
     )
@@ -447,9 +439,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.UniqueConstraint(
-            "tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"
-        ),
+        sa.UniqueConstraint("tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"),
     )
     op.create_index(
         "idx_tender_knowledge_selected",
@@ -459,9 +449,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "idx_tender_knowledge_selected", table_name="tender_knowledge_selections"
-    )
+    op.drop_index("idx_tender_knowledge_selected", table_name="tender_knowledge_selections")
     op.drop_table("tender_knowledge_selections")
     op.drop_table("knowledge_relationships")
     op.drop_table("company_documents")

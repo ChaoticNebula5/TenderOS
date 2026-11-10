@@ -11,9 +11,7 @@ from tenderos_backend.db.models.base import Base, UUIDPrimaryKeyMixin
 class ReadinessReport(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "readiness_reports"
     __table_args__ = (
-        UniqueConstraint(
-            "tender_id", "tender_state_version", name="uq_readiness_report_version"
-        ),
+        UniqueConstraint("tender_id", "tender_state_version", name="uq_readiness_report_version"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

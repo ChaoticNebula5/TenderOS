@@ -46,7 +46,9 @@ async def test_supervisor_node_writes_plan_version_to_postgres_not_only_the_chec
 
     result = await supervisor_node({"workflow_run_id": str(run_id), "plan_version": 0})
 
-    assert result["plan_version"] == 1, "the checkpoint's own copy already worked - regression guard"
+    assert result["plan_version"] == 1, (
+        "the checkpoint's own copy already worked - regression guard"
+    )
 
     async with UnitOfWork() as uow:
         after = await uow.workflow.get_run(run_id)

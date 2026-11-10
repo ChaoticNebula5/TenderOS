@@ -120,118 +120,170 @@ class CapabilitySpec:
 
 _HAND_AUTHORED: list[RequirementSpec] = [
     RequirementSpec(
-        "REQ-001", True, "security",
+        "REQ-001",
+        True,
+        "security",
         "[REQ-001] The platform shall integrate with the Authority's Active Directory "
         "for single sign-on.",
-        RFP_PDF, source_page=1,
+        RFP_PDF,
+        source_page=1,
     ),
     RequirementSpec(
-        "REQ-002", True, "eligibility",
+        "REQ-002",
+        True,
+        "eligibility",
         "[REQ-002] The bidder must hold a valid tax clearance certificate issued "
         "within the last twelve months.",
-        RFP_PDF, source_page=1,
-        expected_compliance="compliant", valid_evidence_keys=["CERT-01"],
+        RFP_PDF,
+        source_page=1,
+        expected_compliance="compliant",
+        valid_evidence_keys=["CERT-01"],
     ),
     RequirementSpec(
-        "REQ-003", True, "experience",
+        "REQ-003",
+        True,
+        "experience",
         "[REQ-003] The bidder is required to demonstrate at least three comparable "
         "projects delivered in the past five years.",
-        RFP_PDF, source_page=1,
+        RFP_PDF,
+        source_page=1,
         expected_compliance="partially_compliant",
         valid_evidence_keys=["PROJECT-01", "PROJECT-02"],
     ),
     RequirementSpec(
-        "REQ-004", False, "technical",
+        "REQ-004",
+        False,
+        "technical",
         "[REQ-004] Support for a dark-mode user interface is preferred but not "
         "required for this engagement.",
-        RFP_PDF, source_page=1,
+        RFP_PDF,
+        source_page=1,
     ),
     RequirementSpec(
-        "REQ-005", True, "commercial",
+        "REQ-005",
+        True,
+        "commercial",
         "[REQ-005] Pricing shall remain fixed for the full twelve-month contract "
         "term, with no mid-term escalation clauses.",
-        RFP_PDF, source_page=2,
+        RFP_PDF,
+        source_page=2,
     ),
     RequirementSpec(
-        "REQ-006", False, "commercial",
+        "REQ-006",
+        False,
+        "commercial",
         "[REQ-006] A volume discount schedule for optional add-on modules is desirable.",
-        RFP_PDF, source_page=2,
+        RFP_PDF,
+        source_page=2,
     ),
     RequirementSpec(
-        "REQ-007", True, "submission",
-        "[REQ-007] Proposals must be submitted no later than 31 March 2026 at "
-        "17:00 local time.",
-        RFP_PDF, source_page=2,
+        "REQ-007",
+        True,
+        "submission",
+        "[REQ-007] Proposals must be submitted no later than 31 March 2026 at 17:00 local time.",
+        RFP_PDF,
+        source_page=2,
     ),
     RequirementSpec(
-        "REQ-008", True, "submission",
-        "[REQ-008] Late submissions shall not be considered under any circumstances "
-        "whatsoever.",
-        RFP_PDF, source_page=2,
+        "REQ-008",
+        True,
+        "submission",
+        "[REQ-008] Late submissions shall not be considered under any circumstances whatsoever.",
+        RFP_PDF,
+        source_page=2,
     ),
     RequirementSpec(
-        "REQ-009", True, "legal",
+        "REQ-009",
+        True,
+        "legal",
         "[REQ-009] The successful bidder will be responsible for maintaining "
         "professional indemnity insurance of at least 1,000,000 for the contract duration.",
-        RFP_PDF, source_page=2,
+        RFP_PDF,
+        source_page=2,
         expected_compliance="unsupported",
     ),
     RequirementSpec(
-        "REQ-010", False, "staffing",
+        "REQ-010",
+        False,
+        "staffing",
         "[REQ-010] Where possible, the proposed team should include a certified "
         "project manager, though this is not a precondition for evaluation.",
-        RFP_PDF, source_page=3,
+        RFP_PDF,
+        source_page=3,
     ),
     RequirementSpec(
-        "REQ-011", True, "staffing",
+        "REQ-011",
+        True,
+        "staffing",
         "[REQ-011] The bidder must assign a dedicated technical lead who is "
         "available for the full duration of the engagement.",
-        RFP_PDF, source_page=3,
-        expected_compliance="compliant", valid_evidence_keys=["PROJECT-03"],
+        RFP_PDF,
+        source_page=3,
+        expected_compliance="compliant",
+        valid_evidence_keys=["PROJECT-03"],
     ),
     RequirementSpec(
-        "REQ-012", True, "security",
+        "REQ-012",
+        True,
+        "security",
         "[REQ-012] All personal data processed under this contract must comply "
         "with applicable data-protection legislation.",
-        RFP_PDF, source_page=3,
+        RFP_PDF,
+        source_page=3,
     ),
     RequirementSpec(
-        "REQ-013", False, "technical",
+        "REQ-013",
+        False,
+        "technical",
         "[REQ-013] Bidders may optionally propose an accelerated delivery timeline "
         "if it does not compromise quality.",
-        RFP_PDF, source_page=3,
+        RFP_PDF,
+        source_page=3,
     ),
     RequirementSpec(
         # Negation edge case: contains "shall" (mandatory-list term) but the
         # sentence means the opposite - exercises the classifier's negation
         # handling, and the LLM's own contextual reading, on the same input.
-        "REQ-014", False, "technical",
+        "REQ-014",
+        False,
+        "technical",
         "[REQ-014] The vendor shall not be required to provide on-site support "
         "outside standard business hours.",
-        RFP_PDF, source_page=4,
+        RFP_PDF,
+        source_page=4,
     ),
     RequirementSpec(
-        "REQ-015", True, "technical",
+        "REQ-015",
+        True,
+        "technical",
         "[REQ-015] The solution must, at a minimum, support concurrent access "
         "for five hundred named users.",
         ANNEXURE_DOCX,
-        expected_compliance="compliant", valid_evidence_keys=["PROJECT-01"],
+        expected_compliance="compliant",
+        valid_evidence_keys=["PROJECT-01"],
     ),
     RequirementSpec(
-        "REQ-016", True, "eligibility",
+        "REQ-016",
+        True,
+        "eligibility",
         "[REQ-016] The bidder shall not have been subject to a debarment decision "
         "by any public authority within the past five years.",
-        RFP_PDF, source_page=4,
+        RFP_PDF,
+        source_page=4,
     ),
     RequirementSpec(
-        "REQ-017", True, "commercial",
+        "REQ-017",
+        True,
+        "commercial",
         "[REQ-017] All prices quoted shall be inclusive of applicable duties and "
         "shall be denominated in USD.",
         ANNEXURE_DOCX,
         expected_compliance="unsupported",
     ),
     RequirementSpec(
-        "REQ-018", False, "other",
+        "REQ-018",
+        False,
+        "other",
         "[REQ-018] Additional case studies beyond the required minimum are "
         "welcome but will not affect the technical score.",
         ANNEXURE_DOCX,
@@ -256,112 +308,300 @@ _HAND_AUTHORED: list[RequirementSpec] = [
 # item, and _build_page_doc_assignments assigns (document, page) from an
 # independently seeded shuffle instead of the same loop index.
 _FILLER_TEMPLATES: list[tuple[str, str, bool]] = [
-    ("technical", "The system {token} support single sign-on via SAML 2.0 for "
-                  "all administrative users.", True),
-    ("technical", "The platform {token} maintain 99.5% uptime measured monthly, "
-                  "excluding scheduled maintenance windows.", True),
-    ("technical", "The solution {token} provide a sandbox environment for user "
-                  "acceptance testing prior to go-live.", True),
-    ("technical", "Data exports {token} be available in both CSV and JSON "
-                  "formats.", True),
-    ("technical", "The vendor {token} support a phased migration of legacy "
-                  "records over no more than three release cycles.", False),
-    ("technical", "The platform {token} offer a dark-mode display option for "
-                  "the end-user interface.", False),
-    ("staffing", "The bidder {token} assign a dedicated project manager who "
-                 "remains in place for the contract's first twelve months.", True),
-    ("staffing", "Each key personnel substitution {token} be accompanied by a "
-                 "CV of equivalent or greater experience.", True),
-    ("staffing", "The bidder {token} maintain a minimum of two certified "
-                 "database administrators on the account team throughout "
-                 "delivery.", True),
-    ("staffing", "Subcontracted staff {token} undergo the same background-check "
-                 "process as direct employees.", True),
-    ("staffing", "The bidder {token} offer an optional on-site training day for "
-                 "the Authority's staff during handover.", False),
-    ("staffing", "A staffing contingency plan for key-role absence longer than "
-                 "two weeks {token} be included.", False),
-    ("commercial", "The bidder's pricing schedule {token} disclose any "
-                   "assumptions underlying the quoted unit rates.", True),
-    ("commercial", "Any price escalation after year one {token} be capped at "
-                   "the published consumer price index.", True),
-    ("commercial", "The bidder {token} itemize implementation costs separately "
-                   "from ongoing subscription costs.", True),
-    ("commercial", "Late payment beyond forty-five days {token} accrue interest "
-                   "at the statutory rate.", True),
-    ("commercial", "A volume discount schedule for additional user licenses "
-                   "{token} be proposed.", False),
+    (
+        "technical",
+        "The system {token} support single sign-on via SAML 2.0 for all administrative users.",
+        True,
+    ),
+    (
+        "technical",
+        "The platform {token} maintain 99.5% uptime measured monthly, "
+        "excluding scheduled maintenance windows.",
+        True,
+    ),
+    (
+        "technical",
+        "The solution {token} provide a sandbox environment for user "
+        "acceptance testing prior to go-live.",
+        True,
+    ),
+    ("technical", "Data exports {token} be available in both CSV and JSON formats.", True),
+    (
+        "technical",
+        "The vendor {token} support a phased migration of legacy "
+        "records over no more than three release cycles.",
+        False,
+    ),
+    (
+        "technical",
+        "The platform {token} offer a dark-mode display option for the end-user interface.",
+        False,
+    ),
+    (
+        "staffing",
+        "The bidder {token} assign a dedicated project manager who "
+        "remains in place for the contract's first twelve months.",
+        True,
+    ),
+    (
+        "staffing",
+        "Each key personnel substitution {token} be accompanied by a "
+        "CV of equivalent or greater experience.",
+        True,
+    ),
+    (
+        "staffing",
+        "The bidder {token} maintain a minimum of two certified "
+        "database administrators on the account team throughout "
+        "delivery.",
+        True,
+    ),
+    (
+        "staffing",
+        "Subcontracted staff {token} undergo the same background-check "
+        "process as direct employees.",
+        True,
+    ),
+    (
+        "staffing",
+        "The bidder {token} offer an optional on-site training day for "
+        "the Authority's staff during handover.",
+        False,
+    ),
+    (
+        "staffing",
+        "A staffing contingency plan for key-role absence longer than "
+        "two weeks {token} be included.",
+        False,
+    ),
+    (
+        "commercial",
+        "The bidder's pricing schedule {token} disclose any "
+        "assumptions underlying the quoted unit rates.",
+        True,
+    ),
+    (
+        "commercial",
+        "Any price escalation after year one {token} be capped at "
+        "the published consumer price index.",
+        True,
+    ),
+    (
+        "commercial",
+        "The bidder {token} itemize implementation costs separately "
+        "from ongoing subscription costs.",
+        True,
+    ),
+    (
+        "commercial",
+        "Late payment beyond forty-five days {token} accrue interest at the statutory rate.",
+        True,
+    ),
+    (
+        "commercial",
+        "A volume discount schedule for additional user licenses {token} be proposed.",
+        False,
+    ),
     ("commercial", "A multi-year prepayment discount option {token} be offered.", False),
-    ("submission", "The commercial proposal {token} be submitted as a separate "
-                   "sealed file from the technical proposal.", True),
-    ("submission", "All submission files {token} be named according to the "
-                   "naming convention specified in Appendix B.", True),
-    ("submission", "The bidder's authorized signatory {token} sign and date the "
-                   "cover letter.", True),
-    ("submission", "The bidder {token} provide proposal copies in both "
-                   "electronic and one physical hard-copy format.", True),
-    ("submission", "A video walkthrough of the proposed solution {token} be "
-                   "submitted alongside the written proposal.", False),
-    ("submission", "A one-page summary of team qualifications {token} be "
-                   "attached as an appendix.", False),
-    ("legal", "The successful bidder {token} execute a data processing "
-              "agreement prior to contract commencement.", True),
-    ("legal", "Intellectual property developed under this contract {token} "
-              "vest in the Authority upon final payment.", True),
-    ("legal", "The bidder {token} disclose any pending litigation relevant to "
-              "the services described in this RFP.", True),
-    ("legal", "Force majeure provisions {token} follow the standard clause "
-              "published in Appendix C.", True),
-    ("legal", "An indemnification clause exceeding the standard template "
-              "{token} be flagged for legal review before signature.", False),
-    ("legal", "A voluntary sustainability declaration {token} be included with "
-              "the legal submission.", False),
-    ("security", "The bidder {token} hold a current ISO 27001 certification or "
-                 "provide a remediation timeline to obtain one.", True),
-    ("security", "All data at rest {token} be encrypted using AES-256 or an "
-                 "equivalent approved standard.", True),
-    ("security", "The bidder {token} conduct an annual third-party penetration "
-                 "test and share summary findings with the Authority.", True),
-    ("security", "Administrative access to production databases {token} be "
-                 "logged and retained for a minimum of one year.", True),
-    ("security", "A dedicated security operations contact {token} be available "
-                 "outside standard business hours.", False),
-    ("security", "A voluntary bug-bounty program covering the delivered "
-                 "solution {token} be described if one exists.", False),
-    ("experience", "The bidder {token} identify the specific team members who "
-                   "will remain assigned across all phases of a multi-phase "
-                   "engagement.", True),
-    ("experience", "The proposed delivery lead {token} have personally managed "
-                   "at least one project of similar size and sector.", True),
-    ("experience", "The bidder {token} disclose any contract terminated for "
-                   "cause within the past five years.", True),
-    ("experience", "Evidence of experience integrating with legacy mainframe "
-                   "systems {token} be provided where claimed.", True),
-    ("experience", "Awards or industry recognitions relevant to similar "
-                   "engagements {token} be listed if available.", False),
-    ("experience", "A short video testimonial from a past client {token} be "
-                   "included where consent has been obtained.", False),
-    ("eligibility", "The bidder {token} be currently registered as an active, "
-                    "legally operating entity in its jurisdiction of "
-                    "incorporation.", True),
-    ("eligibility", "The bidder {token} hold the minimum annual turnover "
-                    "threshold specified in the eligibility criteria.", True),
-    ("eligibility", "A parent-company guarantee {token} be provided where the "
-                    "bidding entity is a subsidiary.", True),
-    ("eligibility", "The bidder {token} confirm there is no undisclosed common "
-                    "ownership with a competing bidder on this tender.", True),
-    ("eligibility", "Bidders operating as a consortium {token} identify a "
-                    "single point of contact for all correspondence.", False),
-    ("other", "The bidder {token} acknowledge and accept the Authority's "
-              "standard code of conduct for suppliers.", True),
-    ("other", "Any assumptions made in preparing the proposal {token} be "
-              "listed explicitly in a dedicated appendix.", True),
-    ("other", "The bidder {token} confirm the proposal remains valid for at "
-              "least ninety days from the submission deadline.", True),
-    ("other", "A short statement of the bidder's approach to environmental "
-              "sustainability {token} be included.", False),
-    ("other", "A proposed glossary of acronyms used throughout the response "
-              "{token} be provided for the evaluators' convenience.", False),
+    (
+        "submission",
+        "The commercial proposal {token} be submitted as a separate "
+        "sealed file from the technical proposal.",
+        True,
+    ),
+    (
+        "submission",
+        "All submission files {token} be named according to the "
+        "naming convention specified in Appendix B.",
+        True,
+    ),
+    (
+        "submission",
+        "The bidder's authorized signatory {token} sign and date the cover letter.",
+        True,
+    ),
+    (
+        "submission",
+        "The bidder {token} provide proposal copies in both "
+        "electronic and one physical hard-copy format.",
+        True,
+    ),
+    (
+        "submission",
+        "A video walkthrough of the proposed solution {token} be "
+        "submitted alongside the written proposal.",
+        False,
+    ),
+    (
+        "submission",
+        "A one-page summary of team qualifications {token} be attached as an appendix.",
+        False,
+    ),
+    (
+        "legal",
+        "The successful bidder {token} execute a data processing "
+        "agreement prior to contract commencement.",
+        True,
+    ),
+    (
+        "legal",
+        "Intellectual property developed under this contract {token} "
+        "vest in the Authority upon final payment.",
+        True,
+    ),
+    (
+        "legal",
+        "The bidder {token} disclose any pending litigation relevant to "
+        "the services described in this RFP.",
+        True,
+    ),
+    (
+        "legal",
+        "Force majeure provisions {token} follow the standard clause published in Appendix C.",
+        True,
+    ),
+    (
+        "legal",
+        "An indemnification clause exceeding the standard template "
+        "{token} be flagged for legal review before signature.",
+        False,
+    ),
+    (
+        "legal",
+        "A voluntary sustainability declaration {token} be included with the legal submission.",
+        False,
+    ),
+    (
+        "security",
+        "The bidder {token} hold a current ISO 27001 certification or "
+        "provide a remediation timeline to obtain one.",
+        True,
+    ),
+    (
+        "security",
+        "All data at rest {token} be encrypted using AES-256 or an equivalent approved standard.",
+        True,
+    ),
+    (
+        "security",
+        "The bidder {token} conduct an annual third-party penetration "
+        "test and share summary findings with the Authority.",
+        True,
+    ),
+    (
+        "security",
+        "Administrative access to production databases {token} be "
+        "logged and retained for a minimum of one year.",
+        True,
+    ),
+    (
+        "security",
+        "A dedicated security operations contact {token} be available "
+        "outside standard business hours.",
+        False,
+    ),
+    (
+        "security",
+        "A voluntary bug-bounty program covering the delivered "
+        "solution {token} be described if one exists.",
+        False,
+    ),
+    (
+        "experience",
+        "The bidder {token} identify the specific team members who "
+        "will remain assigned across all phases of a multi-phase "
+        "engagement.",
+        True,
+    ),
+    (
+        "experience",
+        "The proposed delivery lead {token} have personally managed "
+        "at least one project of similar size and sector.",
+        True,
+    ),
+    (
+        "experience",
+        "The bidder {token} disclose any contract terminated for cause within the past five years.",
+        True,
+    ),
+    (
+        "experience",
+        "Evidence of experience integrating with legacy mainframe "
+        "systems {token} be provided where claimed.",
+        True,
+    ),
+    (
+        "experience",
+        "Awards or industry recognitions relevant to similar "
+        "engagements {token} be listed if available.",
+        False,
+    ),
+    (
+        "experience",
+        "A short video testimonial from a past client {token} be "
+        "included where consent has been obtained.",
+        False,
+    ),
+    (
+        "eligibility",
+        "The bidder {token} be currently registered as an active, "
+        "legally operating entity in its jurisdiction of "
+        "incorporation.",
+        True,
+    ),
+    (
+        "eligibility",
+        "The bidder {token} hold the minimum annual turnover "
+        "threshold specified in the eligibility criteria.",
+        True,
+    ),
+    (
+        "eligibility",
+        "A parent-company guarantee {token} be provided where the bidding entity is a subsidiary.",
+        True,
+    ),
+    (
+        "eligibility",
+        "The bidder {token} confirm there is no undisclosed common "
+        "ownership with a competing bidder on this tender.",
+        True,
+    ),
+    (
+        "eligibility",
+        "Bidders operating as a consortium {token} identify a "
+        "single point of contact for all correspondence.",
+        False,
+    ),
+    (
+        "other",
+        "The bidder {token} acknowledge and accept the Authority's "
+        "standard code of conduct for suppliers.",
+        True,
+    ),
+    (
+        "other",
+        "Any assumptions made in preparing the proposal {token} be "
+        "listed explicitly in a dedicated appendix.",
+        True,
+    ),
+    (
+        "other",
+        "The bidder {token} confirm the proposal remains valid for at "
+        "least ninety days from the submission deadline.",
+        True,
+    ),
+    (
+        "other",
+        "A short statement of the bidder's approach to environmental "
+        "sustainability {token} be included.",
+        False,
+    ),
+    (
+        "other",
+        "A proposed glossary of acronyms used throughout the response "
+        "{token} be provided for the evaluators' convenience.",
+        False,
+    ),
 ]
 _MANDATORY_MODALS = ("shall", "must", "is required to", "will")
 _OPTIONAL_MODALS = ("should", "may", "is encouraged to")
@@ -371,8 +611,14 @@ _OPTIONAL_MODALS = ("should", "may", "is encouraged to")
 # (clause codes, row IDs) that signal per-item distinctness independent of
 # surrounding phrasing, which the old unprefixed filler lacked entirely.
 _CLAUSE_SECTION_BY_CATEGORY = {
-    "technical": 4, "staffing": 5, "commercial": 6, "submission": 7,
-    "legal": 8, "security": 9, "experience": 10, "eligibility": 11,
+    "technical": 4,
+    "staffing": 5,
+    "commercial": 6,
+    "submission": 7,
+    "legal": 8,
+    "security": 9,
+    "experience": 10,
+    "eligibility": 11,
     "other": 12,
 }
 
@@ -403,8 +649,7 @@ def _generate_filler(start_index: int, count: int) -> list[RequirementSpec]:
         token = f"[{key}]"
         category_item_counts[category] = category_item_counts.get(category, 0) + 1
         clause_prefix = (
-            f"Clause {_CLAUSE_SECTION_BY_CATEGORY[category]}."
-            f"{category_item_counts[category]}: "
+            f"Clause {_CLAUSE_SECTION_BY_CATEGORY[category]}.{category_item_counts[category]}: "
         )
         # {token} sits where the modal verb goes, so the planted [REQ-nnn]
         # marker and the mandatory-language signal appear together - closer
@@ -423,17 +668,23 @@ _FILLER = _generate_filler(start_index=len(_HAND_AUTHORED) + 1, count=52)
 
 _AMENDMENT_REQUIREMENTS: list[RequirementSpec] = [
     RequirementSpec(
-        "REQ-071", True, "technical",
+        "REQ-071",
+        True,
+        "technical",
         "[REQ-071] Amendment 1: the concurrent-user requirement in Section 4.2 is "
         "revised - the solution shall now support concurrent access for seven "
         "hundred fifty named users, superseding the original figure of five hundred.",
-        AMENDMENT_PDF, source_page=1,
+        AMENDMENT_PDF,
+        source_page=1,
     ),
     RequirementSpec(
-        "REQ-072", True, "submission",
+        "REQ-072",
+        True,
+        "submission",
         "[REQ-072] Amendment 1: the submission deadline in Section 3.1 is extended "
         "- proposals must now be submitted no later than 14 April 2026 at 17:00 local time.",
-        AMENDMENT_PDF, source_page=1,
+        AMENDMENT_PDF,
+        source_page=1,
     ),
 ]
 
@@ -450,12 +701,17 @@ _AMENDMENT_REQUIREMENTS: list[RequirementSpec] = [
 # dropping the stricter (annexure) figure.
 _DIVERGENT_RESTATEMENT_PAIR: list[RequirementSpec] = [
     RequirementSpec(
-        "REQ-073", True, "security",
+        "REQ-073",
+        True,
+        "security",
         "[REQ-073] Audit logs shall be retained for a minimum of one year.",
-        RFP_PDF, source_page=4,
+        RFP_PDF,
+        source_page=4,
     ),
     RequirementSpec(
-        "REQ-074", True, "security",
+        "REQ-074",
+        True,
+        "security",
         "[REQ-074] Audit logs shall be retained for a minimum of three years.",
         ANNEXURE_DOCX,
     ),
@@ -474,15 +730,16 @@ _UNSUPPORTED_KEYS = ("REQ-009", "REQ-017", "REQ-004", "REQ-006", "REQ-018")
 
 SUBMISSION_ITEMS: list[SubmissionItemSpec] = [
     SubmissionItemSpec("SUB-01", "Signed cover letter", True, RFP_PDF, will_be_uploaded=True),
-    SubmissionItemSpec(
-        "SUB-02", "Tax clearance certificate", True, RFP_PDF, will_be_uploaded=True
-    ),
+    SubmissionItemSpec("SUB-02", "Tax clearance certificate", True, RFP_PDF, will_be_uploaded=True),
     SubmissionItemSpec(
         "SUB-03", "Three signed reference letters", True, RFP_PDF, will_be_uploaded=False
     ),
     SubmissionItemSpec(
-        "SUB-04", "Proof of professional indemnity insurance", True,
-        RFP_PDF, will_be_uploaded=False,
+        "SUB-04",
+        "Proof of professional indemnity insurance",
+        True,
+        RFP_PDF,
+        will_be_uploaded=False,
     ),
     SubmissionItemSpec(
         "SUB-05", "Company organizational chart", False, RFP_PDF, will_be_uploaded=True
@@ -499,35 +756,53 @@ EMPLOYEES: list[EmployeeSpec] = [
     EmployeeSpec("EMP-02", "Marcus Ilori", "Senior Engineer", "resume_marcus_ilori.docx"),
     EmployeeSpec("EMP-03", "Priya Ostrowski", "Project Manager", "resume_priya_ostrowski.docx"),
     EmployeeSpec(
-        "EMP-04", "Tomás Reyes", "Security Consultant",
-        "resume_tomas_reyes.docx", incomplete=True,
+        "EMP-04",
+        "Tomás Reyes",
+        "Security Consultant",
+        "resume_tomas_reyes.docx",
+        incomplete=True,
     ),
     EmployeeSpec(
-        "EMP-05", "Dana Whitfield (dup)", "Solution Architect",
+        "EMP-05",
+        "Dana Whitfield (dup)",
+        "Solution Architect",
         "resume_dana_whitfield_resubmit.docx",
     ),
     EmployeeSpec(
-        "EMP-06", "Helen Achterberg", "Former Commercial Lead",
-        resume_file=None, removed=True,
+        "EMP-06",
+        "Helen Achterberg",
+        "Former Commercial Lead",
+        resume_file=None,
+        removed=True,
     ),
 ]
 
 CERTIFICATIONS: list[CertificationSpec] = [
     CertificationSpec(
-        "CERT-01", "EMP-01", "Tax Clearance Certificate",
-        "Revenue Authority", "2025-09-01", "2026-09-01",
+        "CERT-01",
+        "EMP-01",
+        "Tax Clearance Certificate",
+        "Revenue Authority",
+        "2025-09-01",
+        "2026-09-01",
     ),
     CertificationSpec(
-        "CERT-02", "EMP-02", "AWS Certified Solutions Architect",
-        "Amazon Web Services", "2023-05-10", "2026-05-10",
+        "CERT-02",
+        "EMP-02",
+        "AWS Certified Solutions Architect",
+        "Amazon Web Services",
+        "2023-05-10",
+        "2026-05-10",
     ),
     CertificationSpec(
-        "CERT-03", "EMP-03", "PMP",
-        "Project Management Institute", "2021-02-15", "2027-02-15",
+        "CERT-03",
+        "EMP-03",
+        "PMP",
+        "Project Management Institute",
+        "2021-02-15",
+        "2027-02-15",
     ),
-    CertificationSpec(
-        "CERT-04", "EMP-04", "CISSP", "ISC2", "2019-11-01", "2023-11-01"
-    ),  # expired
+    CertificationSpec("CERT-04", "EMP-04", "CISSP", "ISC2", "2019-11-01", "2023-11-01"),  # expired
     CertificationSpec(
         "CERT-05", "EMP-01", "ISO 27001 Lead Implementer", "PECB", "2024-01-20", "2027-01-20"
     ),
@@ -538,40 +813,52 @@ CERTIFICATIONS: list[CertificationSpec] = [
 
 PROJECTS: list[ProjectSpec] = [
     ProjectSpec(
-        "PROJECT-01", "Regional Network Modernization", "Ministry of Transport", "2024",
+        "PROJECT-01",
+        "Regional Network Modernization",
+        "Ministry of Transport",
+        "2024",
         "Delivered network infrastructure upgrades across six regional sites, "
         "supporting over five hundred concurrent users.",
     ),
     ProjectSpec(
-        "PROJECT-02", "Citizen Services Portal", "City of Alden", "2023",
+        "PROJECT-02",
+        "Citizen Services Portal",
+        "City of Alden",
+        "2023",
         "Built and operated a public-facing citizen services portal integrated "
         "with single sign-on.",
     ),
     ProjectSpec(
-        "PROJECT-03", "Health Records Migration", "Regional Health Authority", "2022",
+        "PROJECT-03",
+        "Health Records Migration",
+        "Regional Health Authority",
+        "2022",
         "Led a dedicated technical team through a multi-year records migration "
         "with a named on-site lead throughout.",
     ),
     ProjectSpec(
-        "PROJECT-04", "Emergency Services Dispatch Upgrade", "County Emergency Services", "2021",
-        "Upgraded dispatch systems under a fixed-price contract with no mid-term "
-        "cost escalation.",
+        "PROJECT-04",
+        "Emergency Services Dispatch Upgrade",
+        "County Emergency Services",
+        "2021",
+        "Upgraded dispatch systems under a fixed-price contract with no mid-term cost escalation.",
     ),
 ]
 
 CAPABILITIES: list[CapabilitySpec] = [
     CapabilitySpec(
-        "CAP-01", "Systems Integration",
-        "Proven ability to integrate new platforms with legacy identity and "
-        "directory services.",
+        "CAP-01",
+        "Systems Integration",
+        "Proven ability to integrate new platforms with legacy identity and directory services.",
     ),
     CapabilitySpec(
-        "CAP-02", "Public-Sector Delivery",
-        "A decade of continuous public-sector project delivery across multiple "
-        "jurisdictions.",
+        "CAP-02",
+        "Public-Sector Delivery",
+        "A decade of continuous public-sector project delivery across multiple jurisdictions.",
     ),
     CapabilitySpec(
-        "CAP-03", "Security and Compliance",
+        "CAP-03",
+        "Security and Compliance",
         "In-house security consulting practice covering data-protection and "
         "access-control compliance.",
     ),
@@ -586,6 +873,7 @@ CLARIFICATIONS = [
     "Section 5.2 references 'the standard warranty period' without stating its "
     "duration anywhere in this document or its annexures.",
 ]
+
 
 class PricingDiscrepancy(TypedDict):
     sheet: str
@@ -620,27 +908,33 @@ class PricingDiscrepancy(TypedDict):
 #   not the simple `=B{row}*C{row}` shape the checker is built to recompute.
 PRICING_DISCREPANCIES: list[PricingDiscrepancy] = [
     {
-        "sheet": "pricing_schedule_1.xlsx", "item_index": 0,
+        "sheet": "pricing_schedule_1.xlsx",
+        "item_index": 0,
         "issue": "line_total_does_not_equal_unit_cost_times_quantity",
     },
     {
-        "sheet": "pricing_schedule_1.xlsx", "item_index": None,
+        "sheet": "pricing_schedule_1.xlsx",
+        "item_index": None,
         "issue": "grand_total_does_not_sum_line_items",
     },
     {
-        "sheet": "pricing_schedule_2.xlsx", "item_index": 1,
+        "sheet": "pricing_schedule_2.xlsx",
+        "item_index": 1,
         "issue": "line_total_does_not_equal_unit_cost_times_quantity",
     },
     {
-        "sheet": "pricing_schedule_2.xlsx", "item_index": 2,
+        "sheet": "pricing_schedule_2.xlsx",
+        "item_index": 2,
         "issue": "unit_cost_missing_for_priced_line_item",
     },
     {
-        "sheet": "pricing_schedule_1.xlsx", "item_index": 4,
+        "sheet": "pricing_schedule_1.xlsx",
+        "item_index": 4,
         "issue": "mismatched_currency",
     },
     {
-        "sheet": "pricing_schedule_2.xlsx", "item_index": 4,
+        "sheet": "pricing_schedule_2.xlsx",
+        "item_index": 4,
         "issue": "unsupported_markup_formula",
     },
 ]
@@ -923,9 +1217,7 @@ def _write_knowledge_ground_truth() -> None:
             }
         )
     for project in PROJECTS:
-        records.append(
-            {"record_type": "project", "key": project.key, "name": project.name}
-        )
+        records.append({"record_type": "project", "key": project.key, "name": project.name})
     for capability in CAPABILITIES:
         records.append(
             {"record_type": "capability", "key": capability.key, "name": capability.name}

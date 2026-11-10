@@ -254,9 +254,7 @@ async def test_documents_upload_list_and_reprocess_reject_a_caller_outside_the_o
         )
         assert blocked_upload.status_code == 403
 
-        blocked_list = await client.get(
-            f"/tenders/{tender_id}/documents", headers=outsider_headers
-        )
+        blocked_list = await client.get(f"/tenders/{tender_id}/documents", headers=outsider_headers)
         assert blocked_list.status_code == 403
 
         blocked_reprocess = await client.post(

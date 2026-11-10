@@ -55,9 +55,7 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "proposal_claims"
     __table_args__ = (
         CheckConstraint(
-            "claim_type IN ("
-            "'capability','experience','team','compliance','commercial','other'"
-            ")",
+            "claim_type IN ('capability','experience','team','compliance','commercial','other')",
             name="ck_proposal_claim_type",
         ),
         CheckConstraint(
@@ -68,9 +66,7 @@ class ProposalClaim(UUIDPrimaryKeyMixin, Base):
             "claim_kind IN ('current','commitment')",
             name="ck_proposal_claim_kind",
         ),
-        UniqueConstraint(
-            "section_id", "content_fingerprint", name="uq_proposal_claim_fingerprint"
-        ),
+        UniqueConstraint("section_id", "content_fingerprint", name="uq_proposal_claim_fingerprint"),
     )
 
     section_id: Mapped[uuid.UUID] = mapped_column(

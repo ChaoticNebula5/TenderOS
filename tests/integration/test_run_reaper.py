@@ -303,7 +303,9 @@ async def test_a_run_waiting_behind_another_tenders_long_job_is_not_reaped(rq):
     A's previous job, whose failure scheduled the retry, is in the failed
     registry, as it always is (I4). Its current job was recorded two hours
     ago, with no task progress since. Waiting, not lost."""
-    waiting = await _run("reap-behind", job=lambda r: retry_job_id(r, 1), job_age=timedelta(hours=2))
+    waiting = await _run(
+        "reap-behind", job=lambda r: retry_job_id(r, 1), job_age=timedelta(hours=2)
+    )
     ahead = await _run("reap-ahead", job_age=timedelta(minutes=20))
     rq.failed(start_job_id(waiting))
     rq.queued(retry_job_id(waiting, 1))
@@ -318,7 +320,9 @@ async def test_a_run_waiting_behind_another_tenders_long_job_is_not_reaped(rq):
 
 async def test_a_scheduled_retry_with_the_failed_job_behind_it_is_not_reaped(rq):
     """Design test 2."""
-    run_id = await _run("reap-scheduled", job=lambda r: retry_job_id(r, 1), job_age=timedelta(hours=1))
+    run_id = await _run(
+        "reap-scheduled", job=lambda r: retry_job_id(r, 1), job_age=timedelta(hours=1)
+    )
     rq.failed(start_job_id(run_id))
     rq.scheduled(retry_job_id(run_id, 1))
 
@@ -373,8 +377,12 @@ async def test_a_current_job_unknown_to_rq_is_lost_only_after_the_grace(rq):
     """Design test 4. A retry's id is recorded before it is enqueued, so a
     job RQ does not know yet is not lost at once: 30 s after it was recorded
     it is left alone, 61 s after it is failed."""
-    fresh = await _run("reap-unknown-fresh", job=lambda r: retry_job_id(r, 1), job_age=timedelta(seconds=30))
-    gone = await _run("reap-unknown-gone", job=lambda r: retry_job_id(r, 1), job_age=timedelta(seconds=61))
+    fresh = await _run(
+        "reap-unknown-fresh", job=lambda r: retry_job_id(r, 1), job_age=timedelta(seconds=30)
+    )
+    gone = await _run(
+        "reap-unknown-gone", job=lambda r: retry_job_id(r, 1), job_age=timedelta(seconds=61)
+    )
 
     reaped = await _reap(rq)
 
@@ -812,7 +820,9 @@ async def test_after_a_reap_the_tender_can_start_a_new_run_at_once(rq):
 async def test_with_redis_down_the_rq_rules_are_skipped_and_the_cap_still_applies(caplog):
     """Design test 16, Redis: the RQ rules fail the pass (logged, nothing
     written), and the cap, which needs no Redis, still fails its run."""
-    capped = await _run("reap-redis-down", job_age=run_reaper.MAX_RUN_JOB_AGE + timedelta(minutes=1))
+    capped = await _run(
+        "reap-redis-down", job_age=run_reaper.MAX_RUN_JOB_AGE + timedelta(minutes=1)
+    )
     dead = Redis.from_url(_DEAD_REDIS_URL, socket_connect_timeout=0.5, socket_timeout=0.5)
 
     try:

@@ -75,7 +75,9 @@ async def test_generate_proposal_drafts_exactly_the_always_on_section(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid"},
+        headers=headers,
     ).json()
 
     sections = await _generate(client, headers, tender["id"], monkeypatch)
@@ -123,7 +125,9 @@ async def test_generate_proposal_returns_202_and_the_same_operation_while_active
 async def test_generate_proposal_requires_idempotency_key(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 2"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 2"},
+        headers=headers,
     ).json()
 
     response = client.post(f"/tenders/{tender['id']}/proposal/generate", headers=headers)
@@ -136,7 +140,9 @@ async def test_list_proposal_sections_returns_the_real_section(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 3"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 3"},
+        headers=headers,
     ).json()
     await _generate(client, headers, tender["id"], monkeypatch)
 
@@ -151,7 +157,9 @@ async def test_list_proposal_claims_returns_the_real_claim(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 4"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 4"},
+        headers=headers,
     ).json()
     sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
@@ -170,7 +178,9 @@ async def test_patch_proposal_section_updates_content(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 5"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 5"},
+        headers=headers,
     ).json()
     sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
@@ -200,13 +210,15 @@ async def test_trace_proposal_claim_walks_claim_to_section(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 6"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 6"},
+        headers=headers,
     ).json()
     sections = await _generate(client, headers, tender["id"], monkeypatch)
     section_id = sections[0]["id"]
-    claim_id = client.get(
-        f"/proposal/sections/{section_id}/claims", headers=headers
-    ).json()[0]["id"]
+    claim_id = client.get(f"/proposal/sections/{section_id}/claims", headers=headers).json()[0][
+        "id"
+    ]
 
     response = client.get(f"/proposal/claims/{claim_id}/trace", headers=headers)
 
@@ -299,7 +311,9 @@ async def test_list_proposal_claims_rejects_a_section_from_another_organization(
     # reach org A's claims.
     admin_headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 9"}, headers=admin_headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 9"},
+        headers=admin_headers,
     ).json()
     sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
 
@@ -324,7 +338,9 @@ async def test_trace_proposal_claim_rejects_a_claim_from_another_organization(
     # request rather than trusted from tracing dependencies.py alone.
     admin_headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Proposal Route Test Bid 10"}, headers=admin_headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Proposal Route Test Bid 10"},
+        headers=admin_headers,
     ).json()
     sections = await _generate(client, admin_headers, tender["id"], monkeypatch)
     claim_id = client.get(
@@ -357,9 +373,7 @@ async def test_list_generate_and_patch_reject_a_caller_outside_the_organization(
 
     outsider_headers, _, _outsider_org_id = register_actor()
 
-    list_resp = client.get(
-        f"/tenders/{tender['id']}/proposal/sections", headers=outsider_headers
-    )
+    list_resp = client.get(f"/tenders/{tender['id']}/proposal/sections", headers=outsider_headers)
     assert list_resp.status_code == 403, list_resp.text
     assert list_resp.json()["error"]["code"] == "ORG_ACCESS_DENIED"
 

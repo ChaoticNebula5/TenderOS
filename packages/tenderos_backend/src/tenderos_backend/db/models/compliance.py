@@ -98,9 +98,7 @@ class ComplianceEntry(UUIDPrimaryKeyMixin, Base):
 class ComplianceEvidence(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "compliance_evidence"
     __table_args__ = (
-        UniqueConstraint(
-            "compliance_entry_id", "evidence_link_id", name="uq_compliance_evidence"
-        ),
+        UniqueConstraint("compliance_entry_id", "evidence_link_id", name="uq_compliance_evidence"),
     )
 
     compliance_entry_id: Mapped[uuid.UUID] = mapped_column(

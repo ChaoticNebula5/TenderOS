@@ -281,7 +281,9 @@ async def test_duplicate_idempotency_key_same_tender_still_replays():
     false conflict - only a DIFFERENT resource should 409.
     """
     async with await _client() as client:
-        token, org_id = await _register_admin(client, "idem-graph-b@example.com", "Idem Graph Org B")
+        token, org_id = await _register_admin(
+            client, "idem-graph-b@example.com", "Idem Graph Org B"
+        )
         create_headers = {"Authorization": f"Bearer {token}"}
 
         tender_id = (
@@ -690,8 +692,10 @@ async def _rows_for_tender_creation(org_id: str) -> tuple[int, int]:
 async def _lapse_lease(record_id: UUID) -> None:
     async with UnitOfWork() as uow:
         await uow.session.execute(
-            text("UPDATE idempotency_records SET locked_until = now() - interval '1 second' "
-                 "WHERE id = :id"),
+            text(
+                "UPDATE idempotency_records SET locked_until = now() - interval '1 second' "
+                "WHERE id = :id"
+            ),
             {"id": record_id},
         )
         await uow.commit()
@@ -714,7 +718,9 @@ async def test_a_process_that_dies_after_the_commit_is_replayed():
         assert record.status == "completed"
         assert record.response_status == 201
 
-        retry = await client.post(url, content=body, headers=_tender_headers(token, "die-after-key"))
+        retry = await client.post(
+            url, content=body, headers=_tender_headers(token, "die-after-key")
+        )
         assert retry.status_code == 201, retry.text
         assert retry.json() == record.response_body
         assert await _tender_count(client, org_id, token) == 1

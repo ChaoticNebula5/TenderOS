@@ -77,9 +77,7 @@ def _no_pooling_for_the_app_engine():
     from sqlalchemy.pool import NullPool
 
     db_session.engine = create_async_engine(settings.postgres_dsn, poolclass=NullPool)
-    db_session.async_session_factory = async_sessionmaker(
-        db_session.engine, expire_on_commit=False
-    )
+    db_session.async_session_factory = async_sessionmaker(db_session.engine, expire_on_commit=False)
 
 
 @asynccontextmanager

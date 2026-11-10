@@ -146,7 +146,9 @@ async def _queued_run(label: str) -> tuple[uuid.UUID, uuid.UUID]:
 
 async def _set_run(run_id: uuid.UUID, **values) -> None:
     async with UnitOfWork() as uow:
-        await uow.session.execute(update(WorkflowRun).where(WorkflowRun.id == run_id).values(**values))
+        await uow.session.execute(
+            update(WorkflowRun).where(WorkflowRun.id == run_id).values(**values)
+        )
         await uow.commit()
 
 
@@ -397,14 +399,19 @@ async def test_an_operation_request_is_refused_once_failed_and_redriven_while_qu
     )
 
     assert failed.refused
-    assert failed.line == f"refused: operation {failed_id} is failed (DISPATCH_FAILED): request it again"
+    assert (
+        failed.line
+        == f"refused: operation {failed_id} is failed (DISPATCH_FAILED): request it again"
+    )
     assert (await _row(failed_event))[0] == "failed"
     assert queued.redriven
     assert queued.line == f"re-driven: operation {queued_id} is queued"
 
 
 # 8
-async def test_a_reanalysis_with_a_live_lease_or_completed_is_refused_lapsed_or_unclaimed_runs(made):
+async def test_a_reanalysis_with_a_live_lease_or_completed_is_refused_lapsed_or_unclaimed_runs(
+    made,
+):
     _registered, tender = await _tender("redrive-reanalysis")
     item = uuid.uuid4()
     claims = {"live": 11, "completed": 12, "lapsed": 13, "none": 14}
@@ -441,7 +448,9 @@ async def test_a_reanalysis_with_a_live_lease_or_completed_is_refused_lapsed_or_
     )
 
     assert results["live"].refused
-    assert results["live"].line.startswith("refused: a delivery is running now; its lease runs until ")
+    assert results["live"].line.startswith(
+        "refused: a delivery is running now; its lease runs until "
+    )
     assert results["live"].line.endswith(" UTC: re-drive after that if it has not completed")
     assert results["completed"].refused
     assert results["completed"].line.startswith(
@@ -596,9 +605,10 @@ async def test_the_cli_exit_statuses_and_no_write_without_apply(made, capsys):
 
     assert await redrive_cli.run(["--event-id", str(runnable)]) == redrive_cli.EXIT_OK
     assert await _row(runnable) == before
-    assert await redrive_cli.run(
-        ["--event-id", str(runnable), "--event-id", str(uuid.uuid4())]
-    ) == redrive_cli.EXIT_REFUSED
+    assert (
+        await redrive_cli.run(["--event-id", str(runnable), "--event-id", str(uuid.uuid4())])
+        == redrive_cli.EXIT_REFUSED
+    )
     assert await _row(runnable) == before
     for usage_error in (
         [],
@@ -611,9 +621,10 @@ async def test_the_cli_exit_statuses_and_no_write_without_apply(made, capsys):
         assert await redrive_cli.run(usage_error) == redrive_cli.EXIT_ERROR, usage_error
     assert await _row(runnable) == before
 
-    assert await redrive_cli.run(
-        ["--event-id", str(runnable), "--apply", "--reason", "fixed"]
-    ) == redrive_cli.EXIT_OK
+    assert (
+        await redrive_cli.run(["--event-id", str(runnable), "--apply", "--reason", "fixed"])
+        == redrive_cli.EXIT_OK
+    )
     assert (await _row(runnable))[:2] == ("pending", 0)
     capsys.readouterr()
 
@@ -634,11 +645,16 @@ async def test_apply_needs_a_reason_and_each_reset_logs_id_type_and_reason(made,
     assert await _row(event_id) == before
 
     with caplog.at_level(logging.INFO, logger=outbox_redrive.__name__):
-        assert await redrive_cli.run(
-            ["--event-id", str(event_id), "--apply", "--reason", "route fix 1f2e deployed"]
-        ) == redrive_cli.EXIT_OK
+        assert (
+            await redrive_cli.run(
+                ["--event-id", str(event_id), "--apply", "--reason", "route fix 1f2e deployed"]
+            )
+            == redrive_cli.EXIT_OK
+        )
 
-    resets = [r.getMessage() for r in caplog.records if "re-driven: reset to pending" in r.getMessage()]
+    resets = [
+        r.getMessage() for r in caplog.records if "re-driven: reset to pending" in r.getMessage()
+    ]
     assert resets == [
         f"outbox event {event_id} (TenderCreated) re-driven: reset to pending; "
         "reason: route fix 1f2e deployed"
@@ -687,7 +703,12 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
     )
 
     done = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / "redrive_outbox.py"), "--event-id", str(event_id)],
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "redrive_outbox.py"),
+            "--event-id",
+            str(event_id),
+        ],
         capture_output=True,
         text=True,
         timeout=120,
@@ -695,8 +716,9 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
     )
 
     assert done.returncode == 0, done.stderr
-    assert f"{event_id} TenderCreated failed: would re-drive: no consumer acts on this event type" in (
-        done.stdout
+    assert (
+        f"{event_id} TenderCreated failed: would re-drive: no consumer acts on this event type"
+        in (done.stdout)
     )
     assert (
         f"INFO tenderos_backend.domain.services.outbox_redrive: outbox event {event_id} "
@@ -726,11 +748,20 @@ async def test_redrive_writes_only_the_outbox_row(made):
         workflow_run_created_payload(run_id, tender_id),
     )
     async with UnitOfWork() as uow:
-        before = (await uow.session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id))).scalar_one()
+        before = (
+            await uow.session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id))
+        ).scalar_one()
         before_row = (before.status, before.current_job_id, before.error_code, before.retry_count)
 
     await outbox_redrive.redrive([event_id], CTX, apply=True, reason="test")
 
     async with UnitOfWork() as uow:
-        after = (await uow.session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id))).scalar_one()
-        assert (after.status, after.current_job_id, after.error_code, after.retry_count) == before_row
+        after = (
+            await uow.session.execute(select(WorkflowRun).where(WorkflowRun.id == run_id))
+        ).scalar_one()
+        assert (
+            after.status,
+            after.current_job_id,
+            after.error_code,
+            after.retry_count,
+        ) == before_row

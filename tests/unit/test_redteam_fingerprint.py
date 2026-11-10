@@ -45,13 +45,17 @@ def test_fingerprint_differs_on_category():
 
 def test_fingerprint_differs_across_tenders():
     a = finding_fingerprint(_TENDER, "requirement", _TARGET, "missed_mandatory_requirement", "x")
-    b = finding_fingerprint(uuid.uuid4(), "requirement", _TARGET, "missed_mandatory_requirement", "x")
+    b = finding_fingerprint(
+        uuid.uuid4(), "requirement", _TARGET, "missed_mandatory_requirement", "x"
+    )
     assert a != b
 
 
 class TestMapFindingToCorrectiveTask:
     def test_missed_mandatory_requirement_maps_to_compliance_analysis(self):
-        assert map_finding_to_corrective_task("missed_mandatory_requirement") == "compliance_analysis"
+        assert (
+            map_finding_to_corrective_task("missed_mandatory_requirement") == "compliance_analysis"
+        )
 
     def test_expired_certification_maps_to_compliance_analysis(self):
         assert map_finding_to_corrective_task("expired_certification") == "compliance_analysis"

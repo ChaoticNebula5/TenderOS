@@ -60,14 +60,16 @@ async def _make_pricing_finding(tender_id: str) -> str:
         return str(finding.id)
 
 
-async def test_list_pricing_documents_returns_the_real_document(
-    client: TestClient, register_actor
-):
+async def test_list_pricing_documents_returns_the_real_document(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Commercial Route Test Bid"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Commercial Route Test Bid"},
+        headers=headers,
     ).json()
-    pricing_document_id = await _ingest_pricing_sheet(org_id, tender["id"], "pricing_schedule_1.xlsx")
+    pricing_document_id = await _ingest_pricing_sheet(
+        org_id, tender["id"], "pricing_schedule_1.xlsx"
+    )
 
     response = client.get(f"/tenders/{tender['id']}/pricing-documents", headers=headers)
 
@@ -80,9 +82,13 @@ async def test_validate_pricing_document_queues_an_operation_the_worker_runs(
 ):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Commercial Route Test Bid 2"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Commercial Route Test Bid 2"},
+        headers=headers,
     ).json()
-    pricing_document_id = await _ingest_pricing_sheet(org_id, tender["id"], "pricing_schedule_1.xlsx")
+    pricing_document_id = await _ingest_pricing_sheet(
+        org_id, tender["id"], "pricing_schedule_1.xlsx"
+    )
 
     fake_client = FakeLLMClient()
     fake_client.script(
@@ -132,9 +138,7 @@ async def test_validate_pricing_document_queues_an_operation_the_worker_runs(
     assert len(fake_client.calls) == 4
 
 
-async def test_validate_pricing_document_404s_for_an_unknown_id(
-    client: TestClient, register_actor
-):
+async def test_validate_pricing_document_404s_for_an_unknown_id(client: TestClient, register_actor):
     headers, _, _org_id = register_actor()
 
     response = client.post(f"/pricing-documents/{uuid.uuid4()}/validate", headers=headers)
@@ -145,7 +149,9 @@ async def test_validate_pricing_document_404s_for_an_unknown_id(
 async def test_list_pricing_findings_returns_the_real_finding(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Commercial Route Test Bid 3"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Commercial Route Test Bid 3"},
+        headers=headers,
     ).json()
     finding_id = await _make_pricing_finding(tender["id"])
 
@@ -158,7 +164,9 @@ async def test_list_pricing_findings_returns_the_real_finding(client: TestClient
 async def test_resolve_pricing_finding_sets_resolved(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
-        f"/organizations/{org_id}/tenders", json={"name": "Commercial Route Test Bid 4"}, headers=headers
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Commercial Route Test Bid 4"},
+        headers=headers,
     ).json()
     finding_id = await _make_pricing_finding(tender["id"])
 

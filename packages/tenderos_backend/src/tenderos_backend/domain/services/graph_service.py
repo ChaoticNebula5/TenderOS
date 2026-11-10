@@ -376,18 +376,18 @@ def evaluate_evidence_coverage(
         )
 
         path_is_valid = evidence_is_valid and fact_is_valid
-        
+
         if path_is_valid:
             valid_evidence_ids.append(evidence_id)
         else:
             invalid_evidence_ids.append(evidence_id)
-            
+
     valid_path_count = len(valid_evidence_ids)
     if valid_path_count > 0:
         recommended_action = "review_optional"
     else:
         recommended_action = "compliance_re_evaluation_required"
-        
+
     return EvidenceCoverageResult(
         valid_path_count,
         valid_evidence_ids,

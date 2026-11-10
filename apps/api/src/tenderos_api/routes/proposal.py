@@ -22,9 +22,7 @@ router = APIRouter(tags=["proposal"])
 _EDIT = "edit_proposal"
 
 
-@router.get(
-    "/tenders/{tender_id}/proposal/sections", response_model=list[ProposalSectionResponse]
-)
+@router.get("/tenders/{tender_id}/proposal/sections", response_model=list[ProposalSectionResponse])
 async def list_proposal_sections(
     tender_id: UUID, current_user: User = Depends(require_permission(_EDIT))
 ) -> list[ProposalSectionResponse]:
@@ -75,9 +73,7 @@ async def generate_proposal(
     return response
 
 
-@router.get(
-    "/proposal/sections/{section_id}/claims", response_model=list[ProposalClaimResponse]
-)
+@router.get("/proposal/sections/{section_id}/claims", response_model=list[ProposalClaimResponse])
 async def list_proposal_claims(
     section_id: UUID, current_user: User = Depends(require_permission(_EDIT))
 ) -> list[ProposalClaimResponse]:

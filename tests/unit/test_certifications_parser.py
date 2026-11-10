@@ -64,9 +64,7 @@ def test_parse_certifications_handles_native_excel_date_only_cells():
     # backwards without a distinct test: datetime IS a date, but date is
     # not a datetime, so an isinstance ordering bug would only surface on
     # one of these two cases, not both.
-    content = _xlsx_bytes(
-        [["CERT-02", "EMP-01", "AWS Certified", "AWS", date(2023, 6, 1), None]]
-    )
+    content = _xlsx_bytes([["CERT-02", "EMP-01", "AWS Certified", "AWS", date(2023, 6, 1), None]])
 
     rows = parse_certifications(content)
 
@@ -75,9 +73,7 @@ def test_parse_certifications_handles_native_excel_date_only_cells():
 
 
 def test_parse_certifications_still_accepts_iso_string_dates():
-    content = _xlsx_bytes(
-        [["CERT-03", "EMP-01", "CISSP", "ISC2", "2022-03-10", "2025-03-10"]]
-    )
+    content = _xlsx_bytes([["CERT-03", "EMP-01", "CISSP", "ISC2", "2022-03-10", "2025-03-10"]])
 
     rows = parse_certifications(content)
 

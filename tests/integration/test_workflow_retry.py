@@ -143,9 +143,7 @@ async def test_an_exhausted_run_level_budget_overrides_an_otherwise_retryable_ex
 
 async def test_an_exhausted_per_task_ceiling_overrides_an_otherwise_retryable_exception():
     org_id, tender_id = await _make_org_and_tender("RetryTaskCeiling")
-    run_id, _task_id = await _make_run_with_failed_task(
-        tender_id, attempt_count=2, max_attempts=2
-    )
+    run_id, _task_id = await _make_run_with_failed_task(tender_id, attempt_count=2, max_attempts=2)
 
     retried = await _fail(run_id, RateLimitedError("429", retry_after_seconds=1.0))
 

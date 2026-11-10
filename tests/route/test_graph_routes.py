@@ -105,7 +105,8 @@ async def test_get_graph_status_reflects_a_real_projection(client: TestClient, r
     ).json()
     await _requirement(tender["id"])
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-2"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-2"},
     )
 
     response = client.get(f"/tenders/{tender['id']}/graph/status", headers=headers)
@@ -124,7 +125,8 @@ async def test_preview_graph_impact_returns_the_selected_employee(
     ).json()
     employee_id = await _selected_employee(org_id, tender["id"], user_id)
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-3"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-3"},
     )
 
     response = client.post(
@@ -144,7 +146,8 @@ async def test_preview_graph_impact_409s_when_stale(client: TestClient, register
     ).json()
     employee_id = await _selected_employee(org_id, tender["id"], user_id)
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-4"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-4"},
     )
     # Bumps tender.state_version without re-projecting - the projection
     # taken a moment ago is now behind current state. A raw requirement
@@ -178,7 +181,8 @@ async def test_get_graph_contradictions_returns_a_real_empty_list(
     ).json()
     await _requirement(tender["id"])
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-5"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-5"},
     )
 
     response = client.get(f"/tenders/{tender['id']}/graph/contradictions", headers=headers)
@@ -196,7 +200,8 @@ async def test_get_graph_trace_returns_the_real_requirement_node(
     ).json()
     requirement_id = await _requirement(tender["id"])
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-6"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-6"},
     )
 
     response = client.get(
@@ -225,7 +230,8 @@ async def test_get_graph_trace_rejects_an_unallowed_label(client: TestClient, re
     ).json()
     await _requirement(tender["id"])
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-7"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-7"},
     )
 
     response = client.get(
@@ -249,7 +255,8 @@ async def test_graph_routes_reject_a_non_member(client: TestClient, register_act
     ).json()
     await _requirement(tender["id"])
     client.post(
-        f"/tenders/{tender['id']}/graph/project", headers={**headers, "Idempotency-Key": "project-8"}
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-8"},
     )
 
     outsider_headers, _, _ = register_actor()

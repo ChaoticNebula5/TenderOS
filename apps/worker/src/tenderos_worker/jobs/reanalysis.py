@@ -152,7 +152,9 @@ async def reanalyze_knowledge_selection_change(
         logger.info(
             "reanalysis skipped: tender=%s knowledge_item=%s state_version=%s already "
             "claimed by another delivery",
-            tid, kid, state_version,
+            tid,
+            kid,
+            state_version,
         )
         return
 
@@ -177,9 +179,7 @@ async def reanalyze_knowledge_selection_change(
                     aggregate_type=AGGREGATE_COMPLIANCE_ENTRY,
                     aggregate_id=entry.id,
                     event_type=EVENT_COMPLIANCE_CHANGED,
-                    payload=compliance_changed_payload(
-                        entry.id, requirement_id, tid, entry.status
-                    ),
+                    payload=compliance_changed_payload(entry.id, requirement_id, tid, entry.status),
                     idempotency_key=compliance_changed_idempotency_key(
                         requirement_id, state_version
                     ),
@@ -194,7 +194,9 @@ async def reanalyze_knowledge_selection_change(
             logger.exception(
                 "reanalysis: compliance evaluation failed for requirement %s "
                 "(tender=%s, knowledge_item=%s)",
-                requirement_id, tid, kid,
+                requirement_id,
+                tid,
+                kid,
             )
             continue
 
@@ -215,7 +217,9 @@ async def reanalyze_knowledge_selection_change(
         except Exception:
             logger.exception(
                 "reanalysis: regrounding failed for claim %s (tender=%s, knowledge_item=%s)",
-                claim_id, tid, kid,
+                claim_id,
+                tid,
+                kid,
             )
             continue
 
@@ -257,14 +261,20 @@ async def reanalyze_knowledge_selection_change(
             logger.exception(
                 "reanalysis: persisting graph-contradiction finding failed "
                 "(category=%s, tender=%s, knowledge_item=%s)",
-                draft.finding_category, tid, kid,
+                draft.finding_category,
+                tid,
+                kid,
             )
             continue
 
     logger.info(
         "reanalysis complete: tender=%s knowledge_item=%s state_version=%s "
         "requirements=%d claims=%d contradictions=%d",
-        tid, kid, state_version, len(requirement_ids), len(claim_ids),
+        tid,
+        kid,
+        state_version,
+        len(requirement_ids),
+        len(claim_ids),
         len(contradiction_drafts),
     )
     if not await reanalysis_service.complete_reanalysis(claim_token):
@@ -273,5 +283,7 @@ async def reanalyze_knowledge_selection_change(
         logger.warning(
             "reanalysis: claim for tender=%s knowledge_item=%s state_version=%s was taken "
             "over before this job finished",
-            tid, kid, state_version,
+            tid,
+            kid,
+            state_version,
         )

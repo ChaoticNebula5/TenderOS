@@ -89,9 +89,7 @@ async def preview_graph_impact(
         raise  # unreachable - _reraise_as_stale always raises; satisfies type checkers
 
 
-@router.get(
-    "/tenders/{tender_id}/graph/contradictions", response_model=list[GraphContradictionRow]
-)
+@router.get("/tenders/{tender_id}/graph/contradictions", response_model=list[GraphContradictionRow])
 async def get_graph_contradictions(
     tender_id: UUID, current_user: User = Depends(require_permission(_VIEW))
 ) -> list[GraphContradictionRow]:

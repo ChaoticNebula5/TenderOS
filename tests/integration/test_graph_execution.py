@@ -520,9 +520,7 @@ async def test_over_budget_run_opens_a_gate_and_approving_it_unblocks_specialist
         gates_after_first_resume = await uow.gates.list_for_run(run.id)
         tasks_still_pending = await uow.workflow.list_tasks(run.id)
         run_after_first_resume = await uow.workflow.get_run(run.id)
-    cost_budget_gate = next(
-        g for g in gates_after_first_resume if g.gate_type == "cost_budget"
-    )
+    cost_budget_gate = next(g for g in gates_after_first_resume if g.gate_type == "cost_budget")
     assert cost_budget_gate.status == "pending"
     assert cost_budget_gate.request_payload["summary"]["accumulated_cost_usd"] == 0.0
     assert cost_budget_gate.request_payload["summary"]["budget_usd"] == 0.0
@@ -540,12 +538,9 @@ async def test_over_budget_run_opens_a_gate_and_approving_it_unblocks_specialist
     async with UnitOfWork() as uow:
         tasks_after_approval = await uow.workflow.list_tasks(run.id)
         run_after_approval = await uow.workflow.get_run(run.id)
-    specialist_tasks_after = [
-        t for t in tasks_after_approval if t.task_type in specialist_types
-    ]
+    specialist_tasks_after = [t for t in tasks_after_approval if t.task_type in specialist_types]
     assert all(t.status == "completed" for t in specialist_tasks_after), (
-        "approving the cost_budget gate must let specialists actually run, "
-        "not leave them stranded"
+        "approving the cost_budget gate must let specialists actually run, not leave them stranded"
     )
     assert run_after_approval is not None
     assert run_after_approval.status == "waiting_for_human", (

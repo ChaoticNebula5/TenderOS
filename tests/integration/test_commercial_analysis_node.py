@@ -45,7 +45,9 @@ async def _upload_pricing_sheet(org_id: uuid.UUID, tender_id: uuid.UUID, filenam
     )
 
 
-def _base_state(tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
+def _base_state(
+    tender_id: uuid.UUID, organization_id: uuid.UUID, workflow_run_id: uuid.UUID
+) -> dict:
     return {
         "tender_id": str(tender_id),
         "organization_id": str(organization_id),

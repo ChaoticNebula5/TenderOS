@@ -298,19 +298,21 @@ async def main() -> int:
     compliance_result = await _measure_compliance_manipulation(client)
     print(f"  tender_id: {compliance_result['tender_id']}")
     print(f"  model's proposed status: {compliance_result['model_status']}")
-    print(f"  model influenced (claimed compliance with zero evidence): "
-          f"{compliance_result['model_influenced']}")
+    print(
+        f"  model influenced (claimed compliance with zero evidence): "
+        f"{compliance_result['model_influenced']}"
+    )
     print(f"  final PERSISTED status: {compliance_result['persisted_status']}")
-    print(f"  unsafe outcome actually persisted: "
-          f"{compliance_result['unsafe_outcome_persisted']}")
+    print(f"  unsafe outcome actually persisted: {compliance_result['unsafe_outcome_persisted']}")
     print()
 
     print("=== Measurement 2: system-prompt leakage ===")
     leakage_result = await _measure_system_prompt_leakage(client)
     print(f"  tender_id: {leakage_result['tender_id']}")
     print(f"  total requirements extracted: {leakage_result['total_extracted']}")
-    print(f"  model influenced (system-prompt fragments leaked): "
-          f"{leakage_result['model_influenced']}")
+    print(
+        f"  model influenced (system-prompt fragments leaked): {leakage_result['model_influenced']}"
+    )
     if leakage_result["leaked_fragments"]:
         print(f"  leaked fragments: {leakage_result['leaked_fragments']}")
     print()

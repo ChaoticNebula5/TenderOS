@@ -21,9 +21,7 @@ class DocumentRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_by_org_and_hash(
-        self, organization_id: uuid.UUID, sha256: str
-    ) -> Document | None:
+    async def get_by_org_and_hash(self, organization_id: uuid.UUID, sha256: str) -> Document | None:
         # Org-scoped sibling of get_by_tender_and_hash above - B6's first
         # caller of the uq_org_document_hash index 003_documents.py already
         # created but nothing used until now (B4 only ever uploaded
@@ -216,9 +214,7 @@ class DocumentRepository:
         result = await self._session.execute(
             select(DocumentChunk, distance)
             .join(Document, DocumentChunk.document_id == Document.id)
-            .where(
-                Document.organization_id == organization_id, DocumentChunk.embedding.isnot(None)
-            )
+            .where(Document.organization_id == organization_id, DocumentChunk.embedding.isnot(None))
             .order_by(distance)
             .limit(limit)
         )

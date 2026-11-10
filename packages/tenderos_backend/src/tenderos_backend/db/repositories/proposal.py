@@ -133,9 +133,7 @@ class ProposalRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_proposal_claims_for_section(
-        self, section_id: uuid.UUID
-    ) -> list[ProposalClaim]:
+    async def list_proposal_claims_for_section(self, section_id: uuid.UUID) -> list[ProposalClaim]:
         result = await self._session.execute(
             select(ProposalClaim).where(ProposalClaim.section_id == section_id)
         )

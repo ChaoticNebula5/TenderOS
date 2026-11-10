@@ -112,7 +112,9 @@ async def _seed_rich_tender(count: int = 6) -> uuid.UUID:
                 organization_id=org_id, title=f"Project {i}", content_fingerprint=uuid.uuid4().hex
             )
             capability, _ = await uow.knowledge.create_capability(
-                organization_id=org_id, title=f"Capability {i}", content_fingerprint=uuid.uuid4().hex
+                organization_id=org_id,
+                title=f"Capability {i}",
+                content_fingerprint=uuid.uuid4().hex,
             )
             certification_ids.append(cert.id)
             project_ids.append(project.id)
@@ -151,7 +153,9 @@ async def _seed_rich_tender(count: int = 6) -> uuid.UUID:
             normalized_text="req",
             content_hash=uuid.uuid4().hex,
         )
-        section = await uow.proposal.create_proposal_section(tender_id=tender_id, section_name="Team")
+        section = await uow.proposal.create_proposal_section(
+            tender_id=tender_id, section_name="Team"
+        )
         for i, employee_id in enumerate(employee_ids):
             requirement = await uow.requirements.create(
                 tender_id=tender_id,
@@ -300,7 +304,9 @@ async def test_four_projections_of_one_tender_fail_nothing_and_equal_one_project
         )
 
         failures = [r for r in results if isinstance(r, BaseException)]
-        assert failures == [], "every projection must succeed; EntityNotFound here is a stop-and-report"
+        assert failures == [], (
+            "every projection must succeed; EntityNotFound here is a stop-and-report"
+        )
         assert await _dump(tender_id) == expected
         assert await _duplicated_keys() == {}
         async with get_neo4j_session() as session:
@@ -460,7 +466,9 @@ async def test_a_database_error_that_is_not_a_lock_timeout_stays_what_it_is(monk
 async def test_the_wait_is_bounded():
     # 0 would mean no timeout at all in Postgres. Three attempts at this must stay
     # under the shortest RQ job a projection runs in, 180 s.
-    assert 0 < graph_service._PROJECTION_LOCK_TIMEOUT_MS * graph_service._PROJECTION_ATTEMPTS < 180_000
+    assert (
+        0 < graph_service._PROJECTION_LOCK_TIMEOUT_MS * graph_service._PROJECTION_ATTEMPTS < 180_000
+    )
 
 
 # ----------------------------------------------------------------------

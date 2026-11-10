@@ -101,7 +101,9 @@ async def _role_match(tender_id: uuid.UUID, org_id: uuid.UUID) -> uuid.UUID:
             title="Candidate",
         )
         role = await uow.talent.create_role_requirement(
-            tender_id=tender_id, role_name="Solution Architect", content_fingerprint=uuid.uuid4().hex
+            tender_id=tender_id,
+            role_name="Solution Architect",
+            content_fingerprint=uuid.uuid4().hex,
         )
         match = await uow.talent.create_role_match(
             role_requirement_id=role.id, employee_knowledge_item_id=knowledge_item.id
@@ -140,7 +142,9 @@ async def test_compliance_entry_approve_dispatches_to_approve_compliance_entry(a
     entry_id = await _compliance_entry(requirement_id)
 
     await gate_target_service.apply_target_update(
-        tender_id, {"target_type": "compliance_entry", "target_id": str(entry_id), "decision": "approve"}, actor_id
+        tender_id,
+        {"target_type": "compliance_entry", "target_id": str(entry_id), "decision": "approve"},
+        actor_id,
     )
 
     async with UnitOfWork() as uow:
@@ -153,7 +157,9 @@ async def test_role_match_approve_dispatches_to_select_candidate(actor_id):
     match_id = await _role_match(tender_id, org_id)
 
     await gate_target_service.apply_target_update(
-        tender_id, {"target_type": "role_match", "target_id": str(match_id), "decision": "approve"}, actor_id
+        tender_id,
+        {"target_type": "role_match", "target_id": str(match_id), "decision": "approve"},
+        actor_id,
     )
 
     async with UnitOfWork() as uow:
@@ -166,7 +172,9 @@ async def test_pricing_finding_approve_dispatches_to_resolve_pricing_finding(act
     finding_id = await _pricing_finding(tender_id)
 
     await gate_target_service.apply_target_update(
-        tender_id, {"target_type": "pricing_finding", "target_id": str(finding_id), "decision": "approve"}, actor_id
+        tender_id,
+        {"target_type": "pricing_finding", "target_id": str(finding_id), "decision": "approve"},
+        actor_id,
     )
 
     async with UnitOfWork() as uow:
@@ -184,7 +192,9 @@ async def test_unknown_target_type_is_a_silent_noop(actor_id):
     # Must not raise - forward-compatibility, same posture as
     # map_finding_to_corrective_task's unknown-category handling.
     await gate_target_service.apply_target_update(
-        tender_id, {"target_type": "not_a_real_type", "target_id": str(uuid.uuid4()), "decision": "approve"}, actor_id
+        tender_id,
+        {"target_type": "not_a_real_type", "target_id": str(uuid.uuid4()), "decision": "approve"},
+        actor_id,
     )
 
 
@@ -195,7 +205,9 @@ async def test_unknown_decision_is_a_silent_noop(actor_id):
     entry_id = await _compliance_entry(requirement_id)
 
     await gate_target_service.apply_target_update(
-        tender_id, {"target_type": "compliance_entry", "target_id": str(entry_id), "decision": "reject"}, actor_id
+        tender_id,
+        {"target_type": "compliance_entry", "target_id": str(entry_id), "decision": "reject"},
+        actor_id,
     )
 
     async with UnitOfWork() as uow:
@@ -294,8 +306,16 @@ async def test_a_later_dispatch_failure_rolls_back_an_earlier_success(actor_id, 
         await gate_target_service.apply_target_updates(
             tender_id,
             [
-                {"target_type": "compliance_entry", "target_id": str(entry_id), "decision": "approve"},
-                {"target_type": "pricing_finding", "target_id": str(finding_id), "decision": "approve"},
+                {
+                    "target_type": "compliance_entry",
+                    "target_id": str(entry_id),
+                    "decision": "approve",
+                },
+                {
+                    "target_type": "pricing_finding",
+                    "target_id": str(finding_id),
+                    "decision": "approve",
+                },
             ],
             actor_id,
         )

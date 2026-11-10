@@ -126,12 +126,8 @@ async def test_two_deliveries_at_once_one_runs_and_one_is_refused(
     caplog.set_level(logging.INFO, logger=_JOB_LOGGER)
 
     await asyncio.gather(
-        reanalysis.reanalyze_knowledge_selection_change(
-            str(tender_id), str(knowledge_item_id), 5
-        ),
-        reanalysis.reanalyze_knowledge_selection_change(
-            str(tender_id), str(knowledge_item_id), 5
-        ),
+        reanalysis.reanalyze_knowledge_selection_change(str(tender_id), str(knowledge_item_id), 5),
+        reanalysis.reanalyze_knowledge_selection_change(str(tender_id), str(knowledge_item_id), 5),
     )
 
     assert seen["wait"], "the second insert never waited on the first: no overlap was tested"

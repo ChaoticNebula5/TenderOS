@@ -76,7 +76,9 @@ async def _chunk(tender_id: uuid.UUID) -> uuid.UUID:
         return chunk.id
 
 
-async def _requirement(tender_id: uuid.UUID, chunk_id: uuid.UUID, mandatory: bool = True) -> uuid.UUID:
+async def _requirement(
+    tender_id: uuid.UUID, chunk_id: uuid.UUID, mandatory: bool = True
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.create(
             tender_id=tender_id,
@@ -93,10 +95,14 @@ async def _requirement(tender_id: uuid.UUID, chunk_id: uuid.UUID, mandatory: boo
 
 
 async def _compliance_entry(
-    requirement_id: uuid.UUID, status: str = "fully_compliant", evidence_ids: list[uuid.UUID] | None = None
+    requirement_id: uuid.UUID,
+    status: str = "fully_compliant",
+    evidence_ids: list[uuid.UUID] | None = None,
 ) -> uuid.UUID:
     async with UnitOfWork() as uow:
-        entry = await uow.compliance.create_compliance_entry(requirement_id=requirement_id, status=status)
+        entry = await uow.compliance.create_compliance_entry(
+            requirement_id=requirement_id, status=status
+        )
         for evidence_id in evidence_ids or []:
             await uow.compliance.link_evidence(entry.id, evidence_id)
         await uow.commit()
@@ -112,7 +118,9 @@ async def _employee(org_id: uuid.UUID, name: str) -> uuid.UUID:
         return knowledge_item.id
 
 
-async def _evidence_link(tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, valid: bool = True) -> uuid.UUID:
+async def _evidence_link(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, valid: bool = True
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         link = await uow.compliance.create_evidence_link(
             tender_id=tender_id,
@@ -129,13 +137,17 @@ async def _evidence_link(tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, val
 async def _role_requirement(tender_id: uuid.UUID) -> uuid.UUID:
     async with UnitOfWork() as uow:
         role = await uow.talent.create_role_requirement(
-            tender_id=tender_id, role_name="Solution Architect", content_fingerprint=uuid.uuid4().hex
+            tender_id=tender_id,
+            role_name="Solution Architect",
+            content_fingerprint=uuid.uuid4().hex,
         )
         await uow.commit()
         return role.id
 
 
-async def _role_match(role_requirement_id: uuid.UUID, employee_id: uuid.UUID, selected: bool) -> uuid.UUID:
+async def _role_match(
+    role_requirement_id: uuid.UUID, employee_id: uuid.UUID, selected: bool
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         match = await uow.talent.create_role_match(
             role_requirement_id=role_requirement_id, employee_knowledge_item_id=employee_id
@@ -146,7 +158,9 @@ async def _role_match(role_requirement_id: uuid.UUID, employee_id: uuid.UUID, se
         return match.id
 
 
-async def _pricing_finding(tender_id: uuid.UUID, severity: str = "critical", resolved: bool = False) -> uuid.UUID:
+async def _pricing_finding(
+    tender_id: uuid.UUID, severity: str = "critical", resolved: bool = False
+) -> uuid.UUID:
     async with UnitOfWork() as uow:
         finding = await uow.commercial.create_pricing_finding(
             tender_id=tender_id,
@@ -164,7 +178,10 @@ async def _pricing_finding(tender_id: uuid.UUID, severity: str = "critical", res
 async def _submission_item(tender_id: uuid.UUID) -> uuid.UUID:
     async with UnitOfWork() as uow:
         item = await uow.requirements.create_submission_item(
-            tender_id=tender_id, name="Insurance proof", mandatory=True, content_fingerprint=uuid.uuid4().hex
+            tender_id=tender_id,
+            name="Insurance proof",
+            mandatory=True,
+            content_fingerprint=uuid.uuid4().hex,
         )
         await uow.commit()
         return item.id
@@ -387,9 +404,7 @@ async def test_the_real_write_path_reaches_an_honest_unwaived_ready_true():
     assert len(blocked_findings) == 1
     assert blocked_findings[0].finding_category == "missing_mandatory_submission_item"
 
-    await requirement_service.patch_submission_item(
-        item_id, org_id, uuid.uuid4(), status="present"
-    )
+    await requirement_service.patch_submission_item(item_id, org_id, uuid.uuid4(), status="present")
     await _project(tender_id)
 
     cleared = await readiness_service.evaluate_readiness(tender_id)
@@ -496,7 +511,9 @@ async def test_red_team_degraded_stage_blocks():
     _org_id, tender_id = await _org_and_tender("RedTeamDegraded")
     await _project(tender_id)
 
-    result = await readiness_service.evaluate_readiness(tender_id, degraded_stages=["red_team:RuntimeError"])
+    result = await readiness_service.evaluate_readiness(
+        tender_id, degraded_stages=["red_team:RuntimeError"]
+    )
     categories = {b["category"] for b in result.blockers}
     assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in categories
 
@@ -659,7 +676,9 @@ async def test_batched_compliance_and_evidence_queries_scale_with_requests_not_r
         requirement_id = await _requirement(tender_id, chunk_id, mandatory=True)
         employee_id = await _employee(org_id, f"Evidence Source {i}")
         evidence_id = await _evidence_link(tender_id, employee_id, valid=True)
-        await _compliance_entry(requirement_id, status="fully_compliant", evidence_ids=[evidence_id])
+        await _compliance_entry(
+            requirement_id, status="fully_compliant", evidence_ids=[evidence_id]
+        )
     await _project(tender_id)
 
     query_count = {"n": 0}

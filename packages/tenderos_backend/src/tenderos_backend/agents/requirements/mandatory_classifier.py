@@ -102,14 +102,10 @@ def classify_mandatory_language(text: str) -> MandatoryClassification:
     # can tell you a negation word is nearby, not reliably which matched
     # term it scopes over in a compound sentence).
     if any_negated:
-        return MandatoryClassification(
-            mandatory=False, ambiguous=True, matched_terms=matched_terms
-        )
+        return MandatoryClassification(mandatory=False, ambiguous=True, matched_terms=matched_terms)
 
     if has_mandatory and not has_optional:
-        return MandatoryClassification(
-            mandatory=True, ambiguous=False, matched_terms=matched_terms
-        )
+        return MandatoryClassification(mandatory=True, ambiguous=False, matched_terms=matched_terms)
 
     if has_optional and not has_mandatory:
         return MandatoryClassification(

@@ -40,7 +40,7 @@ def test_both_signals_present_is_ambiguous_not_a_coin_flip():
 
 
 def test_negation_after_modal_verb_is_ambiguous_not_mandatory():
-    """"shall not be required to..." contains "shall", a mandatory term - but
+    """ "shall not be required to..." contains "shall", a mandatory term - but
     the sentence is the opposite of a mandatory requirement. Catching this
     requires checking for negation trailing the match, not just preceding
     it."""
@@ -51,7 +51,7 @@ def test_negation_after_modal_verb_is_ambiguous_not_mandatory():
 
 
 def test_deadline_phrase_does_not_self_negate():
-    """"not later than" is itself a mandatory term and contains the literal
+    """ "not later than" is itself a mandatory term and contains the literal
     substring "not " - regression test for the negation window accidentally
     including the matched span itself and always flagging this term as
     negated."""
@@ -61,7 +61,7 @@ def test_deadline_phrase_does_not_self_negate():
 
 
 def test_word_boundary_prevents_substring_collision():
-    """"must" should not match inside "mustard", "will" should not match
+    """ "must" should not match inside "mustard", "will" should not match
     inside "goodwill"."""
     result = classify_mandatory_language("The catering menu includes mustard and goodwill gifts.")
     assert result.matched_terms == ()

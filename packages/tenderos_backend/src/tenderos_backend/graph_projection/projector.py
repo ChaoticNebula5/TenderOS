@@ -124,9 +124,7 @@ async def project_tender(
         ev.knowledge_item_id for ev in evidence_links if ev.knowledge_item_id is not None
     )
     for matches in role_matches_by_role.values():
-        reachable_ids.update(
-            m.employee_knowledge_item_id for m in matches if m.human_selected
-        )
+        reachable_ids.update(m.employee_knowledge_item_id for m in matches if m.human_selected)
     for links in claim_employees_by_claim.values():
         reachable_ids.update(link.employee_knowledge_item_id for link in links)
 
@@ -192,9 +190,7 @@ async def project_tender(
             raise ProjectionIntegrityError(hid, "certification holder has no employees row")
         employees[hid] = (holder_item, holder)
 
-    projected_ids = (
-        employees.keys() | certifications.keys() | projects.keys() | capabilities.keys()
-    )
+    projected_ids = employees.keys() | certifications.keys() | projects.keys() | capabilities.keys()
 
     # ------------------------------------------------------------------
     # Step 3-4: MERGE shared nodes + organization-scoped relationships.
@@ -251,9 +247,7 @@ async def project_tender(
     await nodes.merge_certification_nodes(
         neo4j_session, _sorted_rows(certification_rows, "knowledge_item_id")
     )
-    await nodes.merge_project_nodes(
-        neo4j_session, _sorted_rows(project_rows, "knowledge_item_id")
-    )
+    await nodes.merge_project_nodes(neo4j_session, _sorted_rows(project_rows, "knowledge_item_id"))
     await nodes.merge_capability_nodes(
         neo4j_session, _sorted_rows(capability_rows, "knowledge_item_id")
     )

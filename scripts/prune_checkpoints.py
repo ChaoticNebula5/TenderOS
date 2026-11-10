@@ -115,9 +115,7 @@ async def _orphaned_thread_ids(session) -> set[str]:
     return orphaned
 
 
-async def _report_and_prune(
-    terminal_ids: set[str], orphaned_ids: set[str], execute: bool
-) -> None:
+async def _report_and_prune(terminal_ids: set[str], orphaned_ids: set[str], execute: bool) -> None:
     all_ids = sorted(terminal_ids | orphaned_ids)
     print(
         f"Terminal threads: {len(terminal_ids)}. Orphaned-and-older-than-the-wipe "

@@ -127,9 +127,7 @@ def test_refresh_rejects_an_access_token_used_as_a_refresh_token(client: TestCli
     assert response.status_code == 401, response.text
 
 
-def test_me_returns_the_authenticated_user_and_their_membership(
-    client: TestClient, register_actor
-):
+def test_me_returns_the_authenticated_user_and_their_membership(client: TestClient, register_actor):
     headers, user_id, org_id = register_actor()
 
     response = client.get("/auth/me", headers=headers)

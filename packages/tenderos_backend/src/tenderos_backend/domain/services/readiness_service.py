@@ -24,6 +24,7 @@ class TenderNotFoundError(Exception):
     # rather than letting a bare ValueError surface as an unhandled 500.
     pass
 
+
 # The Build Guide's 7 required blockers (B12's own build list, verbatim
 # categories) plus one addition this block's own Q5 answer motivates -
 # "at minimum" in that list's own wording explicitly leaves room for more,

@@ -91,7 +91,9 @@ async def test_set_knowledge_selection_writes_a_knowledge_selection_changed_outb
         "selected": True,
         "state_version": tender.state_version,
     }
-    assert event.idempotency_key == f"knowledge_selection_changed:{tender_id}:{tender.state_version}"
+    assert (
+        event.idempotency_key == f"knowledge_selection_changed:{tender_id}:{tender.state_version}"
+    )
 
 
 async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_organization():
@@ -105,9 +107,12 @@ async def test_set_knowledge_selection_rejects_a_knowledge_item_from_another_org
     private data as evidence for an org A claim.
     """
     _org_id, tender_id, _own_item_id, actor_id = await _org_tender_and_employee()
-    _other_org_id, _other_tender_id, other_org_item_id, _other_actor_id = (
-        await _org_tender_and_employee()
-    )
+    (
+        _other_org_id,
+        _other_tender_id,
+        other_org_item_id,
+        _other_actor_id,
+    ) = await _org_tender_and_employee()
 
     with pytest.raises(knowledge_service.CrossOrganizationKnowledgeItemError):
         await knowledge_service.set_knowledge_selection(
@@ -211,8 +216,11 @@ async def test_import_employee_master_row_concurrent_delivery_converges_not_cras
         await uow.commit()
 
     row = EmployeeMasterRow(
-        row_number=2, employee_code="EMP-CONCURRENT", name="Concurrent Test Employee",
-        role=None, status=None,
+        row_number=2,
+        employee_code="EMP-CONCURRENT",
+        name="Concurrent Test Employee",
+        role=None,
+        status=None,
     )
 
     first, second = await asyncio.gather(
@@ -222,8 +230,7 @@ async def test_import_employee_master_row_concurrent_delivery_converges_not_cras
 
     assert first.status == "approved" and second.status == "approved"
     assert first.target_knowledge_item_id == second.target_knowledge_item_id, (
-        "both concurrent attempts must converge on the SAME employee knowledge_item, "
-        "not create two"
+        "both concurrent attempts must converge on the SAME employee knowledge_item, not create two"
     )
     async with UnitOfWork() as uow:
         items = await uow.knowledge.list_import_items_for_batch(batch.id)
@@ -291,9 +298,7 @@ async def test_import_certification_row_is_idempotent_on_retry():
         actor_user_id=registered.user.id,
         filename="certifications.xlsx",
         content=b"placeholder",
-        mime_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        mime_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         side="company",
         doc_type="certification_documents",
     )
@@ -380,8 +385,12 @@ async def test_import_certification_row_concurrent_delivery_converges_not_crashe
     )
 
     first, second = await asyncio.gather(
-        knowledge_service.import_certification_row(org_id, batch.id, document.id, row, today=date(2026, 1, 1)),
-        knowledge_service.import_certification_row(org_id, batch.id, document.id, row, today=date(2026, 1, 1)),
+        knowledge_service.import_certification_row(
+            org_id, batch.id, document.id, row, today=date(2026, 1, 1)
+        ),
+        knowledge_service.import_certification_row(
+            org_id, batch.id, document.id, row, today=date(2026, 1, 1)
+        ),
     )
 
     assert first.status == "approved" and second.status == "approved"
@@ -450,7 +459,9 @@ async def _org_and_resume_batch() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     return org_id, registered.user.id, batch.id
 
 
-async def _resume_document_with_chunks(org_id: uuid.UUID, user_id: uuid.UUID, filename: str, texts: list[str]):
+async def _resume_document_with_chunks(
+    org_id: uuid.UUID, user_id: uuid.UUID, filename: str, texts: list[str]
+):
     """A real document + real document_chunks rows, same shape a real
     résumé produces after B4 chunking (summary/experience/certifications/
     education as separate chunks) - no embedding passed, matching every
@@ -468,9 +479,7 @@ async def _resume_document_with_chunks(org_id: uuid.UUID, user_id: uuid.UUID, fi
         actor_user_id=user_id,
         filename=filename,
         content=f"placeholder:{filename}".encode(),
-        mime_type=(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ),
+        mime_type=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         side="company",
         doc_type="resume",
     )
@@ -541,11 +550,19 @@ async def test_import_resume_concurrent_delivery_converges_not_crashes():
 
     first, second = await asyncio.gather(
         knowledge_service.import_resume(
-            org_id, batch_id, "concurrent-candidate.docx", _document.id, profile,
+            org_id,
+            batch_id,
+            "concurrent-candidate.docx",
+            _document.id,
+            profile,
             [c.id for c in chunks],
         ),
         knowledge_service.import_resume(
-            org_id, batch_id, "concurrent-candidate.docx", _document.id, profile,
+            org_id,
+            batch_id,
+            "concurrent-candidate.docx",
+            _document.id,
+            profile,
             [c.id for c in chunks],
         ),
     )
@@ -721,10 +738,14 @@ async def test_one_knowledge_item_is_reused_across_two_tenders_and_deselection_s
         selected_a = await uow.knowledge.list_selections_for_tender(tender_a, selected_only=True)
         selected_b = await uow.knowledge.list_selections_for_tender(tender_b, selected_only=True)
         org_items = (
-            await uow.session.execute(
-                select(KnowledgeItem.id).where(KnowledgeItem.organization_id == org_id)
+            (
+                await uow.session.execute(
+                    select(KnowledgeItem.id).where(KnowledgeItem.organization_id == org_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         version_b_before = (await uow.tenders.get(tender_b)).state_version
     assert [s.knowledge_item_id for s in selected_a] == [knowledge_item_id]
     assert [s.knowledge_item_id for s in selected_b] == [knowledge_item_id]

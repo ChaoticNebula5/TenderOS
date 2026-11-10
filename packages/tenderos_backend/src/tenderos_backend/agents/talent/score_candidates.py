@@ -138,10 +138,7 @@ async def score_candidate(
     """
     system_prompt = load_prompt(_AGENT_NAME)
     role_text = _render_role(role_name, min_experience_years, required_skills, required_certs)
-    user_prompt = (
-        f"ROLE:\n{role_text}\n\n"
-        f"CANDIDATE:\n{_render_candidate(profile, evidence)}"
-    )
+    user_prompt = f"ROLE:\n{role_text}\n\nCANDIDATE:\n{_render_candidate(profile, evidence)}"
     try:
         llm_result = await call_with_repair(
             client,

@@ -1,0 +1,5 @@
+# Mechanical reformat commits that git blame should skip. GitHub's blame view
+# reads this file by itself; for local blame, see the README.
+
+# style: apply ruff format to every Python file
+14c203925f4a7e2cc6097f9a801750ab6ebdae33

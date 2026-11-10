@@ -121,8 +121,7 @@ async def draft_section(
     """
     system_prompt = load_prompt(_AGENT_NAME)
     user_prompt = (
-        f"SECTION: {section_name}\n{section_guidance}\n\n"
-        f"AVAILABLE FACTS:\n{_format_facts(facts)}"
+        f"SECTION: {section_name}\n{section_guidance}\n\nAVAILABLE FACTS:\n{_format_facts(facts)}"
     )
     try:
         llm_result = await call_with_repair(

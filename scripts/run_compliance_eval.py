@@ -129,7 +129,9 @@ async def _upload_and_ingest_org_doc(org_id, user_id, filename, mime_type, doc_t
     return document, content
 
 
-async def _run_knowledge_import(client: GeminiClient, org_id: uuid.UUID, user_id: uuid.UUID) -> None:
+async def _run_knowledge_import(
+    client: GeminiClient, org_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
     em_doc, em_content = await _upload_and_ingest_org_doc(
         org_id, user_id, "employee_master.xlsx", XLSX_MIME, "employee_master"
     )
@@ -161,7 +163,9 @@ async def _run_knowledge_import(client: GeminiClient, org_id: uuid.UUID, user_id
     )
     async with UnitOfWork() as uow:
         cap_chunks = await uow.documents.list_chunks_for_document(cap_doc.id)
-    extraction = await extract_capability_statement(client, settings.extractor_model, cap_chunks, org_id)
+    extraction = await extract_capability_statement(
+        client, settings.extractor_model, cap_chunks, org_id
+    )
     async with UnitOfWork() as uow:
         batch = await uow.knowledge.create_import_batch(
             organization_id=org_id, import_type="manual", source_document_id=cap_doc.id
@@ -174,28 +178,41 @@ async def _run_knowledge_import(client: GeminiClient, org_id: uuid.UUID, user_id
         await import_capability(org_id, cap_batch_id, f"capability_{i}", capability)
 
     async with UnitOfWork() as uow:
-        project_items = await uow.knowledge.list_knowledge_items_for_org(org_id, item_type="past_project")
+        project_items = await uow.knowledge.list_knowledge_items_for_org(
+            org_id, item_type="past_project"
+        )
         candidates = []
         for i, ki in enumerate(project_items):
             pp = (
-                await uow.session.execute(select(PastProject).where(PastProject.knowledge_item_id == ki.id))
+                await uow.session.execute(
+                    select(PastProject).where(PastProject.knowledge_item_id == ki.id)
+                )
             ).scalar_one()
             candidates.append(
                 ProjectCandidateRef(
-                    label=f"project_{i + 1}", knowledge_item_id=ki.id, name=ki.title, client=pp.client_name
+                    label=f"project_{i + 1}",
+                    knowledge_item_id=ki.id,
+                    name=ki.title,
+                    client=pp.client_name,
                 )
             )
 
     async with UnitOfWork() as uow:
-        batch = await uow.knowledge.create_import_batch(organization_id=org_id, import_type="bulk_resumes")
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id, import_type="bulk_resumes"
+        )
         await uow.commit()
         resume_batch_id = batch.id
 
     for filename in RESUME_FILES:
-        resume_doc, _content = await _upload_and_ingest_org_doc(org_id, user_id, filename, DOCX_MIME, "resume")
+        resume_doc, _content = await _upload_and_ingest_org_doc(
+            org_id, user_id, filename, DOCX_MIME, "resume"
+        )
         async with UnitOfWork() as uow:
             resume_chunks = await uow.documents.list_chunks_for_document(resume_doc.id)
-        profile = await extract_employee_profile(client, settings.extractor_model, resume_chunks, org_id)
+        profile = await extract_employee_profile(
+            client, settings.extractor_model, resume_chunks, org_id
+        )
         item = await import_resume(
             org_id, resume_batch_id, filename, resume_doc.id, profile, [c.id for c in resume_chunks]
         )

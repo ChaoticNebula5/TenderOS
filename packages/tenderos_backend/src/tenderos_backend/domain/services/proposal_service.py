@@ -66,8 +66,7 @@ SECTION_TEMPLATES: tuple[SectionTemplate, ...] = (
     ),
     SectionTemplate(
         "Technical Approach",
-        "Describe the proposed technical approach addressing this tender's "
-        "technical requirements.",
+        "Describe the proposed technical approach addressing this tender's technical requirements.",
     ),
     SectionTemplate(
         "Proposed Team",
@@ -452,7 +451,7 @@ def enforce_claim_grounding(
     if claim.claim_type == "compliance" and resolved_requirement_ids:
         for requirement_id in resolved_requirement_ids:
             requirement_status = compliance_status_by_requirement.get(requirement_id)
-            
+
             if requirement_status not in _AFFIRMATIVE_COMPLIANCE_STATUSES:
                 return GroundingResult(
                     status="needs_review",
@@ -464,10 +463,10 @@ def enforce_claim_grounding(
     return GroundingResult(
         status="grounded",
         reason=(
-            f"{len(resolved_evidence_link_ids)} number of evidence items "
-            "support the audit record."
+            f"{len(resolved_evidence_link_ids)} number of evidence items support the audit record."
         ),
     )
+
 
 # ----------------------------------------------------------------------
 # Persistence (E7: "Persist section and claims transactionally")

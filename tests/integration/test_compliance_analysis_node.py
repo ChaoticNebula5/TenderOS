@@ -275,8 +275,12 @@ async def test_req073_074_divergent_restatements_get_independent_compliance_entr
         f"precondition failed: expected both REQ-073 and REQ-074 to survive extraction, "
         f"got {len(requirements)} requirement(s) - {[r.requirement_text for r in requirements]}"
     )
-    assert len(one_year) == 1, "precondition failed: REQ-073 (1-year duration) missing after extraction"
-    assert len(three_years) == 1, "precondition failed: REQ-074 (3-year duration) missing after extraction"
+    assert len(one_year) == 1, (
+        "precondition failed: REQ-073 (1-year duration) missing after extraction"
+    )
+    assert len(three_years) == 1, (
+        "precondition failed: REQ-074 (3-year duration) missing after extraction"
+    )
     req_073, req_074 = one_year[0], three_years[0]
 
     # --- 2. Compliance layer: independent entries, no cross-contamination ---

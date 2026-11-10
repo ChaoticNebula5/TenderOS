@@ -70,9 +70,7 @@ def _promote_due_jobs(queue: Queue, connection: Redis) -> None:
 
 def _job_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [
-        r.getMessage()
-        for r in caplog.records
-        if r.name == _LOGGER and r.levelno >= logging.WARNING
+        r.getMessage() for r in caplog.records if r.name == _LOGGER and r.levelno >= logging.WARNING
     ]
 
 

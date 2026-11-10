@@ -253,9 +253,7 @@ async def evaluate_commercial_for_tender(
 # ----------------------------------------------------------------------
 
 
-def pricing_finding_evidence_fingerprint(
-    finding_id: uuid.UUID, suffix: str | None = None
-) -> str:
+def pricing_finding_evidence_fingerprint(finding_id: uuid.UUID, suffix: str | None = None) -> str:
     """Shared with proposal_service.py's own _facts_from_pricing, which
     needs to look up the same EvidenceLink(s) this fingerprint scheme
     creates - one formula, not two independently-maintained copies that
@@ -272,9 +270,7 @@ async def _materialize_one_pricing_evidence_link(
     uow: UnitOfWork, finding: PricingFinding, pricing_document_id: uuid.UUID, suffix: str | None
 ) -> None:
     fingerprint = pricing_finding_evidence_fingerprint(finding.id, suffix)
-    existing = await uow.compliance.get_evidence_link_by_fingerprint(
-        finding.tender_id, fingerprint
-    )
+    existing = await uow.compliance.get_evidence_link_by_fingerprint(finding.tender_id, fingerprint)
     if existing is not None:
         return
     pricing_document = await uow.commercial.get_pricing_document(pricing_document_id)
