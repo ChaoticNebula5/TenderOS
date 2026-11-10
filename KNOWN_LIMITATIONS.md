@@ -11634,6 +11634,13 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      blocker 3. Events written before a stream opens are not replayed; the
      web app re-reads the resource when the stream opens, so none is
      missed.
+     **Corrected (plan item 54, 2026-11-10):** "none is missed" was wrong.
+     An event whose transaction began before the stream's starting point
+     and committed after it was never sent, and the web app's read went out
+     before the stream opened, so it could miss that event too. The stream
+     now starts from the ids of the events that exist when it opens and
+     sends every other one; the web app reads again once the stream is
+     open. See the plan item 54 entry.
   5. **`OperationStatusChanged` events are routed to the generic
      placeholder consumer** (`jobs/placeholder.py`, logs and returns), like
      every other event type without a worker consumer. They exist for the
@@ -13164,3 +13171,50 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - A test entering `with TestClient(app)` closed the shared driver for every
     later test, unless it patched `close_driver`. **Resolved (plan item 49):**
     `close_driver()` now clears the driver and the next session builds a fresh one.
+
+## [Phase 4 plan item 54, 2026-11-10, environment limit; the SSE stream no longer depends on it] On the Windows dev host, Postgres's `now()` steps back about 1 s every ~28 s between transactions
+
+- **Seen (observed, Docker Desktop on Windows, 2026-11-10):** sequential,
+  committed transactions 250 ms apart on the test suite's own connection
+  (`127.0.0.1:5433`, the same server as `docker exec`): `now()` went
+  backwards six times in about 100 s. Each event was about 1 s: in one
+  step (-944 ms, -986 ms) or in two consecutive readings (-227 then -485 ms).
+  Events came every 110 or so transactions, about every 28 s. Seen from the
+  host, Postgres's clock runs about 4.3% fast and then drops back about
+  1.2 s, so its gap with the host swings between about -810 and +480 ms.
+  The host's own wall clock stayed exactly on its monotonic counter.
+- **Not seen inside one statement:** a single long PL/pgSQL loop, or one
+  long SELECT, reading `clock_timestamp()` every 10 ms saw no backward step
+  and no stall: 10 minutes idle, 12 minutes during a full suite, and 52 s
+  through each connection path. Why only separate statements see the steps
+  is not known.
+- **Likely source (read, not proven):** the VM's kernel runs Hyper-V's time
+  sync with `hv_utils.timesync_implicit=1`, which lets the host set the
+  guest's clock. Related to plan item 45's entry above, where the same VM's
+  monotonic clock ran about 2% fast.
+- **What it broke, now fixed (plan item 54):**
+  - The SSE stream (`apps/api/src/tenderos_api/outbox_stream.py`) asked
+    only for events stamped after the last one it sent. An event written in
+    the second after a step, following one sent in the second before it,
+    was never sent. The same cursor also skipped an event whose transaction
+    began before a later-stamped one but committed after it, and one whose
+    transaction spanned the stream's opening. The stream now tracks the ids
+    it has sent and depends on neither clock order nor commit order.
+  - The reaper test's intermittent failure, events read as `running,
+    failed, queued` (2 of 4 full suites): `test_async_operations.py`'s
+    `_statuses_announced` ordered by `created_at`. It now orders by the
+    inserting transaction's id (`xmin`), a test-only ordering.
+- **Still shown out of order here, nothing skipped or decided (read):**
+  `OutboxRepository.list_failed` (the operator's `--list`),
+  `WorkflowRepository.list_waiting_runs_with_a_decided_gate` (batch order),
+  and `scripts/e2e_step11_timeline.py` (a diagnostic report). Comparisons
+  of a stamp with `now()` (leases, retry delays, the reaper's caps) can be
+  off by up to about 1.2 s, small against their minutes.
+- **Production:** a server whose clock is slewed (NTP) rather than stepped
+  should not do this. Not measured.
+- **The stream's poll reads the whole outbox table**, before item 54 and
+  after it: no index covers the payload key. Measured on the dev data's
+  6,639 rows (largest run 34 events): 1.2 to 1.3 ms for the old cursor
+  query, 1.7 ms for the new one. It grows with the table, and nothing
+  deletes outbox rows (read). An index on the payload key, or pruning
+  dispatched rows, would be the fix when it matters.

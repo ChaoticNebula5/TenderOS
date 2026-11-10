@@ -22,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 from rq import Queue
 from sqlalchemy import select, update
 from tenderos_api.main import app
-from tenderos_api.outbox_stream import outbox_event_stream
+from tenderos_api.outbox_stream import open_outbox_event_stream
 from tenderos_api.routes.operations import OperationKind, _operation_message
 from tenderos_api.sse_tickets import (
     SCOPE_OPERATION,
@@ -334,7 +334,7 @@ async def test_the_operation_stream_sends_a_heartbeat_then_each_status_reached()
         other_id = uuid.UUID((await _start_red_team(client, headers, other_tender))["operation_id"])
 
     # The same generator stream_operation_events returns.
-    gen = outbox_event_stream(
+    gen = await open_outbox_event_stream(
         event_types=[EVENT_OPERATION_STATUS_CHANGED],
         payload_key="operation_id",
         resource_id=operation_id,

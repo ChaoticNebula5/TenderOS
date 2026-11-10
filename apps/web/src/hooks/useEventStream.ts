@@ -8,7 +8,8 @@ const _MAX_MINT_RETRIES = 3;
 // B14. Same { data, error } contract usePolling.ts already promised this
 // swap would preserve - callers destructure the return value identically,
 // only the import changes. fetcher is reused exactly as usePolling used
-// it: called once on mount, then again on every real SSE message, so the
+// it: called once on mount, again when each connection opens (plan item
+// 54, see source.onopen), then again on every real SSE message, so the
 // actual data always comes from the normal REST route (listWorkflowTasks/
 // getWorkflowRun), never from the stream's own payload directly. That's
 // deliberate, not a shortcut - GET .../events/stream sends G13's
@@ -162,6 +163,13 @@ export function useEventStreamFor<T>(
       source.onopen = () => {
         streamFailures = 0;
         setStreamDown(false);
+        // Plan item 54: read again once the stream is open. The server fixes
+        // the stream's starting set of events before it answers, and from
+        // then on sends every event that is not in it; this read comes after
+        // that answer, so it sees everything the starting set holds. The read
+        // above, sent before the stream opened, can land before a change the
+        // starting set already holds, and that change would never be sent.
+        void refetch();
       };
       source.onmessage = () => {
         void refetch();

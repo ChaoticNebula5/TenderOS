@@ -23,7 +23,7 @@ from redis import Redis
 from rq import Queue
 from rq.executions import Execution
 from rq.job import JobStatus
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from tenderos_backend.agents.llm.client import LLMTimeoutError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
@@ -97,6 +97,19 @@ async def _reload(operation_id: uuid.UUID) -> AsyncOperation:
 
 
 async def _statuses_announced(operation_id: uuid.UUID) -> list[str]:
+    # Plan item 54: in the order the transactions that wrote them ran, read
+    # from each row's xmin (the id Postgres gives the inserting transaction,
+    # handed out in order), not from created_at. created_at is Postgres
+    # now(), and on the Windows dev host now() steps back about 1 s every
+    # ~28 s between transactions (KNOWN_LIMITATIONS.md), which read these
+    # statuses as running, failed, queued. Valid here only because each
+    # status comes from its own transaction, the test runs them one after
+    # another, and nothing updates these rows (an UPDATE gives a row the
+    # updating transaction's xmin).
+    # Test-only. Product code must never order by xmin: it says nothing
+    # about commit order between concurrent transactions, it changes on
+    # every UPDATE, and it wraps. The SSE stream needs no order at all; it
+    # tracks the ids it has sent (tenderos_api/outbox_stream.py).
     async with UnitOfWork() as uow:
         result = await uow.session.execute(
             select(OutboxEvent)
@@ -104,7 +117,7 @@ async def _statuses_announced(operation_id: uuid.UUID) -> list[str]:
                 OutboxEvent.aggregate_id == operation_id,
                 OutboxEvent.event_type == EVENT_OPERATION_STATUS_CHANGED,
             )
-            .order_by(OutboxEvent.created_at, OutboxEvent.id)
+            .order_by(text("outbox_events.xmin::text::bigint"))
         )
         return [e.payload["status"] for e in result.scalars().all()]
 

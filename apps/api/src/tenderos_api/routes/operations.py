@@ -38,7 +38,7 @@ from tenderos_backend.domain.services import operation_service, tender_service
 
 from tenderos_api.dependencies import get_current_user, get_current_user_for_sse
 from tenderos_api.errors import OrgAccessDeniedError
-from tenderos_api.outbox_stream import outbox_event_stream
+from tenderos_api.outbox_stream import open_outbox_event_stream
 from tenderos_api.schemas.operations import OperationResponse
 from tenderos_api.schemas.workflow import SSETicketResponse
 from tenderos_api.sse_tickets import SCOPE_OPERATION, TICKET_TTL_SECONDS, mint_sse_ticket
@@ -139,7 +139,7 @@ async def stream_operation_events(
     signal: the client re-reads GET /operations/{operation_id})."""
     await _authorized_operation(operation_id, current_user)
     return StreamingResponse(
-        outbox_event_stream(
+        await open_outbox_event_stream(
             event_types=[EVENT_OPERATION_STATUS_CHANGED],
             payload_key="operation_id",
             resource_id=operation_id,
