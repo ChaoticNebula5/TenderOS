@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
@@ -74,6 +74,49 @@ describe("useEventStream", () => {
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     FakeEventSource.instances[0]!.onopen?.();
     await waitFor(() => expect(result.current.data).toBe("after the change"));
+  });
+
+  // Plan item 56: the read sent before the stream opened and the read on
+  // open are both in flight; the older one can answer last (a slow request,
+  // or one that waited for an access-token refresh), and no message may
+  // follow to correct the screen.
+  function readsAnsweredByHand() {
+    const pending: { resolve: (v: string) => void; reject: (e: unknown) => void }[] = [];
+    const fetcher = () =>
+      new Promise<string>((resolve, reject) => {
+        pending.push({ resolve, reject });
+      });
+    return { fetcher, pending };
+  }
+
+  it("an older read that answers last does not replace a newer one (plan item 56)", async () => {
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    const { fetcher: reads, pending } = readsAnsweredByHand();
+    const { result } = renderHook(() => useEventStream(reads, "run-7", true));
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    FakeEventSource.instances[0]!.onopen?.();
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    await act(async () => pending[1]!.resolve("newer"));
+    expect(result.current.data).toBe("newer");
+    await act(async () => pending[0]!.resolve("older"));
+    expect(result.current.data).toBe("newer");
+  });
+
+  it("an older read that fails last does not show an error over newer data (plan item 56)", async () => {
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    const { fetcher: reads, pending } = readsAnsweredByHand();
+    const { result } = renderHook(() => useEventStream(reads, "run-8", true));
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    FakeEventSource.instances[0]!.onopen?.();
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    await act(async () => pending[1]!.resolve("newer"));
+    await act(async () => pending[0]!.reject(new Error("older read failed")));
+    expect(result.current.data).toBe("newer");
+    expect(result.current.error).toBeNull();
   });
 
   it("a 401 minting the ticket surfaces as error and does not retry", async () => {
