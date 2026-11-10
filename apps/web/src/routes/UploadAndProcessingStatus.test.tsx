@@ -404,7 +404,11 @@ describe("why the last run failed", () => {
   it("shows the reason when the open run ends failed on the stream", async () => {
     const sentence =
       "The last run stopped because the background job processing it was lost. Start processing again to run it from the beginning.";
-    const failedRun: WorkflowRunResponse = { ...activeRun(), status: "failed", error_code: "WORKER_LOST" };
+    const failedRun: WorkflowRunResponse = {
+      ...activeRun(),
+      status: "failed",
+      error_code: "WORKER_LOST",
+    };
     // Once the stream reports the run failed, the screen clears the run id
     // and lists the tender's runs again. A real server answers that second
     // list with the failed run; the first version of this test kept

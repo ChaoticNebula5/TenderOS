@@ -339,9 +339,13 @@ export function UploadAndProcessingStatus() {
                 Last run <StatusBadge {...describeStatus("run", lastRunStatus)} />
               </p>
             )}
-            {lastRunStatus === "failed" && lastRunErrorCode && RUN_ERROR_SENTENCES[lastRunErrorCode] && (
-              <p className="processing__last-run-reason">{RUN_ERROR_SENTENCES[lastRunErrorCode]}</p>
-            )}
+            {lastRunStatus === "failed" &&
+              lastRunErrorCode &&
+              RUN_ERROR_SENTENCES[lastRunErrorCode] && (
+                <p className="processing__last-run-reason">
+                  {RUN_ERROR_SENTENCES[lastRunErrorCode]}
+                </p>
+              )}
             <Button
               variant="primary"
               onClick={handleStartProcessing}
