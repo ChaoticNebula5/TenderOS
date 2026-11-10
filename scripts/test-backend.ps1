@@ -17,6 +17,9 @@
     - The stack's api, four workers and outbox_dispatcher
       containers must be stopped: six fixtures run `MATCH (n) DETACH DELETE n` against the one
       shared Neo4j (KNOWN_LIMITATIONS.md). -AllowRunningStack overrides it.
+      If Docker cannot be asked (no docker command, or the engine does not
+      answer), this refuses too, rather than reading no output as "none
+      running".
     - Both Hugging Face models the code loads by name (ingestion/embed.py,
       agents/knowledge/rerank.py) must be in the local cache. The run is
       offline (HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1), as the images are
@@ -58,12 +61,29 @@ if (-not $vars["REDIS_URL"].EndsWith("/1")) {
 }
 
 if (-not $AllowRunningStack) {
+    # The answer is trusted only if docker itself succeeded. An unreachable
+    # engine prints its error to stderr and nothing to stdout, which once read
+    # as an empty list, "no app containers running", and let the run go on.
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        throw ("refusing: the docker command is not on PATH, so whether the stack's app " +
+            "containers are running cannot be checked. Start Docker Desktop, or pass -AllowRunningStack.")
+    }
     Push-Location $repo
     try {
-        $running = docker compose ps --status running --format "{{.Service}}"
+        # 2>&1 keeps docker's error for the message below; its stderr lines
+        # arrive as ErrorRecords, its service names as strings.
+        $psOutput = & docker compose ps --status running --format "{{.Service}}" 2>&1
+        $psCode = $LASTEXITCODE
     } finally {
         Pop-Location
     }
+    if ($psCode -ne 0) {
+        $detail = (@($psOutput) | ForEach-Object { "$_" }) -join " "
+        throw ("refusing: could not ask Docker which containers are running (docker compose ps " +
+            "exited $psCode), so pytest cannot know it is not racing a live worker. Is Docker " +
+            "Desktop running? Docker said: $detail")
+    }
+    $running = @($psOutput | Where-Object { $_ -is [string] })
     $apps = @($running | Where-Object { $_ -in @("api", "workflow_worker", "ingestion_worker", "maintenance_worker", "operations_worker", "outbox_dispatcher") })
     if ($apps.Count -gt 0) {
         throw ("refusing: stack app containers are running ($($apps -join ', ')). pytest wipes " +
