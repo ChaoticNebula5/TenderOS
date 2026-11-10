@@ -120,15 +120,30 @@ export function useEventStreamFor<T>(
     let streamFailures = 0;
     const _MAX_STREAM_BACKOFF_MS = 30_000;
 
+    // Plan item 56: reads overlap (one on mount, one each time a connection
+    // opens, one per message) and can answer out of order: a slow request,
+    // or one that waited for client.ts to refresh an expired access token.
+    // An answer, data or error, is applied only if no later read's answer
+    // has been applied yet, so an older picture never replaces a newer one,
+    // and no message may follow to correct it. The same rule as
+    // useListReads.ts's merge() for list screens. Counted per effect run,
+    // like `cancelled`, so a new target starts from zero.
+    let reads = 0;
+    let lastApplied = 0;
     async function refetch() {
+      const read = ++reads;
       try {
         const result = await fetcherRef.current();
-        if (!cancelled) {
+        if (!cancelled && read > lastApplied) {
+          lastApplied = read;
           setData(result);
           setError(null);
         }
       } catch (err) {
-        if (!cancelled) setError(err);
+        if (!cancelled && read > lastApplied) {
+          lastApplied = read;
+          setError(err);
+        }
       }
     }
 
