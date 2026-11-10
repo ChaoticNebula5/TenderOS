@@ -18,10 +18,10 @@ import { humanize } from "../format/humanize";
 import { useReportRunStatus } from "../shell/runStatus";
 import "./Readiness.css";
 
-// The eleven readiness counts (readiness_service.py:186-321) in words.
+// The eleven readiness counts (_evaluate_readiness_once in readiness_service.py) in words.
 // chosen, not in DESIGN: hand-written so each says what is counted - e.g.
 // critical_major_redteam_findings counts open critical AND major findings
-// (readiness_service.py:45, :237, :248). A key not listed here falls back
+// (_OPEN_REDTEAM_SEVERITIES in readiness_service.py). A key not listed here falls back
 // to humanize(), so a count the backend adds later still shows.
 const COUNT_LABELS: Readonly<Record<string, string>> = {
   requirements_total: "Requirements",
@@ -41,7 +41,7 @@ function countLabel(key: string): string {
   return Object.hasOwn(COUNT_LABELS, key) ? COUNT_LABELS[key] : humanize(key);
 }
 
-// The eight blocker categories (readiness_service.py:33-40) in words.
+// The eight blocker categories (the constants atop readiness_service.py) in words.
 // chosen, not in DESIGN (polish pass): hand-written like COUNT_LABELS, so
 // "critical_redteam_finding" reads "Critical red-team finding" - as the nav
 // says "Red team" - not humanize()'s "Critical redteam finding". A category
@@ -98,7 +98,7 @@ function blockerCount(n: number): string {
 //
 // Restyle batch 5 - which report is "current" (DESIGN.md Batch 5):
 // GET /readiness on mount returns the latest STORED report
-// (readiness_service.py:450-459), which may predate later changes to the
+// (get_latest_readiness in readiness_service.py), which may predate later changes to the
 // tender, and nothing this screen fetches says the tender's current state
 // version. So a stored report is shown as exactly that - "Last stored
 // report: state version N ..." - with no <strong> and never the word

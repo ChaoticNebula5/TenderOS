@@ -21,7 +21,7 @@ import { NOT_SET } from "./talentImportValues";
 import "./TalentLibrary.css";
 
 // The four knowledge item statuses, in the order the select offers them
-// (db/models/knowledge.py:103; PATCH accepts exactly these,
+// (ck_knowledge_item_status in db/models/knowledge.py; PATCH accepts exactly these,
 // apps/api/.../schemas/knowledge.py:98). Option values stay these backend
 // words; the visible text is the mapped label.
 const KNOWLEDGE_STATUSES = ["active", "expired", "archived", "unverified"] as const;

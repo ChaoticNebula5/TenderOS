@@ -1542,7 +1542,7 @@ Each entry:
   directly:** `ProposalClaimDraft.is_factual: bool = True`
   (`agents/schemas/proposal.py:28`) - a plain bool, no enum. Storage:
   `proposal_claims.is_factual: Mapped[bool]`
-  (`db/models/proposal.py:63`) - also a plain, non-nullable `Boolean`
+  (`ProposalClaim` in `db/models/proposal.py`) - also a plain, non-nullable `Boolean`
   column. Nothing in the schema can represent a third category even if
   the prompt asked for one.
 - **The model is not simply failing to use an option it has - checked
@@ -4759,7 +4759,7 @@ edits, not code bugs.
   found - the fifth distinct real bug this block's route testing has
   caught. `readiness.py` passed clean on its first run: `evaluate_
   readiness` already caught the identical `GraphStaleError` correctly
-  (`readiness_service.py:322-329`, turning it into a real
+  (the `except GraphStaleError` in `readiness_service.py`, turning it into a real
   `stale_graph_projection` blocker rather than crashing) - checked and
   confirmed by the route test asserting that blocker category actually
   appears on a fresh tender's generated report, not just that the route
@@ -5500,7 +5500,7 @@ edits, not code bugs.
   `ready`/`blockers`/`counts`/`degraded_stages`). `ReadinessReportResponse.
   counts` is exactly 11 always-present int keys; `.blockers` entries are
   `{category, target_type, target_id, message}` with 8 fixed `category`
-  values (`readiness_service.py:31-38`).
+  values (the category constants in `readiness_service.py`).
 - **Why no live Docker/LangGraph run was used to pin this (a deviation
   from §8a's own original text, confirmed with the user before
   proceeding):** every one of these dicts is built by a single,
@@ -7356,7 +7356,7 @@ edits, not code bugs.
   queries.py:63-65`) hard-requires `MATCH (fact)-[u:USED_IN]->(:Tender
   {id: $tenderId})` as its literal first match clause, before any further
   traversal happens - and `used_in_rows` (`graph_projection/
-  projector.py:400-412`) is built *only* from `tender_knowledge_
+  projector.py`'s `project_tender`) is built *only* from `tender_knowledge_
   selections` rows (`for sel in selections if sel.knowledge_item_id in
   resolved`). Nothing in `full-flow.spec.ts` calls the knowledge-
   selection PUT before the 14th step - every row on that screen has no
@@ -7469,7 +7469,7 @@ edits, not code bugs.
     evidence materializes) - disqualified, a real self-defeating loop,
     traced at the code level, not assumed.** The write would go in
     `persist_compliance_decision`, right after `uow.compliance.
-    link_evidence(...)` (`compliance_service.py:338`) - and
+    link_evidence(...)` (`compliance_service.py`) - and
     `reanalyze_knowledge_selection_change` already calls exactly that
     function (via `evaluate_compliance_for_requirement`) on every
     selection change, deselections included. A human deselects an item;
@@ -9755,9 +9755,9 @@ of a third and fourth hand-rolled copy.
   `tests/integration/conftest.py::_guard_test_database` refuses any
   `POSTGRES_DSN` not ending in `_test`, but nothing equivalent exists for
   Neo4j or Redis. Six fixtures wipe the whole graph:
-  `tests/integration/test_graph_projection.py:37` and `:279`,
+  `tests/integration/test_graph_projection.py:37` and its `test_rebuild_from_postgres_after_deleting_neo4j`,
   `test_readiness_service.py:39`, `test_reanalysis_job.py:53`,
-  `test_redteam_service.py:36`, `tests/route/conftest.py:164`. Neo4j 5.26
+  `test_redteam_service.py:36`, `_clean_neo4j` in `tests/route/conftest.py`. Neo4j 5.26
   Community has a single user database, so there is no `_test` graph to
   point at. Redis held 81 keys immediately after the 2026-10-04 pytest
   runs; whether any of them were test-written RQ jobs that a live worker
@@ -9903,7 +9903,7 @@ of a third and fourth hand-rolled copy.
 - **Why neither step can happen on a deselection, from the code:**
   - Compliance cannot reopen: re-evaluation (`reanalysis.py:152`,
     `evaluate_compliance_for_requirement`) retrieves evidence with
-    `selected_only` deliberately unused (`compliance_service.py:404-413`),
+    `selected_only` deliberately unused (`compliance_service.py`),
     so it re-finds the identical evidence; `persist_compliance_decision`
     correctly leaves an unchanged decision alone. Observed live in B16
     (this file, the `[B14] preview_impact ... USED_IN` entry's B16
@@ -9912,14 +9912,14 @@ of a third and fourth hand-rolled copy.
     retrieval by selection; auto-reselecting on evidence materialization)
     for documented reasons in the same entry.
   - A claim cannot become needs_review: the only computed needs_review is
-    `proposal_service.py:458`, inside `enforce_claim_grounding`, reached
+    in `proposal_service.py`, inside `enforce_claim_grounding`, reached
     only when a cited requirement's compliance is non-affirmative. Its two
     callers are draft-time persistence (`:551`) and `reground_claim`
     (`:922`, called by `reanalysis.py:184`). `reground_claim` re-filters
     evidence by `verified and validity_status == "valid"` only
     (`_prepare_evidence_facts`, `:154`) - selection is not an input - and
     compliance stays affirmative per the point above. The model default
-    (`models/proposal.py:79`, `default="needs_review"`) is an initial
+    (`ProposalClaim.grounding_status` in `models/proposal.py`, `default="needs_review"`) is an initial
     value, not a transition.
   - The one remaining route is incidental: under a real provider the
     re-evaluation's LLM call could answer differently by nondeterminism.
@@ -9931,7 +9931,7 @@ of a third and fourth hand-rolled copy.
   `compliance_re_evaluation_required` (no alternate valid path) - the
   spec's "evidence coverage = 0" (:3561) - and **major** otherwise. A
   critical open finding is a readiness blocker
-  (`readiness_service.py:237-245`: "Unresolved critical red-team finding:
+  (`_evaluate_readiness_once` in `readiness_service.py`: "Unresolved critical red-team finding:
   deselected_fact_in_use."), which is the spec's last line (:3564).
 - **E2E consequence (B17 Phase 0):** `full-flow.spec.ts` step 14's final
   assertion ("at least one additional claim to become needs_review") was
@@ -10088,12 +10088,12 @@ The original entry, as found:
     it** (no `target_type` in `apps/web/src/routes` or `components`); the
     red-team screen renders category, severity, text, resolved - no link
     built from target_type/target_id.
-  - Readiness (`readiness_service.py:238-246`) builds its blocker from the
+  - Readiness (`_evaluate_readiness_once` in `readiness_service.py`) builds its blocker from the
     constant `"redteam_finding"` and `finding.id`, never the finding's own
     `target_type`.
   - Targeted replanning (`orchestration/nodes/redteam.py:101`) routes by
     `map_finding_to_corrective_task(finding.finding_category)`
-    (`redteam_service.py:275`), not by `target_type`.
+    (`redteam_service.py`), not by `target_type`.
   - `domain/policies/rbac.py:187` mentions the column in a comment only.
   - The other `target_type` hits in the codebase are different columns
     (`audit_events.target_type`, readiness blockers' own, gate targets) -
@@ -10115,7 +10115,7 @@ The original entry, as found:
     re-labels and re-fingerprints existing rows together.
   - **Nothing catches it in the database.** `redteam_findings.target_type`
     is `TEXT NOT NULL` with no CHECK constraint (Build Guide `:1562`;
-    `db/models/redteam.py:37`), so any string is accepted.
+    `RedteamFinding.target_type` in `db/models/redteam.py`), so any string is accepted.
   - **The spec's vocabulary.** Build Guide examples use
     `"target_type": "proposal_claim"` for red-team findings (`:2298`, E8)
     and `"compliance_entry"` for gate targets (`:871`, R5) - so a correct
@@ -10945,7 +10945,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      in-process. Found when the new log-asserting tests passed alone and
      failed in the full suite; reproduced with that one file run first.
      Worked around with the opt-in `main_logger_enabled` fixture
-     (`tests/route/conftest.py:201`). A real API process never runs
+     (in `tests/route/conftest.py` until `f93814d` removed it). A real API process never runs
      Alembic, so production logging is unaffected. The root-cause fix
      (`disable_existing_loggers=False`) is planned as a separate small
      commit. **Resolved in Phase 4 batch 1 (item 12)**; see the Alembic
@@ -10984,7 +10984,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   `IDEMPOTENCY_IN_PROGRESS` and `Retry-After`; a lapsed lease (or a NULL
   one, from before migration 019) is taken over by one conditional UPDATE
   (`IdempotencyRepository.take_over_expired`); any exception from the
-  route releases the record (`apps/api/src/tenderos_api/idempotency.py:134-153`);
+  route releases the record (`get_idempotency_context` and `IdempotencyContext.release` in `apps/api/src/tenderos_api/idempotency.py`);
   `finalize` and `release` act only while the caller still holds the
   claim. The lease is 60 s (`idempotency.py:30`), a design number, not
   measured, and every time value is on the database clock.
@@ -11034,12 +11034,12 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      delete_expired` exists and is tested, but nothing calls it yet; Phase 4
      blocker 3 runs it from the outbox dispatcher's loop. **RESOLVED by
      `13414ed`:** the dispatcher's loop calls it
-     (`apps/worker/src/tenderos_worker/outbox_dispatcher.py:631`); marked
+     (`_delete_expired_idempotency_records` in `apps/worker/src/tenderos_worker/outbox_dispatcher.py`); marked
      here in batch 2b.
   6. **A cancelled request does not release its key.** When a client
      disconnects, the request is cancelled with `asyncio.CancelledError`,
      which is not an `Exception`, so the dependency's release-on-error path
-     (`apps/api/src/tenderos_api/idempotency.py:134-153`) does not run. The
+     (`get_idempotency_context` and `IdempotencyContext.release` in `apps/api/src/tenderos_api/idempotency.py`) does not run. The
      record stays `in_progress` until its lease runs out; a retry with the
      same key gets `IDEMPOTENCY_IN_PROGRESS` for up to 60 s (the lease, a
      design number) and then takes the record over. **RESOLVED in Phase 4
@@ -11444,7 +11444,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      from being skipped when that earlier one finishes after it.
   4. `parse_and_embed_document` skips when the ingestion run for
      `(document, PARSER_VERSION)` already completed
-     (`jobs/ingestion.py:139`). An explicit reprocess reopens that run
+     (`parse_and_embed_document` in `jobs/ingestion.py`). An explicit reprocess reopens that run
      (`document_service.reprocess_document`), so it still re-runs. The
      ingest job id now includes the event id: with blocker 3's
      `unique=True` and an id shared across events, a reprocess within RQ's
@@ -11674,8 +11674,8 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Behaviour (fixed in Stage 2):**
   1. Both routes now follow Stage 1's pattern: they record an async
      operation (`proposal_generation`, `commercial_validation`) and return
-     202 with it (`apps/api/src/tenderos_api/routes/proposal.py:40`,
-     `routes/commercial.py:35`); the worker runs the work in
+     202 with it (`generate_proposal` in `apps/api/src/tenderos_api/routes/proposal.py`,
+     `validate_pricing_document` in `routes/commercial.py`); the worker runs the work in
      `run_operation` (`apps/worker/src/tenderos_worker/jobs/operations.py:52`,
      `:61`). Job timeout 1800 s each, lease 1860 s (configured in Stage 1,
      `operation_service.JOB_TIMEOUT_SECONDS`). A second POST while one is

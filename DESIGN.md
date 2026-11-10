@@ -292,19 +292,19 @@ Sources:
   `agents/schemas/redteam.py:5` and `agents/schemas/commercial.py:5` -
   `critical, major, minor` (there is no "high"; an earlier draft of this
   file said so and was wrong)
-- Proposal claim grounding: `db/models/proposal.py:58` - `grounded, unsupported, needs_review, not_required`
+- Proposal claim grounding: `ck_proposal_claim_grounding_status` in `db/models/proposal.py` - `grounded, unsupported, needs_review, not_required`
 - Compliance entry: `db/models/compliance.py:53-56` - `fully_compliant, partially_compliant, non_compliant, clarification_required, evidence_unavailable, not_reviewed`
-- Finding resolved flag: `db/models/redteam.py:46` and `db/models/commercial.py:93` (boolean)
+- Finding resolved flag: `RedteamFinding.resolved` in `db/models/redteam.py` and `PricingFinding.resolved` in `db/models/commercial.py` (boolean)
 - Import item: `db/models/knowledge.py:61` - `pending, extracted, needs_review, approved, rejected, failed`
 - Import batch (batch 6): the status the API **returns** is computed from
   the batch's items, `domain/services/knowledge_service.py:1211-1240` -
   `queued, processing, needs_review, completed, failed` - not the stored
   column (`db/models/knowledge.py:34`). "completed" includes batches with
   some failed items; only an all-failed batch is "failed".
-- Knowledge item (batch 6): `db/models/knowledge.py:103` - `active, expired, archived, unverified`
+- Knowledge item (batch 6): `ck_knowledge_item_status` in `db/models/knowledge.py` - `active, expired, archived, unverified`
   (only `active` counts as verified evidence, `domain/services/compliance_service.py:79`)
-- Employee availability (batch 6): `db/models/knowledge.py:174` - `available, partially_available, unavailable, unknown`
-- Employee profile review (batch 6): `db/models/knowledge.py:178` - `needs_review, verified, stale, rejected, archived`
+- Employee availability (batch 6): `ck_employee_availability_status` in `db/models/knowledge.py` - `available, partially_available, unavailable, unknown`
+- Employee profile review (batch 6): `ck_employee_profile_review_status` in `db/models/knowledge.py` - `needs_review, verified, stale, rejected, archived`
   (only `needs_review`, the default, and `verified`, `knowledge_service.py:1156`, have a writer)
 
 | Display state | Gate | Run | Task | Parse | Severity | Grounding | Compliance | Other |
@@ -324,7 +324,7 @@ Sources:
   Ready treatment with the label "Resolved", whatever its severity; an open
   one shows its severity badge. This matches what readiness counts as
   blocking: open `critical` and `major` only
-  (`domain/services/readiness_service.py:44-45`).
+  (`_OPEN_COMMERCIAL_SEVERITIES` and `_OPEN_REDTEAM_SEVERITIES` in `readiness_service.py`).
 - **`evidence_unavailable` is Warning, not Failed**, because it says the
   system could not find support, not that the bid fails the requirement;
   `non_compliant` is the only compliance value that asserts failure.
@@ -375,7 +375,7 @@ into words:
     "Verified", stale Warning "Stale", rejected Failed "Rejected",
     archived Neutral "Archived".
 - **Polish pass (chosen, not in this file before; in code):**
-  - Readiness blocker categories (`domain/services/readiness_service.py:33-40`)
+  - Readiness blocker categories (the category constants in `readiness_service.py`)
     through a hand-written map in `Readiness.tsx`, `humanize` for one the
     backend adds later: e.g. `critical_redteam_finding` "Critical red-team
     finding" (as the nav says "Red team", not "redteam"),
@@ -383,12 +383,12 @@ into words:
   - Graph node property values through the families above
     (`routes/graphExplorerValues.ts`): `validity_status`,
     `grounding_status`, `availability_status`, `profile_review_status` by
-    key; a bare `status` by node label - Compliance (`projector.py:339`),
-    ProposalSection (`:366`), and Employee, Certification, Project and
-    Capability, whose `status` is the knowledge item's (`:194-201`); any
+    key; a bare `status` by node label - Compliance and ProposalSection (`projector.py`'s
+    `project_tender`), and Employee, Certification, Project and Capability, whose
+    `status` is the knowledge item's (the same function's shared-node step); any
     other status humanised. The labels match the ones the projector writes
-    (`graph_projection/cypher/nodes.py:71`, `:98`, `:108`, `:117`, `:126`,
-    `:135`).
+    (`graph_projection/cypher/nodes.py`: `merge_compliance_nodes`, `merge_proposal_section_nodes`,
+    and the `merge_*_nodes` for Employee, Certification, Project and Capability).
 
 ### Named Rules
 
@@ -738,8 +738,8 @@ and is reused; after the polish pass, screen code has 0 inline
   Neutral "Draft", review Blocked "In review", approved Ready "Approved")
   and `validity` (valid Ready, invalid Failed, expired **Failed** - the
   backend treats expired exactly like invalid: only verified and `valid`
-  evidence grounds a claim, `domain/services/proposal_service.py:154`,
-  `:279`, or counts for readiness, `readiness_service.py:219` - unknown
+  evidence grounds a claim (`_prepare_evidence_facts`, `_facts_from_pricing` in
+  `proposal_service.py`) or counts for readiness (`has_valid` in `readiness_service.py`) - unknown
   Neutral). **Spec-forced (raw word in the DOM):** where a label is just
   the backend word capitalised, a badge the spec reads as text keeps that
   word and CSS capitalises it (`describeStatusKeepingRawWord`,
@@ -1236,8 +1236,8 @@ and is reused; after the polish pass, screen code has 0 inline
     Decided: see Decisions, item 8.
   - **Batch 4: `formatInr` still has no caller.** The only structured
     amount on these screens, `delta`, is `actual - expected` in the pricing
-    sheet's own currency (`domain/services/pricing_checks.py:265`, `:373`,
-    `:501`), and the fixture's sheets are USD and EUR with `currency` null
+    sheet's own currency (`domain/services/pricing_checks.py`: `evaluate_row_arithmetic`,
+    `check_grand_total`, `check_cross_doc_mismatch`), and the fixture's sheets are USD and EUR with `currency` null
     on both pricing documents. Labelling it "₹" would claim INR for a
     non-INR figure; a bare number breaks "Don't show ... a bare number for
     money". So `delta` stays unshown, and the commercial screen's Currency
@@ -1642,7 +1642,7 @@ Library setup, **no new dependency**.
     reads a table or the counts (grep of `:1436-1494`), so the counts are a
     `<dl>`.
 - **Readiness: stored vs current (follow-up, not built).** `GET /readiness`
-  returns the latest stored report (`readiness_service.py:450-459`), and
+  returns the latest stored report (`get_latest_readiness` in `readiness_service.py`), and
   no response this screen fetches carries the tender's current state
   version, so the screen cannot tell a stored report is current. A mount
   `GET` that answers after Generate is dropped, so a stored report never
@@ -1657,7 +1657,7 @@ Library setup, **no new dependency**.
   `describeGraphFreshness` (Status badge); readiness count labels - a
   hand-written map of the 11 keys (`Readiness.tsx`, `COUNT_LABELS`; e.g.
   `critical_major_redteam_findings` -> "Open critical or major red-team
-  findings", since it counts both, `readiness_service.py:45`, `:248`),
+  findings", since it counts both, `_OPEN_REDTEAM_SEVERITIES` in `readiness_service.py`),
   `humanize` for unknown keys; graph values (`routes/graphExplorerValues.ts`)
   - plain values as text, booleans "Yes"/"No", null "Not set", arrays
   joined, objects as their JSON in `<code>` (never "[object Object]"),

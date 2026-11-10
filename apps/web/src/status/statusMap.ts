@@ -110,7 +110,7 @@ const severity: FamilyMap = {
   minor: { tone: "neutral", label: "Minor" },
 };
 
-// Proposal claim grounding - db/models/proposal.py:58
+// Proposal claim grounding - ck_proposal_claim_grounding_status, db/models/proposal.py
 const grounding: FamilyMap = {
   // DESIGN.md:314-315 'Grounding: "Grounded"'; :276 Ready row
   grounded: { tone: "ready", label: "Grounded" },
@@ -175,9 +175,9 @@ const validity: FamilyMap = {
   invalid: { tone: "failed", label: "Invalid" },
   // chosen, not in DESIGN: Failed, not Warning, because the backend treats
   // expired exactly like invalid - only verified AND 'valid' evidence can
-  // ground a claim (domain/services/proposal_service.py:154, :279) or count
-  // as valid evidence for readiness (domain/services/readiness_service.py:219,
-  // a blocker when none is left).
+  // ground a claim (_prepare_evidence_facts, _facts_from_pricing in proposal_service.py) or
+  // count as valid evidence for readiness (has_valid in readiness_service.py, a blocker when
+  // none is left).
   expired: { tone: "failed", label: "Expired" },
   // chosen, not in DESIGN
   unknown: { tone: "neutral", label: "Unknown" },
@@ -201,7 +201,7 @@ const importBatch: FamilyMap = {
   failed: { tone: "failed", label: "Failed" },
 };
 
-// Knowledge item - db/models/knowledge.py:103. Batch 6, decided at plan
+// Knowledge item - ck_knowledge_item_status, db/models/knowledge.py. Batch 6, decided at plan
 // review; DESIGN.md has no row for this family. Only `active` counts as
 // verified evidence (domain/services/compliance_service.py:79).
 const knowledgeItem: FamilyMap = {
@@ -216,8 +216,8 @@ const knowledgeItem: FamilyMap = {
   archived: { tone: "neutral", label: "Archived" },
 };
 
-// Employee availability - db/models/knowledge.py:174. Batch 6, decided at
-// plan review; DESIGN.md has no row for this family.
+// Employee availability - ck_employee_availability_status, db/models/knowledge.py.
+// Batch 6, decided at plan review; DESIGN.md has no row for this family.
 const availability: FamilyMap = {
   // chosen, not in DESIGN
   available: { tone: "ready", label: "Available" },
@@ -230,11 +230,11 @@ const availability: FamilyMap = {
   unknown: { tone: "neutral", label: "Unknown" },
 };
 
-// Employee profile review - db/models/knowledge.py:178. Batch 6, decided at
-// plan review; DESIGN.md has no row for this family. Only needs_review
-// (the default, :217) and verified (knowledge_service.py:1156) have a
-// writer today; stale, rejected and archived are read
-// (talent_service.py:236, db/repositories/knowledge.py:340) but never set.
+// Employee profile review - ck_employee_profile_review_status, db/models/knowledge.py.
+// Batch 6, decided at plan review; DESIGN.md has no row for this family. Only needs_review
+// (the profile_review_status default) and verified (knowledge_service.py:1156) have a writer
+// today; stale, rejected and archived are read (_compute_candidate_talent_signals in
+// talent_service.py, db/repositories/knowledge.py:340) but never set.
 const profileReview: FamilyMap = {
   // chosen, not in DESIGN: the import item and grounding families' word and tone
   needs_review: { tone: "blocked", label: "Needs review" },
