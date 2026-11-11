@@ -29,20 +29,31 @@ from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Text, literal_column, select
 from sqlalchemy.sql.elements import ColumnElement
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
 POLL_INTERVAL_SECONDS = 1.0
 
+# Plan item 55: the only payload keys a stream may filter on. Each is written
+# into the SQL as a literal, so migration 026's expression indexes on
+# (payload ->> 'workflow_run_id') and (payload ->> 'operation_id') match it
+# under a generic plan too; sent as a parameter, as before, the key cannot use
+# them (observed: a full scan). Nothing but these two strings is ever inlined:
+# any other key raises before a statement exists.
+STREAM_PAYLOAD_KEYS = frozenset({"workflow_run_id", "operation_id"})
+
 
 def _matching(
     event_types: list[str], payload_key: str, resource_id: UUID
 ) -> list[ColumnElement[bool]]:
+    if payload_key not in STREAM_PAYLOAD_KEYS:
+        raise ValueError(f"not a stream payload key: {payload_key!r}")
+    key = literal_column(f"'{payload_key}'", type_=Text)
     return [
         OutboxEvent.event_type.in_(event_types),
-        OutboxEvent.payload[payload_key].astext == str(resource_id),
+        OutboxEvent.payload.op("->>", return_type=Text)(key) == str(resource_id),
     ]
 
 
@@ -82,9 +93,11 @@ async def _poll(
     oldest stamp first within a poll (for the reader; nothing depends on
     that order), and a heartbeat comment whenever a poll finds nothing.
 
-    Every poll reads the whole outbox table, as the created_at cursor did
-    before item 54 (no index covers the payload key): 1.7 ms against 1.2-1.3 ms
-    for the cursor on the dev data's 6,639 rows, measured 2026-11-10.
+    Since plan item 55 a poll reads only its resource's rows, through
+    migration 026's expression index on the payload key: measured
+    2026-11-10 on the dev data (6,762 rows) with this statement prepared
+    under plan_cache_mode = force_generic_plan, the largest run's poll read
+    39 rows in 0.07 ms, against a full scan of 6,762 rows in 2.3 ms before.
     `sent` holds at most one id per event of one run or operation (34 for
     the largest run in the dev data).
     """
