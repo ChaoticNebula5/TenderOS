@@ -38,6 +38,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.workflow import WorkflowRun
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -65,7 +66,16 @@ logger = logging.getLogger(__name__)
 # --list shows at most this many dead letters, oldest first.
 LIST_LIMIT = 200
 
-_NO_SUCH_EVENT = "refused: no such outbox event"
+
+def _no_such_event() -> str:
+    """Plan item 55 (decision 0082): an id can be missing because the
+    dispatcher's cleanup removed it, so the refusal names both retention
+    periods, read from the settings each time."""
+    return (
+        "refused: no such outbox event (dispatched events are removed "
+        f"{settings.outbox_dispatched_retention_days} days after dispatch, "
+        f"dead letters {settings.outbox_dead_letter_retention_days} days after their last attempt)"
+    )
 
 
 @dataclass(frozen=True)
@@ -290,7 +300,7 @@ async def _one(
     async with UnitOfWork() as uow:
         event = await uow.outbox.get(event_id)
         if event is None:
-            result = _result(event_id, None, redriven=False, refused=True, line=_NO_SUCH_EVENT)
+            result = _result(event_id, None, redriven=False, refused=True, line=_no_such_event())
         else:
             allowed, why = await _assess(uow, event, ctx)
             if not allowed:

@@ -20,6 +20,7 @@ from rq.job import Job
 from sqlalchemy import text
 from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
+from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.session import engine
@@ -716,6 +717,54 @@ async def _delete_expired_idempotency_records() -> None:
         logger.exception("idempotency record cleanup failed; will retry on a later tick")
 
 
+async def _delete_old_dispatched_events() -> None:
+    """Plan item 55 (decision 0082): one batch of at most CLEANUP_BATCH_SIZE
+    dispatched outbox events older than outbox_dispatched_retention_days,
+    in its own short transaction, once per cleanup tick (a fixed cap: about
+    720,000 rows a day, against 1,005 written on the dev data's busiest day).
+    A gate decision whose run still waits is kept
+    (OutboxRepository.delete_old_dispatched). A failure is logged and
+    swallowed, like the other cleanups."""
+    try:
+        async with UnitOfWork() as uow:
+            deleted = await uow.outbox.delete_old_dispatched(
+                timedelta(days=backend_settings.outbox_dispatched_retention_days),
+                batch_size=CLEANUP_BATCH_SIZE,
+            )
+            await uow.commit()
+        if deleted:
+            logger.info(
+                "deleted %d dispatched outbox events older than %d days",
+                deleted,
+                backend_settings.outbox_dispatched_retention_days,
+            )
+    except Exception:
+        logger.exception("dispatched outbox event cleanup failed; will retry on a later tick")
+
+
+async def _delete_old_dead_letters() -> None:
+    """Plan item 55 (decision 0082): one batch of at most CLEANUP_BATCH_SIZE
+    dead letters whose last attempt is older than
+    outbox_dead_letter_retention_days, the re-drive tool's window, per
+    cleanup tick. Logged and swallowed on failure, separately from the
+    dispatched cleanup, so neither skips the other."""
+    try:
+        async with UnitOfWork() as uow:
+            deleted = await uow.outbox.delete_old_dead_letters(
+                timedelta(days=backend_settings.outbox_dead_letter_retention_days),
+                batch_size=CLEANUP_BATCH_SIZE,
+            )
+            await uow.commit()
+        if deleted:
+            logger.info(
+                "deleted %d dead-lettered outbox events older than %d days",
+                deleted,
+                backend_settings.outbox_dead_letter_retention_days,
+            )
+    except Exception:
+        logger.exception("dead-letter outbox event cleanup failed; will retry on a later tick")
+
+
 async def _delete_expired_refresh_tokens() -> None:
     """Plan item 34, option 3: one bounded batch of expired refresh-token
     rows, its own short transaction, on the same cadence and batch size as
@@ -862,6 +911,8 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
         if tick % CLEANUP_EVERY_N_TICKS == 0:
             await _delete_expired_idempotency_records()
             await _delete_expired_refresh_tokens()
+            await _delete_old_dispatched_events()
+            await _delete_old_dead_letters()
             await _reap_lapsed_operations(connection)
             await _reap_lost_runs(run_jobs)
         with contextlib.suppress(TimeoutError):

@@ -28,6 +28,15 @@ class Settings(BaseSettings):
 
     max_upload_size_mb: int = 50
 
+    # Phase 4 plan item 55 (decision 0082): outbox retention, design numbers.
+    # The outbox dispatcher's cleanup deletes a dispatched event this many
+    # days after its dispatched_at, and a dead letter (status 'failed') this
+    # many days after its last scheduled attempt (available_at). Pending
+    # events are never deleted, nor a gate decision whose run still waits.
+    # outbox_redrive.py's "no such event" message names both periods.
+    outbox_dispatched_retention_days: int = Field(default=7, gt=0)
+    outbox_dead_letter_retention_days: int = Field(default=30, gt=0)
+
     gemini_api_key: str = ""
     # B16: one Gemini API key per specialist branch that dispatches in
     # PARALLEL via LangGraph's Send() - compliance_analysis, talent_analysis,

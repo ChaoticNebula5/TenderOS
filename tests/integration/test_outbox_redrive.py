@@ -26,6 +26,7 @@ import pytest_asyncio
 from _helpers import register_org_and_tender
 from redis import Redis
 from sqlalchemy import func, select, update
+from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.reanalysis_claim import ReanalysisClaim
@@ -271,7 +272,15 @@ async def test_unknown_pending_and_dispatched_events_are_refused(made):
     )
 
     assert [r.refused for r in results] == [True, True, True]
-    assert results[0].line == "refused: no such outbox event"
+    # Plan item 55: an id may be missing because retention removed it, so the
+    # refusal names both periods (the settings' design numbers).
+    assert results[0].line == (
+        "refused: no such outbox event (dispatched events are removed "
+        f"{backend_settings.outbox_dispatched_retention_days} days after dispatch, dead letters "
+        f"{backend_settings.outbox_dead_letter_retention_days} days after their last attempt)"
+    )
+    assert backend_settings.outbox_dispatched_retention_days == 7
+    assert backend_settings.outbox_dead_letter_retention_days == 30
     assert results[1].line == (
         f"refused: pending, not dead-lettered (3 of {MAX_ATTEMPTS} attempts used): "
         "the dispatcher will deliver it"

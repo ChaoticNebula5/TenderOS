@@ -1,10 +1,16 @@
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, delete, exists, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
+from tenderos_backend.domain.events.outbox_events import (
+    AGGREGATE_APPROVAL_GATE,
+    EVENT_GATE_DECISION_RECORDED,
+)
 
 # Phase 4 blocker 3: every time this repository compares or writes is the
 # database's own now(). available_at is stamped by Postgres on insert
@@ -148,6 +154,98 @@ class OutboxRepository:
             .execution_options(synchronize_session=False)
         )
         return result.scalar_one_or_none() is not None
+
+    async def delete_old_dispatched(self, older_than: timedelta, batch_size: int) -> int:
+        """Plan item 55 (decision 0082): delete at most batch_size dispatched
+        events whose dispatched_at is more than older_than ago (database
+        clock), oldest first, and return how many were deleted.
+
+        Kept whatever its age: the gate decision for the gate a
+        waiting_for_human run is at now, its newest gate. run_reaper's gate
+        backstop (WorkflowRepository.list_waiting_runs_with_a_decided_gate)
+        reads that one row for as long as the run waits, with no age limit,
+        and no other gate's: "newest" here is the backstop's own order,
+        requested_at then id, so the two cannot disagree (the retention test
+        checks them against each other). A decision for a gate the run has
+        already passed goes like any other row (observed 2026-11-11: all 366
+        rows the first rule kept on the dev data were such). Every other
+        reader of dispatched rows needs them for at most 6 hours (the queued
+        reapers' caps). Pending events and dead letters are never touched
+        here (delete_old_dead_letters takes those).
+        """
+        newer_gate = aliased(ApprovalGate)
+        current_gate_of_waiting_run = exists(
+            select(ApprovalGate.id)
+            .join(WorkflowRun, WorkflowRun.id == ApprovalGate.workflow_run_id)
+            .where(
+                ApprovalGate.id == OutboxEvent.aggregate_id,
+                WorkflowRun.status == "waiting_for_human",
+                ~exists(
+                    select(newer_gate.id).where(
+                        newer_gate.workflow_run_id == ApprovalGate.workflow_run_id,
+                        tuple_(newer_gate.requested_at, newer_gate.id)
+                        > tuple_(ApprovalGate.requested_at, ApprovalGate.id),
+                    )
+                ),
+            )
+        )
+        batch = self._batch(
+            "old_dispatched",
+            OutboxEvent.dispatched_at,
+            batch_size,
+            OutboxEvent.status == "dispatched",
+            OutboxEvent.dispatched_at < func.now() - older_than,
+            ~and_(
+                OutboxEvent.aggregate_type == AGGREGATE_APPROVAL_GATE,
+                OutboxEvent.event_type == EVENT_GATE_DECISION_RECORDED,
+                current_gate_of_waiting_run,
+            ),
+        )
+        return await self._delete(batch)
+
+    async def delete_old_dead_letters(self, older_than: timedelta, batch_size: int) -> int:
+        """Plan item 55 (decision 0082): delete at most batch_size dead
+        letters (status 'failed') whose last scheduled attempt (available_at:
+        mark_retry and reset_failed set it, mark_failed leaves it) is more
+        than older_than ago, oldest first, and return how many were deleted.
+        Until then the re-drive tool (plan item 20) can still list and
+        re-drive them."""
+        batch = self._batch(
+            "old_dead_letters",
+            OutboxEvent.available_at,
+            batch_size,
+            OutboxEvent.status == "failed",
+            OutboxEvent.available_at < func.now() - older_than,
+        )
+        return await self._delete(batch)
+
+    @staticmethod
+    def _batch(name: str, oldest_first, batch_size: int, *conditions):
+        """The rows one batch deletes: the same bounded, SKIP LOCKED,
+        MATERIALIZED-CTE shape as IdempotencyRepository.delete_expired (its
+        comment records why the CTE must be materialized: the subquery form
+        deleted more than one batch). SKIP LOCKED lets the cleanup pass over
+        a row a re-drive or the dispatcher holds."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        return (
+            select(OutboxEvent.id)
+            .where(*conditions)
+            .order_by(oldest_first)
+            .limit(batch_size)
+            .with_for_update(skip_locked=True, of=OutboxEvent)
+            .cte(name)
+            .prefix_with("MATERIALIZED")
+        )
+
+    async def _delete(self, batch) -> int:
+        result = await self._session.execute(
+            delete(OutboxEvent)
+            .where(OutboxEvent.id.in_(select(batch.c.id)))
+            .returning(OutboxEvent.id)
+            .execution_options(synchronize_session=False)
+        )
+        return len(result.scalars().all())
 
     async def mark_failed(self, event_id: uuid.UUID) -> None:
         """Count the last attempt and mark the event 'failed': the dead-letter

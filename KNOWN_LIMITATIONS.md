@@ -13218,3 +13218,12 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   query, 1.7 ms for the new one. It grows with the table, and nothing
   deletes outbox rows (read). An index on the payload key, or pruning
   dispatched rows, would be the fix when it matters.
+  **Resolved by plan item 55 (2026-11-10, decision 0082):** migration 026
+  indexes `(payload ->> 'workflow_run_id')` and `(payload ->> 'operation_id')`,
+  and the stream writes the key as a literal from an allowlist, so a poll
+  reads only its run's or operation's rows, generic plan included. The
+  outbox dispatcher's cleanup now deletes dispatched rows after
+  `outbox_dispatched_retention_days` (7) and dead letters after
+  `outbox_dead_letter_retention_days` (30), in batches of at most 500 per
+  kind per cleanup tick; pending rows never, nor a gate decision whose run
+  still waits.

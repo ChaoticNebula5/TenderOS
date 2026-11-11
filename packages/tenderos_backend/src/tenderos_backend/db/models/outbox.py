@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, Index, func
+from sqlalchemy import TIMESTAMP, CheckConstraint, Index, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,6 +17,18 @@ class OutboxEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "status",
             "available_at",
             postgresql_where="status IN ('pending','failed')",
+        ),
+        # Plan item 55 (migration 026, decision 0082): the SSE stream's filter,
+        # whose keys tenderos_api/outbox_stream.py writes as literals so a
+        # generic plan can use these; and retention's oldest-dispatched
+        # lookup (OutboxRepository.delete_old_dispatched), which the stream
+        # never uses. The migration builds them CONCURRENTLY.
+        Index("idx_outbox_workflow_run_id", text("(payload ->> 'workflow_run_id'::text)")),
+        Index("idx_outbox_operation_id", text("(payload ->> 'operation_id'::text)")),
+        Index(
+            "idx_outbox_dispatched_at",
+            "dispatched_at",
+            postgresql_where="status = 'dispatched'",
         ),
     )
 
