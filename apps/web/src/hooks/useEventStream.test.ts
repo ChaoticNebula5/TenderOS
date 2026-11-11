@@ -42,6 +42,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
@@ -57,6 +58,27 @@ describe("useEventStream", () => {
     const url = FakeEventSource.instances[0]!.url;
     expect(url).toContain("ticket=real-ticket");
     expect(url).not.toContain("access_token");
+  });
+
+  it("opens the stream on the page's origin when the API base URL is relative (plan item 27)", async () => {
+    // The production build sets VITE_API_BASE_URL=/api, served by the same
+    // nginx as the page. The hook reads the base URL when its module loads,
+    // so the module (and the client it imports) is loaded again under it.
+    vi.stubEnv("VITE_API_BASE_URL", "/api");
+    vi.resetModules();
+    const client = await import("../api/client");
+    vi.mocked(client.mintWorkflowEventsTicket).mockResolvedValue({
+      ticket: "t",
+      expires_in_seconds: 30,
+    });
+    const { useEventStream: useRelativeEventStream } = await import("./useEventStream");
+
+    renderHook(() => useRelativeEventStream(fetcher, "run-9", true));
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(FakeEventSource.instances[0]!.url).toBe(
+      `${window.location.origin}/api/workflow-runs/run-9/events/stream?ticket=t`,
+    );
   });
 
   it("reads the resource again once the stream opens (plan item 54)", async () => {

@@ -12,13 +12,15 @@ the first instant of the next) is an accepted tradeoff for a first real
 rate limiter, not silently assumed away.
 
 Keyed on client IP (request.client.host) for both the global and login-
-specific limits. X-Forwarded-For is deliberately NOT trusted - nothing in
-this project's own docker-compose defines a reverse proxy in front of the
-API in any configuration, so honoring that header would let any caller
-trivially bypass IP-based limiting by setting it themselves. A real
-deployment that puts a reverse proxy/load balancer in front of this API
-needs to revisit this (trust X-Forwarded-For only from a known-trusted
-proxy hop) - named here as a real gap, not silently assumed away.
+specific limits. Plan item 27: the browser reaches the API through the web
+container's nginx, so request.client.host is the client nginx saw, not
+nginx itself. uvicorn sets it from X-Forwarded-For (--proxy-headers), only
+for requests from nginx's fixed address (FORWARDED_ALLOW_IPS in
+docker-compose.yml), and nginx overwrites that header with the address it
+saw. A caller anywhere else, including the loopback-published API port,
+keeps its own address whatever header it sends, so it cannot pick a bucket.
+This module still reads only request.client.host; the trust decision is
+uvicorn's, made before any middleware runs.
 
 See tenderos_api.config.Settings.rate_limit_enabled's own comment for why
 the test suite disables this entirely rather than working around it

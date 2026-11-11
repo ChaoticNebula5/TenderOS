@@ -20,8 +20,12 @@ this fails when:
   the services named below, does not set LLM_PROVIDER to fake and every
   Gemini key to "" in `environment:` (a new service that reads .env gets
   the fake settings before CI passes);
-- a compose override file is tracked: `docker compose up` loads it with no
-  -f at all, so it could undo the fake default without being named.
+- a compose override file exists, tracked or not: `docker compose up` loads
+  it with no -f at all, so it could undo the fake default (or swap the web
+  image for the dev server) without being named;
+- plan item 27: a workflow, a file a workflow uses, or scripts/fake-stack.ps1
+  names docker-compose.dev.yml, the Vite dev-server override. CI's E2E and
+  the local fake stack must test the production build.
 
 Exit 0 when everything holds, 1 with one line per problem otherwise.
 Run: uv run python scripts/check_ci_stays_fake.py   (CI's lint job runs it)
@@ -41,6 +45,8 @@ LIVE_FILE = re.compile(r"docker-compose\.live\.ya?ml", re.IGNORECASE)
 FAKE_OVERLAY = "docker-compose.e2e-fake.yml"
 SCRIPT_PATH = re.compile(r"scripts/[\w./-]+")
 COMPOSE_PATH = re.compile(r"docker-compose[\w.-]*\.ya?ml")
+DEV_FILE = re.compile(r"docker-compose\.dev\.ya?ml", re.IGNORECASE)
+FAKE_STACK_SCRIPT = "scripts/fake-stack.ps1"
 OVERRIDE_FILES = (
     "docker-compose.override.yml",
     "docker-compose.override.yaml",
@@ -87,6 +93,8 @@ def _check_workflows(root: Path, own_path: Path) -> list[str]:
         text = path.read_text(encoding="utf-8")
         if LIVE_FILE.search(text):
             problems.append(f"{name} names the live compose file")
+        if DEV_FILE.search(text):
+            problems.append(f"{name} names the dev compose file")
         used.update(SCRIPT_PATH.findall(text))
         used.update(COMPOSE_PATH.findall(text))
 
@@ -118,6 +126,8 @@ def _check_workflows(root: Path, own_path: Path) -> list[str]:
             text = yaml.safe_dump(yaml.safe_load(text))
         if LIVE_FILE.search(text):
             problems.append(f"{rel}, used by a workflow, names the live compose file")
+        if DEV_FILE.search(text):
+            problems.append(f"{rel}, used by a workflow, names the dev compose file")
     return problems
 
 
@@ -140,22 +150,41 @@ def _check_base_compose(root: Path) -> list[str]:
     return problems
 
 
-def _check_no_tracked_override(root: Path) -> list[str]:
-    tracked = subprocess.run(
-        ["git", "ls-files", "--", *OVERRIDE_FILES],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    return [f"{path} is tracked: a bare docker compose up would load it" for path in tracked]
+def _check_no_override(root: Path) -> list[str]:
+    """An override file on disk is loaded by any `docker compose` run with no
+    -f and no COMPOSE_FILE, whether git tracks it or not."""
+    tracked = set(
+        subprocess.run(
+            ["git", "ls-files", "--", *OVERRIDE_FILES],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    )
+    problems = []
+    for path in OVERRIDE_FILES:
+        if path in tracked:
+            problems.append(f"{path} is tracked: a bare docker compose up would load it")
+        elif (root / path).exists():
+            problems.append(f"{path} exists: a bare docker compose up would load it")
+    return problems
+
+
+def _check_fake_stack_script(root: Path) -> list[str]:
+    """The local fake stack must start the production web build too."""
+    path = root / FAKE_STACK_SCRIPT
+    if path.is_file() and DEV_FILE.search(path.read_text(encoding="utf-8")):
+        return [f"{FAKE_STACK_SCRIPT} names the dev compose file"]
+    return []
 
 
 def check(root: Path, own_path: Path = Path(__file__)) -> list[str]:
     return (
         _check_workflows(root, own_path)
         + _check_base_compose(root)
-        + _check_no_tracked_override(root)
+        + _check_no_override(root)
+        + _check_fake_stack_script(root)
     )
 
 
@@ -167,7 +196,8 @@ def main() -> int:
         return 1
     print(
         "fake provider: no CI workflow reaches docker-compose.live.yml, its e2e keeps "
-        f"{FAKE_OVERLAY}, and docker-compose.yml sets every service that reads .env to fake"
+        f"{FAKE_OVERLAY}, docker-compose.yml sets every service that reads .env to fake, "
+        "no compose override file exists, and neither CI nor fake-stack.ps1 uses the dev override"
     )
     return 0
 

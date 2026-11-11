@@ -66,5 +66,12 @@ RUN uv sync --frozen --package tenderos-api
 # PID 1 and gets no default signal actions. Either way each one handles
 # SIGTERM itself: uvicorn shuts down gracefully, waiting at most 10 s
 # for open connections (an SSE stream stays open until the client leaves).
+#
+# Plan item 27: --proxy-headers (uvicorn's default, stated here) takes the
+# client address and scheme from X-Forwarded-For and X-Forwarded-Proto, but
+# only for a request from an address in FORWARDED_ALLOW_IPS. That is set
+# where the network is known: docker-compose.yml gives it nginx's fixed
+# address. Unset, uvicorn trusts only 127.0.0.1 and ::1, so the image alone
+# trusts no proxy.
 EXPOSE 8000
-CMD ["/app/.venv/bin/uvicorn", "tenderos_api.main:app", "--app-dir", "apps/api/src", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]
+CMD ["/app/.venv/bin/uvicorn", "tenderos_api.main:app", "--app-dir", "apps/api/src", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10", "--proxy-headers"]

@@ -6,3 +6,7 @@ test-results/
 # Kept out on purpose, by project rule: prettier would rewrap its
 # @font-face unicode-range lists.
 src/styles/tokens.css
+
+# Plan item 27: nginx config, not a web file. Prettier reads .inc as HTML
+# (nginx.conf has no parser and is skipped already).
+proxy_headers.inc

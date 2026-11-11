@@ -15,7 +15,8 @@
        Neo4j's constraints,
        and the app services start only once it has exited 0 (compose's
        service_completed_successfully), so a failed migration fails here,
-    3. waits for the api health check,
+    3. waits for the api health check, then web's (nginx's /healthz, plan
+       item 27),
     4. prints `printenv LLM_PROVIDER` for api, the four workers and
        outbox_dispatcher,
        and fails unless all four say fake.
@@ -55,6 +56,16 @@ try {
         Start-Sleep -Seconds 3
     }
     if (-not $healthy) { throw "api never became healthy" }
+
+    # Plan item 27: web is nginx with the production build; its healthcheck
+    # asks nginx for /healthz. A config error shows here, not in the E2E.
+    $healthy = $false
+    for ($i = 0; $i -lt 20; $i++) {
+        $status = (& docker inspect -f "{{.State.Health.Status}}" tenderos-web-1).Trim()
+        if ($status -eq "healthy") { $healthy = $true; break }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $healthy) { throw "web never became healthy (docker compose logs web)" }
 
     $bad = @()
     foreach ($svc in @("api", "workflow_worker", "ingestion_worker", "maintenance_worker", "operations_worker", "outbox_dispatcher")) {

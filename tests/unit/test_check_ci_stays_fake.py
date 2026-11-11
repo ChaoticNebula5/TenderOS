@@ -122,8 +122,16 @@ def test_a_workflow_that_sets_a_live_provider_fails(tree):
 @pytest.mark.parametrize(
     ("service", "old", "new"),
     [
-        ("api", "    environment: *fake-provider\n    ports:", "    ports:"),
-        ("operations_worker", "      <<: *fake-provider\n", ""),
+        (
+            "api",
+            "      <<: *fake-provider\n      # Plan item 27: trust X-Forwarded-For",
+            "      # Plan item 27: trust X-Forwarded-For",
+        ),
+        (
+            "operations_worker",
+            'operations"]\n    env_file: .env\n    environment:\n      <<: *fake-provider\n',
+            'operations"]\n    env_file: .env\n    environment:\n',
+        ),
         (
             "migrate",
             "apply_constraints\n    env_file: .env\n    environment: *fake-provider\n",
@@ -162,13 +170,59 @@ def test_a_new_service_that_reads_env_fails_until_it_is_fake(tree):
     assert _problems(tree) == []
 
 
-def test_a_tracked_compose_override_fails(tree):
+def test_a_compose_override_fails_whether_tracked_or_not(tree):
+    """Plan item 27: compose loads an override file from disk, tracked or
+    not, so an untracked one fails too (before, only a tracked one did)."""
     (tree / "docker-compose.override.yml").write_text(
         "services:\n  api:\n    environment:\n      LLM_PROVIDER: gemini\n", encoding="utf-8"
     )
-    assert _problems(tree) == []
+    assert _problems(tree) == [
+        "docker-compose.override.yml exists: a bare docker compose up would load it"
+    ]
     subprocess.run(["git", "add", "docker-compose.override.yml"], cwd=tree, check=True)
-    assert (
+    assert _problems(tree) == [
         "docker-compose.override.yml is tracked: a bare docker compose up would load it"
-        in _problems(tree)
+    ]
+
+
+def test_a_workflow_that_names_the_dev_override_fails(tree):
+    _edit(
+        tree,
+        _CI,
+        "COMPOSE_FILE: docker-compose.yml:",
+        "COMPOSE_FILE: docker-compose.yml:docker-compose.dev.yml:",
     )
+    assert ".github/workflows/ci.yml names the dev compose file" in _problems(tree)
+
+
+def test_a_script_a_workflow_runs_that_names_the_dev_override_fails(tree):
+    script = "scripts/ci_e2e_env.py"
+    assert script in _files_ci_uses()
+    path = tree / script
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n# docker-compose.dev.yml\n", encoding="utf-8"
+    )
+    assert f"{script}, used by a workflow, names the dev compose file" in _problems(tree)
+
+
+def test_the_fake_stack_script_that_names_the_dev_override_fails(tree):
+    """Checked on its own, not only as a file ci.yml mentions: it is what
+    starts the local fake stack, whatever ci.yml's comments say."""
+    path = tree / "scripts" / "fake-stack.ps1"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "scripts" / "fake-stack.ps1", path)
+    assert _problems(tree) == []
+    _edit(
+        tree,
+        "scripts/fake-stack.ps1",
+        '"-f", "docker-compose.e2e-fake.yml"',
+        '"-f", "docker-compose.e2e-fake.yml", "-f", "docker-compose.dev.yml"',
+    )
+    assert "scripts/fake-stack.ps1 names the dev compose file" in _problems(tree)
+    # Without ci.yml mentioning it (every mention), the script is still checked.
+    ci = tree / _CI
+    ci.write_text(
+        ci.read_text(encoding="utf-8").replace("scripts/fake-stack.ps1", "the fake-stack script"),
+        encoding="utf-8",
+    )
+    assert _problems(tree) == ["scripts/fake-stack.ps1 names the dev compose file"]
