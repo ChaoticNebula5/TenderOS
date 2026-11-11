@@ -99,13 +99,30 @@ class GateRepository:
         decided_by: uuid.UUID,
         status: str,
         decision_payload: dict,
-    ) -> ApprovalGate:
-        gate = await self._session.get(ApprovalGate, gate_id)
-        if gate is None:
-            raise ValueError(f"ApprovalGate {gate_id} not found")
-        gate.status = status
-        gate.decided_by = decided_by
-        gate.decision_payload = decision_payload
-        gate.decided_at = datetime.now(UTC)
-        await self._session.flush()
-        return gate
+    ) -> ApprovalGate | None:
+        """Record the decision on a gate that is still pending, and return
+        the decided gate; None if it is no longer pending (decided, or
+        closed by a cancel, since the caller read it).
+
+        Plan item 57: one conditional UPDATE (compare-and-swap), like
+        close_pending_for_run. Of two concurrent decisions, the second waits
+        on the row lock, then re-checks status = 'pending' against the row
+        the first wrote and matches nothing. Before this, the update had no
+        status condition, so the second overwrote the first and was stopped
+        only by the outbox's unique idempotency_key, as an IntegrityError the
+        route answered with a 500 (observed 2026-11-11: 4 of 5 races)."""
+        result = await self._session.execute(
+            update(ApprovalGate)
+            .where(ApprovalGate.id == gate_id, ApprovalGate.status == "pending")
+            .values(
+                status=status,
+                decided_by=decided_by,
+                decision_payload=decision_payload,
+                decided_at=datetime.now(UTC),
+            )
+            .returning(ApprovalGate.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+        return await self._session.get(ApprovalGate, gate_id, populate_existing=True)
