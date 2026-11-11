@@ -1,0 +1,32 @@
+# Plan item 27 (decision 0085): local development with the Vite dev server and
+# hot reload, instead of the production nginx image. Named, never
+# docker-compose.override.yml (which compose loads with no -f at all), so it
+# applies only when asked for:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up web
+#
+# CI and scripts/fake-stack.ps1 never name this file, so the E2E always runs
+# the production build; scripts/check_ci_stays_fake.py fails if either does,
+# or if a compose override file exists.
+#
+# The dev stage listens on 8080 like nginx, so the base file's 5173:8080
+# mapping serves it. The sources are bind-mounted over the image's copy, so an
+# edit on the host reloads the page; node_modules stays the image's own (Linux)
+# install. /api is proxied by the dev server to the api service
+# (vite.config.ts), as nginx does in production.
+services:
+  web:
+    build:
+      target: dev
+    environment:
+      VITE_API_PROXY_TARGET: "http://api:8000"
+      # Docker Desktop on Windows: bind-mounted edits send no file events.
+      VITE_WATCH_POLLING: "1"
+    volumes:
+      - ./apps/web/src:/app/src
+      - ./apps/web/public:/app/public
+      - ./apps/web/index.html:/app/index.html
+      - ./apps/web/vite.config.ts:/app/vite.config.ts
+    # The dev image has no wget; the dev server needs no health wait.
+    healthcheck:
+      disable: true

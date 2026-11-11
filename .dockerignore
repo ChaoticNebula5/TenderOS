@@ -18,3 +18,14 @@ backups/
 
 # Gitignored third-party Claude Code skills (docs/frontend-tooling.md).
 .agents/
+
+# Plan item 27: the host's own Node installs and build output. apps/web's
+# Dockerfile runs `npm ci` and then `COPY apps/web .`; without these lines a
+# local build copied this machine's node_modules (Windows binaries included)
+# over the image's own, and its old dist/ and test reports in beside them.
+# CI's checkout has none of them when it builds, so CI was never affected.
+**/node_modules/
+apps/web/dist/
+apps/web/test-results/
+apps/web/playwright-report/
+apps/landing/dist/

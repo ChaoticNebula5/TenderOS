@@ -171,7 +171,13 @@ export function useEventStreamFor<T>(
 
       void refetch();
 
-      const url = new URL(`${BASE_URL}${STREAM_ROUTES[targetKind].path(targetId)}`);
+      // Plan item 27: resolved against the page, so a relative base URL
+      // (/api, the production build's same-origin proxy) works as well as an
+      // absolute one; new URL() with no base throws on a relative URL.
+      const url = new URL(
+        `${BASE_URL}${STREAM_ROUTES[targetKind].path(targetId)}`,
+        window.location.href,
+      );
       url.searchParams.set("ticket", ticket);
       source = new EventSource(url.toString());
 

@@ -8527,7 +8527,10 @@ edits, not code bugs.
   front of the API in any configuration, so honoring that header would
   let any caller trivially bypass IP-based limiting by setting it
   themselves; a real deployment behind a reverse proxy needs to revisit
-  this, named here rather than silently assumed away. Two limits: a
+  this, named here rather than silently assumed away. **Revisited by plan
+  item 27 (2026-11-11, decision 0085):** the web container's nginx now
+  proxies the API, and the API trusts `X-Forwarded-For` from nginx's
+  fixed address only (see "Trusted proxy" under plan item 27 below). Two limits: a
   generous global ceiling (100/60s) on every route, and a tighter,
   dedicated ceiling (5/60s) specifically on `/auth/login` - the one route
   a credential-stuffing/brute-force attempt would actually target,
@@ -10937,6 +10940,13 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      balancer that is the proxy's IP, so every user would share one
      bucket (100 requests and 5 logins per 60 s, configured numbers).
      The fix is planned in Phase 4 with the deployment host.
+     **Resolved for the compose stack by plan item 27 (2026-11-11):**
+     uvicorn takes the client from `X-Forwarded-For` only for requests
+     from nginx's fixed address (`FORWARDED_ALLOW_IPS`), and nginx sets
+     that header to the address it saw. Observed: two clients behind
+     nginx got separate buckets, and forged headers from four places got
+     none. A host with its own proxy in front of nginx must pass nginx
+     the real client the same way (host-dependent items).
   4. **Test session only: Alembic disables existing loggers.**
      `packages/tenderos_backend/src/tenderos_backend/db/migrations/env.py:14`
      calls `fileConfig()`, whose default `disable_existing_loggers=True`
@@ -12405,7 +12415,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - A job killed anyway is not retried by RQ. Operations are failed by
     the reaper; workflow runs by the run reaper (plan item 19).
 
-## [Phase 4 batch 2b, 2026-10-23, resolved for the api; the proxy's log is a deployment item] SSE tickets in the access log
+## [Phase 4 batch 2b, 2026-10-23, resolved for the api; resolved for nginx by plan item 27] SSE tickets in the access log
 
 - **Before:** `GET .../events/stream?ticket=...` carries its single-use
   ticket in the query string (EventSource cannot send headers), and
@@ -12431,7 +12441,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
 - **Limits:**
   - The reverse proxy in front of the api, once there is one, keeps its
     own access log; it needs the same redaction, configured at
-    deployment (plan item 3, host part).
+    deployment (plan item 3, host part). **Resolved for the web
+    container's nginx by plan item 27 (2026-11-11):** its access log
+    records the requested path without the query string, and CI's E2E
+    fails on a ticket in nginx's or the api's log
+    (`scripts/e2e_proxy_log_check.py`). nginx's error log cannot be
+    reformatted and quotes the whole request line on an upstream error;
+    it shares the web service's output, so the same check covers it. A
+    host's own proxy in front of nginx still needs the same care.
   - Browser history still holds the stream URL with its ticket (dead
     after first use).
 - **Test:** `tests/unit/test_logging_filters.py` (a record made as
@@ -12966,7 +12983,10 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   fixed it and step 11's check, so the tally restarts at 0 from the main
   run after the spec edit merges. The edited spec's blob, `0d6adac6`, is the
   new frozen reference: the spec is not edited again without the same kind
-  of explicit, recorded decision. The E2E folder is typechecked from this
+  of explicit, recorded decision. **Updated 2026-11-11 (plan item 27,
+  decision 0086):** one more such decision changed line 610's exact path
+  match to `endsWith`, so the step 4 wait matches through nginx's `/api`
+  proxy; the frozen reference is now `a2a50eba`. The E2E folder is typechecked from this
   edit on (`apps/web/tsconfig.e2e.json`, referenced from `tsconfig.json`,
   so CI's web job's `npx tsc -b` covers it). Local runs on the final tree:
   3 of 3 passed, 2.6, 3.1 and 3.1 min (2026-11-03, fake provider).
@@ -13225,5 +13245,19 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   outbox dispatcher's cleanup now deletes dispatched rows after
   `outbox_dispatched_retention_days` (7) and dead letters after
   `outbox_dead_letter_retention_days` (30), in batches of at most 500 per
-  kind per cleanup tick; pending rows never, nor a gate decision whose run
-  still waits.
+  kind per cleanup tick; pending rows never, nor the decision for the gate
+  a waiting run is at now (corrected 2026-11-11: the rule was narrowed to
+  that gate before item 55's commit, decision 0082).
+
+## [Phase 4 plan item 27, 2026-11-11, decision 0085] The web app behind nginx: what holds only in the compose stack, and what a host must still do
+
+- **Built:** the web image is a static build served by nginx (unprivileged, port 8080, published on the host's 5173). nginx proxies `/api/` to the api with the prefix removed, so the browser sees one origin. The api trusts `X-Forwarded-For` only from nginx's fixed address (`FORWARDED_ALLOW_IPS=10.89.27.10`), and nginx overwrites that header with the address it saw.
+- **Observed (fake stack):** two clients behind nginx got separate rate-limit buckets, and forged headers from four places got none. Uploads of 2 and 40 MB passed, 50 MiB + 64 KiB got the api's 413, 51.5 MiB nginx's. Both streams were unbuffered (heartbeats every 1.00 to 1.02 s). 3 of 3 E2E runs passed, with no SSE ticket in nginx's or the api's log and no CSP report. 15 screens showed 0 CSP violations and 0 console errors.
+- **Limits:**
+  - **The api port stays published on loopback** (`127.0.0.1:8000`, `[::1]:8000`) for local tools and the E2E's health wait. Requests there come from Docker's host gateway, so their forwarded headers are ignored, and they share one rate-limit bucket. Production must not publish it: only nginx is exposed (host-dependent items).
+  - **The trusted address and its subnet are the compose network's** (`proxy`, `10.89.27.0/28`). A host network already using that range would need another one. A host with its own proxy in front of nginx must pass nginx the real client, and nginx's `X-Forwarded-For` rule must then trust that proxy instead of overwriting.
+  - **nginx resolves the api through Docker's DNS** (`resolver 127.0.0.11`). A host without Docker's DNS needs the resolver or the upstream changed.
+  - **nginx's error log quotes the whole request line,** query string included, on an upstream error. A stream request's ticket could appear there. The web service's output is checked by `scripts/e2e_proxy_log_check.py` in CI's E2E; a host must treat that log like the access log.
+  - **`/csp-report` accepts anonymous POSTs** (16 KB at most, answered 204, one access-log line each). It is how CI's E2E sees a CSP violation on any screen; it can also be used to add lines to the log.
+  - **Turning proxy buffering back on was not visible in the stream timing:** with `proxy_buffering on`, nginx still passed each heartbeat on as it arrived (observed). The setting stays off, as nginx documents for streams and so a slow reader cannot make nginx hold its data. `tests/unit/test_web_proxy_config.py` pins it.
+  - **The Vite dev server** runs only through the named `docker-compose.dev.yml` with an explicit `-f`. It polls for file changes, because Docker Desktop on Windows sends no file events through a bind mount.

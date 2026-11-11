@@ -607,7 +607,7 @@ test("golden path: login through readiness, live Docker stack", async ({ page })
   const workflowRunCreated = page.waitForResponse(
     (resp) =>
       resp.request().method() === "POST" &&
-      new URL(resp.url()).pathname === `/tenders/${tenderId}/workflow-runs`,
+      new URL(resp.url()).pathname.endsWith(`/tenders/${tenderId}/workflow-runs`),
     { timeout: 30_000 },
   );
   await page.getByRole("button", { name: "Start processing" }).click();

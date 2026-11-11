@@ -9,7 +9,7 @@ on:
 # a comment, at the releases Dependabot's PR #17 proposed (its CI was green
 # on exactly these SHAs, run 39821371762). Dependabot's github-actions entry
 # updates the SHA and the comment together. setup-uv installs uv 0.13.5 and
-# setup-node Node 22.23.4 (with npm 10.9.9), the versions the images use;
+# setup-node Node 26.13.0 (with npm 11.20.0), the versions the images use;
 # scripts/check_pins.py, run in the lint job, fails if they drift apart, and
 # if the service images below drift from docker-compose.yml's.
 jobs:
@@ -214,7 +214,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.23.4"
+          node-version: "26.13.0"
       # Phase 4 item 7: the npm this job runs is the one package.json's
       # packageManager names (npm does not enforce the field itself).
       - name: npm matches packageManager
@@ -237,7 +237,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.23.4"
+          node-version: "26.13.0"
       # Phase 4 item 7: the npm this job runs is the one package.json's
       # packageManager names (npm does not enforce the field itself).
       - name: npm matches packageManager
@@ -387,7 +387,7 @@ jobs:
           done
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.23.4"
+          node-version: "26.13.0"
       - run: npm ci
         working-directory: apps/web
       # The Playwright version in apps/web's lockfile, with its own Chromium.
@@ -415,6 +415,14 @@ jobs:
         if: always()
         run: |
           "$HOST_PYTHON" scripts/e2e_step11_timeline.py e2e-logs/compose.log --outbox e2e-logs/outbox.tsv --json e2e-logs/step11.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # Plan item 27: the web container's nginx proxies the SSE streams, whose
+      # tickets travel in the query string. Fails on a ticket in nginx's log
+      # or an unredacted one in the api's, and on any CSP violation report
+      # (the enforced policy reports to /csp-report), so the E2E proves the
+      # app works under its CSP on every screen it visits.
+      - name: No SSE ticket in the proxy or api log, no CSP violation
+        if: always()
+        run: '"$HOST_PYTHON" scripts/e2e_proxy_log_check.py e2e-logs/compose.log'
       # Masking covers the console log, not artifact files: the logs are
       # uploaded only if none of this run's generated values appears in them.
       - name: No generated value in the saved logs
@@ -461,7 +469,7 @@ jobs:
           version: "0.13.5"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22.23.4"
+          node-version: "26.13.0"
       - run: uv sync
       - name: detect-secrets
         # NUL-delimited throughout (git ls-files -z / grep -z / mapfile -d

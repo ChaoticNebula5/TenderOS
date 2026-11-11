@@ -158,7 +158,22 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     env_file: .env
-    environment: *fake-provider
+    environment:
+      <<: *fake-provider
+      # Plan item 27: trust X-Forwarded-For only from the web container's
+      # nginx (its fixed address on the proxy network below), never "*".
+      # uvicorn reads this as --forwarded-allow-ips; it has --proxy-headers
+      # on (apps/api/Dockerfile). A request from anywhere else, including the
+      # published port below, keeps its own address, whatever header it sends.
+      FORWARDED_ALLOW_IPS: "10.89.27.10"
+    networks:
+      - default
+      - proxy
+    # Loopback only, for local tools and the E2E's health wait. Requests here
+    # come from Docker's host gateway, not from nginx, so their forwarded
+    # headers are ignored and they share one rate-limit bucket (the
+    # gateway's). Production must not publish this port: only nginx is
+    # exposed (host-dependent items).
     ports:
       - "127.0.0.1:8000:8000"
       - "[::1]:8000:8000"
@@ -325,15 +340,30 @@ services:
     # 0029), so even a kill mid-tick loses nothing.
     stop_grace_period: 30s
 
+  # Plan item 27 (decision 0085): nginx serving the static build and proxying
+  # /api/ to the api. It listens on 8080 in the container; the host side
+  # stays 5173, so Playwright's baseURL, CI's wait and web_base_url are
+  # unchanged. It joins only the proxy network, at a fixed address, so every
+  # request it makes to the api comes from 10.89.27.10, the one address the
+  # api trusts for X-Forwarded-For.
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+    networks:
+      proxy:
+        ipv4_address: 10.89.27.10
     ports:
-      - "127.0.0.1:5173:5173"
-      - "[::1]:5173:5173"
+      - "127.0.0.1:5173:8080"
+      - "[::1]:5173:8080"
     depends_on:
       - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   prometheus:
     image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
@@ -362,3 +392,13 @@ volumes:
   neo4j_data:
   s3_data:
   grafana_data:
+
+networks:
+  # Plan item 27: nginx (web) and the api only. A fixed subnet, outside
+  # Docker's default pools (172.17-31, 192.168), so web's address is known
+  # and the api can trust exactly it (FORWARDED_ALLOW_IPS above). Added
+  # alongside the default network, which every other service keeps.
+  proxy:
+    ipam:
+      config:
+        - subnet: 10.89.27.0/28
