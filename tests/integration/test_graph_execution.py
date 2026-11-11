@@ -120,8 +120,8 @@ async def test_full_smoke_path_start_to_complete():
     connection independently - nothing is cached between them - which is
     exactly what makes this equivalent to "stop worker, restart worker"
     rather than one continuous in-memory call, and is the closest thing this
-    automated suite has to B7's own stop-gate bullet "vertical slice
-    survives worker restart" (the real Docker kill-and-restart exercise
+    automated suite has to B7's own stop-gate bullet that the vertical
+    slice must outlive a worker restart (the real Docker kill-and-restart exercise
     covers the same property against the live stack, not just in-process).
     """
     registered, run = await _make_run()

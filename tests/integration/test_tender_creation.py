@@ -48,7 +48,8 @@ async def test_create_tender_does_not_bump_state_version():
 async def test_create_tender_persists_regardless_of_redis_reachability():
     """Tender + outbox row commit to Postgres in one transaction with no Redis
     involvement at all - this is what makes the outbox pattern survive a Redis
-    outage (Build Guide B2 test: 'Outbox event survives Redis outage'). Nothing
+    outage (Build Guide B2's test that an outbox event outlives Redis being
+    down). Nothing
     here talks to Redis; the dispatcher (a separate process) is what would need
     Redis, and its retry-on-failure behavior is covered separately."""
     registered = await _make_org()

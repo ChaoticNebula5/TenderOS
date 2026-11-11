@@ -1,6 +1,6 @@
 """domain/services/gate_service.py::record_decision - CodeRabbit review of
-B12's waiver enforcement (routes/gates.py's decide_gate): the ROUTE enforced
-"refuses approval until resolved or explicitly waived" correctly, but the
+B12's waiver enforcement (routes/gates.py's decide_gate): the ROUTE kept
+approval back until each blocker was resolved or waived, correctly, but the
 waived flag was computed, used to permit the override, and then discarded -
 never passed into record_decision, so the persisted gate row and audit event
 were indistinguishable from a normal approval. This tests the actual

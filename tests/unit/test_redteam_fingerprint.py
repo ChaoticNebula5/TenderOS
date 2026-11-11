@@ -1,5 +1,6 @@
-"""redteam_service.finding_fingerprint - E8's own rule: "Finding identity
-is based on the violated condition, not free-text wording." Same
+"""redteam_service.finding_fingerprint - E8's own rule: a finding is
+identified by the condition it violates, never by how its text is
+worded. Same
 plain-function unit-test shape as the fingerprint stability already proven
 for pricing_checks.finding_fingerprint (B8B) - no DB needed.
 """

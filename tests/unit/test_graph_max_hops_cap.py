@@ -1,7 +1,7 @@
 """B17 Phase 0: core/config.py::Settings.graph_max_hops is bounded 1..6.
 
-Build Guide D4 (:1940): "The code permits configuration up to 6 for
-experiments, but the public application defaults to 4." Until this test,
+Build Guide D4: experiments may raise the setting as far as 6, while the
+application ships with 4. Until this test,
 the 6 existed only as a comment. graph_projection/queries.py::preview_impact
 interpolates the value directly into a variable-length Cypher bound, so an
 unchecked GRAPH_MAX_HOPS is the one input that sets traversal depth.

@@ -25,7 +25,7 @@ from tenderos_backend.domain.services.proposal_service import enforce_claim_grou
 
 def _claim(**overrides) -> ProposalClaimDraft:
     fields = {
-        "claim_text": "The company completed three telecom migrations.",
+        "claim_text": "The company has delivered three telecom network migrations.",
         "claim_type": "experience",
         "is_factual": True,
     }

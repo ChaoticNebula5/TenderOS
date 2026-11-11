@@ -134,7 +134,7 @@ async def _draft_one_grounded_claim(
         )
     ]
     draft_claim = ProposalClaimDraft(
-        claim_text="The company completed three telecom migrations.",
+        claim_text="The company has delivered three telecom network migrations.",
         claim_type="experience",
         is_factual=True,
         evidence_refs=["evidence_1"],

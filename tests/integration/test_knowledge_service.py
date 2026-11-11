@@ -715,9 +715,9 @@ async def test_deselecting_also_bumps_state_version():
 
 
 async def test_one_knowledge_item_is_reused_across_two_tenders_and_deselection_stays_per_tender():
-    """B17 Phase 0, Part N (Build Guide :3920-3921): "knowledge facts are
-    reusable across tenders" and "deselection in one tender does not affect
-    another". The only prior evidence was graph-layer
+    """B17 Phase 0, Part N (Build Guide :3920-3921): one knowledge fact can
+    serve many tenders, and deselecting it in one leaves the others as they
+    were. The only prior evidence was graph-layer
     (test_graph_projection.py::test_deselecting_fact_in_one_tender_does_not_
     affect_another), which creates each tender under a NEW organization and
     writes selections through a helper, not this service. This test is the

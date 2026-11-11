@@ -275,7 +275,7 @@ async def test_persist_section_and_claims_creates_grounded_claim_with_linked_evi
     draft = _section_draft(
         [
             ProposalClaimDraft(
-                claim_text="The company completed three telecom migrations.",
+                claim_text="The company has delivered three telecom network migrations.",
                 claim_type="experience",
                 is_factual=True,
                 evidence_refs=["evidence_1"],
@@ -419,8 +419,8 @@ async def test_materialize_claim_links_drops_a_label_not_in_this_sections_own_fa
     # row from outside this section's own prepared fact list - a label from
     # another section, another tender, or an invented one all resolve to
     # nothing, the same "skip rather than fabricate" posture as
-    # materialize_evidence. This is what makes "evidence from another
-    # organization rejected" structurally true rather than merely tested.
+    # materialize_evidence. This is what makes rejecting another
+    # organization's evidence structurally true rather than merely tested.
     claim = ProposalClaimDraft(
         claim_text="Some claim citing a label that was never offered.",
         claim_type="experience",
@@ -453,7 +453,7 @@ async def test_get_proposal_trace_walks_claim_to_evidence_to_source():
     draft = _section_draft(
         [
             ProposalClaimDraft(
-                claim_text="The company completed three telecom migrations.",
+                claim_text="The company has delivered three telecom network migrations.",
                 claim_type="experience",
                 is_factual=True,
                 evidence_refs=["evidence_1"],
@@ -532,7 +532,7 @@ async def test_get_proposal_trace_currently_in_scope_evidence_excludes_already_c
     draft = _section_draft(
         [
             ProposalClaimDraft(
-                claim_text="The company completed three telecom migrations.",
+                claim_text="The company has delivered three telecom network migrations.",
                 claim_type="experience",
                 is_factual=True,
                 evidence_refs=["evidence_1"],
@@ -618,7 +618,7 @@ async def _draft_one_grounded_claim(
     draft = _section_draft(
         [
             ProposalClaimDraft(
-                claim_text="The company completed three telecom migrations.",
+                claim_text="The company has delivered three telecom network migrations.",
                 claim_type="experience",
                 is_factual=True,
                 evidence_refs=["evidence_1"],

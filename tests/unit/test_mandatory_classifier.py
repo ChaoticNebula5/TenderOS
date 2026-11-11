@@ -1,7 +1,7 @@
 """Mandatory-language classifier - pure function, no DB, no LLM call. This
 classifier is deliberately crude: it's meant to be a second, independent
 signal the LLM's own mandatory/optional judgment gets checked against
-(E3: "low confidence or disagreement enters human review"), not a replacement
+(E3: an unsure or disagreeing result goes to a human reviewer), not a replacement
 for contextual understanding. `ambiguous=True` is the correct, honest output
 whenever the classifier can't reach a confident verdict on its own - it is
 not a failure mode to eliminate.

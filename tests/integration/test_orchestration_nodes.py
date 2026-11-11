@@ -79,9 +79,9 @@ def _base_state(run: WorkflowRun) -> dict:
 # needs TODO #4's real checkpointer, covered separately). Monkeypatching
 # interrupt() to return a fixed decision immediately lets these tests verify
 # the one thing that IS pure node logic, independent of LangGraph's runtime:
-# the pre-interrupt gate-opening step must be idempotent (R3's "any side
-# effect before an interrupt is idempotent" rule, and B3's own required test
-# "side effects before interrupt are not duplicated").
+# the pre-interrupt gate-opening step must be idempotent (R3's rule that
+# whatever runs before an interrupt is safe to repeat, and B3's own required
+# test that those side effects happen only once).
 
 
 # B13/§8a: the six gate_types' targets/summary shapes, pinned from every

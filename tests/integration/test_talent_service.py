@@ -102,7 +102,7 @@ async def test_candidate_pool_excludes_employees_not_eligible_for_bid():
 
 
 async def test_candidate_pool_includes_stale_and_needs_review_profiles_not_hidden():
-    # PRD 10.9: "surface explicit gaps and stale or unknown profile facts" -
+    # PRD 10.9: gaps, and profile facts that are stale or unknown, are shown -
     # this project's own interpretation is warn, not exclude (see
     # talent_service.py's list_candidate_pool_employees docstring).
     org_id, _ = await _make_org_and_tender("Stale Visibility Test")
