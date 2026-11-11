@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Phase 4 plan item 58 (from decision 0083's audit): the workflow's token is
+# read-only here, not left to the repository's default setting. No job writes
+# to the repository, its pull requests or its packages. Caches, artifacts and
+# the image build cache use the runner's own token, which this doesn't limit.
+permissions:
+  contents: read
+
 # Phase 4 item 7: every action is pinned by commit SHA, with its release in
 # a comment, at the releases Dependabot's PR #17 proposed (its CI was green
 # on exactly these SHAs, run 39821371762). Dependabot's github-actions entry
