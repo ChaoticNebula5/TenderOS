@@ -125,7 +125,7 @@ def test_the_streams_are_unbuffered_with_a_timeout_above_the_heartbeat():
 
 def test_the_access_log_never_records_a_query_string():
     formats = dict(re.findall(r"log_format\s+(\w+)\s+((?:'[^']*'\s*)+);", NGINX))
-    (used,) = re.findall(r"^\s*access_log\s+\S+\s+(\w+);", NGINX, re.MULTILINE)
+    (used,) = re.findall(r"^\s*access_log\s+\S+\s+(\w+)(?:\s+if=\$\w+)?;", NGINX, re.MULTILINE)
     assert used in formats, "the server's access_log uses a format defined here"
     for variable in (
         "$request ",
@@ -141,3 +141,53 @@ def test_the_access_log_never_records_a_query_string():
     assert re.search(
         r'map \$request_uri \$request_path \{\s*"~\^\(\?<(\w+)>\[\^\?\]\*\)" \$\1;\s*\}', NGINX
     )
+
+
+# --- plan item 58: compression and the CSP report endpoint ------------------------
+
+_STATIC_LOCATIONS = ("/assets/", "/")
+_API_LOCATIONS = ("/api/", "~ ^/api/(workflow-runs|operations)/[^/]+/events/stream$")
+
+
+def test_gzip_is_on_for_the_static_files_only():
+    """gzip holds output back to compress it, which would batch the SSE
+    streams' events, and compressing api responses that hold secrets beside
+    attacker-chosen text is the BREACH shape. So it is switched on in the two
+    locations that serve files and nowhere else, and the api locations say
+    `gzip off` themselves, so a later `gzip on` above them cannot reach them."""
+    assert _directives(NGINX).count("gzip on") == len(_STATIC_LOCATIONS)
+    for block in _STATIC_LOCATIONS:
+        assert "gzip on" in _directives(_location(block)), block
+    for block in _API_LOCATIONS:
+        assert "gzip off" in _directives(_location(block)), block
+
+    (types,) = [d for d in _directives(NGINX) if d.startswith("gzip_types ")]
+    listed = set(types.split()[1:])
+    assert listed == {"text/css", "application/javascript", "image/svg+xml", "application/json"}
+    assert "gzip_vary on" in _directives(NGINX), "caches must key on the encoding"
+
+
+def test_csp_reports_are_rate_limited_and_rejections_are_not_logged():
+    """/csp-report takes anonymous POSTs. A `return` in its location would
+    answer in nginx's rewrite phase, before limit_req runs, so the 204 comes
+    from a named location reached by try_files, which runs after it."""
+    report = _directives(_location("= /csp-report"))
+    (limit,) = [d for d in report if d.startswith("limit_req ")]
+    zone = re.search(r"zone=(\w+)", limit)
+    assert zone, limit
+    assert re.search(rf"^limit_req_zone \$binary_remote_addr zone={zone[1]}:", NGINX, re.MULTILINE)
+    assert "limit_req_status 429" in report
+    assert not [d for d in report if d.startswith("return")], "return skips limit_req"
+    (fallback,) = [d for d in report if d.startswith("try_files ")]
+    named = fallback.split()[-1]
+    assert named.startswith("@")
+    assert "return 204" in _directives(_location(named))
+
+    # A rejected report is not written to the access log: the server's
+    # access_log is conditional on a variable that is 0 for exactly that.
+    (condition,) = re.findall(r"^\s*access_log\s+\S+\s+\w+\s+if=\$(\w+);", NGINX, re.MULTILINE)
+    mapping = re.search(rf'map "\$status \$request_path" \${condition} \{{([^}}]*)\}}', NGINX)
+    assert mapping, condition
+    assert _directives(mapping[1]) == ['"429 /csp-report" 0', "default 1"]
+    # ...nor to the error log: logged at info, under the image's notice level.
+    assert "limit_req_log_level info" in report
