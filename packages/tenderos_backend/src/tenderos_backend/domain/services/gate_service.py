@@ -15,6 +15,17 @@ class GateAlreadyDecidedError(Exception):
     pass
 
 
+def _replay_or_conflict(gate: ApprovalGate, decision: str) -> tuple[ApprovalGate, bool]:
+    """The answer for a decision on a gate that is no longer pending: the
+    same decision as the one recorded is a replay (is_new_decision=False, no
+    new outbox row); any other is GateAlreadyDecidedError, which the route
+    answers with 409. A gate closed by a cancel records decision None, so
+    every decision on it conflicts."""
+    if (gate.decision_payload or {}).get("decision") == decision:
+        return gate, False
+    raise GateAlreadyDecidedError()
+
+
 async def get_gate(gate_id: uuid.UUID) -> ApprovalGate | None:
     async with UnitOfWork() as uow:
         return await uow.gates.get(gate_id)
@@ -41,6 +52,10 @@ async def record_decision(
     twice - repeating the same POST (e.g. a retried request using a fresh
     Idempotency-Key by mistake) must not double-enqueue a resume job. A *different*
     decision against an already-decided gate is a real conflict, not a replay.
+    Two decisions racing on one pending gate get the same answers (plan item 57):
+    the gate update is conditional on status = 'pending', so the one that loses
+    is answered like a decision arriving after the other, and the outbox's unique
+    idempotency_key stays a backstop rather than the guard.
 
     Assumes the caller already confirmed the gate exists (the route resolves
     gate_type -> RBAC action from it before this is ever called, so a second
@@ -63,10 +78,7 @@ async def record_decision(
             raise ValueError(f"ApprovalGate {gate_id} not found")
 
         if gate.status != "pending":
-            already_recorded = (gate.decision_payload or {}).get("decision")
-            if already_recorded == decision:
-                return gate, False
-            raise GateAlreadyDecidedError()
+            return _replay_or_conflict(gate, decision)
 
         decision_payload: dict = {"decision": decision, "notes": notes, "waived": waived}
         if waived:
@@ -78,6 +90,14 @@ async def record_decision(
             status=status_for_decision(decision),
             decision_payload=decision_payload,
         )
+        if updated is None:
+            # Plan item 57: another request decided (or a cancel closed) the
+            # gate between the read above and this update, and the update's
+            # status = 'pending' condition matched nothing; nothing has been
+            # written. Answer as for a decision arriving after that one did:
+            # the winner's decision, re-read now that it has committed.
+            await uow.session.refresh(gate)
+            return _replay_or_conflict(gate, decision)
         await uow.outbox.create(
             aggregate_type=AGGREGATE_APPROVAL_GATE,
             aggregate_id=gate_id,
