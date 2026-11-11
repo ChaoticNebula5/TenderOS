@@ -2,7 +2,7 @@
 # pinning. Node 22.23.4 bundles npm 10.9.9, the version package.json's
 # packageManager names; CI's setup-node uses the same Node version, and
 # scripts/check_pins.py fails CI if they differ.
-FROM node:22.23.4-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+FROM node:26.13.0-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
 
 WORKDIR /app
 
