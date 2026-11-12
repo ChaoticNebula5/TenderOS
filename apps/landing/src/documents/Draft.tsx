@@ -14,7 +14,7 @@ export function Draft({ d, id }: { d: Dr; id: number }) {
   if (d.gate) {
     return (
       <>
-        <Top left="Bid KMRC-14" tag="Gate" />
+        <Top left="Bid VLMRC-14" tag="Gate" />
         <p className="c-t">Readiness checklist</p>
         {GATE_ITEMS.map((t) => (
           <div className="chk" key={t}>
@@ -35,7 +35,7 @@ export function Draft({ d, id }: { d: Dr; id: number }) {
       <p className="c-t">{d.t}</p>
       <p className="c-p">{d.p}</p>
       <Bars n={9} s={id + 40} />
-      <Foot left="Bid KMRC-14" right="Draft 3" />
+      <Foot left="Bid VLMRC-14" right="Draft 3" />
     </>
   );
 }

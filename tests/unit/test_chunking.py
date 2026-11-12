@@ -15,7 +15,7 @@ def test_chunks_never_span_a_page_boundary():
     """The load-bearing guarantee. A chunk records ONE page_num, so merging
     two pages would make every requirement extracted from the second page
     cite the first - directly breaking B5's citation-validity gate and B4's
-    "chunks cannot return to source page/sheet" condition.
+    condition that every chunk leads back to its own page or sheet.
     """
     blocks = [
         ExtractedBlock(text="Page one requires a tax clearance certificate.", page_num=1),

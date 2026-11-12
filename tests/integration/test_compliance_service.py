@@ -1,6 +1,7 @@
 """domain/services/compliance_service.py against real Postgres - evidence
 materialization idempotency, compliance-entry persistence idempotency
-(B7 stop-gate: "retry does not duplicate evidence or compliance"),
+(B7 stop-gate: a retry must not create a second copy of evidence or of
+a compliance entry),
 clarification generation, human override/approve auditing, and the
 traceability walk."""
 

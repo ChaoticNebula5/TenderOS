@@ -1,5 +1,6 @@
-"""agents/llm/client.py::call_with_repair - I4's "malformed structured
-output: one repair attempt, then fail task." Shared by every agent, and
+"""agents/llm/client.py::call_with_repair - I4's rule for malformed
+structured output: ask for a repair once, and fail the task if the repair
+is malformed too. Shared by every agent, and
 until now had zero direct test coverage anywhere in this project - only
 exercised incidentally, through agent-level tests asserting on downstream
 degradation (e.g. test_proposal_drafting_node.py), never proving the
@@ -92,6 +93,6 @@ async def test_two_malformed_responses_propagates_not_a_third_attempt():
         )
 
     assert len(client.calls) == 2, (
-        "I4: 'one repair attempt, then fail task' - a second failure must propagate, "
+        "I4: repair once, then fail the task - a second failure must propagate, "
         "not trigger a third call"
     )

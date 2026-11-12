@@ -19,7 +19,7 @@ def test_low_text_page_with_image_triggers_ocr():
 
 
 def test_blank_page_without_image_does_not_trigger_ocr():
-    """B4's smoke test requires OCR to run only on low-text pages. A blank
+    """B4's smoke test wants OCR only where a page has little text. A blank
     separator page is also low-text, but OCR cannot recover text that was
     never there, so running it would be pure waste."""
     assert page_needs_ocr("", has_embedded_image=False) is False

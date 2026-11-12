@@ -401,8 +401,8 @@ const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
 
 /* ================================ DATA ================================ */
-const BUYER = 'Kaveri Metro Rail Corporation';
-const TNO = 'KMRC/S&amp;T/2026/14';
+const BUYER = 'Velantra Metro Rail Corporation';
+const TNO = 'VLMRC/S&amp;T/2026/14';
 
 // [page, heading, text, short name, full name] (names only on mandatory pages)
 const PAGES = [
@@ -543,7 +543,7 @@ function evHTML(e, i){
     ${rows([['Project',e.proj],['Work',e.work],['Contract value',e.val],['Completed on',e.date],['Performance','Satisfactory']])}</div>
     <div class="sig"><i></i><i></i></div>`;
   case 'bg': return top('Guarantee') + `<p class="c-t">Bank guarantee for earnest money</p><div style="margin-top:10px">
-    ${rows([['Amount','₹1.92 crore'],['Beneficiary',BUYER],['Tender','KMRC/S&amp;T/2026/14'],['Valid until','31 May 2027']])}</div>
+    ${rows([['Amount','₹1.92 crore'],['Beneficiary',BUYER],['Tender','VLMRC/S&amp;T/2026/14'],['Valid until','31 May 2027']])}</div>
     ${bars(3, i, .45)}<div class="sig"><i></i><i></i></div>`;
   case 'sheet': return top('Rates') + `<p class="c-t">Schedule of rates, 2026</p><div style="margin-top:6px">
     ${rows([['Axle counter, per set','₹2.4 lakh'],['LED signal, each','₹1.1 lakh'],['Point machine, each','₹6.8 lakh'],['Quad cable, per km','₹3.2 lakh'],['Route interlocking, per route','₹4.5 lakh'],['Site supervision, per month','₹9.6 lakh']])}</div>
@@ -553,12 +553,12 @@ function evHTML(e, i){
   }
 }
 function drHTML(d, i){
-  if (d.gate) return `<div class="c-top"><span>Bid KMRC-14</span><b>Gate</b></div><p class="c-t">Readiness checklist</p>
+  if (d.gate) return `<div class="c-top"><span>Bid VLMRC-14</span><b>Gate</b></div><p class="c-t">Readiness checklist</p>
     <div class="chk"><i></i>All six mandatory criteria addressed</div><div class="chk"><i></i>Pricing arithmetic verified</div>
     <div class="chk"><i></i>Review findings resolved</div><div class="chk"><i></i>Every statement traced to a source</div>
     <div class="chk"><i></i>Approver sign-off</div><p class="stamp"><span class="a">Clear to submit</span><span class="b">Blocked</span></p>`;
   return `<div class="c-top"><span>Draft, version 3</span><b>${d.k}</b></div><p class="c-t">${d.t}</p>
-    <p class="c-p">${d.p}</p>${bars(9, i + 40)}<div class="c-foot"><span>Bid KMRC-14</span><span>Draft 3</span></div>`;
+    <p class="c-p">${d.p}</p>${bars(9, i + 40)}<div class="c-foot"><span>Bid VLMRC-14</span><span>Draft 3</span></div>`;
 }
 
 const host = document.getElementById('cards'), flyHost = document.getElementById('flying');

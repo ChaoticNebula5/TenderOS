@@ -1,8 +1,8 @@
 // The tender, the company's evidence and the bid drafts. Copy is final as written
 // in reference/tenderos-v3.html; HTML entities there are plain characters here.
 
-export const BUYER = "Kaveri Metro Rail Corporation";
-export const TNO = "KMRC/S&T/2026/14";
+export const BUYER = "Velantra Metro Rail Corporation";
+export const TNO = "VLMRC/S&T/2026/14";
 
 /** [page, heading, text, short name, full name]. Names only on mandatory pages. */
 export type PageRow = readonly [number, string, string, string?, string?];

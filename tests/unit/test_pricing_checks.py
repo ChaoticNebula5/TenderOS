@@ -1,8 +1,8 @@
 """domain/services/pricing_checks.py against the REAL synthetic pricing
 workbooks (data/synthetic/tender_a/pricing_schedule_{1,2}.xlsx) - this IS
-B8B's own stop-gate assertion, not just illustrative coverage: "arithmetic
-correctness = 100%, seeded defect recall = 100%, for the supported
-deterministic test set." Six seeded defect categories must each be found
+B8B's own stop-gate assertion, not just illustrative coverage: on its
+deterministic test set, every sum must be right and every seeded defect
+must be found. Six seeded defect categories must each be found
 exactly, and every OTHER (non-defective) row must produce zero findings -
 false positives on correct data would themselves be a stop-gate failure,
 not just noise."""
@@ -100,9 +100,9 @@ def test_cross_doc_mismatch_is_found_across_both_sheets():
 
 
 def test_all_six_seeded_defect_categories_are_recalled():
-    """B8B's own stop-gate wording, checked directly: seeded defect
-    recall = 100% across the 6 required categories (wrong total, missing
-    cell, currency mismatch, duplicate cost, cross-sheet discrepancy,
+    """B8B's stop-gate, checked directly: every seeded defect is found, in
+    each of the six categories (a wrong total, a missing cell, mismatched
+    currencies, a duplicated cost, a discrepancy between sheets, an
     unsupported formula)."""
     rows1, grand_total1 = _load("pricing_schedule_1.xlsx")
     rows2, grand_total2 = _load("pricing_schedule_2.xlsx")

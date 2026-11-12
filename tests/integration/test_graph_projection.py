@@ -1,8 +1,8 @@
 """graph_projection/ + domain/services/graph_service.py against real
 Postgres AND real Neo4j - the 10 required graph tests from the Build Guide's
-own B10 list, verbatim, plus an 11th "no extra facts" completeness test the
-stop-gate's second sentence ("do not proceed if Neo4j contains a fact that
-cannot be reconstructed from PostgreSQL") demands but the 10 don't directly
+own B10 list, one section each, plus an 11th "no extra facts" completeness
+test the stop-gate's second sentence demands (Neo4j must hold nothing that
+PostgreSQL could not rebuild) but the 10 don't directly
 assert, plus the real-mutation staleness test from the B10 plan's freshness
 section.
 
@@ -248,7 +248,7 @@ async def _proposal_claim(
 
 
 # ----------------------------------------------------------------------
-# 1. Project same state twice; same graph result.
+# 1. Projecting the same state twice gives the same graph.
 # ----------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ async def test_projecting_same_state_twice_yields_same_counts():
 
 
 # ----------------------------------------------------------------------
-# 2. Delete Neo4j database; rebuild from PostgreSQL.
+# 2. The Neo4j database deleted, then rebuilt from PostgreSQL.
 # ----------------------------------------------------------------------
 
 
@@ -295,7 +295,7 @@ async def test_rebuild_from_postgres_after_deleting_neo4j():
 
 
 # ----------------------------------------------------------------------
-# 3. Deselect Project A in Bid A; Bid B remains unchanged.
+# 3. Deselecting Project A in Bid A leaves Bid B as it was.
 # ----------------------------------------------------------------------
 
 
@@ -345,7 +345,7 @@ async def test_deselecting_fact_in_one_tender_does_not_affect_another():
 
 
 # ----------------------------------------------------------------------
-# 4. USED_IN(selected=false) still exists.
+# 4. A USED_IN edge set to selected=false is kept, not removed.
 # ----------------------------------------------------------------------
 
 
@@ -370,7 +370,7 @@ async def test_used_in_selected_false_edge_persists_not_deleted():
 
 
 # ----------------------------------------------------------------------
-# 5. Expired cert contradiction found.
+# 5. A contradiction from an expired certificate is found.
 # ----------------------------------------------------------------------
 
 
@@ -393,7 +393,7 @@ async def test_expired_certification_contradiction_found():
 
 
 # ----------------------------------------------------------------------
-# 6. Removed employee still named in claim found.
+# 6. An employee taken off the bid but still named in a claim is found.
 # ----------------------------------------------------------------------
 
 
@@ -411,7 +411,7 @@ async def test_removed_employee_still_named_in_claim_found():
 
 
 # ----------------------------------------------------------------------
-# 7 & 8. Evidence-coverage re-evaluation - alternate evidence remains vs not.
+# 7 & 8. Evidence coverage re-evaluated, with and without other evidence left.
 # ----------------------------------------------------------------------
 
 
@@ -461,7 +461,7 @@ async def test_no_alternate_evidence_requires_reevaluation():
 
 
 # ----------------------------------------------------------------------
-# 9. ProposalClaim appears in affected impact set.
+# 9. A ProposalClaim is in the affected impact set.
 # ----------------------------------------------------------------------
 
 
@@ -517,7 +517,7 @@ async def test_employee_with_no_evidence_affects_nothing_even_beside_one_that_do
 
 
 # ----------------------------------------------------------------------
-# 10. Stale projection query returns GRAPH_STALE.
+# 10. A query on a stale projection answers GRAPH_STALE.
 # ----------------------------------------------------------------------
 
 
@@ -591,7 +591,7 @@ async def test_no_extra_facts_every_node_traces_to_postgres():
     # must be a SUBSET of what Postgres actually has - if Neo4j ever held a
     # node with no corresponding Postgres row, this assertion is what would
     # catch it (a hotfix or stray write directly to Neo4j, the exact thing
-    # D3's "no agent writes directly to Neo4j" rule exists to prevent).
+    # D3's rule that only the projection writes to Neo4j exists to prevent).
     assert graph_requirement_ids <= real_requirement_ids
     assert graph_requirement_ids == real_requirement_ids
     assert graph_evidence_ids <= real_evidence_ids

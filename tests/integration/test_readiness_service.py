@@ -283,7 +283,7 @@ async def test_unresolved_mandatory_requirement_blocks_and_clears():
 
 
 # ----------------------------------------------------------------------
-# Blocker 2: compliant decision without valid evidence.
+# Blocker 2: a compliant decision whose evidence is not valid.
 # ----------------------------------------------------------------------
 
 
@@ -453,7 +453,7 @@ async def test_minor_commercial_finding_is_not_a_blocker():
 
 
 # ----------------------------------------------------------------------
-# Blocker 6: required role with no human-selected candidate.
+# Blocker 6: a required role that no human has filled.
 # ----------------------------------------------------------------------
 
 
