@@ -13262,3 +13262,30 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - **gzip, plan item 58:** on for the static files only (CSS, JavaScript, SVG, and JSON for a future manifest; `index.html` at 577 bytes is under the 1 KB minimum). Never for the `/api/` locations, which turn it off themselves. Observed: a 126 KB api response and both streams were sent uncompressed with gzip asked. Compressing a stream would not show in its timing: with gzip turned on for the streams (a live mutation), nginx still passed each heartbeat on within a second, with `Content-Encoding: gzip`. `tests/unit/test_web_proxy_config.py` pins that the api locations stay off.
   - **Turning proxy buffering back on was not visible in the stream timing:** with `proxy_buffering on`, nginx still passed each heartbeat on as it arrived (observed). The setting stays off, as nginx documents for streams and so a slow reader cannot make nginx hold its data. `tests/unit/test_web_proxy_config.py` pins it.
   - **The Vite dev server** runs only through the named `docker-compose.dev.yml` with an explicit `-f`. It polls for file changes, because Docker Desktop on Windows sends no file events through a bind mount.
+
+## [Phase 4 plan item 62, 2026-11-12] Company-knowledge lexical search matched almost nothing; terms are now OR-ed
+
+- **Found by:** a retrieval benchmark built in a separate evaluation session (`eval/`, untracked). **The benchmark is synthetic and self-labelled:** the corpus, the queries and the relevance labels were all written by the same project, not by independent annotators (`eval/results/eval_set_summary.json`, label "SYNTHETIC, SELF-AUTHORED"). It shows the direction of a change, not real-world accuracy.
+- **What was wrong:** `DocumentRepository.search_chunks_lexical_for_org` built its query with `plainto_tsquery`, which joins every term with AND. A requirement sentence has 10 or more terms, so a company-knowledge chunk almost never contained them all.
+    - Measured on the benchmark: lexical search returned rows for **0 of 101** queries, so reciprocal rank fusion had only the vector list, and the system was in effect vector search plus the cross-encoder reranker.
+    - Observed on the dev data: for one 132-character requirement, AND matched 0 of 1,422 company chunks (and 135 tender-document chunks, which the organization filter excludes).
+- **The fix:** the same `plainto_tsquery` parsing, stemming and stop words, with its `&` operators rewritten to `|` before the cast back to `tsquery`. A chunk sharing any term matches, and `ts_rank` puts chunks sharing more terms first. The organization filter and the GIN index expression are unchanged. Only one caller exists (`search_company_knowledge`, called by compliance's evidence retrieval); there is no exact-phrase, requirement-key or admin search that would need AND.
+- **Measured on the benchmark** (`eval/results/ablation_comparison_baseline_vs_lexical_or.json`, after label adjudication; 95% paired bootstrap intervals):
+    - lexical returned rows for **101 of 101** queries (was 0);
+    - RRF before the reranker: MRR@10 **0.824 to 0.919** (+0.095, +0.045 to +0.148), recall@5 0.653 to 0.720;
+    - the full pipeline (RRF plus reranker): recall@5 **0.749 to 0.766** (+0.017, +0.001 to +0.035), MRR@10 0.898 to 0.897 (no change).
+    - Before adjudication (`..._pre_adjudication.json`): pipeline recall@5 0.851 to 0.857 (+0.006, interval includes zero), MRR@10 0.900 to 0.900, RRF MRR@10 0.825 to 0.905.
+    - The reranker already recovered most of what lexical matching adds, so the pipeline barely moved.
+- **Observed in the E2E (fake provider):** the spec passes. Compliance now cites a different employee in the fixtures, the one also selected for the team's role (2 of 2 runs with the fix, 0 of 6 without, a control run included). The spec later deselects the cited employee, so the red team's graph check finds a deselected employee who still fills a role: 15 findings instead of 14, the new one `removed_employee_committed`. That is the check working on a case the E2E did not reach before.
+- **Limits:**
+    - **Cost grows with an organization's corpus.** OR matches most chunks: on the dev data, 567 of 1,422 company chunks for one requirement. Each match computes `to_tsvector` twice (filter and rank) before the top 20 are taken. Measured in rolled-back transactions on the test database, one organization holding copies of the dev chunk texts:
+
+      | Chunks | AND | OR |
+      |---|---|---|
+      | 22 (dev data) | 1.4 ms | 1.05 ms |
+      | 22,368 | 29.7 ms | 797.8 ms |
+      | 74,560 | 97.4 ms | 1,915 ms |
+
+      A stored generated `tsvector` column with its own GIN index brought OR at 74,560 chunks to 109 ms (measured). Not built: the dev organizations hold at most 22 company chunks. A cap on the result count would not help, because the cost is in matching and ranking before the LIMIT.
+    - **Common terms count as much as rare ones** in the match (`ts_rank` weighs frequency within a chunk, not across the corpus). Domain stop words or a different ranking would be tuned on the same 101 queries, so neither was tried.
+    - **The OR is made by rewriting the query's text form** (`' & '` to `' | '`). `plainto_tsquery` only produces `&` between lexemes; a quote, slash, colon or literal `&` or `|` in the requirement is parsed away first (tested).
