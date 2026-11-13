@@ -1994,6 +1994,7 @@ dependencies = [
     { name = "boto3" },
     { name = "google-genai" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "neo4j" },
@@ -2009,6 +2010,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "sentence-transformers" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tokenizers" },
     { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
@@ -2021,6 +2023,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
     { name = "google-genai", specifier = ">=0.3" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "huggingface-hub", specifier = ">=1.26.1" },
     { name = "langgraph", specifier = ">=0.6" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=2.0" },
     { name = "neo4j", specifier = ">=6.4.1,<7" },
@@ -2036,6 +2039,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sentence-transformers", specifier = ">=3.3" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.5" },
+    { name = "tokenizers", specifier = ">=0.22.2" },
     { name = "torch", specifier = ">=2.0", index = "https://download.pytorch.org/whl/cpu" },
 ]
 

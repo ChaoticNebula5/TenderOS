@@ -2,11 +2,15 @@
 forks jobs (tenderos_worker.worker.preload_operations_module).
 
 A process that forks while other threads run can hang in the child, so that
-import must start no OS thread. numpy's and scipy's bundled OpenBLAS each
-start a thread pool when they load, unless OPENBLAS_NUM_THREADS and
-OMP_NUM_THREADS are 1, which the operations_worker service sets. These tests
-run in fresh subprocesses, so a future import-time thread or client fails
-here instead of quietly breaking forked jobs.
+import must start no OS thread. numpy's bundled OpenBLAS starts a thread pool
+when it loads, unless OPENBLAS_NUM_THREADS and OMP_NUM_THREADS are 1, which
+the operations_worker service sets. Before plan item 23 scipy's did too;
+since then the module no longer imports torch, transformers or scipy, and
+test_the_preload_refuses_to_start_when_the_pin_is_missing rests on numpy's
+pool alone, reached through openpyxl (openpyxl/compat/numbers.py; observed
+2026-11-13: unpinned, the import still goes from 1 to 4 OS threads). These
+tests run in fresh subprocesses, so a future import-time thread or client
+fails here instead of quietly breaking forked jobs.
 
 Linux only: OS threads are counted through /proc, and Linux is where the
 workers run, where RQ forks and where CI runs these tests. (On Windows a

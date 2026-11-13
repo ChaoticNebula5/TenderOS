@@ -31,6 +31,13 @@ dependencies = [
     # (uv only honors a source override for a package that is a direct
     # dependency somewhere in the workspace, not a transitive one).
     "torch>=2.0",
+    # Plan item 23: ingestion/embed.py's count_tokens loads the embedding
+    # model's tokenizer.json through these two directly (no torch), so they
+    # are direct dependencies here, not only sentence-transformers'. Floors
+    # at the versions already in uv.lock; transformers 5.14.1 itself
+    # requires tokenizers >=0.22.0,<=0.23.0 and huggingface-hub >=1.5.0,<2.0.
+    "tokenizers>=0.22.2",
+    "huggingface-hub>=1.26.1",
     # B5: first real LLM adapter (this project's own choice of first
     # provider - A2's literal locked-choice cell names Anthropic; flagged in
     # the B5 plan/commit message). Part P: verify this resolves to the SDK
