@@ -240,10 +240,25 @@ async def test_gate_node_request_changes_does_not_advance(module, node, gate_typ
     async with UnitOfWork() as uow:
         updated_run = await uow.workflow.get_run(run.id)
     assert updated_run is not None
-    assert updated_run.status == "waiting_for_human", (
-        "request_changes must read as waiting_for_human, not silently "
-        f"'completed'/'running': got {updated_run.status!r}"
+    # Plan item 71: its own terminal status, not "waiting_for_human" (which
+    # held the tender's one active run for good) and not "completed".
+    assert updated_run.status == "changes_requested", (
+        f"request_changes must end the run as changes_requested: got {updated_run.status!r}"
     )
+    assert updated_run.completed_at is not None, "a terminal run records when it ended"
+
+    # The tender is free: a new run can start at once (the one-active-run
+    # index refused this while the run read waiting_for_human).
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(run.tender_id)
+    assert tender is not None and tender.created_by is not None
+    again = await workflow_service.create_workflow_run(
+        tender_id=tender.id,
+        organization_id=tender.organization_id,
+        created_by=tender.created_by,
+    )
+    assert again.id != run.id
+    assert again.status == "queued"
 
 
 @pytest.mark.parametrize(

@@ -445,11 +445,13 @@ class WorkflowRepository:
 
         Only runs with a recorded current job: whether the resume already
         claimed the run is read from current_job_id, and a run from before
-        migration 024 has none. Such a run may be waiting on purpose (a
-        resume that answered "request changes" ends the run at its gate), so
-        it is left alone. Observed 2026-11-04: a pre-024 dev run waiting
-        after a "request changes" decision, its resume job gone with a
-        Redis flush, was failed by the first build of this rule."""
+        migration 024 has none. Such a run may be waiting on purpose (until
+        plan item 71, a resume that answered "request changes" ended the run
+        at its gate and left it waiting; migration 029 moved those to the
+        terminal changes_requested), so it is left alone. Observed
+        2026-11-04: a pre-024 dev run waiting after a "request changes"
+        decision, its resume job gone with a Redis flush, was failed by the
+        first build of this rule."""
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
         latest_gate = select(

@@ -26,9 +26,11 @@ writes:
   dispatched, and the resume job never claimed the run (it is not the
   current job): that resume job is failed, canceled, finished, unknown or
   abandoned: DISPATCH_FAILED. A resume that did claim the run and left it
-  waiting (a "changes_requested" decision ends the run at the gate, on
-  purpose) is never reaped, and neither is a waiting run from before
-  migration 024, which has no current job to tell the two apart.
+  waiting is never reaped, and neither is a waiting run from before
+  migration 024, which has no current job to tell the two apart. (Until
+  plan item 71 a "changes_requested" decision left its run waiting this
+  way, on purpose; since migration 029 it ends the run with the terminal
+  status changes_requested, which no rule here lists.)
 - queued or running, past MAX_RUN_JOB_AGE whatever RQ says: the backstop.
 
 Every fail is one conditional UPDATE naming the status and current job that
@@ -138,7 +140,8 @@ async def reap_lost_runs(batch_size: int, job_verdict: JobVerdict) -> list[Reape
         job_id = resume_job_id(at_gate.run_id, at_gate.gate_id)
         if at_gate.current_job_id == job_id:
             # The resume claimed the run, so whatever left it waiting since
-            # (a changes_requested decision) is its outcome, not a loss.
+            # is its outcome, not a loss. (A changes_requested decision did,
+            # until plan item 71 made it a terminal status.)
             continue
         rule = await job_verdict(job_id)
         if rule is None:

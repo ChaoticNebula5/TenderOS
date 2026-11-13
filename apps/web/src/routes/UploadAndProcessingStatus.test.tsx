@@ -52,6 +52,8 @@ vi.mock("../api/client", async (importOriginal) => {
     mintWorkflowEventsTicket: vi.fn(),
     uploadDocument: vi.fn(),
     createWorkflowRun: vi.fn(),
+    listGates: vi.fn(),
+    cancelWorkflowRun: vi.fn(),
   };
 });
 
@@ -62,6 +64,8 @@ const getWorkflowRun = vi.mocked(apiClient.getWorkflowRun);
 const mintWorkflowEventsTicket = vi.mocked(apiClient.mintWorkflowEventsTicket);
 const uploadDocument = vi.mocked(apiClient.uploadDocument);
 const createWorkflowRun = vi.mocked(apiClient.createWorkflowRun);
+const listGates = vi.mocked(apiClient.listGates);
+const cancelWorkflowRun = vi.mocked(apiClient.cancelWorkflowRun);
 
 beforeEach(() => {
   FakeEventSource.instances = [];
@@ -435,5 +439,149 @@ describe("why the last run failed", () => {
     expect(screen.getByText(sentence)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
     expect(listWorkflowRuns).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Plan item 71: a reviewer's Request changes ends the run (terminal status
+// changes_requested). The page names the gate, shows the notes, and offers
+// Start processing again.
+function decidedGate(
+  status: "approved" | "changes_requested",
+  gateType: "requirement_review" | "compliance_review",
+  notes: string | null,
+): apiClient.GateResponse {
+  return {
+    gate_id: `gate-${gateType}`,
+    gate_type: gateType,
+    workflow_run_id: "run-1",
+    status,
+    targets: [],
+    summary: {},
+    allowed_decisions: ["approve", "reject", "request_changes"],
+    decision_payload: { decision: status === "approved" ? "approve" : "request_changes", notes },
+    decided_by: null,
+    requested_at: "2026-01-01T00:00:00Z",
+    decided_at: "2026-01-01T01:00:00Z",
+  } as unknown as apiClient.GateResponse;
+}
+
+describe("a run ended by Request changes", () => {
+  it("names the gate, shows the reviewer's notes, and offers Start processing", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "changes_requested" }]);
+    listDocuments.mockResolvedValue([]);
+    listGates.mockResolvedValue([
+      decidedGate("approved", "requirement_review", null),
+      decidedGate("changes_requested", "compliance_review", "Recheck clause 4.2."),
+    ]);
+    renderAt("tender-1");
+
+    expect(
+      await screen.findByText("Changes were requested at the Compliance review gate."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Changes requested")).toHaveClass("status-badge--blocked");
+    expect(screen.getByText("Recheck clause 4.2.", { exact: false })).toHaveClass(
+      "processing__last-run-notes",
+    );
+    expect(listGates).toHaveBeenCalledWith("run-1");
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel run" })).not.toBeInTheDocument();
+  });
+
+  it("still says what happened when the gates cannot be read", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "changes_requested" }]);
+    listDocuments.mockResolvedValue([]);
+    listGates.mockRejectedValue(new ApiError(500, {}));
+    renderAt("tender-1");
+
+    expect(
+      await screen.findByText("Changes were requested at one of the run's review gates."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+  });
+
+  it("reads no gates for any other outcome", async () => {
+    listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "completed" }]);
+    listDocuments.mockResolvedValue([]);
+    renderAt("tender-1");
+
+    expect(await screen.findByText("Last run")).toBeInTheDocument();
+    expect(listGates).not.toHaveBeenCalled();
+  });
+});
+
+// Plan item 72: cancel the active run, confirmed inside the page.
+function renderWithActiveRun() {
+  listWorkflowRuns.mockResolvedValue([activeRun()]);
+  listDocuments.mockResolvedValue([]);
+  listWorkflowTasks.mockResolvedValue([]);
+  getWorkflowRun.mockResolvedValue(activeRun());
+  mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+  renderAt("tender-1");
+}
+
+describe("cancelling the active run", () => {
+  it("asks inside the page, never through window.confirm, and cancels once", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    renderWithActiveRun();
+    // Once the run has ended the page re-reads the tender's runs (its
+    // run-lookup effect); the server then lists this run as cancelled.
+    cancelWorkflowRun.mockImplementation(async () => {
+      listWorkflowRuns.mockResolvedValue([{ ...activeRun(), status: "cancelled" }]);
+      return { ...activeRun(), status: "cancelled" };
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    const region = screen.getByRole("group", { name: "Cancel this run?" });
+    expect(region).toHaveTextContent("Work already done is kept.");
+    // Focus lands on the safe choice.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Keep running" })).toHaveFocus());
+    expect(cancelWorkflowRun).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
+
+    expect(await screen.findByText("Cancelled")).toHaveClass("status-badge--neutral");
+    expect(cancelWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(cancelWorkflowRun).toHaveBeenCalledWith("run-1");
+    expect(screen.getByText("Last run")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start processing" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Cancel this run?" })).not.toBeInTheDocument();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("Keep running and Escape close the question without cancelling", async () => {
+    renderWithActiveRun();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
+    expect(screen.queryByRole("group", { name: "Cancel this run?" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    fireEvent.keyDown(screen.getByRole("group", { name: "Cancel this run?" }), { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Cancel this run?" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel run" })).toHaveFocus());
+    expect(cancelWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("says when the role may not cancel, and keeps the question open", async () => {
+    cancelWorkflowRun.mockRejectedValue(new ApiError(403, { detail: "Forbidden" }));
+    renderWithActiveRun();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
+
+    expect(await screen.findByText("Your role can't cancel runs.")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Cancel this run?" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start processing" })).not.toBeInTheDocument();
+  });
+
+  it("says when the cancel failed for any other reason", async () => {
+    cancelWorkflowRun.mockRejectedValue(new ApiError(503, {}));
+    renderWithActiveRun();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
+
+    expect(await screen.findByText("Failed to cancel the run.")).toBeInTheDocument();
   });
 });
