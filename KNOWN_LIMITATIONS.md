@@ -12456,7 +12456,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   handler and formatter; the filter installed after and before uvicorn's
   `dictConfig`; installing twice adds one filter; the pattern's edges).
 
-## [found 2026-10-23 in batch 2b's review; the 15-minute session RESOLVED for the web app in plan item 34; revocation RESOLVED in option 3 (2026-10-24); access tokens outlive a logout (accepted); the httpOnly cookie waits for item 27] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
+## [found 2026-10-23 in batch 2b's review; the 15-minute session RESOLVED for the web app in plan item 34; revocation RESOLVED in option 3 (2026-10-24); the httpOnly cookie RESOLVED in option 2 (2026-11-13); access tokens outlive a logout (accepted)] A web session ends when its 15-minute access token expires; refresh tokens cannot be revoked
 
 - **Resolved for the web app (plan item 34, option 1, decision 0057):**
   `apps/web/src/api/client.ts` now answers a 401 from any route except
@@ -12505,10 +12505,12 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     token.
   - **The grace window:** a used token presented again within 30 s, whose
     successor has never been used (a lost response, or two tabs at once),
-    supersedes that successor and gets a new one. A thief replaying within
-    the window gets a token, but the real client's next refresh then
-    presents the superseded one, which is reuse: detection one rotation
-    later.
+    gets that same successor back (option 2, below; until then it
+    superseded the successor and got a new one), and the successor is
+    stamped `resent_at`. A re-sent token can be rotated once; a re-send for
+    it is refused as reuse. A thief replaying within the window gets the
+    token the real client holds, and is caught at the first rotation after
+    the theft, whichever of the two refreshes first.
   - **The invariant:** at most one live (unused, unrevoked) token per
     family, enforced by a partial unique index
     (`uq_refresh_token_live_per_family`) as well as by the code's order of
@@ -12518,9 +12520,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     different tokens of one family; with the family lock removed, two
     spent tokens presented together deadlocked (observed, the mutation
     check below).
-  - **Logout:** `POST /auth/logout` with the refresh token in the body, no
-    access token needed, revokes the family (`'logout'`) and answers 204
-    whatever the token was. The web app's `logout()` clears storage, then
+  - **Logout:** `POST /auth/logout` (since option 2 with the refresh
+    cookie, not a body), no access token needed, revokes the family
+    (`'logout'`) and answers 204 whatever the token was. The web app's `logout()` clears storage, then
     calls it, bounded at 5 s (the order changed in item 39). Other tabs of
     the same browser share that storage, so they find out at their next
     request (no token, then the login screen), never through a refused
@@ -12532,9 +12534,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     `jti` and is refused: everyone signed in before the deploy logs in
     once.
   - **Cross-tab:** the web client refreshes under a Web Lock shared by every
-    tab (`navigator.locks`, name `tenderos-refresh`) and re-reads the stored
-    refresh token after taking it, so a tab that waited uses the token the
-    other tab just stored instead of sending the spent one. A rejected
+    tab (`navigator.locks`, name `tenderos-refresh`). Until option 2 it
+    re-read the stored refresh token after taking it, so a tab that waited
+    used the token the other tab had just stored; since option 2 no script
+    can read the token, and a tab that waited refreshes with the rotated
+    cookie the browser now holds. A rejected
     refresh clears storage inside the lock, so a waiting tab never sends a
     token from a session that has ended (found by the two-tab vitest case).
     The refresh request is bounded at 10 s (`REFRESH_TIMEOUT_MS`, a design
@@ -12597,11 +12601,7 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     dependency decision 0041 kept out of authenticated requests; not
     planned. Shortening `JWT_ACCESS_MINUTES` narrows it at the cost of one
     refresh per expiry. Asserted in a test, so the limit stays visible.
-  - **The refresh token is still in `localStorage`**, readable by any
-    script on the page. It is now single-use: a stolen copy works until
-    either the thief or the user uses the family next, and the other's
-    next refresh is reuse, which ends the family for both. The `httpOnly`
-    cookie (option 2) waits for item 27.
+  - **The refresh token in `localStorage`:** resolved by option 2 (below).
   - **A Log out that can't reach the API (plan item 39 built the button):**
     this browser signs out, but that family stays live until it expires.
   - **A tab closed during Log out (plan item 39):** storage is cleared first,
@@ -12611,17 +12611,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     10. Not observed: Firefox, Safari, or the whole browser quitting. A
     browser that drops the call leaves the family live until it expires;
     this browser stays signed out either way.
-  - **Without Web Locks** (read in code, corrected in review): two tabs
-    whose access tokens expire together both send the same token T1. The
-    API rotates it for the first (T2), then takes the grace path for the
-    second (T2 superseded, T3 issued). The first answer usually arrives
-    first and is stored, and the second is then dropped by the client's
-    changed-storage check (`requestTokens`), so storage keeps the
-    superseded T2. The next refresh is reuse: the user is logged out once,
-    and the API logs a reuse WARNING. That is the usual outcome, not a
-    rare one. Web Locks exist only in secure contexts (HTTPS; localhost
-    counts), so a deployment that serves the web app over plain HTTP
-    always takes this path; serving it over HTTPS is a deployment item.
+  - **Without Web Locks:** resolved by option 2's grace re-send (below).
+    Until then two tabs refreshing at once usually logged the user out
+    once.
   - **A hung refresh holds the lock for up to 10 s:** other tabs that need
     a refresh wait that long, then take the lock and refresh themselves.
   - **A lost response is treated as reuse after 30 s:** a refresh the API
@@ -12637,10 +12629,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     cleanup compares it with the database clock (decision 0030). A skew
     of s seconds deletes a row up to s seconds early, so a token in the
     last seconds of its 7-day family may get a 401 instead of rotating.
-  - **`revoked_reason = 'user'` has no writer:** nothing deactivates a
-    user today. The refresh path already refuses an inactive user's
-    token; a deactivation path, when one exists, should also revoke the
-    user's families (`user_id` is indexed for it).
+  - **`revoked_reason = 'user'` has no writer in the app:** only migration
+    027 writes it, once (option 2). Nothing deactivates a user today. The
+    refresh path already refuses an inactive user's token; a deactivation
+    path, when one exists, should also revoke the user's families
+    (`user_id` is indexed for it).
   - **The family lock's key is `hashtext(family_id)`:** two families can
     share a key and then wait on each other briefly; harmless.
   - **The test that inserts a second live row by hand proves the database
@@ -12682,14 +12675,14 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   family. Option 3's rotation is in Postgres only; it adds no Redis call.
 - **Risk:** before option 3, a leaked refresh token was a 7-day credential
   that logout could not end. Now a leaked one is single-use and ends its
-  family at the next use by either side; what remains is the access-token
-  window after logout (up to 15 minutes) and the `localStorage` exposure
-  above.
+  family at the next use by either side, and since option 2 no page script
+  can read it; what remains is the access-token window after logout (up to
+  15 minutes), and a script on the page can still read this tab's access
+  token and act as the user while the page is open.
 - **Status:** the 15-minute session resolved for the web app (item 34,
-  option 1); revocation, rotation and reuse detection resolved (option 3).
-  Open: the refresh token in an `httpOnly` cookie once item 27 settles
-  whether the web app and the API share an origin (option 2). The Log out
-  control on screen is built (item 39).
+  option 1); revocation, rotation and reuse detection resolved (option 3);
+  the refresh token in an `httpOnly` cookie resolved (option 2, below). The
+  Log out control on screen is built (item 39).
 - **Test:** `apps/web/src/api/sessionRefresh.test.tsx` (two parallel 401s
   make one refresh; a 401 after the refresh finished makes none; a 401
   after a successful refresh logs out once, no loop; a retried POST keeps
@@ -12747,6 +12740,141 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   inside the lock (failed first, before the fix), the refresh timeout (the
   test times out without it), logout's order, its clear on failure, its
   timeout, and the context's call.
+- **Resolved: the refresh token in an `httpOnly` cookie (plan item 34,
+  option 2, 2026-11-13; built, not committed).** Item 27 put the web app and
+  the api on one origin (nginx's `/api`), which this needed.
+  - **The cookie:** `tenderos_refresh`, `HttpOnly; Secure; SameSite=Strict;
+    Path=/api/auth`, no `Domain`, `Max-Age` the seconds left in the family.
+    Login, register and refresh set it; logout and a rejected refresh clear
+    it. No response body carries the refresh token, and the api does not
+    read one from a body. Name, path and `Secure` are settings
+    (`AUTH_COOKIE_NAME`, `AUTH_COOKIE_PATH`, `AUTH_COOKIE_SECURE`);
+    production refuses `AUTH_COOKIE_SECURE=false`. The path is the
+    browser's: nginx and Vite's dev server strip `/api`.
+  - **CSRF:** login, register, refresh and logout answer 403
+    `CSRF_CHECK_FAILED` without `X-TenderOS-Client: web`, or with an
+    `Origin` other than `WEB_BASE_URL`'s (`Origin: null` included). A
+    request with no `Origin` passes on the header alone (tools).
+  - **The access token** lives in the tab's `sessionStorage`: it survives a
+    reload, not the tab. A new tab, or one with no access token, refreshes
+    with the cookie at start-up, before `/auth/me`. `localStorage` holds no
+    token; the two old keys are deleted at start-up.
+  - **Log out** writes a marker (`tenderos_logged_out`) to `localStorage`
+    and clears the tab's access token before the call, and clears the
+    marker only on the api's 204. The other tabs sign out on the marker's
+    `storage` event. A load that finds the marker sends the call again and
+    shows the login screen, so a lost call cannot leave the browser able to
+    sign back in. No refresh is sent while the marker is set. A login or
+    register in the same tab waits for a log out call still out (at most
+    its 5 s), because that call's answer clears the cookie by name and path
+    and would otherwise delete the new session's cookie.
+  - **Two tabs refreshing at once without Web Locks:** the grace path sends
+    the second request the successor the first one got, minted again from
+    its row (the refresh JWT has no `iat`, so the same row gives the same
+    string, checked against the stored hash). Both answers set the same
+    live cookie, so the browser keeps a live token whichever it processes
+    last, and nobody is signed out. A hash mismatch answers 401 without
+    revoking the family. `'superseded'` has no writer since.
+  - **A re-sent token is not re-sent again (migration 028, found in
+    review):** the re-send alone let a thief who replayed a token within
+    the window hold the client's token at every rotation. Both got their
+    access tokens together, so both refresh within the window of each other,
+    and each rotation's second presentation was re-sent the successor:
+    reuse detection never fired (observed with a scratch test: a theft and
+    10 rotations, nothing revoked). Now the grace path stamps the successor
+    it re-sends (`resent_at`, the database clock) and refuses for a presented
+    token whose own `resent_at` is set, which `refresh()` treats as reuse.
+    The thief is caught at the first rotation after the theft, whichever of
+    the two goes first. A normal rotation of a re-sent token is allowed, and
+    the same used token presented any number of times in the window still
+    gets the same successor.
+  - **Migration 027** revokes every live refresh token (`'user'`) once, so a
+    token copied out of `localStorage` before the change stops working.
+    Every browser signs in once. Downgrade does nothing.
+- **Observed (fake stack, Chromium, 2026-11-13):**
+  - **E2E, 3 runs** (the frozen spec and the new
+    `apps/web/e2e/session-cookie.spec.ts`), all passed, 2.8, 3.0 and 3.0
+    min. Per run, in the api log: 2 registers (201), 2 refreshes answered 200
+    (the frozen spec's second tab, and the cookie spec's start-up refresh),
+    3 answered 401 (logged-out loads), 1 answered 403 (the cookie spec's call
+    without the header), 1 logout (204, one family revoked), no reuse.
+    The proxy log check passed each time: no SSE ticket, no
+    `tenderos_refresh=` in any service's log, no CSP report.
+  - **Two tabs with Web Locks removed** (`navigator.locks` undefined before
+    any page script), no access token in either, reloaded at the same
+    moment, 8 rounds: both refreshes 200 every round with the same
+    Set-Cookie value, which the jar kept; both tabs signed in; a refresh
+    with the kept cookie then 200. The api log has 8 grace re-send lines
+    (every round overlapped) and no reuse line.
+  - **After migration 028** (the re-sent rule): the E2E once more, both specs
+    passed (3.0 min), the same calls per run and no reuse; the migrate log
+    shows 027 to 028 applied. Two tabs without Web Locks, one simultaneous
+    reload on a fresh account: both signed in, the same cookie, one re-send,
+    and the re-sent token's next (sequential) rotation 200. Eight rounds,
+    each race separated by a sequential refresh: all signed in, no refused
+    re-send and no reuse.
+- **Tests (option 2):** `tests/route/test_auth_routes.py` (the cookie's
+  attributes and Max-Age on register, login and refresh; Max-Age from an
+  aged family; no `refresh_token` in any body, none read from one; a
+  missing or invalid cookie 401 and cleared; logout 204 and cleared for any
+  cookie; 403 without the header, with a wrong value, and with a foreign
+  `Origin` on each of the four routes; the web app's own origin passes;
+  `/auth/me` needs no header; two tabs refreshing at once get the same live
+  cookie, both processing orders, six rounds),
+  `tests/integration/test_refresh_tokens.py` (a token re-mints byte for
+  byte; the grace path re-sends the successor; a re-send whose hash does not
+  match is 401 without revoking; a superseded row is refused; two and six
+  refreshes at once share one successor; the thief in lockstep caught at
+  the first rotation, four orders; one race then a sequential rotation, no
+  logout; two races in a row, reuse; a lost-response retry, fine; a race
+  then a lost-response retry, reuse; a third presentation, the same
+  successor), `tests/integration/test_migration_028_refresh_token_resent_at.py`,
+  `tests/integration/test_migration_027_revoke_live_refresh_tokens.py`,
+  `tests/unit/test_production_settings.py`,
+  `tests/unit/test_e2e_proxy_log_check.py`, and on the web
+  `sessionRefresh.test.tsx`, `refreshRotation.test.tsx`, `logOut.test.tsx`
+  and `AuthContext.test.tsx` (where the token is kept, a spy on every
+  `localStorage` write, start-up refresh, the lock, two tabs with and
+  without Web Locks, the marker and its `storage` event, a login waiting
+  for a log out call). Checked to fail with their mechanism removed: 28
+  backend (5 of them for `resent_at`: the check, the stamp, the stamp on
+  the wrong token, and migration 028's nullability and downgrade), 20 web
+  and 4 E2E mutations (the E2E ones on a rebuilt stack),
+  each file restored and compared by SHA-256. The spec's "signed in after
+  a reload" has no single-change mutation: the tab's stored access token
+  and the start-up refresh each keep the session alone; its restore step
+  (storage cleared, then a reload) isolates the cookie.
+- **Accepted limits of option 2:**
+  - **Two re-sends in a row sign the user out once:** two tabs without Web
+    Locks that race on two consecutive rotations, or a race followed by a
+    lost response retried on the next rotation, look exactly like a client
+    and a thief in lockstep, and are treated as reuse. Every current browser
+    has Web Locks (general knowledge, not checked here; plan item 67), and
+    plain HTTP keeps no session anyway, so this is the old-browser corner.
+  - **A login in another tab during a log out call:** that tab cannot wait
+    for this tab's call, so if the log out's answer arrives after the new
+    login's, the browser drops the new cookie. That tab keeps working on
+    its access token and lands on login when it expires (up to 15 minutes).
+    Read in code; not observed.
+  - **An answer delivered after a later rotation's:** the grace re-send
+    covers requests that carried the same cookie. An answer held back
+    across a whole further rotation (tab C rotated T2 to T3 before tab B's
+    T2 answer was processed) leaves a used token in the jar: within 30 s
+    the grace path still answers it, after that it is reuse, as before.
+    Read in code; not observed.
+  - **Plain HTTP:** a browser drops a `Secure` cookie on plain HTTP except on
+    localhost, so a deployment served over plain HTTP keeps no session past
+    its access token. HTTPS is a hard requirement, not a recommendation.
+  - **`npm run dev` on the host without `VITE_API_BASE_URL`:** the client's
+    fallback base is `http://localhost:8000`, another origin, which never
+    carries the cookie: the session ends with the access token. Every
+    compose setup sets `/api` (the Dockerfile's dev and build stages).
+  - **Safari and `Secure` cookies on `http://localhost`:** not checked.
+  - **One more refresh per tab:** under the Web Lock a waiting tab refreshes
+    too, since it cannot read the cookie to see the other tab rotated: one
+    rotation per tab per expiry instead of one per browser.
+  - **A logged-out first load** makes one `POST /api/auth/refresh` that
+    answers 401.
 
 ## [E2E spec edit, 2026-11-03, accepted, no fix now] Leaving a screen during a write hides its outcome; two screens navigate after their write
 

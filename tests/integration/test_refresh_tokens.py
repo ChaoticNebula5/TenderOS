@@ -1,6 +1,6 @@
 """Plan item 34, option 3: server-side refresh-token rotation, reuse
-detection, the grace re-issue, logout, legacy tokens and cleanup, against
-real Postgres. Every row state is read back in a fresh UnitOfWork, so a
+detection, the grace re-send (option 2), logout, legacy tokens and cleanup,
+against real Postgres. Every row state is read back in a fresh UnitOfWork, so a
 check sees only what was committed."""
 
 import asyncio
@@ -175,42 +175,77 @@ async def test_a_used_token_whose_successor_was_used_is_reuse_even_within_the_wi
     assert await _live_count(members[0].family_id) == 0
 
 
-# --- the grace re-issue -----------------------------------------------------
+# --- the grace re-send (option 2) --------------------------------------------
 
 
-async def test_within_the_window_the_unused_successor_is_superseded_and_replaced():
+async def test_a_refresh_token_mints_the_same_string_from_its_row():
+    """What the re-send rests on: no claim but the row's, so minting again
+    from the row gives the token byte for byte."""
+    registered = await _register()
+    row = await _row(_jti(registered.refresh_token))
+
+    again = create_refresh_token(row.user_id, row.id, row.expires_at)
+
+    assert again == registered.refresh_token
+    assert "iat" not in decode_token(again)
+
+
+async def test_within_the_window_the_unused_successor_is_sent_again():
     registered = await _register()
     first = registered.refresh_token
     lost = await auth_service.refresh(first)
 
     retried = await auth_service.refresh(first)
 
-    assert retried.refresh_token != lost.refresh_token
-    superseded = await _row(_jti(lost.refresh_token))
-    assert superseded.revoked_reason == "superseded"
-    assert superseded.revoked_at is not None
-    assert (await _row(_jti(first))).replaced_by_id == _jti(retried.refresh_token)
-    assert await _live_count(superseded.family_id) == 1
-    # The new successor is a normal live token.
+    assert retried.refresh_token == lost.refresh_token
+    assert retried.access_token
+    successor = await _row(_jti(lost.refresh_token))
+    assert successor.used_at is None and successor.revoked_at is None
+    assert (await _row(_jti(first))).replaced_by_id == successor.id
+    members = await _family(successor.family_id)
+    assert len(members) == 2
+    assert {m.revoked_reason for m in members} == {None}
+    assert await _live_count(successor.family_id) == 1
+    # The successor is a normal live token.
     await auth_service.refresh(retried.refresh_token)
 
 
-async def test_a_superseded_token_presented_later_is_reuse():
+async def test_a_resend_that_does_not_reproduce_the_stored_hash_is_refused_without_revoking():
+    """A mismatch means the minting changed, a server fault: 401, but the
+    family is not revoked as if the token had been stolen."""
     registered = await _register()
     first = registered.refresh_token
     lost = await auth_service.refresh(first)
-    retried = await auth_service.refresh(first)
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.id == _jti(lost.refresh_token))
+            .values(token_hash="e" * 64)
+        )
+        await uow.commit()
 
     with pytest.raises(auth_service.InvalidTokenError):
-        await auth_service.refresh(lost.refresh_token)
+        await auth_service.refresh(first)
 
     members = await _family((await _row(_jti(first))).family_id)
-    reasons = {m.id: m.revoked_reason for m in members}
-    assert reasons[_jti(lost.refresh_token)] == "superseded"
-    assert reasons[_jti(first)] == "reuse"
-    assert reasons[_jti(retried.refresh_token)] == "reuse"
+    assert {m.revoked_reason for m in members} == {None}
+
+
+async def test_a_token_superseded_before_option_2_is_refused():
+    """'superseded' has no writer any more; a row written before is revoked,
+    and refused like any revoked token."""
+    registered = await _register()
+    token_id = _jti(registered.refresh_token)
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.id == token_id)
+            .values(revoked_at=func.now(), revoked_reason="superseded")
+        )
+        await uow.commit()
+
     with pytest.raises(auth_service.InvalidTokenError):
-        await auth_service.refresh(retried.refresh_token)
+        await auth_service.refresh(registered.refresh_token)
 
 
 # --- logout -----------------------------------------------------------------
@@ -323,9 +358,11 @@ def _hold_at_the_family_lock(monkeypatch: pytest.MonkeyPatch, parties: int) -> N
 
 async def test_two_refreshes_racing_with_one_token(monkeypatch):
     """Two tabs (or a client retrying a lost response) send the same token
-    at once. Exactly one rotates; the other takes the grace path. Never two
-    live successors, never a revoked family. Repeated, since one pass could
-    pass by luck."""
+    at once. Exactly one rotates; the other takes the grace path and gets the
+    same successor back (plan item 34, option 2's condition): a browser
+    keeps whichever Set-Cookie it processes last, and both are the one live
+    token. Never two live successors, never a revoked family. Repeated, since
+    one pass could pass by luck."""
     for _ in range(5):
         registered = await _register()
         _hold_at_the_family_lock(monkeypatch, 2)
@@ -335,22 +372,23 @@ async def test_two_refreshes_racing_with_one_token(monkeypatch):
             asyncio.gather(auth_service.refresh(token), auth_service.refresh(token)),
             timeout=_WAIT_SECONDS,
         )
+        monkeypatch.undo()
 
         family_id = (await _row(_jti(token))).family_id
         members = await _family(family_id)
-        assert len({p.refresh_token for p in pairs}) == 2
-        assert len(members) == 3
-        assert [m.revoked_reason for m in members].count("superseded") == 1
-        assert "reuse" not in [m.revoked_reason for m in members]
+        assert pairs[0].refresh_token == pairs[1].refresh_token
+        assert len(members) == 2
+        assert {m.revoked_reason for m in members} == {None}
         assert await _live_count(family_id) == 1
-        monkeypatch.undo()
+        # The token both got rotates normally.
+        await auth_service.refresh(pairs[0].refresh_token)
 
 
-async def test_the_invariant_holds_under_concurrent_refreshes_and_grace_reissues(monkeypatch):
+async def test_the_invariant_holds_under_concurrent_refreshes_and_grace_resends(monkeypatch):
     """Six refreshes of one token, gathered: one rotation and five grace
-    re-issues, each superseding the last. Then the family's one live token
-    and the first token, raced. Repeated. After every round, at most one
-    live token in the family."""
+    re-sends of the same successor. Then the family's one live token and the
+    first token, raced. Repeated. After every round, at most one live token
+    in the family."""
     for _ in range(3):
         registered = await _register()
         first = registered.refresh_token
@@ -363,31 +401,185 @@ async def test_the_invariant_holds_under_concurrent_refreshes_and_grace_reissues
         )
         monkeypatch.undo()
         assert await _live_count(family_id) == 1
-        reasons = [m.revoked_reason for m in await _family(family_id)]
-        assert reasons.count("superseded") == 5 and "reuse" not in reasons
+        members = await _family(family_id)
+        assert len(members) == 2
+        assert {m.revoked_reason for m in members} == {None}
+        assert len({pair.refresh_token for pair in pairs}) == 1
+        live = pairs[0].refresh_token
 
-        # gather returns in call order, not lock order, so the live token is
-        # found by its row, not taken as the last result.
-        live = []
-        for pair in pairs:
-            row = await _row(_jti(pair.refresh_token))
-            if row.used_at is None and row.revoked_at is None:
-                live.append(pair.refresh_token)
-        assert len(live) == 1
-        # Whichever goes first, the second is reuse: the live token after a
-        # grace re-issue is superseded, and the first token after a rotation
-        # has a used successor. One success, one 401, nothing live after.
+        # The two orders differ, and both keep the invariant. The live token
+        # first: it rotates, so the first token's successor is used and the
+        # first token is reuse (one success, one 401, nothing live). The
+        # first token first: a grace re-send of the live token, which then
+        # rotates (two successes, one live token).
         _hold_at_the_family_lock(monkeypatch, 2)
         results = await asyncio.wait_for(
             asyncio.gather(
-                auth_service.refresh(live[0]), auth_service.refresh(first), return_exceptions=True
+                auth_service.refresh(live), auth_service.refresh(first), return_exceptions=True
             ),
             timeout=_WAIT_SECONDS,
         )
         monkeypatch.undo()
-        assert sorted(type(r).__name__ for r in results) == ["InvalidTokenError", "TokenPair"]
-        assert await _live_count(family_id) == 0
-        assert "reuse" in [m.revoked_reason for m in await _family(family_id)]
+        outcome = sorted(type(r).__name__ for r in results)
+        reasons = [m.revoked_reason for m in await _family(family_id)]
+        if outcome == ["InvalidTokenError", "TokenPair"]:
+            assert await _live_count(family_id) == 0
+            assert "reuse" in reasons
+        else:
+            assert outcome == ["TokenPair", "TokenPair"], results
+            assert await _live_count(family_id) == 1
+            assert "reuse" not in reasons
+
+
+# --- a re-sent token is not re-sent again (resent_at, migration 028) --------
+#
+# Server-side, two tabs racing and a lost response retried are the same
+# event: one token presented twice. The grace path re-sends its successor
+# once and stamps it; a second presentation of that re-sent token is reuse.
+
+
+async def _race(token: str, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Two refreshes of one token, overlapping at the family lock, as two
+    tabs without Web Locks would send them."""
+    _hold_at_the_family_lock(monkeypatch, 2)
+    try:
+        return await asyncio.wait_for(
+            asyncio.gather(
+                auth_service.refresh(token), auth_service.refresh(token), return_exceptions=True
+            ),
+            timeout=_WAIT_SECONDS,
+        )
+    finally:
+        monkeypatch.undo()
+
+
+async def _family_reasons(token: str) -> set[str | None]:
+    return {m.revoked_reason for m in await _family((await _row(_jti(token))).family_id)}
+
+
+@pytest.mark.parametrize("theft_order", ["client first", "thief first"])
+@pytest.mark.parametrize("next_order", ["client first", "thief first"])
+async def test_a_thief_in_lockstep_with_the_client_is_caught_at_the_next_rotation(
+    theft_order: str, next_order: str
+):
+    """The review question. A thief replays T1 within the window and gets the
+    same T2 as the client (the grace re-send). Both access tokens were issued
+    together, so both refresh within the window of each other at the next
+    rotation. Before resent_at both got T3, and the same at every rotation:
+    this loop ran 10 rotations with nothing revoked. Now the loop stops at
+    the first rotation after the theft: the second presentation of the
+    re-sent token is reuse, the family is revoked, and the first presenter's
+    new token dies with it. Every order of the two parties."""
+    registered = await _register()
+    t1 = registered.refresh_token
+    first_t2 = await auth_service.refresh(t1)
+    second_t2 = await auth_service.refresh(t1)
+    assert first_t2.refresh_token == second_t2.refresh_token
+    holders = {"client": first_t2.refresh_token, "thief": second_t2.refresh_token}
+    if theft_order == "thief first":
+        holders = {"thief": first_t2.refresh_token, "client": second_t2.refresh_token}
+    assert (await _row(_jti(holders["client"]))).resent_at is not None
+
+    first, second = ("client", "thief") if next_order == "client first" else ("thief", "client")
+    detected = None
+    last_rotated = None
+    for rotation in range(1, 11):
+        last_rotated = (await auth_service.refresh(holders[first])).refresh_token
+        try:
+            again = (await auth_service.refresh(holders[second])).refresh_token
+        except auth_service.InvalidTokenError:
+            detected = (rotation, second)
+            break
+        holders = {first: last_rotated, second: again}
+
+    assert detected == (1, second)
+    assert await _family_reasons(t1) == {"reuse"}
+    assert await _live_count((await _row(_jti(t1))).family_id) == 0
+    with pytest.raises(auth_service.InvalidTokenError):
+        await auth_service.refresh(last_rotated)
+
+
+async def test_two_tabs_racing_once_then_refreshing_one_after_the_other_stay_signed_in(
+    monkeypatch,
+):
+    """The common case without Web Locks: one race, then the next rotation is
+    sequential (one tab refreshes first, the browser stores the rotated
+    cookie, the other tab sends that). A re-sent token rotates normally."""
+    registered = await _register()
+    pairs = await _race(registered.refresh_token, monkeypatch)
+    assert all(isinstance(p, auth_service.TokenPair) for p in pairs), pairs
+    t2 = pairs[0].refresh_token
+    assert (await _row(_jti(t2))).resent_at is not None
+
+    t3 = (await auth_service.refresh(t2)).refresh_token
+    t4 = (await auth_service.refresh(t3)).refresh_token
+
+    assert await _family_reasons(t4) == {None}
+    assert (await _row(_jti(t3))).resent_at is None
+    assert await _live_count((await _row(_jti(t4))).family_id) == 1
+
+
+async def test_two_races_on_consecutive_rotations_are_reuse_the_accepted_cost(monkeypatch):
+    """The accepted cost of the rule: two tabs without Web Locks that race on
+    two rotations in a row look exactly like a client and a thief in
+    lockstep, so the second race signs the user out once (one tab gets T3,
+    the other a 401, and the family is revoked)."""
+    registered = await _register()
+    first_race = await _race(registered.refresh_token, monkeypatch)
+    t2 = first_race[0].refresh_token
+    assert all(isinstance(p, auth_service.TokenPair) for p in first_race)
+
+    second_race = await _race(t2, monkeypatch)
+
+    assert sorted(type(r).__name__ for r in second_race) == ["InvalidTokenError", "TokenPair"]
+    assert await _family_reasons(t2) == {"reuse"}
+
+
+async def test_a_single_lost_response_retried_in_the_window_is_fine():
+    """The client's refresh rotated T1 but the answer was lost; it retries
+    with T1 and gets T2 again. Its next refresh, of T2, is a normal rotation."""
+    registered = await _register()
+    t1 = registered.refresh_token
+    lost = await auth_service.refresh(t1)
+    retried = await auth_service.refresh(t1)
+    assert retried.refresh_token == lost.refresh_token
+
+    t3 = await auth_service.refresh(retried.refresh_token)
+
+    assert await _family_reasons(t3.refresh_token) == {None}
+
+
+async def test_a_race_then_a_lost_response_on_the_next_rotation_is_reuse(monkeypatch):
+    """Also a cost of the rule, and the same pattern as two races: T2 came
+    from a re-send (the race), its rotation's answer is lost, and the retry
+    with T2 is a second presentation of a re-sent token. The user is signed
+    out once."""
+    registered = await _register()
+    pairs = await _race(registered.refresh_token, monkeypatch)
+    t2 = pairs[0].refresh_token
+    await auth_service.refresh(t2)  # the answer that never arrived
+
+    with pytest.raises(auth_service.InvalidTokenError):
+        await auth_service.refresh(t2)
+
+    assert await _family_reasons(t2) == {"reuse"}
+
+
+async def test_a_third_presentation_in_the_window_still_gets_the_same_successor():
+    """The token stamped is the successor, not the presented one: T1 may be
+    presented any number of times in the window and each gets T2."""
+    registered = await _register()
+    t1 = registered.refresh_token
+    answers = [(await auth_service.refresh(t1)).refresh_token for _ in range(3)]
+
+    assert len(set(answers)) == 1
+    assert (await _row(_jti(t1))).resent_at is None
+    stamped = (await _row(_jti(answers[0]))).resent_at
+    assert stamped is not None
+    # Stamped once: the third presentation kept the first stamp.
+    await auth_service.refresh(t1)
+    assert (await _row(_jti(answers[0]))).resent_at == stamped
+    assert await _family_reasons(t1) == {None}
 
 
 async def test_two_spent_tokens_of_one_family_presented_at_once_do_not_deadlock(monkeypatch):

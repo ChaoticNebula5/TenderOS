@@ -1,5 +1,6 @@
-"""scripts/e2e_proxy_log_check.py (plan item 27): leaked SSE tickets and CSP
-violations in one E2E run's compose log."""
+"""scripts/e2e_proxy_log_check.py (plan item 27): leaked SSE tickets, leaked
+refresh cookies (plan item 34, option 2) and CSP violations in one E2E run's
+compose log."""
 
 import importlib.util
 from pathlib import Path
@@ -68,3 +69,14 @@ def test_no_stream_traffic_fails_rather_than_passing_vacuously():
     assert _check(_WEB_STREAM) == [
         "no api stream lines: the check would pass without stream traffic"
     ]
+
+
+def test_the_refresh_cookie_in_any_service_log_fails_without_printing_it():
+    web = _WEB_STREAM.replace('"Mozilla"', '"Mozilla" cookie: tenderos_refresh=s3cr3t')
+    worker = f"worker-1  | {_T} Cookie: tenderos_refresh=s3cr3t"
+    problems = _check(web, _API_STREAM, worker)
+    assert problems == [
+        "line 1: web log holds the refresh cookie",
+        "line 3: worker log holds the refresh cookie",
+    ]
+    assert not any("s3cr3t" in p for p in problems)

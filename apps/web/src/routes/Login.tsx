@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { login, register, setTokens } from "../api/client";
+import { login, register, startSession } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
 import { Button } from "../components/ui/Button";
@@ -52,7 +52,9 @@ export function Login() {
         // only meet the same outage. A 429 would spend more of the login
         // limit. The user sees the wait and decides (Login.test.tsx).
         const tokens = await login({ email, password });
-        setTokens(tokens.access_token, tokens.refresh_token);
+        // Plan item 34, option 2: the api set the refresh cookie; this tab
+        // keeps only the access token.
+        startSession(tokens.access_token);
       } else {
         const result = await register({
           email,
@@ -60,7 +62,7 @@ export function Login() {
           organization_name: organizationName,
           display_name: displayName || null,
         });
-        setTokens(result.access_token, result.refresh_token);
+        startSession(result.access_token);
       }
       await refresh();
       navigate(from, { replace: true });

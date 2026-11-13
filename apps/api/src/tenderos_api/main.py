@@ -385,7 +385,10 @@ app.add_middleware(BaseHTTPMiddleware, dispatch=_security_headers)
 # The web app is a separate origin in every configuration this project has
 # (settings.web_base_url) - without this, every browser request's CORS
 # preflight fails before auth (Authorization header) is even considered.
-# allow_credentials is not needed - auth is a Bearer header, not cookies.
+# allow_credentials stays off: the refresh cookie (plan item 34, option 2;
+# session_cookie.py) is sent only on the browser's same-origin requests
+# through nginx's /api, which need no CORS, so no cross-origin request is
+# ever sent with it. Everything else is a Bearer header.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_base_url],

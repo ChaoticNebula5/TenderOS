@@ -31,9 +31,11 @@ class RefreshToken(UUIDPrimaryKeyMixin, Base):
         # neither used nor revoked; expiry is left out because now() cannot
         # appear in an index predicate, and an expired token is refused by
         # its JWT exp and removed by cleanup anyway. Rotation marks the
-        # presented token used before it inserts the successor, and the
-        # grace re-issue revokes the unused successor first, so a code path
-        # that ever forgot to fails its insert here instead of leaving two.
+        # presented token used before it inserts the successor, so a code
+        # path that ever forgot to fails its insert here instead of leaving
+        # two. The grace path inserts nothing: it sends the existing
+        # successor again (plan item 34, option 2). 'superseded' has had no
+        # writer since then; the value stays for rows written before.
         Index(
             "uq_refresh_token_live_per_family",
             "family_id",
@@ -58,6 +60,11 @@ class RefreshToken(UUIDPrimaryKeyMixin, Base):
     used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(nullable=True)
+    # When the grace path handed this token out a second time (migration
+    # 028; auth_service._grace_resend). A token handed out twice may be
+    # rotated once; a re-send for it is refused as reuse, so a thief in
+    # lockstep with the real client is caught at the next rotation.
+    resent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     # SET NULL: cleanup deletes expired rows in bounded batches, so a
     # family's rows can go in more than one batch. Indexed because of it:
     # Postgres does not index the referencing side of a foreign key, and

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getAccessToken, getRefreshToken, me, setTokens } from "../api/client";
+import { LOGOUT_MARKER_KEY, getAccessToken, me, startSession } from "../api/client";
 import { AuthProvider } from "../auth/AuthContext";
 import { RequireAuth } from "../auth/RequireAuth";
 import { Login } from "../routes/Login";
@@ -14,6 +14,11 @@ import { AppShell } from "./AppShell";
 // AuthProvider, client, RequireAuth, shell and Login, with only fetch stubbed,
 // so these fail if any link between the click and the login screen breaks.
 // AppShell.test.tsx keeps the shell's element rules.
+//
+// Plan item 34, option 2: the refresh token is an HttpOnly cookie, so the
+// client cannot clear it; the api's answer to /auth/logout does. A marker in
+// localStorage holds the log out until that answer comes, and tells the
+// other tabs.
 
 interface Call {
   method: string;
@@ -26,6 +31,8 @@ let calls: Call[];
 // What /auth/logout answers. Each test sets its own.
 let answerLogout: (init?: RequestInit) => Response | Promise<Response>;
 // When true, /auth/me and /auth/refresh answer 401: the session has expired.
+// /auth/refresh answers 401 in every test here: no test needs a refresh to
+// work, and one that sent one by mistake would land on login and fail.
 let sessionExpired: boolean;
 
 function json(status: number, body: unknown): Response {
@@ -41,7 +48,7 @@ beforeEach(() => {
   calls = [];
   sessionExpired = false;
   answerLogout = () => new Response(null, { status: 204 });
-  setTokens("access-1", "refresh-1");
+  startSession("access-1");
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -54,9 +61,11 @@ beforeEach(() => {
       });
       if (path === "/auth/logout") return answerLogout(init);
       if (path === "/auth/login") {
-        return json(200, { access_token: "access-2", refresh_token: "refresh-2" });
+        return json(200, { access_token: "access-2" });
       }
-      if (sessionExpired) return json(401, { detail: "Invalid or expired token" });
+      if (sessionExpired || path === "/auth/refresh") {
+        return json(401, { detail: "Invalid or expired token" });
+      }
       if (path === "/auth/me") {
         // As the API does: no token, no answer.
         if (!(init?.headers as Record<string, string>)["Authorization"]) {
@@ -75,6 +84,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -136,7 +146,6 @@ async function expectOnLoginSignedOut() {
   expect(screen.queryByRole("button", { name: LOG_OUT })).toBeNull();
   expect(screen.queryByText("person@example.com")).toBeNull();
   expect(getAccessToken()).toBeNull();
-  expect(getRefreshToken()).toBeNull();
 }
 
 async function logInThroughTheForm(user: ReturnType<typeof userEvent.setup>) {
@@ -148,7 +157,7 @@ async function logInThroughTheForm(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("the Log out button", () => {
-  it("sends the refresh token to /auth/logout and lands on the login screen", async () => {
+  it("calls /auth/logout, lands on the login screen, and clears the marker on 204", async () => {
     const user = userEvent.setup();
     renderSignedInAt("/tenders/t1");
 
@@ -158,7 +167,10 @@ describe("the Log out button", () => {
     expect(callsTo("/auth/logout")).toHaveLength(1);
     const [call] = callsTo("/auth/logout");
     expect(call.method).toBe("POST");
-    expect(JSON.parse(call.body!)).toEqual({ refresh_token: "refresh-1" });
+    // The cookie is the browser's to send; the client sends no body.
+    expect(call.body).toBeUndefined();
+    expect(call.headers["X-TenderOS-Client"]).toBe("web");
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).toBeNull();
   });
 
   it("is disabled and shows it is working until logout() finishes, then lands", async () => {
@@ -172,12 +184,13 @@ describe("the Log out button", () => {
     const busy = await screen.findByRole("button", { name: "Logging out..." });
     expect(busy).toBeDisabled();
     expect(busy).toHaveAttribute("aria-busy", "true");
-    // Still waiting, on the same screen. The tokens are already gone, so a tab
-    // closed now stays signed out (plan item 39's review).
+    // Still waiting, on the same screen. The access token is already gone and
+    // the marker set, so a tab closed now stays signed out (plan item 39's
+    // review; the marker since plan item 34, option 2).
     expect(screen.getByText("tender screen")).toBeInTheDocument();
     expect(screen.getByTestId("path")).toHaveTextContent("/tenders/t1");
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).not.toBeNull();
 
     // A second click while it runs sends nothing more.
     await user.click(busy);
@@ -205,6 +218,8 @@ describe("the Log out button", () => {
 
     await expectOnLoginSignedOut();
     expect(callsTo("/auth/logout")).toHaveLength(1);
+    // Kept for the next page load to send the call again.
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).not.toBeNull();
   });
 
   it("still ends the session when the call hangs, after logout()'s 5 s bound", async () => {
@@ -263,7 +278,9 @@ describe("the Log out button", () => {
     expect(screen.getByTestId("path")).not.toHaveTextContent("/tenders");
   });
 
-  it("keeps a session signed in during the wait when the old call ends", async () => {
+  it("keeps a session signed in during the wait: the login waits for the old call", async () => {
+    // Plan item 34, option 2: the old call's answer clears the cookie by name
+    // and path, so it must come before the new login's Set-Cookie, not after.
     let answer: (response: Response) => void = () => {};
     answerLogout = () => new Promise<Response>((resolve) => (answer = resolve));
     const user = userEvent.setup();
@@ -273,15 +290,18 @@ describe("the Log out button", () => {
     await screen.findByRole("heading", { name: "TenderOS" });
 
     await logInThroughTheForm(user);
-    expect(await screen.findByText("dashboard screen")).toBeInTheDocument();
+    expect(callsTo("/auth/login")).toHaveLength(0);
 
     answer(new Response(null, { status: 204 }));
 
+    expect(await screen.findByText("dashboard screen")).toBeInTheDocument();
+    const order = calls.map((call) => call.path).filter((path) => path.startsWith("/auth/lo"));
+    expect(order).toEqual(["/auth/logout", "/auth/login"]);
     // Give the old logout() every chance to end the new session.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.getByText("dashboard screen")).toBeInTheDocument();
     expect(screen.getByText("person@example.com")).toBeInTheDocument();
-    expect(getRefreshToken()).toBe("refresh-2");
+    expect(getAccessToken()).toBe("access-2");
   });
 
   it.each<[string, () => Response]>([
@@ -315,6 +335,62 @@ describe("the Log out button", () => {
 
       expect(await screen.findByText("tender screen")).toBeInTheDocument();
       expect(screen.getByTestId("path")).toHaveTextContent("/tenders/t1");
+    },
+  );
+
+  it("another tab's log out (the marker's storage event) lands this tab on login", async () => {
+    const user = userEvent.setup();
+    renderSignedInAt("/tenders/t1");
+    await logOutButton();
+
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: LOGOUT_MARKER_KEY, newValue: "2026-11-13T10:00:00Z" }),
+    );
+
+    await expectOnLoginSignedOut();
+    // This tab made no call: the tab that logged out did.
+    expect(callsTo("/auth/logout")).toHaveLength(0);
+    // A deliberate log out: the next login does not return to the tender.
+    await logInThroughTheForm(user);
+    expect(await screen.findByText("dashboard screen")).toBeInTheDocument();
+    expect(screen.getByTestId("path")).not.toHaveTextContent("/tenders");
+  });
+
+  it.each<[string, StorageEventInit]>([
+    ["the marker removed", { key: LOGOUT_MARKER_KEY, newValue: null }],
+    ["another key", { key: "something_else", newValue: "x" }],
+    ["localStorage cleared", { key: null }],
+  ])("ignores a storage event for %s", async (_name, init) => {
+    renderSignedInAt("/tenders/t1");
+    await logOutButton();
+
+    window.dispatchEvent(new StorageEvent("storage", init));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText("tender screen")).toBeInTheDocument();
+    expect(getAccessToken()).toBe("access-1");
+  });
+
+  it.each<[string, () => Response, boolean]>([
+    ["answers 204, and the marker is cleared", () => new Response(null, { status: 204 }), false],
+    ["fails, and the marker stays", () => json(503, { detail: "unavailable" }), true],
+  ])(
+    "a load with the marker present sends the log out again, shows login, and when it %s",
+    async (_name, answer, markerAfter) => {
+      localStorage.setItem(LOGOUT_MARKER_KEY, "2026-11-13T10:00:00Z");
+      answerLogout = answer;
+
+      renderSignedInAt("/tenders/t1");
+
+      expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
+      await waitFor(() => expect(callsTo("/auth/logout")).toHaveLength(1));
+      // No session was looked up or restored.
+      expect(callsTo("/auth/me")).toHaveLength(0);
+      expect(callsTo("/auth/refresh")).toHaveLength(0);
+      expect(getAccessToken()).toBeNull();
+      await waitFor(() =>
+        expect(localStorage.getItem(LOGOUT_MARKER_KEY) !== null).toBe(markerAfter),
+      );
     },
   );
 });

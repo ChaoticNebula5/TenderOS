@@ -295,14 +295,15 @@ async def test_refresh_still_works_during_the_outage(client: TestClient, unreach
         },
     )
     assert registered.status_code == 201, registered.text
+    # Plan item 34, option 2: the refresh token is the cookie, sent by hand
+    # because the test client's jar keeps it to its /api/auth path.
+    first = registered.cookies["tenderos_refresh"]
 
-    response = client.post(
-        "/auth/refresh", json={"refresh_token": registered.json()["refresh_token"]}
-    )
+    response = client.post("/auth/refresh", headers={"Cookie": f"tenderos_refresh={first}"})
 
     assert response.status_code == 200, response.text
     assert response.json()["access_token"]
-    assert response.json()["refresh_token"] != registered.json()["refresh_token"]
+    assert response.cookies["tenderos_refresh"] != first
 
 
 async def test_the_outage_is_logged_once_per_interval_not_per_request(

@@ -21,7 +21,12 @@ _DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 
 async def _client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    # Plan item 34, option 2: /auth/register needs the web client's header.
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-TenderOS-Client": "web"},
+    )
 
 
 def _docx_bytes(text: str) -> bytes:

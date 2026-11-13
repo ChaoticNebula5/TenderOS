@@ -247,7 +247,12 @@ async def test_a_decision_racing_a_cancel_is_a_conflict(monkeypatch):
 
 
 async def _api_race(monkeypatch, first: FirstWriter, decision: str):
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    # Plan item 34, option 2: /auth/register needs the web client's header.
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-TenderOS-Client": "web"},
+    ) as client:
         registered = await client.post(
             "/auth/register",
             json={
