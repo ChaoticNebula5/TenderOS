@@ -94,3 +94,20 @@
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
+
+/* Plan item 71: what the decision recorded beyond its badge - a waiver,
+   and the reviewer's notes, which say why changes were requested. The
+   label is the muted ink, the notes themselves the body ink. */
+.gate-panel__waived,
+.gate-panel__notes {
+  margin: var(--space-2) 0 0;
+}
+
+.gate-panel__notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gate-panel__notes-label {
+  color: var(--ink-2);
+}

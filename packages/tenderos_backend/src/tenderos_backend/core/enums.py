@@ -59,19 +59,19 @@ _AWAITING_HUMAN: frozenset[WorkflowStatus] = frozenset(
         "awaiting_commercial_approval",
         "awaiting_finding_resolution",
         "awaiting_final_approval",
-        # A gate's own status is "changes_requested" (a real, valid
-        # ALLOWED_DECISIONS value), but the run itself is not rejected and
-        # not approved - a human's decision is still the last word pending
-        # further action. "waiting_for_human" is the more honest coarse
-        # reading than "failed" (nothing errored) or "running" (nothing is
-        # advancing) - see the gate nodes' own request_changes handling.
-        "changes_requested",
     }
 )
+# Phase 4 plan item 71 (decision 0093): "changes_requested" is its own
+# terminal coarse status. Every gate node routes a request_changes decision
+# to END, so nothing resumes the run; it used to read "waiting_for_human",
+# an active status, which held the tender's one active run for good (no
+# start, no cancel in the web app, never reaped). Terminal, it frees the
+# tender, and the reviewer's notes stay on the gate's decision_payload.
 _TERMINAL: dict[WorkflowStatus, str] = {
     "ready": "completed",
     "rejected": "failed",
     "failed": "failed",
+    "changes_requested": "changes_requested",
 }
 
 

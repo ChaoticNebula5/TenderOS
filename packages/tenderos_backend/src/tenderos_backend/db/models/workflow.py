@@ -19,12 +19,17 @@ from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKey
 # Phase 4 plan item 43: the statuses in which a run is still in progress. A
 # run waiting at a gate is active, and so is one with a retry scheduled (it
 # stays "running" until the retry succeeds or the budget runs out). The
-# other three are terminal: nothing moves a run out of them on purpose.
+# others are terminal: nothing moves a run out of them on purpose.
 # The web screen's NON_TERMINAL_STATUSES is the same set.
 ACTIVE_RUN_STATUSES = ("queued", "running", "waiting_for_human")
 # Plan item 44 (the cancellation race): nothing moves a run out of these.
 # WorkflowRepository.update_run_status refuses to, in its own UPDATE.
-TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled")
+# "changes_requested" (plan item 71, migration 029, decision 0093): a
+# reviewer's Request changes ends the run at its gate. Not one of Part C's
+# six values; added on purpose, as migration 018 added the cost_budget gate.
+TERMINAL_RUN_STATUSES = ("completed", "failed", "cancelled", "changes_requested")
+# Every value ck_workflow_run_status allows (Part C's six plus item 71's).
+RUN_STATUSES = ACTIVE_RUN_STATUSES + TERMINAL_RUN_STATUSES
 
 # Plan item 19: why a failed run failed, shown under "Last run". The run
 # reaper writes the first two (domain/services/run_reaper.py), the RQ
@@ -40,7 +45,7 @@ class WorkflowRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "workflow_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued','running','waiting_for_human','completed','failed','cancelled')",
+            "status IN (" + ",".join(f"'{s}'" for s in RUN_STATUSES) + ")",
             name="ck_workflow_run_status",
         ),
         # At most one active run per tender (plan item 43, migration 022).

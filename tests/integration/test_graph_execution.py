@@ -240,6 +240,60 @@ async def test_repeating_same_gate_decision_is_idempotent():
     assert len(result.scalars().all()) == 1, "a replayed decision must not double-enqueue a resume"
 
 
+async def test_request_changes_ends_the_run_and_frees_the_tender():
+    """Plan item 71 (decision 0093), through the real graph and the real
+    resume job: a Request changes decision ends the run with the terminal
+    status changes_requested. Before, the run read waiting_for_human for
+    good, holding the tender's one active run (observed in the item 66 walk:
+    no Start processing, no cancel, never reaped)."""
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gate = (await uow.gates.list_for_run(run.id))[0]
+    assert gate.gate_type == "requirement_review"
+
+    await gate_service.record_decision(
+        gate_id=gate.id,
+        organization_id=registered.organization.id,
+        decided_by=registered.user.id,
+        decision="request_changes",
+        notes="Upload the missing annex, then run again.",
+    )
+    await resume_workflow(str(run.id), str(gate.id))
+
+    async with UnitOfWork() as uow:
+        ended = await uow.workflow.get_run(run.id)
+        decided = await uow.gates.get(gate.id)
+        to_check = await uow.workflow.list_runs_to_check(100)
+        at_gates = await uow.workflow.list_waiting_runs_with_a_decided_gate(100)
+    assert ended is not None and decided is not None
+    assert ended.status == "changes_requested"
+    assert ended.completed_at is not None
+    # The notes the web app shows under "Last run" stay on the gate.
+    assert decided.status == "changes_requested"
+    assert decided.decision_payload["notes"] == "Upload the missing annex, then run again."
+    # No reaper rule lists it: it is not queued, running or waiting.
+    assert run.id not in {r.run_id for r in to_check}
+    assert run.id not in {r.run_id for r in at_gates}
+
+    # Terminal: a late status write is refused, and a cancel is a no-op.
+    async with UnitOfWork() as uow:
+        assert await uow.workflow.update_run_status(run.id, "running") is False
+        await uow.commit()
+    after_cancel = await workflow_service.cancel_workflow_run(
+        run.id, registered.organization.id, registered.user.id
+    )
+    assert after_cancel is not None and after_cancel.status == "changes_requested"
+
+    # The tender is free: Start processing works again.
+    again = await workflow_service.create_workflow_run(
+        tender_id=run.tender_id,
+        organization_id=registered.organization.id,
+        created_by=registered.user.id,
+    )
+    assert again.status == "queued"
+
+
 async def test_resume_continues_the_same_thread_not_a_new_workflow():
     """The literal property R1/B3's do-not-proceed criterion names: resuming
     must continue the exact checkpointed thread, not start a fresh run. If

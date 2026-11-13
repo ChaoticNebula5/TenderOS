@@ -613,6 +613,14 @@ export function getWorkflowRun(runId: string): Promise<WorkflowRunResponse> {
   return apiFetch<WorkflowRunResponse>(`/workflow-runs/${runId}`);
 }
 
+// Plan item 72: I6's cancel (routes/workflow.py, cancel_workflow_run). The
+// server takes no Idempotency-Key here: cancelling a run that has already
+// ended is a no-op that answers with the run as it is, so a repeat is safe.
+// Allowed for bid manager, approver and admin (rbac.py); others get 403.
+export function cancelWorkflowRun(runId: string): Promise<WorkflowRunResponse> {
+  return apiFetch<WorkflowRunResponse>(`/workflow-runs/${runId}/cancel`, { method: "POST" });
+}
+
 export function listWorkflowTasks(runId: string): Promise<WorkflowTaskResponse[]> {
   return apiFetch<WorkflowTaskResponse[]>(`/workflow-runs/${runId}/tasks`);
 }

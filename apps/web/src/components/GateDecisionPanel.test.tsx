@@ -393,6 +393,67 @@ describe("an already-decided gate", () => {
   });
 });
 
+describe("plan items 71 and 72: what a decided gate recorded", () => {
+  it("shows the reviewer's notes on a gate decided with Request changes", () => {
+    const gate: RequirementReviewGateResponse = {
+      ...requirementReviewGate(),
+      status: "changes_requested",
+      decision_payload: {
+        decision: "request_changes",
+        notes: "Upload the missing annex.",
+        waived: false,
+      },
+      decided_at: "2026-01-02T00:00:00Z",
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.getByText("Changes requested")).toHaveClass("status-badge--blocked");
+    expect(container.querySelector(".gate-panel__notes")).toHaveTextContent(
+      "Reviewer's notes: Upload the missing annex.",
+    );
+    expect(container.querySelector(".gate-panel__waived")).toBeNull();
+    expect(container.querySelector("strong")).toBeNull();
+  });
+
+  it("shows no notes line when the decision had none", () => {
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      status: "approved",
+      decision_payload: { decision: "approve", notes: null, waived: false },
+      decided_at: "2026-01-02T00:00:00Z",
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(container.querySelector(".gate-panel__notes")).toBeNull();
+  });
+
+  it("says when a final gate's approval waived outstanding blockers", () => {
+    const gate: FinalReadinessGateResponse = {
+      ...finalReadinessGate({ ready: false }),
+      status: "approved",
+      decision_payload: { decision: "approve", notes: null, waived: true, waived_blockers: [] },
+      decided_at: "2026-01-02T00:00:00Z",
+    };
+    render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.getByText("Approved with outstanding blockers waived.")).toBeInTheDocument();
+  });
+
+  it("labels a gate a cancel closed 'Closed by cancel', not 'Rejected'", () => {
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      status: "rejected",
+      decision_payload: { decision: null, closed_by: "run_cancelled" },
+      decided_at: "2026-01-02T00:00:00Z",
+    };
+    render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.getByText("Closed by cancel")).toHaveClass("status-badge--neutral");
+    expect(screen.queryByText("Rejected")).not.toBeInTheDocument();
+    expect(screen.getByText(`Closed ${formatDate("2026-01-02T00:00:00Z")}`)).toBeInTheDocument();
+  });
+});
+
 describe("restyle batch 3: status, decided line, busy state", () => {
   it.each([
     ["pending", "Awaiting decision", "blocked"],

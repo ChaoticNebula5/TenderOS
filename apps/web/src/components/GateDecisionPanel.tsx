@@ -5,6 +5,7 @@ import { formatErrorDetail } from "../api/formatErrorDetail";
 import { retryTransient } from "../api/retryTransient";
 import { formatDate } from "../format/date";
 import { describeReadiness, describeStatus } from "../status/statusMap";
+import type { StatusDescriptor } from "../status/statusMap";
 import { Button } from "./ui/Button";
 import type { ButtonVariant } from "./ui/buttonClassName";
 import { Field } from "./ui/Field";
@@ -19,6 +20,30 @@ interface GateDecisionPanelProps {
 }
 
 type Decision = "approve" | "reject" | "request_changes";
+
+// Plan item 72: a cancel closes the run's pending gate as "rejected" with
+// decision_payload {"decision": null, "closed_by": "run_cancelled"}
+// (db/repositories/gates.py, CLOSED_BY_CANCEL_PAYLOAD). Nobody rejected
+// it, so it reads "Closed by cancel", Neutral like a cancelled run.
+function isClosedByCancel(gate: GateResponse): boolean {
+  return gate.decision_payload?.closed_by === "run_cancelled";
+}
+
+function describeGate(gate: GateResponse): StatusDescriptor {
+  return isClosedByCancel(gate)
+    ? { tone: "neutral", label: "Closed by cancel" }
+    : describeStatus("gate", gate.status);
+}
+
+// Plan item 71: a decided gate shows what the reviewer wrote, and whether
+// an approval waived outstanding readiness blockers (routes/gates.py
+// records both in decision_payload). Before, a decided panel showed only
+// its badge and date, so a Request changes' reason and a waiver were
+// invisible after the fact.
+function decisionNotes(gate: GateResponse): string | null {
+  const notes = gate.decision_payload?.notes;
+  return typeof notes === "string" && notes.trim() !== "" ? notes : null;
+}
 
 // The `code` from the API's {"error": {"code", "message"}} envelope, or null
 // for any other body shape.
@@ -141,7 +166,7 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   const header = (
     <>
       <div className="gate-panel__header">
-        <StatusBadge {...describeStatus("gate", gate.status)} />
+        <StatusBadge {...describeGate(gate)} />
       </div>
       <p className="gate-panel__asof">At request time · {formatDate(gate.requested_at)}</p>
       <GateSummary gate={gate} />
@@ -154,11 +179,22 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
     // readiness page's only <strong>, and this panel renders there too),
     // no raw ISO string, and no "who": decided_by is a user id, and a name
     // would need a fetch a restyle does not add.
+    const notes = decisionNotes(gate);
     return (
       <section className="gate-panel">
         {header}
         {gate.decided_at && (
-          <p className="gate-panel__decided">Decided {formatDate(gate.decided_at)}</p>
+          <p className="gate-panel__decided">
+            {isClosedByCancel(gate) ? "Closed" : "Decided"} {formatDate(gate.decided_at)}
+          </p>
+        )}
+        {gate.decision_payload?.waived === true && (
+          <p className="gate-panel__waived">Approved with outstanding blockers waived.</p>
+        )}
+        {notes !== null && (
+          <p className="gate-panel__notes">
+            <span className="gate-panel__notes-label">Reviewer&apos;s notes:</span> {notes}
+          </p>
         )}
       </section>
     );

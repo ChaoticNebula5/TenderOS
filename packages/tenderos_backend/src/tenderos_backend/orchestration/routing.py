@@ -4,7 +4,8 @@ from tenderos_backend.orchestration.state import TenderState
 
 # Both a "reject" and a "request_changes" decision must stop the run from
 # advancing - they differ in what the fine-grained status/coarse read says
-# happened (rejected -> failed; changes_requested -> waiting_for_human), not
+# happened (rejected -> failed; changes_requested -> its own terminal
+# changes_requested, plan item 71), not
 # in whether the graph proceeds. Every route_after_*_gate function below
 # checks against this pair rather than "rejected" alone.
 _GATE_HALT_STATUSES = frozenset({"rejected", "changes_requested"})

@@ -3,7 +3,8 @@ checkpoint_blobs, checkpoint_writes) - see KNOWN_LIMITATIONS.md's "Unbounded
 LangGraph checkpoint growth" entry. Two independent, both-safe categories of
 thread are prunable, not one:
 
-1. TERMINAL - workflow_runs.status IN ('completed','failed','cancelled').
+1. TERMINAL - workflow_runs.status IN ('completed','failed','cancelled',
+   'changes_requested'; the last added by plan item 71).
 2. ORPHANED - no workflow_runs row exists at all for this thread_id. Checked
    directly against a live database (240 distinct checkpoint threads, only
    14 workflow_runs rows total, only 1 terminal): 226 of 240 threads are
@@ -45,7 +46,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 from tenderos_backend.db.session import get_session
 
-_TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "changes_requested")
 
 # Hardcoded, not user input - safe to interpolate directly (SQL identifiers
 # can't be bind parameters; this is the standard pattern for iterating a

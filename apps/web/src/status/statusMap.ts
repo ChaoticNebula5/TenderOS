@@ -64,6 +64,11 @@ const run: FamilyMap = {
   failed: { tone: "failed", label: "Failed" },
   // DESIGN.md:307 '`cancelled` -> "Cancelled"'; :281 Neutral row
   cancelled: { tone: "neutral", label: "Cancelled" },
+  // chosen, not in DESIGN: plan item 71 (decision 0093) made a reviewer's
+  // Request changes a terminal run status. The gate family's own word and
+  // tone for the same decision (DESIGN.md:303, :283-284), so the run and
+  // the gate that ended it read alike.
+  changes_requested: { tone: "blocked", label: "Changes requested" },
 };
 
 // Task - db/models/workflow.py:42
