@@ -77,16 +77,21 @@ def queue_names_from(argv: list[str]) -> list[str]:
 
 
 # The module each operations job runs from. RQ forks a fresh work-horse per
-# job and imports the job's module there, and this one takes 7 to 8 s to
+# job and imports the job's module there, and this one took 7 to 8 s to
 # import (measured; most of it sentence_transformers and torch, pulled in
-# through commercial_service -> document_service -> ingestion). Importing it
-# once in this parent, before any fork, lets every job inherit it.
+# through commercial_service -> document_service -> ingestion). Since plan
+# item 23 those load only when a model is first used, which no operation
+# does, and the import takes 1.6 to 1.8 s (measured 2026-11-13, fresh
+# interpreter in the container, 3 samples). Importing it once in this parent,
+# before any fork, lets every job inherit it.
 #
 # A process that forks while other threads run can hang in the child (a lock
 # held by a thread that does not exist there). The import loads no model
-# weights and opens no connections, but numpy's and scipy's bundled
-# OpenBLAS each start a pool of worker threads when they load (observed: 1
-# -> 31 OS threads on 16 CPUs). The operations_worker service therefore sets
+# weights and opens no connections, but numpy's bundled OpenBLAS (and
+# scipy's, before item 23) starts a pool of worker threads when it loads
+# (observed: 1 -> 31 OS threads on 16 CPUs). numpy now arrives through
+# openpyxl (openpyxl/compat/numbers.py, observed 2026-11-13). The
+# operations_worker service therefore sets
 # OPENBLAS_NUM_THREADS=1 and OMP_NUM_THREADS=1 (docker-compose.yml), which
 # keeps the import at one thread (observed), and the worker refuses to start
 # if the import adds a thread or opens a socket (preload_operations_module).

@@ -11847,7 +11847,12 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   6. **The preload costs the operations worker about 400 MiB** at idle
      (about 126 MiB without it, about 520 MiB with it; measured), almost
      all of it sentence_transformers and torch, a library no operation
-     uses. Follow-up (a) below removes it.
+     uses. Follow-up (a) below removes it. **Removed by plan item 23
+     (2026-11-13):** the operations worker is about 168 MiB idle
+     (`docker stats`; 178 MiB RSS for the worker process, no torch
+     mapped), the preload takes about 2.5 s at a contended start instead
+     of 13.2 s, and the module imports in 1.6 to 1.8 s in a fresh
+     interpreter (measured, fake stack, 3 samples).
   7. **Workflow jobs, gate resumes included, still spend 7 to 8 s
      importing per job** (the same per-fork import on the default worker,
      unchanged in this stage). Measured 2026-10-16:
@@ -11856,12 +11861,36 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      (`orchestration.graph` -> `nodes.commercial` -> `commercial_service`
      -> ingestion); the commercial gate's resume job lasted 7.5 to 7.6 s
      in total in runs B1 and B2, so that job is almost all import.
+     **After follow-up (a), plan item 23 (2026-11-13, one E2E run, RQ's
+     own job durations, fake provider):** a workflow job that loads no
+     model takes 1.4 to 4.1 s in all (`run_workflow_job` 1.88 s; 3
+     resumes 1.65, 1.79 and 4.13 s; 2 reanalyses 1.42 and 1.60 s), against
+     6.4 to 7.5 s before for the jobs that loaded none; the module imports
+     in 2.2 to 2.3 s (4.4 s once, first sample), so the 4.13 s resume is
+     about 2 s of its own work. `run_workflow_job` loaded the whole
+     embedder before only to count tokens (6.81 s); it now loads no model.
+     A job that loads a model takes about the same, 5.6 to 9.6 s against
+     6.2 to 10.0 s before (ingestion, knowledge import, a resume and
+     reanalyses that embed): the torch import moved from the start of the
+     job to its first embedding.
      Follow-ups, owner Phase 4 deployment prep, in this order, each tested
      with its own E2E runs:
      - (a) **First item of deployment prep: lazy-import the embedder**
        (`ingestion/embed.py`), so code that never embeds never imports
        torch. It recovers the operations worker's ~400 MiB (limit 6) and
-       cuts API and default-worker memory and start-up too.
+       cuts API and default-worker memory and start-up too. **Done, plan
+       item 23 (2026-11-13):** `embed.py` and `agents/knowledge/rerank.py`
+       import sentence_transformers inside the function that builds the
+       model, behind a lock, and `count_tokens` reads the model's
+       `tokenizer.json` through the tokenizers library (no torch, same
+       counts). `tests/unit/test_lazy_model_imports.py` checks that the
+       api, the dispatcher, the worker and every job module import without
+       torch. Measured on the fake stack, idle (`docker stats`): api 479 to
+       224 MiB, outbox dispatcher 499 to 237 MiB, operations worker 463 to
+       168 MiB; container start to ready: api 19.2 to 8.2 s, dispatcher
+       20.2 to 9.1 s. The cost moves to first use: a process's first
+       embedding now pays the import, 5.7 to 8.8 s in a fresh interpreter
+       (measured, 4 samples), and its memory rises to about 640 MiB then.
      - (b) **Preload the default worker** the same way. It needs the same
        BLAS pin, and workflow jobs do embed (ingestion, retrieval), so
        measure single-threaded BLAS there before choosing. It is expected
@@ -11871,8 +11900,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
        before trying it.
 - **Risk:** limit 2 can repeat an explanation LLM call when a manual
   re-validation and the workflow's commercial step run at the same time.
-- **Status:** built (Stage 2). Limits 1-7 accepted; limit 7's two
-  follow-ups open.
+- **Status:** built (Stage 2). Limits 1-5 and 7 accepted; limit 6
+  removed by follow-up (a) (plan item 23); follow-up (b) open (plan
+  item 48).
 - **Test:** `tests/integration/test_async_operations.py`
   (`test_a_duplicate_delivery_runs_each_kind_once`, all three kinds;
   `test_a_real_proposal_generation_runs_once_under_a_duplicate_delivery`;
