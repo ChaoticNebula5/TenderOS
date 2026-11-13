@@ -60,6 +60,11 @@ class RefreshToken(UUIDPrimaryKeyMixin, Base):
     used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(nullable=True)
+    # When the grace path handed this token out a second time (migration
+    # 028; auth_service._grace_resend). A token handed out twice may be
+    # rotated once; a re-send for it is refused as reuse, so a thief in
+    # lockstep with the real client is caught at the next rotation.
+    resent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     # SET NULL: cleanup deletes expired rows in bounded batches, so a
     # family's rows can go in more than one batch. Indexed because of it:
     # Postgres does not index the referencing side of a foreign key, and

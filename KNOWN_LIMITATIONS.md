@@ -12506,9 +12506,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   - **The grace window:** a used token presented again within 30 s, whose
     successor has never been used (a lost response, or two tabs at once),
     gets that same successor back (option 2, below; until then it
-    superseded the successor and got a new one). A thief replaying within
-    the window gets the token the real client holds; whichever of them uses
-    it second, past the window, is reuse: detection one rotation later.
+    superseded the successor and got a new one), and the successor is
+    stamped `resent_at`. A re-sent token can be rotated once; a re-send for
+    it is refused as reuse. A thief replaying within the window gets the
+    token the real client holds, and is caught at the first rotation after
+    the theft, whichever of the two refreshes first.
   - **The invariant:** at most one live (unused, unrevoked) token per
     family, enforced by a partial unique index
     (`uq_refresh_token_live_per_family`) as well as by the code's order of
@@ -12773,6 +12775,19 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     live cookie, so the browser keeps a live token whichever it processes
     last, and nobody is signed out. A hash mismatch answers 401 without
     revoking the family. `'superseded'` has no writer since.
+  - **A re-sent token is not re-sent again (migration 028, found in
+    review):** the re-send alone let a thief who replayed a token within
+    the window hold the client's token at every rotation. Both got their
+    access tokens together, so both refresh within the window of each other,
+    and each rotation's second presentation was re-sent the successor:
+    reuse detection never fired (observed with a scratch test: a theft and
+    10 rotations, nothing revoked). Now the grace path stamps the successor
+    it re-sends (`resent_at`, the database clock) and refuses for a presented
+    token whose own `resent_at` is set, which `refresh()` treats as reuse.
+    The thief is caught at the first rotation after the theft, whichever of
+    the two goes first. A normal rotation of a re-sent token is allowed, and
+    the same used token presented any number of times in the window still
+    gets the same successor.
   - **Migration 027** revokes every live refresh token (`'user'`) once, so a
     token copied out of `localStorage` before the change stops working.
     Every browser signs in once. Downgrade does nothing.
@@ -12791,6 +12806,13 @@ Resolves the entry above, "A rate-limited request (429) is shown as
     Set-Cookie value, which the jar kept; both tabs signed in; a refresh
     with the kept cookie then 200. The api log has 8 grace re-send lines
     (every round overlapped) and no reuse line.
+  - **After migration 028** (the re-sent rule): the E2E once more, both specs
+    passed (3.0 min), the same calls per run and no reuse; the migrate log
+    shows 027 to 028 applied. Two tabs without Web Locks, one simultaneous
+    reload on a fresh account: both signed in, the same cookie, one re-send,
+    and the re-sent token's next (sequential) rotation 200. Eight rounds,
+    each race separated by a sequential refresh: all signed in, no refused
+    re-send and no reuse.
 - **Tests (option 2):** `tests/route/test_auth_routes.py` (the cookie's
   attributes and Max-Age on register, login and refresh; Max-Age from an
   aged family; no `refresh_token` in any body, none read from one; a
@@ -12802,7 +12824,11 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   `tests/integration/test_refresh_tokens.py` (a token re-mints byte for
   byte; the grace path re-sends the successor; a re-send whose hash does not
   match is 401 without revoking; a superseded row is refused; two and six
-  refreshes at once share one successor),
+  refreshes at once share one successor; the thief in lockstep caught at
+  the first rotation, four orders; one race then a sequential rotation, no
+  logout; two races in a row, reuse; a lost-response retry, fine; a race
+  then a lost-response retry, reuse; a third presentation, the same
+  successor), `tests/integration/test_migration_028_refresh_token_resent_at.py`,
   `tests/integration/test_migration_027_revoke_live_refresh_tokens.py`,
   `tests/unit/test_production_settings.py`,
   `tests/unit/test_e2e_proxy_log_check.py`, and on the web
@@ -12810,13 +12836,21 @@ Resolves the entry above, "A rate-limited request (429) is shown as
   and `AuthContext.test.tsx` (where the token is kept, a spy on every
   `localStorage` write, start-up refresh, the lock, two tabs with and
   without Web Locks, the marker and its `storage` event, a login waiting
-  for a log out call). Checked to fail with their mechanism removed: 23
-  backend, 20 web and 4 E2E mutations (the E2E ones on a rebuilt stack),
+  for a log out call). Checked to fail with their mechanism removed: 28
+  backend (5 of them for `resent_at`: the check, the stamp, the stamp on
+  the wrong token, and migration 028's nullability and downgrade), 20 web
+  and 4 E2E mutations (the E2E ones on a rebuilt stack),
   each file restored and compared by SHA-256. The spec's "signed in after
   a reload" has no single-change mutation: the tab's stored access token
   and the start-up refresh each keep the session alone; its restore step
   (storage cleared, then a reload) isolates the cookie.
 - **Accepted limits of option 2:**
+  - **Two re-sends in a row sign the user out once:** two tabs without Web
+    Locks that race on two consecutive rotations, or a race followed by a
+    lost response retried on the next rotation, look exactly like a client
+    and a thief in lockstep, and are treated as reuse. Every current browser
+    has Web Locks (general knowledge, not checked here; plan item 67), and
+    plain HTTP keeps no session anyway, so this is the old-browser corner.
   - **A login in another tab during a log out call:** that tab cannot wait
     for this tab's call, so if the log out's answer arrives after the new
     login's, the browser drops the new cookie. That tab keeps working on

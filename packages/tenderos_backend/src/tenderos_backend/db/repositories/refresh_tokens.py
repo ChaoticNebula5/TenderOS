@@ -111,6 +111,16 @@ class RefreshTokenRepository:
             .execution_options(synchronize_session=False)
         )
 
+    async def mark_resent(self, token_id: uuid.UUID) -> None:
+        """Record that the grace path handed this token out again. The first
+        time only: a later re-send keeps the first stamp (COALESCE)."""
+        await self._session.execute(
+            update(RefreshToken)
+            .where(RefreshToken.id == token_id)
+            .values(resent_at=func.coalesce(RefreshToken.resent_at, func.now()))
+            .execution_options(synchronize_session=False)
+        )
+
     async def revoke_family(self, family_id: uuid.UUID, reason: str) -> int:
         """Revoke every member of the family not already revoked; returns how
         many. Members already revoked (an earlier logout, or a token
