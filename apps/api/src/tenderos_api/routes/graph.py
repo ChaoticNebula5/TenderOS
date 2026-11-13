@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import graph_service
+from tenderos_backend.graph_projection.serialize import json_safe
 
 from tenderos_api.dependencies import require_permission
 from tenderos_api.errors import GraphStaleAPIError
@@ -20,6 +21,12 @@ router = APIRouter(tags=["graph"])
 
 _VIEW = "view_graph"
 _TRIGGER = "trigger_graph_projection"
+
+# Plan item 75: the impact, contradictions and trace routes return Neo4j
+# rows as they come, and a projected date property comes back as a
+# neo4j.time value Pydantic cannot serialize (a 500). json_safe converts
+# them here, at the response, so graph_service's own callers (the
+# reanalysis job reads preview_impact) keep the values as they are.
 
 
 def _reraise_as_stale(exc: graph_service.GraphStaleError) -> None:
@@ -79,7 +86,7 @@ async def preview_graph_impact(
     current_user: User = Depends(require_permission(_VIEW)),
 ) -> list[GraphImpactRow]:
     try:
-        return await graph_service.preview_impact(tender_id, body.knowledge_item_id)
+        return json_safe(await graph_service.preview_impact(tender_id, body.knowledge_item_id))
     except graph_service.TenderNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
@@ -94,7 +101,7 @@ async def get_graph_contradictions(
     tender_id: UUID, current_user: User = Depends(require_permission(_VIEW))
 ) -> list[GraphContradictionRow]:
     try:
-        return await graph_service.find_contradictions(tender_id)
+        return json_safe(await graph_service.find_contradictions(tender_id))
     except graph_service.TenderNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
@@ -112,7 +119,7 @@ async def get_graph_trace(
     current_user: User = Depends(require_permission(_VIEW)),
 ) -> GraphTraceResponse:
     try:
-        return await graph_service.get_graph_trace(tender_id, node_label, node_id)
+        return json_safe(await graph_service.get_graph_trace(tender_id, node_label, node_id))
     except graph_service.TenderNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found"
