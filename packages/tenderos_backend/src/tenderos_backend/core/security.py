@@ -49,12 +49,16 @@ def refresh_family_expiry() -> datetime:
 
 def create_refresh_token(user_id: UUID, token_id: UUID, expires_at: datetime) -> str:
     """A refresh token whose `jti` is its refresh_tokens row id. `exp` is
-    the family's expiry, passed in, not a fresh 7 days."""
+    the family's expiry, passed in, not a fresh 7 days.
+
+    No `iat` (plan item 34, option 2): every claim comes from the token's
+    row, and HS256 is deterministic, so the same row always mints the same
+    string. The grace path relies on that to send a retried request the
+    successor it already issued (auth_service._grace_resend)."""
     payload = {
         "user_id": str(user_id),
         "token_type": "refresh",
         "jti": str(token_id),
-        "iat": datetime.now(UTC),
         "exp": expires_at,
     }
     return jwt.encode(payload, settings.jwt_signing_key, algorithm="HS256")

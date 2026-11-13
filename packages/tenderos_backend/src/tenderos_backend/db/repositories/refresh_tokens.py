@@ -111,19 +111,10 @@ class RefreshTokenRepository:
             .execution_options(synchronize_session=False)
         )
 
-    async def supersede(self, token_id: uuid.UUID) -> None:
-        """Revoke one unused successor that a grace re-issue replaces."""
-        await self._session.execute(
-            update(RefreshToken)
-            .where(RefreshToken.id == token_id)
-            .values(revoked_at=func.now(), revoked_reason="superseded")
-            .execution_options(synchronize_session=False)
-        )
-
     async def revoke_family(self, family_id: uuid.UUID, reason: str) -> int:
         """Revoke every member of the family not already revoked; returns how
-        many. Members already revoked (a superseded token, an earlier logout)
-        keep their first reason."""
+        many. Members already revoked (an earlier logout, or a token
+        superseded before plan item 34's option 2) keep their first reason."""
         result = await self._session.execute(
             update(RefreshToken)
             .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))

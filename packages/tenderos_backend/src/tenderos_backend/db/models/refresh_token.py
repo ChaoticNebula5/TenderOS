@@ -31,9 +31,11 @@ class RefreshToken(UUIDPrimaryKeyMixin, Base):
         # neither used nor revoked; expiry is left out because now() cannot
         # appear in an index predicate, and an expired token is refused by
         # its JWT exp and removed by cleanup anyway. Rotation marks the
-        # presented token used before it inserts the successor, and the
-        # grace re-issue revokes the unused successor first, so a code path
-        # that ever forgot to fails its insert here instead of leaving two.
+        # presented token used before it inserts the successor, so a code
+        # path that ever forgot to fails its insert here instead of leaving
+        # two. The grace path inserts nothing: it sends the existing
+        # successor again (plan item 34, option 2). 'superseded' has had no
+        # writer since then; the value stays for rows written before.
         Index(
             "uq_refresh_token_live_per_family",
             "family_id",

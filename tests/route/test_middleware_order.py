@@ -142,7 +142,7 @@ async def test_unhandled_exception_is_a_500_envelope_with_cors(
     response = client.post(
         "/auth/login",
         json={"email": f"{uuid.uuid4()}@example.com", "password": uuid.uuid4().hex},
-        headers={"Origin": _ORIGIN},
+        headers={"Origin": _ORIGIN, "X-TenderOS-Client": "web"},
     )
 
     assert response.status_code == 500, response.text

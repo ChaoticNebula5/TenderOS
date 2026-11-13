@@ -5,24 +5,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../auth/AuthContext";
 import { useAuth } from "../auth/useAuth";
 import {
+  LOGOUT_MARKER_KEY,
   getAccessToken,
-  getRefreshToken,
   getTender,
   isLoggingOut,
+  login,
   logout,
-  setTokens,
+  startSession,
 } from "./client";
 
-// Plan item 34, option 3: the API rotates the refresh token on every
-// refresh, so the client stores both tokens, takes a cross-tab Web Lock
-// around the refresh, and logs out on the server. jsdom has no
-// navigator.locks; the tests that need one install a small fake with the
-// same contract: one holder per name at a time, the others queued in order.
+// Plan item 34, options 3 and 2: the API rotates the refresh token on every
+// refresh, and the token is an HttpOnly cookie the browser keeps, invisible
+// to the client. The client takes a cross-tab Web Lock around the refresh,
+// keeps only the access token (sessionStorage), and logs out on the server.
+// jsdom has no navigator.locks; the tests that need one install a small fake
+// with the same contract: one holder per name at a time, the others queued in
+// order.
 
 interface Call {
   path: string;
   headers: Record<string, string>;
-  body: string | undefined;
+  body: unknown;
 }
 
 let calls: Call[] = [];
@@ -41,7 +44,7 @@ function stubFetch(answer: (call: Call, init?: RequestInit) => Response | Promis
       const call: Call = {
         path: new URL(input).pathname,
         headers: { ...(init?.headers as Record<string, string>) },
-        body: init?.body as string | undefined,
+        body: init?.body,
       };
       calls.push(call);
       return answer(call, init);
@@ -52,6 +55,7 @@ function stubFetch(answer: (call: Call, init?: RequestInit) => Response | Promis
 const callsTo = (path: string) => calls.filter((call) => call.path === path);
 const EXPIRED = () => json(401, { detail: "Invalid or expired token" });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const isNewAccess = (call: Call) => /^Bearer new-access/.test(call.headers["Authorization"] ?? "");
 
 function installFakeLocks(): { requests: string[] } {
   const tails = new Map<string, Promise<unknown>>();
@@ -75,13 +79,14 @@ function installFakeLocks(): { requests: string[] } {
 
 beforeEach(() => {
   calls = [];
-  setTokens("old-access", "refresh-1");
+  startSession("old-access");
 });
 
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
   vi.resetModules();
   // Only defined by installFakeLocks; jsdom has no navigator.locks.
@@ -89,33 +94,27 @@ afterEach(() => {
 });
 
 describe("rotation", () => {
-  it("a refresh stores the rotated refresh token with the new access token", async () => {
+  it("a refresh stores only the new access token; the cookie is the browser's", async () => {
     stubFetch((call) => {
       if (call.path === "/auth/refresh") {
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
+        return json(200, { access_token: "new-access", token_type: "bearer" });
       }
-      return call.headers["Authorization"] === "Bearer new-access"
-        ? json(200, { id: call.path })
-        : EXPIRED();
+      return isNewAccess(call) ? json(200, { id: call.path }) : EXPIRED();
     });
 
     await expect(getTender("a")).resolves.toEqual({ id: "/tenders/a" });
 
     expect(getAccessToken()).toBe("new-access");
-    expect(getRefreshToken()).toBe("refresh-2");
-    expect(JSON.parse(callsTo("/auth/refresh")[0].body!)).toEqual({ refresh_token: "refresh-1" });
+    expect(callsTo("/auth/refresh")[0].body).toBeUndefined();
+    expect(localStorage.length).toBe(0);
   });
 
   it("without navigator.locks the refresh still runs, unlocked", async () => {
     expect("locks" in navigator).toBe(false);
     stubFetch((call) =>
       call.path === "/auth/refresh"
-        ? json(200, { access_token: "new-access", refresh_token: "refresh-2" })
-        : call.headers["Authorization"] === "Bearer new-access"
+        ? json(200, { access_token: "new-access" })
+        : isNewAccess(call)
           ? json(200, { id: call.path })
           : EXPIRED(),
     );
@@ -127,8 +126,10 @@ describe("rotation", () => {
 
 describe("two tabs", () => {
   // Each tab is its own instance of client.ts (its own single-flight
-  // promise), sharing localStorage and navigator.locks, as two browser tabs
-  // of one origin do.
+  // promise and session counter), sharing navigator.locks and localStorage,
+  // as two browser tabs of one origin do. jsdom has one sessionStorage, so
+  // here the two tabs share it, where a browser would give each its own;
+  // every case below holds either way.
   async function twoTabs() {
     vi.resetModules();
     const tabA = await import("./client");
@@ -137,40 +138,70 @@ describe("two tabs", () => {
     return { tabA, tabB };
   }
 
-  it("whose access tokens expire together make one refresh call, under the lock", async () => {
+  // Each answer carries its own access token, so a test can see which tab
+  // got which.
+  function answerRefreshes(held?: Promise<void>) {
+    stubFetch(async (call) => {
+      if (call.path === "/auth/refresh") {
+        if (held) await held;
+        return json(200, { access_token: `new-access-${callsTo("/auth/refresh").length}` });
+      }
+      return isNewAccess(call) ? json(200, { id: call.path }) : EXPIRED();
+    });
+  }
+
+  it("whose access tokens expire together refresh one after the other, under the lock", async () => {
     const { requests } = installFakeLocks();
     let releaseRefresh!: () => void;
     const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
-    stubFetch(async (call) => {
-      if (call.path === "/auth/refresh") {
-        await refreshHeld;
-        return json(200, { access_token: "new-access", refresh_token: "refresh-2" });
-      }
-      return call.headers["Authorization"] === "Bearer new-access"
-        ? json(200, { id: call.path })
-        : EXPIRED();
-    });
+    answerRefreshes(refreshHeld);
     const { tabA, tabB } = await twoTabs();
 
     const both = Promise.all([tabA.getTender("a"), tabB.getTender("b")]);
     // Both tabs got their 401 and asked for the lock while the first
-    // refresh is still held, so the second really waited for the first.
+    // refresh is held: the second has not been sent, it waits for the lock.
     await settle();
     expect(requests).toEqual(["tenderos-refresh", "tenderos-refresh"]);
+    expect(callsTo("/auth/refresh")).toHaveLength(1);
+    releaseRefresh();
+
+    // The second tab cannot read the cookie to see the first rotated it, so
+    // it refreshes too, with the rotated cookie the browser now holds.
+    await expect(both).resolves.toEqual([{ id: "/tenders/a" }, { id: "/tenders/b" }]);
+    expect(callsTo("/auth/refresh")).toHaveLength(2);
+  });
+
+  it("without navigator.locks, refreshing at the same moment, both stay signed in", async () => {
+    // Plan item 34, option 2's condition. Both refreshes are in flight at
+    // once, carrying the same cookie; the api answers both with the same
+    // rotated cookie (tests/route/test_auth_routes.py proves that half).
+    // This proves the client half: neither tab drops its answer or signs
+    // out.
+    expect("locks" in navigator).toBe(false);
+    let releaseRefresh!: () => void;
+    const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    answerRefreshes(refreshHeld);
+    const { tabA, tabB } = await twoTabs();
+    const expired = vi.fn();
+    tabA.setSessionExpiredHandler(expired);
+    tabB.setSessionExpiredHandler(expired);
+
+    const both = Promise.all([tabA.getTender("a"), tabB.getTender("b")]);
+    await settle();
+    expect(callsTo("/auth/refresh")).toHaveLength(2);
     releaseRefresh();
 
     await expect(both).resolves.toEqual([{ id: "/tenders/a" }, { id: "/tenders/b" }]);
-    expect(callsTo("/auth/refresh")).toHaveLength(1);
-    expect(getRefreshToken()).toBe("refresh-2");
+    expect(expired).not.toHaveBeenCalled();
   });
 
-  it("a tab that waited while the other tab's refresh was rejected lands on login, with no refresh of its own", async () => {
+  it("a tab that waited while the other tab's refresh was rejected is rejected too, and lands on login", async () => {
     installFakeLocks();
     let releaseRefresh!: () => void;
     const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
-    // Tab A's refresh is rejected (its family was revoked); tab A clears
-    // storage, as a logout does. Tab B, waiting on the lock, must not send
-    // the token it read before waiting.
+    // Tab A's refresh is rejected (its family was revoked), and the api's 401
+    // cleared the cookie, so tab B's own refresh, sent once it has the lock,
+    // carries no cookie and is rejected as well.
     stubFetch(async (call) => {
       if (call.path === "/auth/refresh") {
         await refreshHeld;
@@ -179,7 +210,9 @@ describe("two tabs", () => {
       return EXPIRED();
     });
     const { tabA, tabB } = await twoTabs();
+    const expiredA = vi.fn();
     const expiredB = vi.fn();
+    tabA.setSessionExpiredHandler(expiredA);
     tabB.setSessionExpiredHandler(expiredB);
 
     const both = Promise.allSettled([tabA.getTender("a"), tabB.getTender("b")]);
@@ -187,8 +220,28 @@ describe("two tabs", () => {
     releaseRefresh();
     await both;
 
+    expect(callsTo("/auth/refresh")).toHaveLength(2);
+    expect(expiredA).toHaveBeenCalledTimes(1);
+    expect(expiredB).toHaveBeenCalledTimes(1);
+  });
+
+  it("a tab waiting on the lock while another tab logs out sends no refresh and lands on login", async () => {
+    installFakeLocks();
+    let releaseRefresh!: () => void;
+    const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    answerRefreshes(refreshHeld);
+    const { tabA, tabB } = await twoTabs();
+    const expiredB = vi.fn();
+    tabB.setSessionExpiredHandler(expiredB);
+
+    const both = Promise.allSettled([tabA.getTender("a"), tabB.getTender("b")]);
+    await settle();
+    // A third tab logs out while tab A's refresh holds the lock.
+    localStorage.setItem(LOGOUT_MARKER_KEY, "now");
+    releaseRefresh();
+    await both;
+
     expect(callsTo("/auth/refresh")).toHaveLength(1);
-    expect(getRefreshToken()).toBeNull();
     expect(expiredB).toHaveBeenCalledTimes(1);
   });
 
@@ -204,11 +257,9 @@ describe("two tabs", () => {
             );
           });
         }
-        return json(200, { access_token: "new-access", refresh_token: "refresh-2" });
+        return json(200, { access_token: "new-access" });
       }
-      return call.headers["Authorization"] === "Bearer new-access"
-        ? json(200, { id: call.path })
-        : EXPIRED();
+      return isNewAccess(call) ? json(200, { id: call.path }) : EXPIRED();
     });
     const { tabA, tabB } = await twoTabs();
     const expired = vi.fn();
@@ -231,50 +282,62 @@ describe("two tabs", () => {
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason.status).toBe(401);
-    expect(getRefreshToken()).toBe("refresh-2");
     expect(expired).not.toHaveBeenCalled();
   });
 });
 
 describe("logout", () => {
-  it("clears both tokens, then sends the refresh token it read to /auth/logout", async () => {
-    let refreshDuringCall: string | null = "unset";
+  it("sets the marker and clears the access token before the call, then clears the marker on 204", async () => {
+    let markerDuringCall: string | null = "unset";
     let accessDuringCall: string | null = "unset";
-    stubFetch(() => {
-      refreshDuringCall = getRefreshToken();
+    let sent: RequestInit | undefined;
+    stubFetch((_call, init) => {
+      markerDuringCall = localStorage.getItem(LOGOUT_MARKER_KEY);
       accessDuringCall = getAccessToken();
+      sent = init;
       return new Response(null, { status: 204 });
     });
 
     await logout();
 
     expect(callsTo("/auth/logout")).toHaveLength(1);
-    expect(JSON.parse(callsTo("/auth/logout")[0].body!)).toEqual({ refresh_token: "refresh-1" });
-    // Cleared before the call, not after. The order changed in plan item 39's
-    // review: cleared after it, a tab closed during the wait of up to 5 s left
-    // this browser signed in.
-    expect(refreshDuringCall).toBeNull();
+    // Cleared before the call, not after (plan item 39's review): a tab
+    // closed during the wait of up to 5 s stays signed out.
+    expect(markerDuringCall).not.toBeNull();
     expect(accessDuringCall).toBeNull();
-    expect(callsTo("/auth/logout")[0].headers["Authorization"]).toBeUndefined();
+    const [call] = callsTo("/auth/logout");
+    expect(call.body).toBeUndefined();
+    expect(call.headers["X-TenderOS-Client"]).toBe("web");
+    expect(call.headers["Authorization"]).toBeUndefined();
+    expect(sent?.credentials).toBe("same-origin");
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).toBeNull();
   });
 
-  it("still clears the tokens when the call cannot reach the API", async () => {
-    stubFetch(() => {
-      throw new TypeError("Failed to fetch");
-    });
+  it.each<[string, () => Response]>([
+    [
+      "cannot reach the API",
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+    ["answers with an error", () => json(503, { detail: "unavailable" })],
+  ])("keeps the marker, and the tab signed out, when the call %s", async (_name, answer) => {
+    stubFetch(() => answer());
 
     await expect(logout()).resolves.toBeUndefined();
+
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).not.toBeNull();
   });
 
-  it("still clears the tokens when the API answers with an error", async () => {
-    stubFetch(() => json(503, { detail: "unavailable" }));
+  it("always makes the call: the cookie is invisible to the client", async () => {
+    sessionStorage.clear();
+    stubFetch(() => new Response(null, { status: 204 }));
 
     await logout();
-    expect(getRefreshToken()).toBeNull();
+
+    expect(callsTo("/auth/logout")).toHaveLength(1);
   });
 
   it("sends the call with keepalive, so it can outlive a closed tab", async () => {
@@ -313,7 +376,7 @@ describe("logout", () => {
     expect(isLoggingOut()).toBe(false);
   });
 
-  it("still clears the tokens when the call hangs, ending within its 5 s bound", async () => {
+  it("still ends the session when the call hangs, ending within its 5 s bound", async () => {
     stubFetch(
       (_call, init) =>
         new Promise<Response>((_resolve, reject) => {
@@ -326,18 +389,29 @@ describe("logout", () => {
 
     expect(Date.now() - started).toBeGreaterThan(4_500);
     expect(Date.now() - started).toBeLessThan(6_500);
-    expect(getRefreshToken()).toBeNull();
+    expect(getAccessToken()).toBeNull();
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).not.toBeNull();
     expect(isLoggingOut()).toBe(false);
   }, 10_000);
 
-  it("with no refresh token stored makes no call and still clears", async () => {
-    localStorage.removeItem("tenderos_refresh_token");
-    stubFetch(() => new Response(null, { status: 204 }));
+  it("a login waits for a log out call still out, so that answer cannot clear the new cookie", async () => {
+    let answerLogout!: (response: Response) => void;
+    stubFetch((call) => {
+      if (call.path === "/auth/logout") {
+        return new Promise<Response>((resolve) => (answerLogout = resolve));
+      }
+      return json(200, { access_token: "login-access" });
+    });
 
-    await logout();
+    const loggingOut = logout();
+    const loggingIn = login({ email: "a@example.com", password: "x" });
+    await settle();
+    expect(callsTo("/auth/login")).toHaveLength(0);
 
-    expect(calls).toHaveLength(0);
-    expect(getAccessToken()).toBeNull();
+    answerLogout(new Response(null, { status: 204 }));
+    await loggingOut;
+    await expect(loggingIn).resolves.toEqual({ access_token: "login-access" });
+    expect(calls.map((call) => call.path)).toEqual(["/auth/logout", "/auth/login"]);
   });
 });
 
@@ -357,7 +431,7 @@ function SessionProbe() {
 }
 
 describe("the auth context's logout", () => {
-  it("calls /auth/logout, clears the tokens and ends the session", async () => {
+  it("calls /auth/logout, clears the token and the marker, and ends the session", async () => {
     stubFetch((call) => {
       if (call.path === "/auth/me") {
         return json(200, {
@@ -380,6 +454,6 @@ describe("the auth context's logout", () => {
     expect(await screen.findByText("signed out")).toBeInTheDocument();
     expect(callsTo("/auth/logout")).toHaveLength(1);
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).toBeNull();
   });
 });

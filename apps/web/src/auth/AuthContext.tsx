@@ -2,11 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ApiError,
+  LOGOUT_MARKER_KEY,
   clearTokens,
+  endSessionInThisTab,
   getAccessToken,
   isLoggingOut,
   logout as endSession,
+  logoutPending,
   me,
+  removeLegacyTokens,
+  restoreSession,
   setSessionExpiredHandler,
 } from "../api/client";
 import type { MeResponse } from "../api/client";
@@ -18,10 +23,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loggedOut, setLoggedOut] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!getAccessToken()) {
+    // Plan item 34, option 2: tokens from before the cookie are never read.
+    removeLegacyTokens();
+
+    // A log out whose call never answered (a closed tab, a network failure):
+    // send it again, and show the login screen whatever it answers. The
+    // marker is cleared only once the api has revoked the family (client.ts,
+    // logout()), so this repeats on every load until it has.
+    if (logoutPending()) {
+      void endSession();
+      setLoggedOut(true);
       setMeResponse(null);
       return;
     }
+
+    // No access token in this tab (a new tab, or a tab whose token was
+    // cleared): the refresh cookie, if the browser holds a live one, gets a
+    // new access token. A 401 is no session; a network failure or a 5xx,
+    // once retryTransient gives up, keeps the cookie and shows the login
+    // screen, as a failed /auth/me below does.
+    if (!getAccessToken()) {
+      try {
+        await retryTransient(() => restoreSession());
+      } catch {
+        setMeResponse(null);
+        return;
+      }
+    }
+
     try {
       // retryTransient absorbs a network blip or a brief backend restart
       // (not a 429: Phase 4 blocker 1 made rate limits terminal, see
@@ -47,11 +76,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Plan item 34, option 3: clears the tokens, then revokes the session on the
-  // server, whether or not that call works (client.ts, logout()). The top bar's
-  // Log out button calls it (plan item 39).
+  // Plan item 34, options 3 and 2: marks the log out, clears this tab's
+  // access token, then revokes the session on the server, whether or not
+  // that call works (client.ts, logout()). The top bar's Log out button
+  // calls it (plan item 39).
   //
-  // Tokens in storage after the wait mean a poll landed the user on /login
+  // An access token after the wait means a poll landed the user on /login
   // during it and they signed in again: that new session is theirs to keep.
   const logout = useCallback(async () => {
     await endSession();
@@ -77,6 +107,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMeResponse(null);
     });
     return () => setSessionExpiredHandler(null);
+  }, []);
+
+  // Plan item 34, option 2: a log out in another tab of this browser. Each tab
+  // holds its own access token, so without this the others would carry on
+  // until theirs expired. The `storage` event fires only in the OTHER tabs,
+  // and only when the marker is set; its removal (newValue null) and a
+  // localStorage.clear() (key null) mean nothing here.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== LOGOUT_MARKER_KEY || event.newValue === null) return;
+      endSessionInThisTab();
+      setLoggedOut(true);
+      setMeResponse(null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const organizationId = meResponse?.memberships[0]?.organization_id ?? null;

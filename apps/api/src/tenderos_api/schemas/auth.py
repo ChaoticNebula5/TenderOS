@@ -15,17 +15,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
-class LogoutRequest(BaseModel):
-    refresh_token: str
-
-
+# Plan item 34, option 2: the refresh token is never in a body; login,
+# register and refresh set it as an HttpOnly cookie (session_cookie.py).
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 
@@ -40,7 +33,6 @@ class RegisterResponse(BaseModel):
     user: UserResponse
     organization_id: UUID
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 

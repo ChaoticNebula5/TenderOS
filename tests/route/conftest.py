@@ -177,7 +177,11 @@ def _no_pooling_for_rate_limit_redis(monkeypatch):
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app)
+    # Plan item 34, option 2: login, register, refresh and logout need
+    # the web client's header (session_cookie.require_web_client), so
+    # the route tests' client sends it, as the web app does. A test of
+    # the check itself builds its own client without it.
+    return TestClient(app, headers={"X-TenderOS-Client": "web"})
 
 
 @pytest.fixture

@@ -46,7 +46,7 @@ beforeEach(() => {
   // getAccessToken() is falsy - a real token has to be seeded first for
   // either scenario below to actually reach the retryTransient call this
   // test exists to exercise.
-  apiClient.setTokens("fake-access-token", "fake-refresh-token");
+  apiClient.startSession("fake-access-token");
 });
 
 afterEach(() => {
@@ -59,7 +59,9 @@ afterEach(() => {
   // the wrong reason (a leaked resolved value), not by inspection.
   vi.resetAllMocks();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   apiClient.clearTokens();
+  localStorage.clear();
 });
 
 describe("AuthProvider.refresh() through the real retryTransient", () => {
@@ -101,5 +103,56 @@ describe("AuthProvider.refresh() through the real retryTransient", () => {
     expect(await screen.findByText("logged out")).toBeInTheDocument();
     expect(me).toHaveBeenCalledTimes(1);
     expect(apiClient.getAccessToken()).toBeNull();
+  });
+});
+
+// Plan item 34, option 2: with no access token in this tab, start-up gets
+// one from the refresh cookie before me(). fetch answers the refresh; me()
+// stays mocked.
+describe("AuthProvider start-up with no access token in this tab", () => {
+  function stubRefresh(...answers: (() => Response)[]) {
+    const fetchMock = vi.fn(async () => (answers.shift() ?? answers[answers.length - 1])());
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("a transient refresh failure is retried, then me() runs with the new token", async () => {
+    apiClient.clearTokens();
+    vi.useFakeTimers();
+    const fetchMock = stubRefresh(
+      () => new Response("{}", { status: 503 }),
+      () => new Response(JSON.stringify({ access_token: "restored" }), { status: 200 }),
+    );
+    me.mockResolvedValueOnce(MEMBER);
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(screen.getByText("logged in as person@example.com")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(me).toHaveBeenCalledTimes(1);
+    expect(apiClient.getAccessToken()).toBe("restored");
+  });
+
+  it("deletes the access and refresh tokens an older client left in localStorage", async () => {
+    localStorage.setItem("tenderos_access_token", "legacy-access");
+    localStorage.setItem("tenderos_refresh_token", "legacy-refresh");
+    me.mockResolvedValueOnce(MEMBER);
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByText("logged in as person@example.com")).toBeInTheDocument();
+    expect(localStorage.getItem("tenderos_access_token")).toBeNull();
+    expect(localStorage.getItem("tenderos_refresh_token")).toBeNull();
   });
 });

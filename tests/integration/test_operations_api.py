@@ -45,7 +45,12 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _client() -> AsyncClient:
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    # Plan item 34, option 2: /auth/register needs the web client's header.
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-TenderOS-Client": "web"},
+    )
 
 
 async def _register(client: AsyncClient, email: str) -> tuple[dict[str, str], str, str]:

@@ -173,3 +173,11 @@ def test_the_e2e_bypass_on_is_a_problem():
     assert _api_production_problems(_api(e2e_rate_limit_bypass_enabled=True)) == [
         "E2E_RATE_LIMIT_BYPASS_ENABLED must be false"
     ]
+
+
+def test_the_refresh_cookie_without_secure_is_a_problem():
+    """Plan item 34, option 2: the refresh token's cookie must be Secure in
+    production, so it never crosses plain HTTP."""
+    assert _api_production_problems(_api(auth_cookie_secure=False)) == [
+        "AUTH_COOKIE_SECURE must be true"
+    ]

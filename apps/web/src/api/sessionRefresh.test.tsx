@@ -9,15 +9,16 @@ import { RequireAuth } from "../auth/RequireAuth";
 import { Login } from "../routes/Login";
 import {
   ApiError,
-  clearTokens,
+  LOGOUT_MARKER_KEY,
   createWorkflowRun,
+  endSessionInThisTab,
   getAccessToken,
-  getRefreshToken,
   getTender,
   login,
+  logout,
   mintWorkflowEventsTicket,
   setSessionExpiredHandler,
-  setTokens,
+  startSession,
 } from "./client";
 
 // Phase 4 plan item 34: client.ts refreshes an expired access token once,
@@ -25,11 +26,17 @@ import {
 // request once. These drive the real client against a stubbed fetch that
 // answers by path and by the bearer token sent, so each test can count
 // the refresh calls and read the headers of every attempt.
+//
+// Option 2: the refresh token is an HttpOnly cookie the browser sends and
+// replaces on its own, invisible here as it is to any script. A refresh is
+// a POST with no body; only the access token is stored, in sessionStorage.
 
 interface Call {
   path: string;
   method: string;
   headers: Record<string, string>;
+  body: unknown;
+  credentials: RequestCredentials | undefined;
 }
 
 let calls: Call[] = [];
@@ -49,6 +56,8 @@ function stubFetch(answer: (call: Call) => Response | Promise<Response>) {
         path: new URL(input).pathname,
         method: init?.method ?? "GET",
         headers: { ...(init?.headers as Record<string, string>) },
+        body: init?.body,
+        credentials: init?.credentials,
       };
       calls.push(call);
       return answer(call);
@@ -58,19 +67,22 @@ function stubFetch(answer: (call: Call) => Response | Promise<Response>) {
 
 const callsTo = (path: string) => calls.filter((call) => call.path === path);
 const EXPIRED = json(401, { detail: "Invalid or expired token" });
+const REFRESHED = () => json(200, { access_token: "new-access", token_type: "bearer" });
 // A macrotask: every promise continuation queued so far has run.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   calls = [];
-  setTokens("old-access", "refresh-1");
+  startSession("old-access");
 });
 
 afterEach(() => {
   cleanup();
   setSessionExpiredHandler(null);
   localStorage.clear();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("refresh on a 401", () => {
@@ -80,11 +92,7 @@ describe("refresh on a 401", () => {
     stubFetch(async (call) => {
       if (call.path === "/auth/refresh") {
         await refreshHeld;
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
+        return REFRESHED();
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { id: call.path })
@@ -102,17 +110,29 @@ describe("refresh on a 401", () => {
     expect(getAccessToken()).toBe("new-access");
   });
 
+  it("a refresh is a POST with the client header, the cookie's credentials and no body", async () => {
+    stubFetch((call) => {
+      if (call.path === "/auth/refresh") return REFRESHED();
+      return call.headers["Authorization"] === "Bearer new-access"
+        ? json(200, { id: call.path })
+        : EXPIRED.clone();
+    });
+
+    await getTender("a");
+
+    const [refresh] = callsTo("/auth/refresh");
+    expect(refresh.method).toBe("POST");
+    expect(refresh.headers["X-TenderOS-Client"]).toBe("web");
+    expect(refresh.credentials).toBe("same-origin");
+    expect(refresh.body).toBeUndefined();
+    expect(refresh.headers["Authorization"]).toBeUndefined();
+  });
+
   it("a 401 that arrives after the refresh finished retries with the new token, no second refresh", async () => {
     let releaseB!: () => void;
     const bHeld = new Promise<void>((resolve) => (releaseB = resolve));
     stubFetch(async (call) => {
-      if (call.path === "/auth/refresh") {
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
-      }
+      if (call.path === "/auth/refresh") return REFRESHED();
       if (call.headers["Authorization"] === "Bearer new-access")
         return json(200, { id: call.path });
       // b's first attempt is answered only after a has refreshed and retried.
@@ -131,15 +151,7 @@ describe("refresh on a 401", () => {
   it("a 401 after a successful refresh logs out, with no second refresh and no loop", async () => {
     const expired = vi.fn();
     setSessionExpiredHandler(expired);
-    stubFetch((call) =>
-      call.path === "/auth/refresh"
-        ? json(200, {
-            access_token: "new-access",
-            refresh_token: "refresh-2",
-            token_type: "bearer",
-          })
-        : EXPIRED.clone(),
-    );
+    stubFetch((call) => (call.path === "/auth/refresh" ? REFRESHED() : EXPIRED.clone()));
 
     const error = await getTender("a").catch((err: unknown) => err);
 
@@ -148,19 +160,12 @@ describe("refresh on a 401", () => {
     expect(callsTo("/auth/refresh")).toHaveLength(1);
     expect(callsTo("/tenders/a")).toHaveLength(2);
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
     expect(expired).toHaveBeenCalledTimes(1);
   });
 
   it("an idempotent POST is retried with the same Idempotency-Key and the new token", async () => {
     stubFetch((call) => {
-      if (call.path === "/auth/refresh") {
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
-      }
+      if (call.path === "/auth/refresh") return REFRESHED();
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(202, { id: "run-1" })
         : EXPIRED.clone();
@@ -180,13 +185,7 @@ describe("refresh on a 401", () => {
 
   it("an SSE ticket mint that gets a 401 goes through the same refresh", async () => {
     stubFetch((call) => {
-      if (call.path === "/auth/refresh") {
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
-      }
+      if (call.path === "/auth/refresh") return REFRESHED();
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { ticket: "t-1", expires_in_seconds: 30 })
         : EXPIRED.clone();
@@ -232,24 +231,20 @@ describe("refresh on a 401", () => {
     expect(callsTo("/auth/refresh")).toHaveLength(1);
     expect(callsTo("/tenders/a")).toHaveLength(1);
     expect(getAccessToken()).toBe("old-access");
-    expect(getRefreshToken()).toBe("refresh-1");
     expect(expired).not.toHaveBeenCalled();
   });
 
-  it("a logout while a refresh is in flight stays logged out", async () => {
-    // Found in the live check: the tokens were cleared while a page load's
-    // refresh was in flight, and its answer wrote a new access token into
-    // the emptied storage, so the next load was signed in again.
+  it("a log out in this tab while a refresh is in flight stays logged out", async () => {
+    // Found in option 3's live check: the tokens were cleared while a page
+    // load's refresh was in flight, and its answer wrote a new access token
+    // into the emptied storage, so the next load was signed in again.
     let releaseRefresh!: () => void;
     const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
     stubFetch(async (call) => {
+      if (call.path === "/auth/logout") return new Response(null, { status: 204 });
       if (call.path === "/auth/refresh") {
         await refreshHeld;
-        return json(200, {
-          access_token: "new-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
+        return REFRESHED();
       }
       return call.headers["Authorization"] === "Bearer new-access"
         ? json(200, { id: call.path })
@@ -258,20 +253,171 @@ describe("refresh on a 401", () => {
 
     const request = getTender("a").catch((err: unknown) => err);
     await settle();
-    clearTokens();
+    await logout();
     releaseRefresh();
 
     expect(((await request) as ApiError).status).toBe(401);
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
     expect(callsTo("/tenders/a")).toHaveLength(1);
   });
+
+  it.each<[string, () => void]>([
+    ["sets the log out marker", () => localStorage.setItem(LOGOUT_MARKER_KEY, "now")],
+    ["signs this tab out", () => endSessionInThisTab()],
+  ])(
+    "a refresh answer is dropped when another tab %s while it is in flight",
+    async (_name, otherTab) => {
+      let releaseRefresh!: () => void;
+      const refreshHeld = new Promise<void>((resolve) => (releaseRefresh = resolve));
+      stubFetch(async (call) => {
+        if (call.path === "/auth/refresh") {
+          await refreshHeld;
+          return REFRESHED();
+        }
+        return call.headers["Authorization"] === "Bearer new-access"
+          ? json(200, { id: call.path })
+          : EXPIRED.clone();
+      });
+
+      const request = getTender("a").catch((err: unknown) => err);
+      await settle();
+      otherTab();
+      releaseRefresh();
+
+      expect(((await request) as ApiError).status).toBe(401);
+      expect(getAccessToken()).not.toBe("new-access");
+      expect(callsTo("/tenders/a")).toHaveLength(1);
+    },
+  );
 
   it("a 401 from login itself is a wrong password: no refresh", async () => {
     stubFetch(() => json(401, { detail: "Invalid credentials" }));
 
     await expect(login({ email: "a@example.com", password: "x" })).rejects.toBeInstanceOf(ApiError);
     expect(callsTo("/auth/refresh")).toHaveLength(0);
+    expect(callsTo("/auth/login")[0].headers["X-TenderOS-Client"]).toBe("web");
+  });
+});
+
+describe("where the tokens are kept", () => {
+  it("no code path writes a token to localStorage: only the log out marker", async () => {
+    const writes: [Storage, string][] = [];
+    const original = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      writes.push([this, key]);
+      original.call(this, key, value);
+    });
+    stubFetch((call) => {
+      if (call.path === "/auth/login") return json(200, { access_token: "login-access" });
+      if (call.path === "/auth/refresh") return REFRESHED();
+      if (call.path === "/auth/logout") return new Response(null, { status: 204 });
+      return call.headers["Authorization"] === "Bearer new-access"
+        ? json(200, { id: call.path })
+        : EXPIRED.clone();
+    });
+
+    startSession((await login({ email: "a@example.com", password: "x" })).access_token);
+    sessionStorage.setItem("tenderos_access_token", "expired-access");
+    await getTender("a");
+    await logout();
+
+    const toLocal = writes.filter(([storage]) => storage === localStorage).map(([, key]) => key);
+    expect(toLocal).toEqual([LOGOUT_MARKER_KEY]);
+    expect(writes.some(([storage]) => storage === sessionStorage)).toBe(true);
+  });
+
+  it("the access token is in sessionStorage, and the old localStorage keys are deleted", () => {
+    localStorage.setItem("tenderos_access_token", "legacy-access");
+    localStorage.setItem("tenderos_refresh_token", "legacy-refresh");
+
+    startSession("this-tab");
+
+    expect(sessionStorage.getItem("tenderos_access_token")).toBe("this-tab");
+    expect(localStorage.getItem("tenderos_access_token")).toBeNull();
+    expect(localStorage.getItem("tenderos_refresh_token")).toBeNull();
+  });
+
+  it("a new session clears a log out marker left by a call that failed, and can refresh", async () => {
+    localStorage.setItem(LOGOUT_MARKER_KEY, "2026-11-13T10:00:00Z");
+    stubFetch((call) => {
+      if (call.path === "/auth/refresh") return REFRESHED();
+      return call.headers["Authorization"] === "Bearer new-access"
+        ? json(200, { id: call.path })
+        : EXPIRED.clone();
+    });
+
+    startSession("signed-in-again");
+    sessionStorage.setItem("tenderos_access_token", "expired-access");
+
+    expect(localStorage.getItem(LOGOUT_MARKER_KEY)).toBeNull();
+    await expect(getTender("a")).resolves.toEqual({ id: "/tenders/a" });
+    expect(callsTo("/auth/refresh")).toHaveLength(1);
+  });
+});
+
+const MEMBER = {
+  user: { id: "u1", email: "person@example.com", display_name: null, is_active: true },
+  memberships: [{ organization_id: "org-1", role: "admin" }],
+};
+
+function SessionProbe() {
+  const location = useLocation();
+  return <p>{`signed in at ${location.pathname}`}</p>;
+}
+
+function renderApp(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/*"
+            element={
+              <RequireAuth>
+                <SessionProbe />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </AuthProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("start-up with no access token in this tab", () => {
+  beforeEach(() => sessionStorage.clear());
+
+  it("refreshes with the cookie first, then asks /auth/me with the new token", async () => {
+    stubFetch((call) => {
+      if (call.path === "/auth/refresh") return REFRESHED();
+      if (call.path === "/auth/me") {
+        return call.headers["Authorization"] === "Bearer new-access"
+          ? json(200, MEMBER)
+          : EXPIRED.clone();
+      }
+      return EXPIRED.clone();
+    });
+
+    renderApp("/tenders/t1");
+
+    expect(await screen.findByText("signed in at /tenders/t1")).toBeInTheDocument();
+    expect(calls.map((call) => call.path)).toEqual(["/auth/refresh", "/auth/me"]);
+    expect(getAccessToken()).toBe("new-access");
+  });
+
+  it("with no live cookie (the refresh is 401) shows the login screen without asking /auth/me", async () => {
+    stubFetch(() => EXPIRED.clone());
+
+    renderApp("/tenders/t1");
+
+    expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
+    expect(calls.map((call) => call.path)).toEqual(["/auth/refresh"]);
+    expect(getAccessToken()).toBeNull();
   });
 });
 
@@ -292,20 +438,12 @@ function TenderPage() {
 
 describe("a refresh the API rejects", () => {
   it("lands on the login screen, and logging in returns to the same page", async () => {
-    const member = {
-      user: { id: "u1", email: "person@example.com", display_name: null, is_active: true },
-      memberships: [{ organization_id: "org-1", role: "admin" }],
-    };
     stubFetch((call) => {
       const bearer = call.headers["Authorization"];
-      if (call.path === "/auth/me") return json(200, member);
+      if (call.path === "/auth/me") return json(200, MEMBER);
       if (call.path === "/auth/refresh") return EXPIRED.clone();
       if (call.path === "/auth/login") {
-        return json(200, {
-          access_token: "fresh-access",
-          refresh_token: "refresh-2",
-          token_type: "bearer",
-        });
+        return json(200, { access_token: "fresh-access", token_type: "bearer" });
       }
       return bearer === "Bearer fresh-access" ? json(200, { name: "Tender One" }) : EXPIRED.clone();
     });
@@ -331,7 +469,6 @@ describe("a refresh the API rejects", () => {
 
     expect(await screen.findByRole("heading", { name: "TenderOS" })).toBeInTheDocument();
     expect(getAccessToken()).toBeNull();
-    expect(getRefreshToken()).toBeNull();
     expect(callsTo("/auth/refresh")).toHaveLength(1);
 
     const form = within(container.querySelector("form")!);
@@ -341,5 +478,6 @@ describe("a refresh the API rejects", () => {
 
     expect(await screen.findByText("Tender One ?tab=findings#row-7")).toBeInTheDocument();
     expect(callsTo("/auth/refresh")).toHaveLength(1);
+    expect(getAccessToken()).toBe("fresh-access");
   });
 });

@@ -8,25 +8,72 @@
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+// Plan item 34, option 2: the refresh token is an HttpOnly cookie that no
+// script can read (apps/api session_cookie.py); the browser sends it on
+// /api/auth requests only. The access token lives in this tab's
+// sessionStorage: it survives a reload, not the tab, and no other tab sees
+// it. A new tab, or one whose access token expired, refreshes with the
+// cookie.
 const ACCESS_TOKEN_KEY = "tenderos_access_token";
-const REFRESH_TOKEN_KEY = "tenderos_refresh_token";
+// Where both tokens lived before option 2 (localStorage). Deleted at start-up
+// and on every clear: the client never reads them, and migration 027 revoked
+// what they held.
+const LEGACY_TOKEN_KEYS = ["tenderos_access_token", "tenderos_refresh_token"];
+// The only thing this client writes to localStorage: set when a log out
+// starts, cleared once the api has answered it. A script cannot clear an
+// HttpOnly cookie, so a log out whose call was lost would otherwise leave the
+// browser able to sign straight back in. Shared by every tab, and its
+// `storage` event tells the other tabs (AuthContext).
+export const LOGOUT_MARKER_KEY = "tenderos_logged_out";
+
+// login, register, refresh and logout answer 403 without it (CSRF, plan item
+// 34 option 2): a form post cannot set a header, and another origin's fetch
+// that sets one needs a preflight the api refuses.
+const CLIENT_HEADERS: Record<string, string> = { "X-TenderOS-Client": "web" };
 
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_TOKEN_KEY);
+  return sessionStorage.getItem(ACCESS_TOKEN_KEY);
 }
 
-export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+function setAccessToken(accessToken: string): void {
+  sessionStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
 }
 
-export function setTokens(accessToken: string, refreshToken: string): void {
-  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+export function removeLegacyTokens(): void {
+  for (const key of LEGACY_TOKEN_KEYS) localStorage.removeItem(key);
 }
 
 export function clearTokens(): void {
-  localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+  removeLegacyTokens();
+}
+
+export function logoutPending(): boolean {
+  return localStorage.getItem(LOGOUT_MARKER_KEY) !== null;
+}
+
+// Bumped whenever this tab's session starts or ends (login, register, log
+// out, or a log out in another tab). A refresh compares it before and after,
+// so an answer for a session that has since ended is dropped: the role the
+// stored refresh token's value played before option 2, now that no script
+// can read it.
+let sessionGeneration = 0;
+
+// Login and register: the api has set the cookie; this tab keeps the access
+// token. Clearing the marker first means a log out left pending in another
+// tab cannot end this new session.
+export function startSession(accessToken: string): void {
+  localStorage.removeItem(LOGOUT_MARKER_KEY);
+  removeLegacyTokens();
+  sessionGeneration += 1;
+  setAccessToken(accessToken);
+}
+
+// Another tab logged out (AuthContext's `storage` listener): this tab's
+// access token goes, and any refresh in flight is dropped.
+export function endSessionInThisTab(): void {
+  clearTokens();
+  sessionGeneration += 1;
 }
 
 export class ApiError extends Error {
@@ -125,11 +172,12 @@ function expireSession(): void {
 // is dropped, and the session as it now is stays untouched.
 class SessionChangedError extends Error {}
 
-const NO_REFRESH_TOKEN = () => new ApiError(401, { detail: "No refresh token" });
+const LOGGED_OUT = () => new ApiError(401, { detail: "Logged out" });
 
-// Plan item 34, option 3: every refresh rotates the refresh token. The
-// answer carries a new one, both are stored, and the one sent is spent: the
-// API treats it as stolen if it comes back after a 30 s grace window.
+// Plan item 34, options 3 and 2: every refresh rotates the refresh token.
+// The browser sends the cookie and stores the rotated one from the answer's
+// Set-Cookie before fetch resolves; this tab keeps only the access token. A
+// rejected refresh's 401 clears the cookie too.
 //
 // Bounded, because it runs under the refresh lock every tab shares: a hung
 // refresh would otherwise stall refreshing in every tab until this one
@@ -138,68 +186,61 @@ const NO_REFRESH_TOKEN = () => new ApiError(401, { detail: "No refresh token" })
 // and the request that needed the refresh gets its original 401.
 const REFRESH_TIMEOUT_MS = 10_000;
 
-async function requestTokens(refreshToken: string): Promise<string> {
+async function requestTokens(generation: number): Promise<string> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), REFRESH_TIMEOUT_MS);
-  let tokens: { access_token: string; refresh_token: string };
+  let tokens: { access_token: string };
   try {
     const response = await fetch(`${BASE_URL}/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      headers: CLIENT_HEADERS,
+      credentials: "same-origin",
       signal: abort.signal,
     });
-    tokens = await handleResponse<{ access_token: string; refresh_token: string }>(response);
+    tokens = await handleResponse<{ access_token: string }>(response);
   } catch (err) {
-    // A rejected refresh ends the session. Clearing here, while this tab
-    // still holds the refresh lock, means a tab waiting on the lock reads
-    // the cleared storage; cleared only later (send's expireSession), the
-    // waiting tab could take the lock first and send the spent token again.
-    // Found by the two-tab vitest case.
-    if (refreshWasRejected(err) && getRefreshToken() === refreshToken) clearTokens();
+    if (refreshWasRejected(err) && generation === sessionGeneration) clearTokens();
     throw err;
   } finally {
     clearTimeout(timer);
   }
-  // Found in the live check: storing it unconditionally wrote an access
-  // token into storage a logout had just emptied, signing the user back in.
-  if (getRefreshToken() !== refreshToken) throw new SessionChangedError();
-  setTokens(tokens.access_token, tokens.refresh_token);
+  // Found in option 3's live check: storing it unconditionally wrote an
+  // access token into storage a logout had just emptied, signing the user
+  // back in. Here: this tab's session changed, or a log out started in any
+  // tab, while the call was out.
+  if (generation !== sessionGeneration || logoutPending()) throw new SessionChangedError();
+  setAccessToken(tokens.access_token);
   return tokens.access_token;
 }
 
-// Every tab of the origin shares localStorage, but the single-flight
-// promise below lives in one tab. So the refresh runs under a Web Lock
-// shared by every tab, and after taking it the tab reads the stored refresh
-// token again: if it is no longer the one this tab read before waiting,
-// another tab has already rotated, and this one uses the access token it
-// stored.
+// The single-flight promise below lives in one tab, so the refresh also runs
+// under a Web Lock every tab shares. Without it, two tabs whose access
+// tokens expire together would send the same cookie at once. Under the lock
+// the second tab waits, and by then the browser holds the first tab's
+// rotated cookie, so it sends that one and rotates it in turn: one refresh
+// per tab, each with its own access token. A tab cannot read the cookie to
+// see that another tab rotated, and does not need to.
 //
-// Without the lock (navigator.locks missing), two tabs whose access tokens
-// expire together both send the same token T1. The API rotates it for the
-// first (T2), then takes the grace path for the second: T2 superseded, T3
-// issued. The first answer usually arrives first and is stored; the second
-// is then dropped by requestTokens' changed-storage check. Storage keeps
-// the superseded T2, so the next refresh is reuse: the user is logged out
-// once and the API logs a reuse WARNING. That is the usual outcome, not a
-// rare one. Web Locks exist only in secure contexts (HTTPS; localhost
-// counts), so a plain-HTTP deployment always takes this path, as do jsdom
-// and old browsers.
+// Without the lock (navigator.locks missing: plain HTTP, old browsers,
+// jsdom), the two refreshes do race, and the api makes that safe: the
+// second gets the same rotated token back (auth_service._grace_resend), so
+// both answers set the same live cookie and neither tab is signed out
+// whichever the browser processes last (plan item 34, option 2's
+// condition; tests/route/test_auth_routes.py).
 const REFRESH_LOCK_NAME = "tenderos-refresh";
 
+// While a log out is pending (in this tab or another), no refresh is sent:
+// the session is ending, and a refresh racing the log out call would only
+// rotate a token the log out is about to revoke. Checked again under the
+// lock, for a log out that started while this tab waited.
 async function refreshTokens(): Promise<string> {
-  const before = getRefreshToken();
-  if (!before) throw NO_REFRESH_TOKEN();
+  const generation = sessionGeneration;
+  if (logoutPending()) throw LOGGED_OUT();
   const locks = (navigator as { locks?: LockManager }).locks;
-  if (!locks) return requestTokens(before);
+  if (!locks) return requestTokens(generation);
   return locks.request(REFRESH_LOCK_NAME, async () => {
-    const stored = getRefreshToken();
-    if (stored === before) return requestTokens(before);
-    // Another tab refreshed (or logged in again) while this one waited.
-    // Nothing stored means it logged out: this session is over too.
-    const access = getAccessToken();
-    if (stored === null || access === null) throw NO_REFRESH_TOKEN();
-    return access;
+    if (logoutPending()) throw LOGGED_OUT();
+    return requestTokens(generation);
   });
 }
 
@@ -216,6 +257,14 @@ function freshAccessToken(sentToken: string | null): Promise<string> {
     });
   }
   return refreshInFlight;
+}
+
+// Start-up, with no access token in this tab (a new tab, or the first load
+// after signing in elsewhere): get one from the cookie before /auth/me, rather
+// than letting /auth/me fail with a 401 first. Rejects with the refresh's
+// ApiError (401: no live session) or a network error, as send()'s refresh does.
+export function restoreSession(): Promise<string> {
+  return freshAccessToken(null);
 }
 
 // A refresh the API rejected (a 4xx other than 429: the refresh token
@@ -242,7 +291,14 @@ async function send<T>(
   const attempt = (token: string | null) => {
     const withAuth = { ...headers };
     if (auth && token) withAuth["Authorization"] = `Bearer ${token}`;
-    return fetch(`${BASE_URL}${path}`, { method, headers: withAuth, body });
+    // same-origin is fetch's default; written out because the /api/auth
+    // routes depend on the cookie it sends.
+    return fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: withAuth,
+      body,
+      credentials: "same-origin",
+    });
   };
 
   const sentToken = auth ? getAccessToken() : null;
@@ -275,6 +331,9 @@ async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<
   const { method = "GET", body, auth = true, idempotencyKey } = options;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  // The api requires it on login and register (and on refresh and logout,
+  // which send their own); /auth/me ignores it.
+  if (path.startsWith("/auth/")) Object.assign(headers, CLIENT_HEADERS);
 
   return send<T>(
     path,
@@ -328,7 +387,6 @@ export interface RegisterResponse {
   user: UserResponse;
   organization_id: string;
   access_token: string;
-  refresh_token: string;
   token_type: string;
 }
 
@@ -337,9 +395,9 @@ export interface LoginRequest {
   password: string;
 }
 
+// Plan item 34, option 2: no refresh_token; the api sets it as a cookie.
 export interface TokenResponse {
   access_token: string;
-  refresh_token: string;
   token_type: string;
 }
 
@@ -353,64 +411,84 @@ export interface MeResponse {
   memberships: MeMembership[];
 }
 
-export function register(body: RegisterRequest): Promise<RegisterResponse> {
-  return apiFetch<RegisterResponse>("/auth/register", { method: "POST", body, auth: false });
-}
-
-export function login(body: LoginRequest): Promise<TokenResponse> {
-  return apiFetch<TokenResponse>("/auth/login", { method: "POST", body, auth: false });
-}
-
-export function me(): Promise<MeResponse> {
-  return apiFetch<MeResponse>("/auth/me");
-}
-
-// Plan item 34, option 3: logout ends the session on the server too. POST
-// /auth/logout revokes the refresh token's whole family and needs no access
-// token, which may already have expired. Other tabs of this browser share
-// localStorage, which is cleared below, so they find out at their next
-// request (no token, then the login screen), not through a refused
-// refresh; the server-side revocation is what ends a copy of the refresh
-// token held anywhere else. A family the API never heard about ends at its
-// own expiry. Access tokens already issued are not revoked: one stays valid
-// until it expires, up to JWT_ACCESS_MINUTES (15).
+// Plan item 34, options 3 and 2: logout ends the session on the server too.
+// POST /auth/logout revokes the cookie's whole refresh-token family, clears
+// the cookie, and needs no access token, which may already have expired.
+// Access tokens already issued are not revoked: one stays valid until it
+// expires, up to JWT_ACCESS_MINUTES (15).
 //
-// The tokens are cleared BEFORE the call (plan item 39's review; they used to
-// be cleared after it), so a tab closed during the wait stays signed out.
-// keepalive asks the browser to finish the request after the tab has gone, so
-// the revocation can still reach the API (KNOWN_LIMITATIONS.md says how far
-// that was observed). The call is bounded, and the caller still waits for it.
+// In order:
+// 1. The marker goes into localStorage and this tab's access token is
+//    cleared, BEFORE the call (plan item 39's review), so a tab closed during
+//    the wait stays signed out. The other tabs get the marker's `storage`
+//    event and sign out at once (AuthContext); their access tokens are their
+//    own, so nothing else would tell them for up to 15 minutes.
+// 2. The call, with keepalive, so it can finish after the tab has gone
+//    (KNOWN_LIMITATIONS.md says how far that was observed). Same-origin, so
+//    no preflight. Bounded, and the caller still waits for it.
+// 3. A 204 means the family is revoked and the cookie gone: the marker is
+//    cleared. Any other outcome leaves it, and the next page load in any tab
+//    sends the call again before showing the login screen (AuthContext), so
+//    a lost call cannot leave the browser able to sign straight back in.
 const LOGOUT_TIMEOUT_MS = 5_000;
 
-// True while logout() runs. Storage is already empty by then, so a screen
-// polling during the wait gets a 401 and expires the session. AuthProvider
-// reads this to treat that expiry as the deliberate log out it is, with no
-// page to return to.
+// True while logout() runs. The access token is already gone by then, so a
+// screen polling during the wait gets a 401 and expires the session.
+// AuthProvider reads this to treat that expiry as the deliberate log out it
+// is, with no page to return to.
 let loggingOut = false;
+let logoutInFlight: Promise<void> | null = null;
 
 export function isLoggingOut(): boolean {
   return loggingOut;
 }
 
-export async function logout(): Promise<void> {
-  const refreshToken = getRefreshToken();
+export function logout(): Promise<void> {
+  logoutInFlight ??= endSession().finally(() => {
+    logoutInFlight = null;
+  });
+  return logoutInFlight;
+}
+
+async function endSession(): Promise<void> {
+  localStorage.setItem(LOGOUT_MARKER_KEY, new Date().toISOString());
   clearTokens();
+  sessionGeneration += 1;
   loggingOut = true;
   try {
-    if (refreshToken) {
-      await fetch(`${BASE_URL}/auth/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-        keepalive: true,
-        signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
-      });
-    }
+    const response = await fetch(`${BASE_URL}/auth/logout`, {
+      method: "POST",
+      headers: CLIENT_HEADERS,
+      credentials: "same-origin",
+      keepalive: true,
+      signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
+    });
+    if (response.status === 204) localStorage.removeItem(LOGOUT_MARKER_KEY);
   } catch {
-    // Best effort: a network failure or the timeout still logs out here.
+    // Best effort: a network failure or the timeout still logs out here, and
+    // the marker stays for the next load to finish the job.
   } finally {
     loggingOut = false;
   }
+}
+
+// The api sets the refresh cookie on these two (plan item 34, option 2).
+// Each waits for this tab's log out call, if one is still out: that call's
+// answer clears the cookie by name and path, so arriving after the new
+// session's Set-Cookie it would delete the new cookie. Bounded by the log
+// out's own 5 s.
+export async function register(body: RegisterRequest): Promise<RegisterResponse> {
+  await logoutInFlight;
+  return apiFetch<RegisterResponse>("/auth/register", { method: "POST", body, auth: false });
+}
+
+export async function login(body: LoginRequest): Promise<TokenResponse> {
+  await logoutInFlight;
+  return apiFetch<TokenResponse>("/auth/login", { method: "POST", body, auth: false });
+}
+
+export function me(): Promise<MeResponse> {
+  return apiFetch<MeResponse>("/auth/me");
 }
 
 // ----------------------------------------------------------------------

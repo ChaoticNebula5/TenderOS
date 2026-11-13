@@ -112,6 +112,16 @@ class InvalidTokenError(APIError):
         super().__init__(401, "INVALID_TOKEN", "Invalid or expired token.")
 
 
+class CsrfCheckFailedError(APIError):
+    # Plan item 34, option 2: login, register, refresh and logout need the
+    # web client's header, and a browser Origin of WEB_BASE_URL
+    # (session_cookie.require_web_client).
+    def __init__(self) -> None:
+        super().__init__(
+            403, "CSRF_CHECK_FAILED", "This request must come from the TenderOS web app."
+        )
+
+
 class GateAlreadyDecidedError(APIError):
     def __init__(self) -> None:
         super().__init__(

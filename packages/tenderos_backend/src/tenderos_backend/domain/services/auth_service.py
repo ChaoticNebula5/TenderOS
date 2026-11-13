@@ -27,10 +27,14 @@ logger = logging.getLogger(__name__)
 # Plan item 34, option 3: a used refresh token presented again this soon
 # after its rotation, whose successor has never been used, is taken as the
 # same client retrying (a lost response, or two tabs refreshing at once),
-# not as theft. A design number, not measured. A thief replaying within it
-# gets one token, but the real client's next refresh then presents the
-# superseded successor, which is reuse, so the family is still revoked, one
-# rotation later.
+# not as theft. A design number, not measured.
+#
+# Option 2 (the cookie): the retry gets the same successor back, not a new
+# one (_grace_resend), so every answer to requests carrying one token sets
+# the same cookie, and the browser's jar ends on a live token whatever
+# order it processes them in. A thief replaying within the window gets the
+# token the real client holds; whichever of them uses it second, past the
+# window, is reuse, so the family is still revoked, one rotation later.
 REFRESH_REUSE_GRACE = timedelta(seconds=30)
 
 
@@ -126,11 +130,10 @@ async def refresh(refresh_token: str) -> TokenPair:
     one, in the same family and with the same expiry, is returned with a new
     access token. One transaction, under the family's lock.
 
-    A used token presented again is the grace case (see _grace_reissue) or
-    reuse; a superseded token presented again is always reuse. Reuse
-    revokes the whole family and commits that before the 401 is raised: the
-    raise rolls the transaction back, so a revocation not yet committed
-    would be lost."""
+    A used token presented again is the grace case (see _grace_resend) or
+    reuse; a revoked token is refused. Reuse revokes the whole family and
+    commits that before the 401 is raised: the raise rolls the transaction
+    back, so a revocation not yet committed would be lost."""
     token_id = _refresh_token_id(refresh_token)
     presented_hash = hash_refresh_token(refresh_token)
 
@@ -148,18 +151,16 @@ async def refresh(refresh_token: str) -> TokenPair:
             raise InvalidTokenError()
 
         if presented.revoked_at is not None:
-            if presented.revoked_reason == "superseded":
-                await _revoke_for_reuse(uow, presented)
             raise InvalidTokenError()
 
         if presented.used_at is None:
             new_refresh_token = await _rotate(uow, presented)
         else:
-            reissued = await _grace_reissue(uow, presented)
-            if reissued is None:
+            resent = await _grace_resend(uow, presented)
+            if resent is None:
                 await _revoke_for_reuse(uow, presented)
                 raise InvalidTokenError()
-            new_refresh_token = reissued
+            new_refresh_token = resent
 
         await uow.commit()
         return TokenPair(access_token=create_access_token(user.id), refresh_token=new_refresh_token)
@@ -255,13 +256,16 @@ async def _rotate(uow: UnitOfWork, presented: RefreshToken) -> str:
     return token
 
 
-async def _grace_reissue(uow: UnitOfWork, presented: RefreshToken) -> str | None:
+async def _grace_resend(uow: UnitOfWork, presented: RefreshToken) -> str | None:
     """The grace rule for a used token. Within REFRESH_REUSE_GRACE of its
-    use, and only while its successor has never been used, the successor is
-    revoked as superseded and a new one issued in its place; the presented
-    token then points at the new one, so a third presentation in the window
-    supersedes that one in turn. Returns the new token, or None when the
-    rule does not apply, which the caller treats as reuse."""
+    use, and only while its successor has never been used or revoked, the
+    successor is sent again: minted from its row, which gives the same
+    string the rotation returned (create_refresh_token has no `iat`).
+    Nothing is written. Every request that carried the presented token
+    therefore gets the same cookie back, so a browser whose tabs refreshed
+    at once ends on that live successor whichever answer it keeps (plan
+    item 34, option 2's condition). Returns the token, or None when the rule
+    does not apply, which the caller treats as reuse."""
     if presented.replaced_by_id is None:
         return None
     if not await uow.refresh_tokens.used_within(presented.id, REFRESH_REUSE_GRACE):
@@ -269,17 +273,21 @@ async def _grace_reissue(uow: UnitOfWork, presented: RefreshToken) -> str | None
     successor = await uow.refresh_tokens.get_for_update(presented.replaced_by_id)
     if successor is None or successor.used_at is not None or successor.revoked_at is not None:
         return None
-    # Superseded before the new one is inserted, for the same index.
-    await uow.refresh_tokens.supersede(successor.id)
-    reissued, token = await _issue_refresh_token(
-        uow, presented.user_id, presented.family_id, presented.expires_at
-    )
-    await uow.refresh_tokens.set_replaced_by(presented.id, reissued.id)
+    token = create_refresh_token(successor.user_id, successor.id, successor.expires_at)
+    if not hmac.compare_digest(hash_refresh_token(token), successor.token_hash):
+        # The minting changed since the successor was issued: a server
+        # fault, not theft, so the family is not revoked. The client gets
+        # 401 and signs in again.
+        logger.error(
+            "grace re-send of refresh token %s did not reproduce its stored hash; family %s",
+            successor.id,
+            presented.family_id,
+        )
+        raise InvalidTokenError()
     logger.info(
-        "re-issued refresh token %s within the grace window: %s superseded by %s in family %s",
-        presented.id,
+        "re-sent refresh token %s within the grace window for %s in family %s",
         successor.id,
-        reissued.id,
+        presented.id,
         presented.family_id,
     )
     return token

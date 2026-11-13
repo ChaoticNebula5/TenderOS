@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     # unaffected no matter what any client sends.
     e2e_rate_limit_bypass_enabled: bool = False
 
+    # Plan item 34, option 2 (session_cookie.py): the refresh token travels
+    # only in this HttpOnly cookie. The path is the one the BROWSER asks
+    # for: nginx and Vite's dev server strip /api before the api sees the
+    # request, so the api's /auth/refresh is the browser's
+    # /api/auth/refresh. The name is a setting so a host can switch to
+    # __Secure-tenderos_refresh once it serves HTTPS (not done by default:
+    # the prefix's handling on http://localhost was not checked). Secure
+    # off is refused in production (below).
+    auth_cookie_name: str = "tenderos_refresh"
+    auth_cookie_path: str = "/api/auth"
+    auth_cookie_secure: bool = True
+
 
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
@@ -68,6 +80,8 @@ def _api_production_problems(s: Settings) -> list[str]:
         problems.append("RATE_LIMIT_ENABLED must be true")
     if s.e2e_rate_limit_bypass_enabled:
         problems.append("E2E_RATE_LIMIT_BYPASS_ENABLED must be false")
+    if not s.auth_cookie_secure:
+        problems.append("AUTH_COOKIE_SECURE must be true")
     return problems
 
 

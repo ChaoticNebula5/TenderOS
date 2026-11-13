@@ -1,5 +1,6 @@
-"""Check one E2E run's proxy and api logs for leaked SSE tickets and CSP
-violations (plan item 27, decision 0085).
+"""Check one E2E run's proxy and api logs for leaked SSE tickets, leaked
+refresh cookies and CSP violations (plan item 27, decision 0085; plan item
+34, option 2).
 
 Input: `docker compose logs --no-color --timestamps` for web and api (the
 whole stack's log is fine; lines are told apart by compose's service prefix).
@@ -13,6 +14,10 @@ EventSource cannot send headers. Two logs see those requests:
 nginx's error log cannot be reformatted and quotes the whole request line on
 an upstream error; it shares the web service's output, so it is covered by
 the same rule.
+
+The refresh token travels only in the `tenderos_refresh` cookie (plan item 34,
+option 2). Neither nginx's log format nor uvicorn's access log has headers, so
+no line of any service may contain `tenderos_refresh=`.
 
 The CSP is enforced and reports violations to /csp-report (nginx.conf): any
 `/csp-report` request in the web log is a page the browser blocked something
@@ -36,6 +41,7 @@ _STREAM = re.compile(r"/(workflow-runs|operations)/[^/ ?]+/events/stream")
 _TICKET = re.compile(r"ticket=")
 _UNREDACTED_TICKET = re.compile(r"ticket=(?!\[redacted\])")
 _CSP_REPORT = re.compile(r"/csp-report\b")
+_REFRESH_COOKIE = re.compile(r"tenderos_refresh=")
 
 
 def check(lines: list[str]) -> tuple[list[str], dict[str, int]]:
@@ -46,6 +52,8 @@ def check(lines: list[str]) -> tuple[list[str], dict[str, int]]:
         if not match:
             continue
         service, rest = match["service"], match["rest"]
+        if _REFRESH_COOKIE.search(rest):
+            problems.append(f"line {number}: {service} log holds the refresh cookie")
         if service == "web":
             if _STREAM.search(rest):
                 counts["web stream lines"] += 1
@@ -77,7 +85,10 @@ def main() -> int:
     if problems:
         print(f"FAILED ({summary})")
         return 1
-    print(f"proxy logs: no SSE ticket in nginx's or the api's log, no CSP violation ({summary})")
+    print(
+        "proxy logs: no SSE ticket in nginx's or the api's log, no refresh cookie, "
+        f"no CSP violation ({summary})"
+    )
     return 0
 
 
