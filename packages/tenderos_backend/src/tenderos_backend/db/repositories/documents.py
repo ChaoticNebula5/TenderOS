@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
@@ -176,9 +177,21 @@ class DocumentRepository:
         to_tsvector('english', normalized_text) expression as
         idx_document_chunks_fts (003_documents.py) so Postgres can actually
         use that index rather than a sequential scan.
+
+        Terms are OR-ed, not AND-ed: plainto_tsquery parses, stems and drops
+        stop words, then its "&" operators are swapped for "|", so a chunk
+        sharing any term with the query matches. A requirement sentence has
+        10-14 terms, and AND made almost no knowledge chunk match at all.
+        ts_rank still scores chunks that share more terms higher. The GIN
+        index supports "|" as well as "&".
         """
         tsvector = sa.func.to_tsvector("english", DocumentChunk.normalized_text)
-        tsquery = sa.func.plainto_tsquery("english", query_text)
+        tsquery = sa.cast(
+            sa.func.replace(
+                sa.cast(sa.func.plainto_tsquery("english", query_text), sa.Text), " & ", " | "
+            ),
+            TSQUERY,
+        )
         rank = sa.func.ts_rank(tsvector, tsquery)
         result = await self._session.execute(
             select(DocumentChunk, rank)
