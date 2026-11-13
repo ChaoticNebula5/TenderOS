@@ -114,14 +114,17 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Phase 4 item 63. Python 3.12 to 3.15 is a minor in the image tag's
+    # numbering but a language upgrade here (.python-version, CI's uv venv,
+    # requires-python ==3.12.* in every pyproject), so the python image gets
+    # patch updates only (#47 proposed 3.15.0). A language upgrade is a
+    # deliberate change made by hand, all pins together. The header's reason
+    # for having no `ignore` does not apply here: Dependabot has no security
+    # updates for docker images.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
-      # Python 3.12 to 3.13 is a minor in the image tag's numbering but a
-      # language upgrade here (.python-version, requires-python ==3.12.*),
-      # so it gets a PR of its own instead of riding with patch updates.
-      docker-python-minor:
-        applies-to: version-updates
-        patterns: ["python"]
-        update-types: ["minor"]
       docker-minor-and-patch:
         applies-to: version-updates
         update-types: ["minor", "patch"]

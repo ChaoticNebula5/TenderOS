@@ -96,7 +96,7 @@ jobs:
       # real values from .env (gitignored, never committed - checked
       # directly before writing this).
       postgres:
-        image: pgvector/pgvector:0.8.7-pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        image: pgvector/pgvector:0.8.7-pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
         env:
           POSTGRES_USER: tenderos
           POSTGRES_PASSWORD: changeme
@@ -116,7 +116,7 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
       neo4j:
-        image: neo4j:5.26.31-community@sha256:c7d25c0eeebfe125718d58b72ed5d663c85d0479047733845eb2237c67ce8069
+        image: neo4j:5.26.32-community@sha256:42ef3ebfd671ebd01fdebb6dcbe80cf7b45eef2aa3d346ef4132f7ef31e67d2f
         env:
           NEO4J_AUTH: neo4j/changeme
         ports:
@@ -170,6 +170,15 @@ jobs:
         run: |
           set -a && . scripts/test-backend.env && set +a
           uv run python scripts/verify_migrations.py
+      # Plan item 63: on 2026-11-11 the runners could not resolve Ubuntu's
+      # package servers and both apt installs failed their jobs. The retry
+      # count goes in a config file, not on the command line, so the apt
+      # call inside `npx playwright install --with-deps` (e2e job) reads it
+      # too. apt-config prints the values apt will use, in the log.
+      - name: Retry apt downloads
+        run: |
+          echo 'Acquire::Retries "10";' | sudo tee /etc/apt/apt.conf.d/80-retries
+          apt-config dump | grep -i '^Acquire::Retries'
       # Phase 4 item 15: tests/unit/test_ocr_path.py skips without the
       # tesseract binary (the Windows host); here it is installed, and
       # TENDEROS_REQUIRE_OCR below turns that skip into a failure, so the
@@ -397,6 +406,12 @@ jobs:
           node-version: "26.13.0"
       - run: npm ci
         working-directory: apps/web
+      # Plan item 63: the same retries as the test job's apt install; the
+      # --with-deps step below runs apt itself.
+      - name: Retry apt downloads
+        run: |
+          echo 'Acquire::Retries "10";' | sudo tee /etc/apt/apt.conf.d/80-retries
+          apt-config dump | grep -i '^Acquire::Retries'
       # The Playwright version in apps/web's lockfile, with its own Chromium.
       - name: Install Chromium for the lockfile's Playwright
         run: |
@@ -404,6 +419,7 @@ jobs:
           df -h /
         working-directory: apps/web
       - name: Run the golden-path E2E
+        id: playwright
         run: npx playwright test
         working-directory: apps/web
       - name: Save the stack's logs
@@ -427,8 +443,12 @@ jobs:
       # or an unredacted one in the api's, and on any CSP violation report
       # (the enforced policy reports to /csp-report), so the E2E proves the
       # app works under its CSP on every screen it visits.
+      # Plan item 63: only when the E2E itself ran, passed or failed. When an
+      # earlier step fails, Playwright is skipped and the log has no stream
+      # traffic, so this check would add a second, misleading failure. When
+      # the E2E ran, the script still fails on a log with no stream traffic.
       - name: No SSE ticket in the proxy or api log, no CSP violation
-        if: always()
+        if: always() && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure')
         run: '"$HOST_PYTHON" scripts/e2e_proxy_log_check.py e2e-logs/compose.log'
       # Masking covers the console log, not artifact files: the logs are
       # uploaded only if none of this run's generated values appears in them.
