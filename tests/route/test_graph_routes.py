@@ -223,6 +223,39 @@ async def test_get_graph_trace_returns_the_real_requirement_node(
     assert body["n"]["id"] == requirement_id
 
 
+async def test_get_graph_trace_returns_a_tender_node_with_its_submission_date(
+    client: TestClient, register_actor
+):
+    # Plan item 75. Observed in the item 66 walk: the trace on a tender's
+    # own node answered 500 (PydanticSerializationError on
+    # neo4j.time.Date), because the projector writes submission_date as a
+    # date and Neo4j returns it as its own type.
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Graph Route Test Bid 6b", "submission_date": "2027-03-31"},
+        headers=headers,
+    ).json()
+    await _requirement(tender["id"])
+    client.post(
+        f"/tenders/{tender['id']}/graph/project",
+        headers={**headers, "Idempotency-Key": "project-6b"},
+    )
+
+    response = client.get(
+        f"/tenders/{tender['id']}/graph/trace",
+        params={"node_label": "Tender", "node_id": tender["id"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["node_labels"] == ["Tender"]
+    assert body["n"]["id"] == tender["id"]
+    # The rest of the API's date format (Pydantic's), not Neo4j's object.
+    assert body["n"]["submission_date"] == "2027-03-31"
+
+
 async def test_get_graph_trace_rejects_an_unallowed_label(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender = client.post(
