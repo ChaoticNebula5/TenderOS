@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -39,6 +40,22 @@ _PROJECTION_ATTEMPTS = 3
 # reanalysis job) could form. A stuck holder fails a caller in about 46 s at
 # worst: 3 waits plus the pauses.
 _PROJECTION_LOCK_TIMEOUT_MS = 15_000
+
+# Phase 4 plan item 81. The reads below run auto-commit queries
+# (session.run), which the driver never retries. Observed in PR 3's E2E run 1:
+# POST /graph/impact answered 500 with Neo.TransientError.Transaction.Outdated,
+# a read overlapping a projection's writes. Only TransientError is retried,
+# the same class the projection writes retry. Not ServiceUnavailable or
+# SessionExpired: the driver's managed transactions (execute_read) would retry
+# those too, for up to 30 s by default, and undo item 31's fast failure (an
+# unreachable Neo4j fails a request in 5 s, a full pool in 10 s). Worst case
+# for a read that hits a transient error every time: 3 attempts and two pauses
+# of at most 0.5 s and 1.0 s. The two transient codes Neo4j marks as not worth
+# retrying (Transaction.Terminated, Transaction.LockClientStopped) arrive as
+# ClientError, rewritten by driver 6.4.1 (neo4j/exceptions.py's
+# _ERROR_REWRITE_MAP), so they are raised at once; TransientError.is_retryable()
+# is True for every instance and would add nothing here.
+_READ_ATTEMPTS = 3
 
 # get_graph_trace's node_label comes from the API caller (a query param on
 # GET /graph/trace), unlike driver.py's own use of these same label tuples
@@ -117,6 +134,34 @@ async def _write_projection_with_retry(tender_id: uuid.UUID) -> tuple[int, int]:
                 attempt,
                 _PROJECTION_ATTEMPTS,
                 type(exc).__name__,
+            )
+            await asyncio.sleep(random.uniform(0.1, 0.5) * attempt)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+async def _read_with_retry[T](
+    what: str, tender_id: uuid.UUID, read: Callable[[Neo4jSession], Awaitable[T]]
+) -> T:
+    """Runs `read` in a fresh Neo4j session, again (up to _READ_ATTEMPTS in
+    all) when Neo4j answers with a TransientError. Repeating is safe: every
+    `read` passed here only reads, from Postgres and Neo4j, and consumes its
+    results inside the session. Anything that is not a TransientError,
+    GraphStaleError and a Neo4j outage included, is raised at once.
+    """
+    for attempt in range(1, _READ_ATTEMPTS + 1):
+        try:
+            async with get_neo4j_session() as session:
+                return await read(session)
+        except TransientError as exc:
+            if attempt == _READ_ATTEMPTS:
+                raise
+            logger.warning(
+                "graph read %s for tender %s attempt %d of %d failed, retrying: %s",
+                what,
+                tender_id,
+                attempt,
+                _READ_ATTEMPTS,
+                exc.code,
             )
             await asyncio.sleep(random.uniform(0.1, 0.5) * attempt)
     raise AssertionError("unreachable: the last attempt returns or raises")
@@ -206,10 +251,12 @@ async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
     # Neo4j-side check into "fresh" rather than trusting Postgres alone.
     fresh = False
     if version_matches:
-        async with get_neo4j_session() as session:
-            fresh = await queries.is_projection_complete(
-                session, str(tender_id), tender.state_version
-            )
+        state_version = tender.state_version
+
+        async def read(session: Neo4jSession) -> bool:
+            return await queries.is_projection_complete(session, str(tender_id), state_version)
+
+        fresh = await _read_with_retry("status", tender_id, read)
     return {
         "fresh": fresh,
         "current_state_version": tender.state_version,
@@ -221,15 +268,17 @@ async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
 async def preview_impact(
     tender_id: uuid.UUID, knowledge_item_id: uuid.UUID
 ) -> list[dict[str, Any]]:
-    async with get_neo4j_session() as session:
+    async def read(session: Neo4jSession) -> list[dict[str, Any]]:
         await check_freshness(tender_id, session)
         return await queries.preview_impact(
             session, str(tender_id), str(knowledge_item_id), settings.graph_max_hops
         )
 
+    return await _read_with_retry("impact", tender_id, read)
+
 
 async def find_contradictions(tender_id: uuid.UUID) -> list[dict[str, Any]]:
-    async with get_neo4j_session() as session:
+    async def read(session: Neo4jSession) -> list[dict[str, Any]]:
         await check_freshness(tender_id, session)
         tid = str(tender_id)
         contradictions: list[dict[str, Any]] = []
@@ -245,6 +294,8 @@ async def find_contradictions(tender_id: uuid.UUID) -> list[dict[str, Any]]:
             for row in await finder(session, tid):
                 contradictions.append({"category": category} | row)
         return contradictions
+
+    return await _read_with_retry("contradictions", tender_id, read)
 
 
 async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -> dict[str, Any]:
@@ -285,7 +336,7 @@ async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -
             "-[:USED_IN]->(:Tender {id: $tenderId})"
         )
 
-    async with get_neo4j_session() as session:
+    async def read(session: Neo4jSession) -> dict[str, Any]:
         await check_freshness(tender_id, session)
         result = await session.run(
             match_clause + " "
@@ -299,6 +350,8 @@ async def get_graph_trace(tender_id: uuid.UUID, node_label: str, node_id: str) -
         if record is None:
             return {"node": None, "node_labels": [], "neighbors": []}
         return record.data()
+
+    return await _read_with_retry("trace", tender_id, read)
 
 
 @dataclass(frozen=True)
@@ -433,7 +486,9 @@ async def find_contradictions_for_redteam(tender_id: uuid.UUID) -> list[dict[str
     decision?
     """
     contradictions = await find_contradictions(tender_id)
-    async with get_neo4j_session() as session:
+
+    # A second attempt redoes every row: each sets the same two keys again.
+    async def read(session: Neo4jSession) -> list[dict[str, Any]]:
         for row in contradictions:
             category = row["category"]
             if category not in ("expired_certification", "deselected_fact_in_use"):
@@ -461,4 +516,6 @@ async def find_contradictions_for_redteam(tender_id: uuid.UUID) -> list[dict[str
                 if coverage.recommended_action == "compliance_re_evaluation_required"
                 else "major"
             )
-    return contradictions
+        return contradictions
+
+    return await _read_with_retry("redteam coverage", tender_id, read)
