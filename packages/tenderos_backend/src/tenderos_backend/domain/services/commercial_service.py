@@ -276,7 +276,17 @@ async def _materialize_one_pricing_evidence_link(
     pricing_document = await uow.commercial.get_pricing_document(pricing_document_id)
     if pricing_document is None:
         return
-    chunk = await create_synthetic_chunk(uow, pricing_document.document_id, finding.note)
+    # No vector, on purpose (plan item 82, KNOWN_LIMITATIONS.md). A pricing
+    # document is a tender document (organization_id NULL), and the only
+    # vector search, search_chunks_vector_for_org, filters on
+    # Document.organization_id; retrieval then keeps only chunks a knowledge
+    # item cites, which this one never is. So no code reads this vector, and
+    # embedding it made the api's first resolve load torch and the model
+    # (8.6 to 9.7 s cold, measured, against the E2E's 10 s wait). Any future
+    # tender-scoped vector search must embed or backfill these chunks first.
+    chunk = await create_synthetic_chunk(
+        uow, pricing_document.document_id, finding.note, embed=False
+    )
     await uow.compliance.create_evidence_link(
         tender_id=finding.tender_id,
         source_kind="document_excerpt",

@@ -11891,6 +11891,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
        20.2 to 9.1 s. The cost moves to first use: a process's first
        embedding now pays the import, 5.7 to 8.8 s in a fresh interpreter
        (measured, 4 samples), and its memory rises to about 640 MiB then.
+       **The api no longer pays it (plan item 82, 2026-11-14):** its only
+       embedding, the grounding chunk of a resolved pricing finding, is
+       now stored without a vector; see the item 82 entry at the end.
      - (b) **Preload the default worker** the same way. It needs the same
        BLAS pin, and workflow jobs do embed (ingestion, retrieval), so
        measure single-threaded BLAS there before choosing. It is expected
@@ -13447,3 +13450,26 @@ Resolves the entry above, "A rate-limited request (429) is shown as
       A stored generated `tsvector` column with its own GIN index brought OR at 74,560 chunks to 109 ms (measured). Not built: the dev organizations hold at most 22 company chunks. A cap on the result count would not help, because the cost is in matching and ranking before the LIMIT.
     - **Common terms count as much as rare ones** in the match (`ts_rank` weighs frequency within a chunk, not across the corpus). Domain stop words or a different ranking would be tuned on the same 101 queries, so neither was tried.
     - **The OR is made by rewriting the query's text form** (`' & '` to `' | '`). `plainto_tsquery` only produces `&` between lexemes; a quote, slash, colon or literal `&` or `|` in the requirement is parsed away first (tested).
+
+## [Phase 4 plan item 82, 2026-11-14] Pricing-grounding chunks have no vector, on purpose
+
+- **What:** resolving a pricing finding grounds it as evidence, through the resolve route or a gate decision that approves it. Grounding writes a synthetic `document_chunks` row quoting the finding's note, against its pricing document, and an `evidence_links` row citing that chunk (`commercial_service._materialize_one_pricing_evidence_link`). Since item 82 the chunk is stored with `embedding` NULL, and nothing fills it later.
+- **Why no reader misses it (read in code, 2026-11-14):**
+    - A pricing document is a tender document, so its `organization_id` is NULL (298 of 298 on the dev database, observed).
+    - The only vector search, `DocumentRepository.search_chunks_vector_for_org`, filters on `Document.organization_id` and skips NULL vectors.
+    - Its one caller, `search_company_knowledge`, keeps only chunks that a knowledge item cites, and no knowledge item cites a grounding chunk.
+    - The evidence link, the claim trace and the graph projection read the chunk's id and text, never its vector.
+- **What it fixed:** since item 23, the api's first resolve on a fresh process imported torch and loaded the model inside the request.
+    - It measured 8.578, 9.158 and 9.678 s at nginx (fake stack), against the frozen E2E's 10 s wait (`apps/web/e2e/full-flow.spec.ts:1156`). One run failed on it (`deps-2026-11-14-e2e/run-1`).
+    - The api now never loads torch on this path: `tests/integration/test_pricing_grounding_without_vector.py` resolves a finding in a fresh interpreter and checks `sys.modules`.
+    - Measured after: 3 E2E runs on the fake stack, each against a cold api (one rebuilt, two restarted), all passed. The first resolve took 0.042, 0.070 and 0.044 s at nginx; the api used 201, 199 and 179 MiB right after it (`docker stats`, sampled each second); the model never loaded in the api; the runs' 27 grounding chunks have no vector (`.playwright-mcp/phase4-review/item82-e2e/`).
+- **What must hold later:**
+    - **Any future tender-scoped vector search must embed or backfill these chunks first.** They are the only chunks with no vector by design. Other synthetic chunks, from certification import, still get one through `create_synthetic_chunk`'s default. A backfill selects chunks with `embedding IS NULL` and embeds their `normalized_text`.
+    - Grounding chunks written before this change keep the vectors they were given; nothing removes them.
+- **Checked for code that assumes every chunk has a vector (2026-11-14):**
+    - the column is nullable in the model and in migration 003;
+    - the vector search filters NULLs;
+    - the one test asserting a vector checks only chunks that ingestion produced (`tests/integration/test_document_ingestion.py:201`);
+    - no script or health check reads the column.
+    - `eval/` was not inspected (it is outside this repository's working rules).
+- **Related, open:** re-parsing a document deletes every chunk not in the new parse, synthetic grounding chunks included, so their evidence links lose their source (plan item 83, to investigate).
