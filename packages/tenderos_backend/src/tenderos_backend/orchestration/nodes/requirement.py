@@ -3,6 +3,7 @@ import uuid
 from langgraph.types import interrupt
 
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
 from tenderos_backend.orchestration.state import TenderState
@@ -37,9 +38,6 @@ async def requirement_gate_node(state: TenderState) -> dict:
             # already committed them earlier in this same graph execution,
             # before this node runs at all.
             requirements = await uow.requirements.list_for_tender(tender_id)
-            submission_items = await uow.requirements.list_submission_items_for_tender(tender_id)
-            clarifications = await uow.requirements.list_clarification_items_for_tender(tender_id)
-            mandatory = [r for r in requirements if r.mandatory]
 
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
@@ -49,13 +47,9 @@ async def requirement_gate_node(state: TenderState) -> dict:
                 targets=[
                     {"target_type": "requirement", "target_id": str(r.id)} for r in requirements
                 ],
-                summary={
-                    "requirement_count": len(requirements),
-                    "mandatory_count": len(mandatory),
-                    "unverified_mandatory_count": len([r for r in mandatory if not r.verified]),
-                    "submission_item_count": len(submission_items),
-                    "clarification_count": len(clarifications),
-                },
+                # Plan item 73: the same function the gates API uses for
+                # the live counts (gate_summary_service).
+                summary=await gate_summary_service.requirement_review_summary(uow, tender_id),
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

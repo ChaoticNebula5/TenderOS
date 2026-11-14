@@ -224,4 +224,11 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     # already gives: Approver sits above Bid manager in every other
     # gate-adjacent row here, not narrower.
     "approve_cost_budget": frozenset({Role.BID_MANAGER, Role.APPROVER, Role.ADMIN}),
+    # Plan item 73, decision 2 (user, 2026-11-13): deciding the
+    # finding-resolution gate accepts whatever critical findings are still
+    # open and moves the run on to readiness, so it is narrowed to the roles
+    # that own the bid's outcome. It used to share resolve_redteam_finding
+    # (all seven roles), which still governs resolving one finding at a
+    # time (routes/redteam.py), unchanged.
+    "decide_finding_resolution_gate": frozenset({Role.BID_MANAGER, Role.APPROVER, Role.ADMIN}),
 }

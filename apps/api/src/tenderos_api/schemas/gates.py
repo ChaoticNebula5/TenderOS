@@ -74,8 +74,13 @@ class ComplianceReviewSummary(BaseModel):
 
 class ResourceSelectionSummary(BaseModel):
     role_count: int
+    # Both count (role, candidate) matches, not people or roles.
     candidate_count: int
     unselected_count: int
+    # Plan item 73: the roles with no human-selected candidate, what the
+    # panel shows as "Roles without a pick". None on a gate opened before
+    # this field existed; its snapshot never counted roles.
+    unselected_role_count: int | None = None
 
 
 class CommercialApprovalSummary(BaseModel):
@@ -124,6 +129,10 @@ class FinalReadinessSummary(BaseModel):
     degraded_stages: list[str]
 
 
+# Plan item 73, decision 3: every gate type but final_readiness also
+# carries live_summary, its counts as they are now (gate_summary_service),
+# for a pending gate only; None once decided. `summary` stays the snapshot
+# taken when the gate opened, the record of what the reviewer was shown.
 class _GateResponseBase(BaseModel):
     gate_id: UUID
     workflow_run_id: UUID
@@ -145,26 +154,31 @@ class _GateResponseBase(BaseModel):
 class RequirementReviewGateResponse(_GateResponseBase):
     gate_type: Literal["requirement_review"]
     summary: RequirementReviewSummary
+    live_summary: RequirementReviewSummary | None = None
 
 
 class ComplianceReviewGateResponse(_GateResponseBase):
     gate_type: Literal["compliance_review"]
     summary: ComplianceReviewSummary
+    live_summary: ComplianceReviewSummary | None = None
 
 
 class ResourceSelectionGateResponse(_GateResponseBase):
     gate_type: Literal["resource_selection"]
     summary: ResourceSelectionSummary
+    live_summary: ResourceSelectionSummary | None = None
 
 
 class CommercialApprovalGateResponse(_GateResponseBase):
     gate_type: Literal["commercial_approval"]
     summary: CommercialApprovalSummary
+    live_summary: CommercialApprovalSummary | None = None
 
 
 class FindingResolutionGateResponse(_GateResponseBase):
     gate_type: Literal["finding_resolution"]
     summary: FindingResolutionSummary
+    live_summary: FindingResolutionSummary | None = None
 
 
 class FinalReadinessGateResponse(_GateResponseBase):
@@ -175,6 +189,7 @@ class FinalReadinessGateResponse(_GateResponseBase):
 class CostBudgetGateResponse(_GateResponseBase):
     gate_type: Literal["cost_budget"]
     summary: CostBudgetSummary
+    live_summary: CostBudgetSummary | None = None
 
 
 GateResponse = Annotated[

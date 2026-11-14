@@ -2,25 +2,43 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
+  listGates,
   listRedteamFindings,
+  listWorkflowRuns,
   resolveRedteamFinding,
   triggerRedTeam,
 } from "../api/client";
-import type { OperationResponse, RedteamFindingResponse } from "../api/client";
+import type { GateResponse, OperationResponse, RedteamFindingResponse } from "../api/client";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
+import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { useListReads } from "../hooks/useListReads";
+import { refreshPendingGate } from "../gates/refreshGate";
 import { useTenderOperation } from "../hooks/useTenderOperation";
+import { useReportRunStatus } from "../shell/runStatus";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
 
 // Screen 14 (Part J). resolve_redteam_finding is the one action granted
 // to all 7 organizational roles (rbac.py) - no per-role gating logic
 // needed on this screen, unlike compliance/talent/commercial.
+//
+// Plan item 73: the finding-resolution gate is decided here. The run
+// pauses at it when critical findings are still open after its automatic
+// revisions (routing.py, route_after_red_team); before, no screen showed
+// it and the run sat there. Deciding it is for bid manager, approver and
+// admin (decide_finding_resolution_gate, decision 2); the API answers 403
+// for the others. The heading and panel render only when the latest run
+// has such a gate: most runs never reach it, and a standing "no gate yet"
+// line would suggest one is coming. The panel adds no <table> and no
+// button whose name holds "Resolve", so the findings table stays the
+// page's first table and the spec's page-wide Resolve count is unchanged.
+const FINDING_GATE_DESCRIPTION =
+  "The run paused here because critical findings were still open after its automatic revisions. Resolve findings below, then approve to generate the readiness report; approving accepts any finding still open.";
 //
 // E2E contract (full-flow.spec.ts) - the column order and cell text are
 // fixed, so this screen deviates from DESIGN.md's findings pattern:
@@ -47,6 +65,9 @@ export function RedteamFindings() {
   const findingReads = useListReads();
   const [error, setError] = useState<string | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
+  const [gate, setGate] = useState<GateResponse | null>(null);
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+  useReportRunStatus(runStatus);
 
   // The tender on screen now, kept fresh on every render, so a read that
   // answers after the user moved to another tender can tell (the same guard
@@ -83,6 +104,35 @@ export function RedteamFindings() {
   // have been re-read (useTenderOperation), and a run started before a
   // reload is picked up again on load. On failure, the operation's own
   // message (LLM timeout, worker lost, ...).
+  // The latest run's finding-resolution gate, if it has one (plan item 73).
+  useEffect(() => {
+    if (!tenderId) return;
+    let cancelled = false;
+    setGate(null);
+    setRunStatus(null);
+    listWorkflowRuns(tenderId)
+      .then(async (runs) => {
+        if (cancelled || runs.length === 0) return;
+        setRunStatus(runs[0].status);
+        const gates = await listGates(runs[0].id);
+        const findingGate = gates.find((g) => g.gate_type === "finding_resolution");
+        if (!cancelled && findingGate) setGate(findingGate);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load the finding resolution gate");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenderId]);
+
+  // As the other gate screens: a decision moves the run on server-side, and
+  // this screen does not re-read the run, so the badge goes blank.
+  function handleGateDecided(updated: GateResponse) {
+    setGate(updated);
+    setRunStatus(null);
+  }
+
   async function handleFinished(operation: OperationResponse) {
     const finishedForTenderId = tenderId;
     const isCancelled = () => tenderIdRef.current !== finishedForTenderId;
@@ -92,6 +142,8 @@ export function RedteamFindings() {
     await refresh(isCancelled).catch(() => {
       if (!isCancelled()) setError("Failed to load red-team findings");
     });
+    // Plan item 73: the gate's live counts follow the new findings.
+    void refreshPendingGate(gate, setGate);
   }
   const { busy: running, start } = useTenderOperation(tenderId, "redteam_run", handleFinished);
 
@@ -111,12 +163,29 @@ export function RedteamFindings() {
       const updated = await resolveRedteamFinding(findingId, resolutionNotes[findingId] ?? null);
       findingReads.changed(findingId);
       setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Resolve failed (${err.status})` : "Resolve failed");
     }
   }
 
   const openCount = findings.filter((f) => !f.resolved).length;
+
+  // Heading and panel as siblings (full-flow.spec.ts's gatePanel() shape):
+  // above the table while pending, below it once decided, as the other
+  // gate screens place theirs.
+  const gateBlock = gate && (
+    <>
+      <h2>Finding resolution gate</h2>
+      <GateDecisionPanel
+        gate={gate}
+        onDecided={handleGateDecided}
+        description={FINDING_GATE_DESCRIPTION}
+      />
+    </>
+  );
+  const gateFirst = gate?.status === "pending";
 
   return (
     <main>
@@ -133,6 +202,8 @@ export function RedteamFindings() {
           Run red team
         </Button>
       </div>
+
+      {gateFirst && gateBlock}
 
       {findings.length > 0 && (
         <p className="count-line">
@@ -215,6 +286,8 @@ export function RedteamFindings() {
           finds here.
         </EmptyState>
       )}
+
+      {!gateFirst && gateBlock}
     </main>
   );
 }

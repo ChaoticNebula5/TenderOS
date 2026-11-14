@@ -29,12 +29,23 @@
 # call that bypassed build_llm_client() and built a GeminiClient directly
 # would fail on an empty key instead of spending real budget. The fake run
 # then cannot spend money even if the provider switch alone were bypassed.
+#
+# Plan item 73: MAX_TENDER_COST_USD, the cost-budget gate's threshold, from
+# TENDEROS_E2E_MAX_TENDER_COST_USD when the shell running fake-stack.ps1
+# sets it, else 25.0. The 25.0 mirrors the code default of
+# Settings.max_tender_cost_usd (core/config.py), so CI and every ordinary
+# fake stack keep today's budget; tests/unit/test_e2e_fake_cost_budget.py
+# fails if the two ever differ. The fake provider records $0.00 per call,
+# so only 0 opens the gate: set it to 0 for a walk that needs the gate,
+# then rebuild without it. CI never sets it (check_ci_stays_fake.py fails a
+# workflow that names it).
 x-fake-provider: &fake-provider
   LLM_PROVIDER: "fake"
   GEMINI_API_KEY: ""
   COMPLIANCE_GEMINI_API_KEY: ""
   TALENT_GEMINI_API_KEY: ""
   COMMERCIAL_GEMINI_API_KEY: ""
+  MAX_TENDER_COST_USD: "${TENDEROS_E2E_MAX_TENDER_COST_USD:-25.0}"
 
 services:
   api:

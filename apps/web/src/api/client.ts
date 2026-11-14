@@ -663,35 +663,88 @@ interface GateResponseBase {
   decided_at: string | null;
 }
 
+// Plan item 73, decision 3: `summary` is the snapshot taken when the gate
+// opened; `live_summary` is the same counts as they are now, sent for a
+// pending gate only (null once decided; never for final_readiness, whose
+// live counts are the Readiness page's own report). Both come from the
+// backend's gate_summary_service.
+export interface RequirementReviewSummary {
+  requirement_count: number;
+  mandatory_count: number;
+  unverified_mandatory_count: number;
+  submission_item_count: number;
+  clarification_count: number;
+}
+
 export interface RequirementReviewGateResponse extends GateResponseBase {
   gate_type: "requirement_review";
-  summary: {
-    requirement_count: number;
-    mandatory_count: number;
-    unverified_mandatory_count: number;
-    submission_item_count: number;
-    clarification_count: number;
-  };
+  summary: RequirementReviewSummary;
+  live_summary?: RequirementReviewSummary | null;
+}
+
+export interface ComplianceReviewSummary {
+  compliance_entry_count: number;
+  pending_count: number;
+  high_risk_count: number;
 }
 
 export interface ComplianceReviewGateResponse extends GateResponseBase {
   gate_type: "compliance_review";
-  summary: { compliance_entry_count: number; pending_count: number; high_risk_count: number };
+  summary: ComplianceReviewSummary;
+  live_summary?: ComplianceReviewSummary | null;
+}
+
+// candidate_count and unselected_count count (role, candidate) matches;
+// unselected_role_count counts roles with no pick (plan item 73), absent
+// from a snapshot taken before it existed.
+export interface ResourceSelectionSummary {
+  role_count: number;
+  candidate_count: number;
+  unselected_count: number;
+  unselected_role_count?: number | null;
 }
 
 export interface ResourceSelectionGateResponse extends GateResponseBase {
   gate_type: "resource_selection";
-  summary: { role_count: number; candidate_count: number; unselected_count: number };
+  summary: ResourceSelectionSummary;
+  live_summary?: ResourceSelectionSummary | null;
+}
+
+export interface CommercialApprovalSummary {
+  finding_count: number;
+  pending_count: number;
+  critical_count: number;
 }
 
 export interface CommercialApprovalGateResponse extends GateResponseBase {
   gate_type: "commercial_approval";
-  summary: { finding_count: number; pending_count: number; critical_count: number };
+  summary: CommercialApprovalSummary;
+  live_summary?: CommercialApprovalSummary | null;
+}
+
+export interface FindingResolutionSummary {
+  open_finding_count: number;
+  critical_count: number;
 }
 
 export interface FindingResolutionGateResponse extends GateResponseBase {
   gate_type: "finding_resolution";
-  summary: { open_finding_count: number; critical_count: number };
+  summary: FindingResolutionSummary;
+  live_summary?: FindingResolutionSummary | null;
+}
+
+// Plan item 73: the cost-budget gate (schemas/gates.py, CostBudgetSummary),
+// missing from this union until it got a screen.
+export interface CostBudgetSummary {
+  accumulated_cost_usd: number;
+  budget_usd: number;
+  overage_usd: number;
+}
+
+export interface CostBudgetGateResponse extends GateResponseBase {
+  gate_type: "cost_budget";
+  summary: CostBudgetSummary;
+  live_summary?: CostBudgetSummary | null;
 }
 
 export interface ReadinessBlocker {
@@ -717,7 +770,12 @@ export type GateResponse =
   | ResourceSelectionGateResponse
   | CommercialApprovalGateResponse
   | FindingResolutionGateResponse
+  | CostBudgetGateResponse
   | FinalReadinessGateResponse;
+
+// Every gate type, as the union names it: gates/gateScreens.ts is keyed by
+// this, so a gate type with no screen fails `tsc -b` (plan item 73).
+export type GateType = GateResponse["gate_type"];
 
 export interface TargetUpdate {
   target_type: string;

@@ -7,6 +7,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.compliance_service import evaluate_compliance_for_requirement
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
@@ -139,14 +140,6 @@ async def compliance_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             entries = await uow.compliance.list_compliance_entries_for_tender(tender_id)
-            pending = [e for e in entries if not e.human_approved]
-            # "high risk" here means a status PRD 8.4 would never let stand
-            # unapproved without evidence - not a separate ML-scored risk
-            # tier, just the two statuses that most need a human's eyes
-            # before this tender proceeds.
-            high_risk = [
-                e for e in pending if e.status in ("evidence_unavailable", "non_compliant")
-            ]
 
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
@@ -156,11 +149,8 @@ async def compliance_gate_node(state: TenderState) -> dict:
                 targets=[
                     {"target_type": "compliance_entry", "target_id": str(e.id)} for e in entries
                 ],
-                summary={
-                    "compliance_entry_count": len(entries),
-                    "pending_count": len(pending),
-                    "high_risk_count": len(high_risk),
-                },
+                # Plan item 73: shared with the gates API's live counts.
+                summary=await gate_summary_service.compliance_review_summary(uow, tender_id),
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

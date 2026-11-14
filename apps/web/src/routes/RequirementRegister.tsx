@@ -10,6 +10,7 @@ import {
   verifyRequirement,
 } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
+import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
 import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
@@ -101,6 +102,8 @@ export function RequirementRegister() {
       const updated = await patchRequirement(requirementId, { action: "confirm" });
       requirementReads.changed(requirementId);
       setRequirements((prev) => prev.map((r) => (r.id === requirementId ? updated : r)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Confirm failed (${err.status})` : "Confirm failed");
     }
@@ -112,6 +115,8 @@ export function RequirementRegister() {
       const updated = await patchRequirement(requirementId, { action: "reject" });
       requirementReads.changed(requirementId);
       setRequirements((prev) => prev.map((r) => (r.id === requirementId ? updated : r)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Reject failed (${err.status})` : "Reject failed");
     }

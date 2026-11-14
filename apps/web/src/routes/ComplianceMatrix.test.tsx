@@ -209,8 +209,14 @@ describe("ComplianceMatrix (restyle batch 4)", () => {
     ).toBeTruthy();
 
     const panel = heading.nextElementSibling as HTMLElement;
+    // What the server says once the decision has moved the run on.
+    listWorkflowRuns.mockResolvedValue([run("running")]);
     await user.click(within(panel).getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(container.querySelector(".tender-bar .status-badge")).toBeNull());
+    // Since plan item 74 the bar re-reads and shows the run's new status
+    // instead of going blank.
+    await waitFor(() =>
+      expect(container.querySelector(".tender-bar .status-badge")).toHaveTextContent("Running"),
+    );
     const decided = screen.getByRole("heading", { name: "Compliance review gate" });
     expect(decided.nextElementSibling?.tagName).toBe("SECTION");
     expect(

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   CommercialApprovalGateResponse,
   ComplianceReviewGateResponse,
+  CostBudgetGateResponse,
   FinalReadinessGateResponse,
   FindingResolutionGateResponse,
   RequirementReviewGateResponse,
@@ -138,10 +139,24 @@ describe("GateSummary - each gate_type renders its own typed fields", () => {
   });
 
   it("resource_selection", () => {
+    // Plan item 73 (item 79's C3): candidate_count counts (role, candidate)
+    // matches, and the old unselected_count (matches) is not shown.
     render(<GateDecisionPanel gate={resourceSelectionGate()} onDecided={vi.fn()} />);
     expectSummaryItem("Roles", "4");
-    expectSummaryItem("Candidates", "9");
-    expectSummaryItem("Unselected roles", "2");
+    expectSummaryItem("Candidate matches", "9");
+    expect(screen.queryByText("Unselected roles")).not.toBeInTheDocument();
+    expect(screen.queryByText("Roles without a pick")).not.toBeInTheDocument();
+  });
+
+  it("resource_selection with roles counted: 'Roles without a pick'", () => {
+    const gate: ResourceSelectionGateResponse = {
+      ...resourceSelectionGate(),
+      summary: { role_count: 1, candidate_count: 4, unselected_count: 3, unselected_role_count: 0 },
+    };
+    render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+    expectSummaryItem("Roles", "1");
+    expectSummaryItem("Candidate matches", "4");
+    expectSummaryItem("Roles without a pick", "0");
   });
 
   it("commercial_approval", () => {
@@ -393,6 +408,100 @@ describe("an already-decided gate", () => {
   });
 });
 
+// Plan item 73, decision 3: live counts first, the snapshot below.
+function gridValues(grid: Element): Record<string, string> {
+  const values: Record<string, string> = {};
+  grid.querySelectorAll("dt").forEach((dt) => {
+    values[dt.textContent ?? ""] = dt.nextElementSibling?.textContent ?? "";
+  });
+  return values;
+}
+
+describe("plan item 73: live counts, then the snapshot taken when the gate opened", () => {
+  it("shows the live counts first and the differing snapshot under its label", () => {
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      summary: { compliance_entry_count: 2, pending_count: 2, high_risk_count: 1 },
+      live_summary: { compliance_entry_count: 2, pending_count: 0, high_risk_count: 0 },
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    const labels = [...container.querySelectorAll(".gate-panel__asof")].map((p) => p.textContent);
+    expect(labels).toEqual(["Now", "When this gate opened · " + formatDate(BASE.requested_at)]);
+    const [live, snapshot] = [...container.querySelectorAll("dl.gate-summary")];
+    expect(gridValues(live)).toEqual({
+      "Compliance entries": "2",
+      "Pending approval": "0",
+      "High risk": "0",
+    });
+    expect(gridValues(snapshot)).toEqual({
+      "Compliance entries": "2",
+      "Pending approval": "2",
+      "High risk": "1",
+    });
+  });
+
+  it("says the counts are unchanged instead of showing the same grid twice", () => {
+    const counts = { compliance_entry_count: 2, pending_count: 1, high_risk_count: 0 };
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      summary: counts,
+      live_summary: { ...counts },
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(container.querySelectorAll("dl.gate-summary")).toHaveLength(1);
+    expect(
+      screen.getByText("Unchanged since this gate opened · " + formatDate(BASE.requested_at)),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a decided gate's snapshot alone, even if live counts were sent", () => {
+    const gate: ComplianceReviewGateResponse = {
+      ...complianceReviewGate(),
+      status: "approved",
+      decided_at: "2026-01-02T00:00:00Z",
+      live_summary: { compliance_entry_count: 9, pending_count: 9, high_risk_count: 9 },
+    };
+    const { container } = render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} />);
+
+    expect(screen.queryByText("Now")).not.toBeInTheDocument();
+    const grids = container.querySelectorAll("dl.gate-summary");
+    expect(grids).toHaveLength(1);
+    expect(gridValues(grids[0])["Pending approval"]).not.toBe("9");
+  });
+
+  it("shows the cost budget gate's spend in US dollars, and its description while pending", () => {
+    const gate: CostBudgetGateResponse = {
+      ...BASE,
+      gate_type: "cost_budget",
+      summary: { accumulated_cost_usd: 25.5, budget_usd: 25, overage_usd: 0.5 },
+      live_summary: { accumulated_cost_usd: 25.5, budget_usd: 25, overage_usd: 0.5 },
+    };
+    const { container } = render(
+      <GateDecisionPanel gate={gate} onDecided={vi.fn()} description="Why it paused." />,
+    );
+
+    expect(gridValues(container.querySelector("dl.gate-summary")!)).toEqual({
+      Spent: "$25.50",
+      Budget: "$25.00",
+      "Over budget by": "$0.50",
+    });
+    expect(screen.getByText("Why it paused.")).toHaveClass("gate-panel__description");
+  });
+
+  it("drops the description once the gate is decided", () => {
+    const gate: FindingResolutionGateResponse = {
+      ...findingResolutionGate(),
+      status: "approved",
+      decided_at: "2026-01-02T00:00:00Z",
+    };
+    render(<GateDecisionPanel gate={gate} onDecided={vi.fn()} description="Why it paused." />);
+
+    expect(screen.queryByText("Why it paused.")).not.toBeInTheDocument();
+  });
+});
+
 describe("plan items 71 and 72: what a decided gate recorded", () => {
   it("shows the reviewer's notes on a gate decided with Request changes", () => {
     const gate: RequirementReviewGateResponse = {
@@ -487,10 +596,10 @@ describe("restyle batch 3: status, decided line, busy state", () => {
     expect(container.querySelector("strong")).toBeNull();
   });
 
-  it("labels the summary as a snapshot from request time", () => {
+  it("labels the summary as the snapshot taken when the gate opened", () => {
     render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
     expect(
-      screen.getByText(`At request time · ${formatDate(BASE.requested_at)}`),
+      screen.getByText(`When this gate opened · ${formatDate(BASE.requested_at)}`),
     ).toBeInTheDocument();
   });
 
