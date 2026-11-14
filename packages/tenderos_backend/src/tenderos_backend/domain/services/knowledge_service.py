@@ -30,6 +30,7 @@ from tenderos_backend.db.models.knowledge import (
     KnowledgeRelationship,
     TenderKnowledgeSelection,
 )
+from tenderos_backend.db.repositories.knowledge import KNOWLEDGE_ITEM_ARCHIVED
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
@@ -82,7 +83,7 @@ class ResolvedCapability:
 # is a data-quality question for a human reviewer, not a hard failure that
 # should abort the whole import row.
 _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS = {
-    "removed": "archived",
+    "removed": KNOWLEDGE_ITEM_ARCHIVED,
 }
 
 
@@ -95,6 +96,12 @@ class KnowledgeItemNotFoundError(Exception):
 
 class EmployeeNotFoundError(Exception):
     pass
+
+
+class EmployeeArchivedError(Exception):
+    """Verifying an employee removed from the roster (plan item 79, C1):
+    PRD 10.9's candidate search includes only profiles "not archived", so
+    one cannot be verified (and made bid-eligible) while archived."""
 
 
 class ImportItemNotFoundError(Exception):
@@ -1158,6 +1165,12 @@ async def verify_employee_profile(
         employee = await uow.knowledge.get_employee(knowledge_item_id)
         if employee is None:
             raise EmployeeNotFoundError()
+        # Removed from the roster: the same column the candidate pool reads
+        # (KnowledgeRepository's KNOWLEDGE_ITEM_ARCHIVED). Restoring the
+        # knowledge item's status is the way back.
+        knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+        if knowledge_item is not None and knowledge_item.status == KNOWLEDGE_ITEM_ARCHIVED:
+            raise EmployeeArchivedError()
 
         before = {
             "profile_review_status": employee.profile_review_status,

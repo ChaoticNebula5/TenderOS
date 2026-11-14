@@ -60,6 +60,7 @@ async def _make_employee(
     eligible_for_bid: bool = True,
     profile_review_status: str = "verified",
     availability_status: str = "available",
+    knowledge_status: str = "active",
 ) -> uuid.UUID:
     async with UnitOfWork() as uow:
         knowledge_item, employee = await uow.knowledge.create_employee(
@@ -74,6 +75,8 @@ async def _make_employee(
             profile_review_status=profile_review_status,
             availability_status=availability_status,
         )
+        if knowledge_status != "active":
+            await uow.knowledge.update_knowledge_item(knowledge_item.id, status=knowledge_status)
         await uow.commit()
         return knowledge_item.id
 
@@ -116,8 +119,13 @@ async def test_candidate_pool_includes_stale_and_needs_review_profiles_not_hidde
 
 
 async def test_candidate_pool_excludes_archived_and_rejected_profiles():
+    # Archived is the knowledge item's status, the column the master import
+    # writes for a "removed" row (plan item 79, C1). This employee was
+    # verified and made eligible before being removed, the case that used
+    # to stay in the pool: the test archived profile_review_status before,
+    # a value no code writes.
     org_id, _ = await _make_org_and_tender("Hard Exclusion Test")
-    await _make_employee(org_id, "Archived Emp", profile_review_status="archived")
+    await _make_employee(org_id, "Archived Emp", knowledge_status="archived")
     await _make_employee(org_id, "Rejected Emp", profile_review_status="rejected")
     await _make_employee(org_id, "Verified Emp", profile_review_status="verified")
 

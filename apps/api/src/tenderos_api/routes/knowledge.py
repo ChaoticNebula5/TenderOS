@@ -412,9 +412,18 @@ async def verify_employee(
     employee = await knowledge_service.get_employee(knowledge_item_id)
     if employee is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    updated = await knowledge_service.verify_employee_profile(
-        knowledge_item_id, employee.organization_id, current_user.id, body.eligible_for_bid
-    )
+    try:
+        updated = await knowledge_service.verify_employee_profile(
+            knowledge_item_id, employee.organization_id, current_user.id, body.eligible_for_bid
+        )
+    except knowledge_service.EmployeeArchivedError as exc:
+        # Plan item 79, C1: a removed employee cannot be verified into the
+        # candidate pool. Restoring the knowledge item's status (the talent
+        # library's status edit) is the way back.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Employee is archived (removed from the roster); restore it before verifying",
+        ) from exc
     return EmployeeResponse.model_validate(updated, from_attributes=True)
 
 
