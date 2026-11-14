@@ -472,6 +472,25 @@ async def test_verify_employee_sets_eligibility_and_review_status(
     assert response.json()["profile_review_status"] == "verified"
 
 
+async def test_verify_refuses_an_archived_employee_with_409(client: TestClient, register_actor):
+    # Plan item 79, C1: archived through the talent library's own status
+    # edit, the employee cannot be verified (and made bid-eligible).
+    headers, _, org_id = register_actor()
+    item_id = await _seed_employee(org_id)
+    archived = client.patch(f"/knowledge/{item_id}", json={"status": "archived"}, headers=headers)
+    assert archived.status_code == 200, archived.text
+
+    response = client.post(
+        f"/employees/{item_id}/verify", json={"eligible_for_bid": True}, headers=headers
+    )
+
+    assert response.status_code == 409, response.text
+    assert "archived" in response.json()["detail"]
+    employee = client.get(f"/employees/{item_id}", headers=headers).json()
+    assert employee["eligible_for_bid"] is False
+    assert employee["profile_review_status"] == "needs_review"
+
+
 async def test_replace_employee_resume_creates_a_new_document_version(
     client: TestClient, register_actor
 ):

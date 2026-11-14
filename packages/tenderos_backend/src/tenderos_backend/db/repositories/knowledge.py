@@ -19,6 +19,15 @@ from tenderos_backend.db.models.knowledge import (
     TenderKnowledgeSelection,
 )
 
+# An employee removed from the roster: its knowledge item's status (Phase 4
+# plan item 79, C1). The employee-master import writes it for a "removed" row
+# (knowledge_service._EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS) and the talent
+# library's status edit can set it. This is the one place "archived" is read
+# for employees: the candidate pool, the bid-eligible list and verification
+# all use it. employees.profile_review_status also allows 'archived' in its
+# CHECK, but nothing writes that value.
+KNOWLEDGE_ITEM_ARCHIVED = "archived"
+
 
 class KnowledgeRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -325,10 +334,13 @@ class KnowledgeRepository:
 
     async def list_bid_eligible_employees(self, organization_id: uuid.UUID) -> list[Employee]:
         result = await self._session.execute(
-            select(Employee).where(
+            select(Employee)
+            .join(KnowledgeItem, KnowledgeItem.id == Employee.knowledge_item_id)
+            .where(
                 Employee.organization_id == organization_id,
                 Employee.eligible_for_bid.is_(True),
                 Employee.profile_review_status == "verified",
+                KnowledgeItem.status != KNOWLEDGE_ITEM_ARCHIVED,
             )
         )
         return list(result.scalars().all())
@@ -344,17 +356,27 @@ class KnowledgeRepository:
         asks the system to "surface explicit gaps and stale or unknown
         profile facts," not silently exclude them, and B8A's own test
         wording ("stale profile visibly warned OR excluded by policy")
-        treats warning as an acceptable alternative to exclusion. Only
-        'archived' (retired from the roster) and 'rejected' (explicitly
-        disqualified) are hard-excluded here - talent_service.py's
-        gap-enforcement step is what turns 'needs_review'/'stale' into a
-        visible warning for anything that does pass through.
+        treats warning as an acceptable alternative to exclusion. Only an
+        archived employee (removed from the roster, PRD 10.9's "not
+        archived") and a 'rejected' profile (explicitly disqualified) are
+        hard-excluded here - talent_service.py's gap-enforcement step is
+        what turns 'needs_review'/'stale' into a visible warning for
+        anything that does pass through.
+
+        Archived is read from the knowledge item's status, the column the
+        import and the talent library write (KNOWLEDGE_ITEM_ARCHIVED above).
+        It used to be read from profile_review_status, which nothing sets
+        to 'archived', so a removed employee who had been verified stayed in
+        the pool (plan item 79, C1).
         """
         result = await self._session.execute(
-            select(Employee).where(
+            select(Employee)
+            .join(KnowledgeItem, KnowledgeItem.id == Employee.knowledge_item_id)
+            .where(
                 Employee.organization_id == organization_id,
                 Employee.eligible_for_bid.is_(True),
-                Employee.profile_review_status.notin_(["archived", "rejected"]),
+                Employee.profile_review_status != "rejected",
+                KnowledgeItem.status != KNOWLEDGE_ITEM_ARCHIVED,
             )
         )
         return list(result.scalars().all())

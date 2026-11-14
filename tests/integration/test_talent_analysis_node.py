@@ -215,3 +215,56 @@ async def test_node_extracts_one_role_and_scores_one_candidate(monkeypatch):
         f"valid_until and isn't archived), got {link.validity_status!r} - "
         "proposal drafting's _facts_from_team filter would silently exclude this"
     )
+
+
+async def test_node_does_not_match_a_removed_employee_to_a_role(monkeypatch):
+    # Plan item 79, C1: an employee verified and made eligible, then removed
+    # from the roster (its knowledge item archived, as the master import
+    # does for a "removed" row), is not in the candidate pool, so no role
+    # match is evaluated for it.
+    org_id, tender_id = await _make_org_and_tender("Talent Node Removed Test")
+    await _make_staffing_requirement(org_id, tender_id)
+    active_item_id = await _make_candidate(org_id)
+    removed_item_id = await _make_candidate(org_id)
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(removed_item_id, status="archived")
+        await uow.commit()
+    workflow_run_id = await _make_workflow_run_row(tender_id)
+
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "role_extraction",
+        RoleExtractionOutput,
+        [
+            RoleExtractionOutput(
+                roles=[
+                    ExtractedRole(
+                        role_name="Project Manager",
+                        required_skills=["Stakeholder management"],
+                        source_requirement_refs=["req_1"],
+                    )
+                ]
+            )
+        ],
+    )
+    # One scoring answer: a second candidate would need a second.
+    fake_client.script(
+        "talent_scoring",
+        CandidateScoring,
+        [CandidateScoring(score=0.6, strengths=[], gaps=[])],
+    )
+    monkeypatch.setattr(talent, "_build_llm_client", lambda: fake_client)
+    task_id = await _make_talent_task(workflow_run_id)
+    state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
+
+    await talent_analysis_node(state)
+
+    async with UnitOfWork() as uow:
+        task = await uow.workflow.get_task_by_key(
+            workflow_run_id, f"talent_analysis:{workflow_run_id}"
+        )
+        roles = await uow.talent.list_role_requirements_for_tender(tender_id)
+        matches = await uow.talent.list_role_matches_for_role(roles[0].id)
+    assert task is not None and task.status == "completed"
+    assert task.output_refs["candidate_count"] == 1
+    assert [m.employee_knowledge_item_id for m in matches] == [active_item_id]

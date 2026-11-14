@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
+from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.knowledge import KnowledgeItem
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -768,3 +769,94 @@ async def test_one_knowledge_item_is_reused_across_two_tenders_and_deselection_s
         "a deselection in tender A must not bump tender B's state_version"
     )
     assert item is not None, "deselecting in one tender must not delete the shared item"
+
+
+# ----------------------------------------------------------------------
+# Plan item 79, C1: an employee removed from the roster (its knowledge
+# item's status 'archived', written by the master import for a "removed"
+# row) cannot be verified, and is not listed as bid-eligible.
+# ----------------------------------------------------------------------
+
+
+async def _removed_master_employee() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Removed Employee Org",
+    )
+    org_id = registered.organization.id
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id,
+            import_type="employee_master_csv",
+            source_document_id=None,
+            created_by=registered.user.id,
+        )
+        await uow.commit()
+    row = EmployeeMasterRow(
+        row_number=2, employee_code="EMP-77", name="Rowan Removed", role="Analyst", status="removed"
+    )
+    item = await knowledge_service.import_employee_master_row(org_id, batch.id, row)
+    assert item.status == "approved"
+    assert item.target_knowledge_item_id is not None
+    return org_id, registered.user.id, item.target_knowledge_item_id
+
+
+async def test_an_employee_the_master_import_removed_cannot_be_verified():
+    org_id, actor_id, employee_id = await _removed_master_employee()
+    async with UnitOfWork() as uow:
+        knowledge_item = await uow.knowledge.get_knowledge_item(employee_id)
+    assert knowledge_item is not None and knowledge_item.status == "archived"
+
+    with pytest.raises(knowledge_service.EmployeeArchivedError):
+        await knowledge_service.verify_employee_profile(
+            employee_id, org_id, actor_id, eligible_for_bid=True
+        )
+
+    async with UnitOfWork() as uow:
+        employee = await uow.knowledge.get_employee(employee_id)
+        audits = (
+            (
+                await uow.session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.target_id == employee_id, AuditEvent.action == "employee_verify"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert employee is not None
+    assert employee.profile_review_status == "needs_review"
+    assert employee.eligible_for_bid is False
+    assert audits == []
+
+
+async def test_an_employee_verified_then_removed_is_not_listed_as_bid_eligible():
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Bid Eligible Archive Org",
+    )
+    org_id = registered.organization.id
+    ids = {}
+    for name in ("Avery Active", "Robin Removed"):
+        async with UnitOfWork() as uow:
+            knowledge_item, _employee = await uow.knowledge.create_employee(
+                organization_id=org_id,
+                name=name,
+                content_fingerprint=uuid.uuid4().hex,
+                title=name,
+            )
+            await uow.commit()
+        ids[name] = knowledge_item.id
+        await knowledge_service.verify_employee_profile(
+            knowledge_item.id, org_id, registered.user.id, eligible_for_bid=True
+        )
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(ids["Robin Removed"], status="archived")
+        await uow.commit()
+
+    listed = await knowledge_service.list_bid_eligible_employees(org_id)
+
+    assert {e.name for e in listed} == {"Avery Active"}
