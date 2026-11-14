@@ -232,8 +232,9 @@ def proposal_changed_idempotency_key(claim_id: uuid.UUID, state_version: int) ->
 
 # B14's own workflow-task/run progress events - what the SSE route (GET
 # .../events/stream, apps/api/routes/workflow.py) actually polls the outbox
-# for. Written from inside db/repositories/workflow.py's own 4 methods
-# (update_run_status, create_task, mark_task_completed, mark_task_failed),
+# for. Written from inside db/repositories/workflow.py's own methods
+# (update_run_status, create_task, mark_task_completed, mark_task_failed,
+# and mark_task_running since Phase 4 plan item 77),
 # not from each of their ~36 real call sites across orchestration/nodes/ -
 # see that repository's own module docstring for why. None of these four
 # have a natural version counter the way tenders.state_version does
@@ -247,6 +248,7 @@ def proposal_changed_idempotency_key(claim_id: uuid.UUID, state_version: int) ->
 # get_task_by_key first), so no suffix is needed there.
 EVENT_WORKFLOW_RUN_STATUS_CHANGED = "WorkflowRunStatusChanged"
 EVENT_WORKFLOW_TASK_CREATED = "WorkflowTaskCreated"
+EVENT_WORKFLOW_TASK_STARTED = "WorkflowTaskStarted"
 EVENT_WORKFLOW_TASK_COMPLETED = "WorkflowTaskCompleted"
 EVENT_WORKFLOW_TASK_FAILED = "WorkflowTaskFailed"
 
@@ -277,6 +279,21 @@ def workflow_task_created_payload(
 
 def workflow_task_created_idempotency_key(task_id: uuid.UUID) -> str:
     return f"workflow_task_created:{task_id}"
+
+
+def workflow_task_started_payload(
+    workflow_run_id: uuid.UUID, task_id: uuid.UUID, task_type: str
+) -> dict:
+    return {
+        "workflow_run_id": str(workflow_run_id),
+        "task_id": str(task_id),
+        "task_type": task_type,
+    }
+
+
+def workflow_task_started_idempotency_key(task_id: uuid.UUID) -> str:
+    # A suffix, like completed/failed: a task starts again on a retry.
+    return f"workflow_task_started:{task_id}:{uuid.uuid4()}"
 
 
 def workflow_task_completed_payload(

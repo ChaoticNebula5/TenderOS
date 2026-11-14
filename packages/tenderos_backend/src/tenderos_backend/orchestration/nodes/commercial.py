@@ -9,7 +9,11 @@ from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.commercial_service import evaluate_commercial_for_tender
-from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
+from tenderos_backend.domain.services.workflow_service import (
+    is_cancelled,
+    start_task,
+    sync_run_status,
+)
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
 from tenderos_backend.orchestration.state import SpecialistTaskState, TenderState
 
@@ -40,6 +44,7 @@ async def commercial_analysis_node(state: SpecialistTaskState) -> dict:
     tender_id = uuid.UUID(state["tender_id"])
     task_id = uuid.UUID(state["task_id"])
 
+    await start_task(task_id)
     try:
         client = _build_llm_client()
         findings = await evaluate_commercial_for_tender(

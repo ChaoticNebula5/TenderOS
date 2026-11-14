@@ -119,6 +119,50 @@ async def test_mark_run_failed_on_timeout_does_not_overwrite_a_real_cancellation
     assert len(timeout_events) == 0
 
 
+@pytest.mark.asyncio
+async def test_mark_run_failed_on_timeout_leaves_a_changes_requested_run_as_it_was():
+    """Plan item 87: the guard's hand-written list missed item 71's terminal
+    changes_requested, so a timeout firing after Request changes ended the
+    run would have overwritten it with "failed" and a false timeout audit
+    event. It now uses TERMINAL_RUN_STATUSES."""
+    _org_id, run_id = await _make_org_tender_and_run("TimeoutMarkChangesRequested")
+    async with UnitOfWork() as uow:
+        done = await uow.workflow.create_task(
+            workflow_run_id=run_id,
+            task_key="requirement_extraction",
+            task_type="requirement_extraction",
+            assigned_agent="requirements",
+            priority=10,
+            input_refs={},
+        )
+        await uow.workflow.create_task(
+            workflow_run_id=run_id,
+            task_key="compliance_analysis",
+            task_type="compliance_analysis",
+            assigned_agent="evidence_compliance",
+            priority=10,
+            input_refs={},
+        )
+        await uow.workflow.mark_task_completed(done.id, output_refs={})
+        await uow.workflow.update_run_status(run_id, "changes_requested")
+        await uow.commit()
+    async with UnitOfWork() as uow:
+        before = {t.task_type: t.status for t in await uow.workflow.list_tasks(run_id)}
+
+    await mark_run_failed_on_timeout(run_id)
+
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.get_run(run_id)
+        after = {t.task_type: t.status for t in await uow.workflow.list_tasks(run_id)}
+        events = await uow.audit.list_for_workflow_run(run_id)
+    assert run is not None
+    assert run.status == "changes_requested"
+    assert run.error_code is None
+    assert before == {"requirement_extraction": "completed", "compliance_analysis": "skipped"}
+    assert after == before
+    assert not [e for e in events if e.action == "workflow_run_timed_out"]
+
+
 # The two tests below are deliberately plain sync functions, not
 # @pytest.mark.asyncio - _run_sync's whole reason for existing is that it
 # owns the sync-to-async transition itself (asyncio.run(coro)), the same

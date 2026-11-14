@@ -56,6 +56,8 @@ async def requirement_extraction_node(state: TenderState) -> dict:
                 priority=10,
                 input_refs={},
             )
+        # Plan item 77: Running from here, committed before the extraction.
+        await uow.workflow.mark_task_running(task.id)
         chunks = await uow.documents.list_chunks_for_tender(tender_id)
         await uow.commit()
 

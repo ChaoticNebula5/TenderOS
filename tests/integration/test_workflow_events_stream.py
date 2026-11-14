@@ -79,6 +79,48 @@ async def test_stream_emits_a_heartbeat_then_a_real_task_created_event():
     assert "timestamp" in message
 
 
+async def test_stream_delivers_task_started_when_a_task_begins():
+    """Phase 4 plan item 77: the open page re-reads its tasks on any stream
+    message, so this event is what makes a running task read Running there
+    without a reload."""
+    tender_id = await _make_tender("SSE Task Started Test")
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.create_run(tender_id, "v1", {})
+        task = await uow.workflow.create_task(
+            workflow_run_id=run.id,
+            task_key="talent_analysis",
+            task_type="talent_analysis",
+            assigned_agent="talent",
+            priority=10,
+            input_refs={},
+        )
+        await uow.commit()
+
+    # Opened after the task.created event: the stream's starting set skips
+    # what was already there (plan item 54), so the next message is ours.
+    gen = await _workflow_progress_stream(run.id)
+    assert await anext(gen) == ": heartbeat\n\n"
+
+    async with UnitOfWork() as uow:
+        assert await uow.workflow.mark_task_running(task.id)
+        await uow.commit()
+
+    # Bounded: the stream heartbeats while nothing matches, so an event the
+    # stream never sends must fail this test, not hang it.
+    data_chunk = None
+    for _ in range(20):
+        chunk = await anext(gen)
+        if chunk.startswith("data:"):
+            data_chunk = chunk
+            break
+    assert data_chunk is not None, "no task.started message within 20 stream chunks"
+    message = json.loads(data_chunk.removeprefix("data:").strip())
+    assert message["event_type"] == "task.started"
+    assert message["workflow_run_id"] == str(run.id)
+    assert message["task_id"] == str(task.id)
+    assert message["task_type"] == "talent_analysis"
+
+
 async def test_stream_ignores_events_from_a_different_run():
     tender_id = await _make_tender("SSE Cross-Run Isolation Test")
     # One active run per tender (plan item 43): the other run is finished

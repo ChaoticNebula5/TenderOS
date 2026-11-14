@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, exists, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_WORKFLOW_TASK_COMPLETED,
     EVENT_WORKFLOW_TASK_CREATED,
     EVENT_WORKFLOW_TASK_FAILED,
+    EVENT_WORKFLOW_TASK_STARTED,
     workflow_run_status_changed_idempotency_key,
     workflow_run_status_changed_payload,
     workflow_task_completed_idempotency_key,
@@ -35,7 +36,14 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_task_created_payload,
     workflow_task_failed_idempotency_key,
     workflow_task_failed_payload,
+    workflow_task_started_idempotency_key,
+    workflow_task_started_payload,
 )
+
+# Phase 4 plan item 77 (user decision, 2026-11-14): when a run reaches a
+# terminal status, its tasks that never finished are "skipped", so no task
+# reads Queued or Running under a run that has ended.
+_UNFINISHED_TASK_STATUSES = ("pending", "running")
 
 
 @dataclass(frozen=True)
@@ -72,8 +80,8 @@ class RunNoLongerActiveError(Exception):
 
 
 class WorkflowRepository:
-    """update_run_status/create_task/mark_task_completed/mark_task_failed
-    each also write a sibling outbox row, in the same session and
+    """update_run_status/create_task/mark_task_running/mark_task_completed/
+    mark_task_failed each also write a sibling outbox row, in the same session and
     transaction as the state change itself - a deliberate exception to this
     codebase's usual "repository touches only its own table, the service
     layer orchestrates cross-table writes" shape (see document_service.py's
@@ -179,6 +187,8 @@ class WorkflowRepository:
         # commit) is reloaded, so it shows what the database now holds and
         # can be read after the session closes.
         await self._session.get(WorkflowRun, run_id, populate_existing=True)
+        if status in TERMINAL_RUN_STATUSES:
+            await self._skip_unfinished_tasks(run_id)
         await self._outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_RUN,
             aggregate_id=run_id,
@@ -345,7 +355,18 @@ class WorkflowRepository:
             .returning(WorkflowRun.id)
             .execution_options(synchronize_session=False)
         )
-        return result.scalar_one_or_none() is not None
+        if result.scalar_one_or_none() is None:
+            return False
+        # Plan item 77: the failed attempt's graph call has returned, so no
+        # task of this run is executing. A task still "running" is a sibling
+        # LangGraph cancelled when another branch failed; the retry reruns
+        # it, so until then it is pending again, not Running.
+        await self._session.execute(
+            sa_update(WorkflowTask)
+            .where(WorkflowTask.workflow_run_id == run_id, WorkflowTask.status == "running")
+            .values(status="pending")
+        )
+        return True
 
     async def fail_lost_run(
         self,
@@ -380,6 +401,7 @@ class WorkflowRepository:
         )
         if result.scalar_one_or_none() is None:
             return False
+        await self._skip_unfinished_tasks(run_id)
         await self._outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_RUN,
             aggregate_id=run_id,
@@ -548,7 +570,9 @@ class WorkflowRepository:
             sa_update(WorkflowRun)
             .where(
                 WorkflowRun.id == run_id,
-                WorkflowRun.status.not_in(("completed", "failed", "cancelled")),
+                # Plan item 87: the model's terminal set, not a hand-written
+                # copy, which had missed item 71's changes_requested.
+                WorkflowRun.status.not_in(TERMINAL_RUN_STATUSES),
             )
             .values(
                 status="failed",
@@ -561,6 +585,7 @@ class WorkflowRepository:
         await self._session.flush()
         moved = result.scalar_one_or_none() is not None
         if moved:
+            await self._skip_unfinished_tasks(run_id)
             await self._outbox.create(
                 aggregate_type=AGGREGATE_WORKFLOW_RUN,
                 aggregate_id=run_id,
@@ -569,6 +594,26 @@ class WorkflowRepository:
                 idempotency_key=workflow_run_status_changed_idempotency_key(run_id),
             )
         return moved
+
+    async def _skip_unfinished_tasks(self, run_id: uuid.UUID) -> None:
+        """Plan item 77: the run just reached a terminal status, in this
+        transaction; every task of it still pending or running becomes
+        "skipped". Called from each of the three writes that end a run
+        (update_run_status, fail_lost_run, mark_failed_if_not_terminal), so
+        a graph failure, a cancel, Request changes, a timeout and the reaper
+        all end the same way. No task event: the run's own status event,
+        written in the same transaction, makes an open page re-read its
+        tasks. Nothing reruns a terminal run's tasks (the start, resume and
+        retry jobs each refuse a run that is not active), so nothing has to
+        turn "skipped" back."""
+        await self._session.execute(
+            sa_update(WorkflowTask)
+            .where(
+                WorkflowTask.workflow_run_id == run_id,
+                WorkflowTask.status.in_(_UNFINISHED_TASK_STATUSES),
+            )
+            .values(status="skipped")
+        )
 
     async def list_tasks(self, workflow_run_id: uuid.UUID) -> list[WorkflowTask]:
         result = await self._session.execute(
@@ -622,6 +667,53 @@ class WorkflowRepository:
             WorkflowTaskDependency(task_id=task_id, depends_on_task_id=depends_on_task_id)
         )
         await self._session.flush()
+
+    async def mark_task_running(self, task_id: uuid.UUID) -> bool:
+        """Plan item 77: a task node calls this as it begins its work, in a
+        transaction that commits before the work, so the task list reads
+        Running while it runs instead of Queued. started_at keeps the first
+        start; a retried task keeps the time it first started.
+
+        One conditional UPDATE, written only while the task's run is active
+        and the task is not "skipped": a cancel can land while a node is
+        about to start (cancellation is checked at gates, not inside
+        analysis nodes), and that start must not turn a task of a cancelled
+        run back to Running. The "skipped" test also holds when the two
+        race: Postgres re-checks it on the row the cancel just wrote.
+        Writes WorkflowTaskStarted only when it wrote the row; returns
+        whether it did."""
+        run_is_active = exists(
+            select(WorkflowRun.id).where(
+                WorkflowRun.id == WorkflowTask.workflow_run_id,
+                WorkflowRun.status.in_(ACTIVE_RUN_STATUSES),
+            )
+        )
+        result = await self._session.execute(
+            sa_update(WorkflowTask)
+            .where(WorkflowTask.id == task_id, WorkflowTask.status != "skipped", run_is_active)
+            .values(
+                status="running",
+                # The app's clock, as mark_task_completed/failed use for
+                # completed_at, not the database's now(): a task's two
+                # times must come from one clock (the Postgres container's
+                # was measured 485 ms behind the host's on 2026-11-10), or
+                # a start can read as after the end (observed in this test
+                # suite before this line used one clock).
+                started_at=func.coalesce(WorkflowTask.started_at, datetime.now(UTC)),
+            )
+            .returning(WorkflowTask.workflow_run_id, WorkflowTask.task_type)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return False
+        await self._outbox.create(
+            aggregate_type=AGGREGATE_WORKFLOW_TASK,
+            aggregate_id=task_id,
+            event_type=EVENT_WORKFLOW_TASK_STARTED,
+            payload=workflow_task_started_payload(row.workflow_run_id, task_id, row.task_type),
+            idempotency_key=workflow_task_started_idempotency_key(task_id),
+        )
+        return True
 
     async def mark_task_completed(self, task_id: uuid.UUID, output_refs: dict) -> None:
         task = await self._session.get(WorkflowTask, task_id)

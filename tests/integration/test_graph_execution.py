@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from _helpers import make_ready_run_inputs
 from sqlalchemy import select
+from tenderos_backend.agents.llm.client import MalformedOutputError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
 from tenderos_backend.agents.schemas.redteam import RedteamCritique
@@ -410,6 +411,13 @@ async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(
     is itself the reason B16's original live-run observation ("both at
     status='pending' with no started_at") could not tell "never ran" from
     "ran, then cancelled" apart.
+
+    Phase 4 plan item 77 changed that: a task now writes "running" as it
+    starts, before its node's own UnitOfWork (where this test's delay
+    sits). The siblings below did start; they read "pending" again because
+    the retry this failure schedules puts its run's running tasks back to
+    pending (WorkflowRepository.record_retry_job). A failure that is not
+    retried leaves them "skipped" instead: the next test.
     """
     registered, run = await _make_run()
     await run_workflow(str(run.id))
@@ -499,6 +507,90 @@ async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(
     assert by_type_after["talent_analysis"].status == "completed"
 
 
+async def test_siblings_cancelled_by_a_failure_that_is_not_retried_end_skipped(monkeypatch):
+    """Plan item 77 (user decision): a sibling branch LangGraph cancels when
+    another branch fails is left neither pending nor running once the run
+    has ended. MalformedOutputError is terminal (classify_task_failure), so
+    no retry is scheduled and the run fails. The siblings provably started:
+    each one's start is followed by a cancellable pause inside the node."""
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+    await _approve(registered, gates[0])
+
+    def _terminal_failure():
+        raise MalformedOutputError("scripted terminal commercial failure")
+
+    monkeypatch.setattr(commercial, "_build_llm_client", _terminal_failure)
+
+    started: list[str] = []
+    real_start = workflow_service.start_task
+
+    async def _start_then_pause(task_id):
+        await real_start(task_id)
+        started.append(str(task_id))
+        await asyncio.sleep(0.5)
+
+    monkeypatch.setattr(compliance, "start_task", _start_then_pause)
+    monkeypatch.setattr(talent, "start_task", _start_then_pause)
+
+    with pytest.raises(MalformedOutputError):
+        await resume_workflow(str(run.id), str(gates[0].id))
+
+    async with UnitOfWork() as uow:
+        ended = await uow.workflow.get_run(run.id)
+        tasks = await uow.workflow.list_tasks(run.id)
+    by_type = {t.task_type: t for t in tasks}
+
+    assert ended is not None and ended.status == "failed"
+    assert len(started) == 2, "both siblings wrote their start before the failure"
+    assert by_type["commercial_validation"].status == "failed"
+    assert by_type["compliance_analysis"].status == "skipped"
+    assert by_type["talent_analysis"].status == "skipped"
+    assert by_type["compliance_analysis"].started_at is not None
+    assert not [t.task_type for t in tasks if t.status in ("pending", "running")]
+
+
+async def test_every_task_records_its_start_before_it_completes():
+    """Plan item 77: each of the four task nodes marks its task running as it
+    starts, with a WorkflowTaskStarted event, through the real graph."""
+    registered, run = await _make_run()
+    await run_workflow(str(run.id))
+    async with UnitOfWork() as uow:
+        gates = await uow.gates.list_for_run(run.id)
+    await _approve(registered, gates[0])
+    await resume_workflow(str(run.id), str(gates[0].id))
+
+    async with UnitOfWork() as uow:
+        tasks = await uow.workflow.list_tasks(run.id)
+        started_events = (
+            (
+                await uow.session.execute(
+                    select(OutboxEvent).where(OutboxEvent.event_type == "WorkflowTaskStarted")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    started_task_ids = {e.payload["task_id"] for e in started_events}
+
+    expected = {
+        "requirement_extraction",
+        "compliance_analysis",
+        "talent_analysis",
+        "commercial_validation",
+    }
+    assert {t.task_type for t in tasks} >= expected
+    for task in tasks:
+        if task.task_type not in expected:
+            continue
+        assert task.status == "completed", task.task_type
+        assert str(task.id) in started_task_ids, task.task_type
+        assert task.started_at is not None, task.task_type
+        assert task.completed_at is not None and task.started_at <= task.completed_at
+
+
 async def test_resume_workflow_does_nothing_once_cancelled_mid_flight():
     """Cancel a run that's already paused at requirement_review, then try to
     approve+resume it anyway - I6's actual scenario: cancellation must win
@@ -524,7 +616,12 @@ async def test_resume_workflow_does_nothing_once_cancelled_mid_flight():
         still_cancelled_run = await uow.workflow.get_run(run.id)
     specialist_types = {"compliance_analysis", "talent_analysis", "commercial_validation"}
     specialist_tasks = [t for t in tasks if t.task_type in specialist_types]
-    assert all(t.status == "pending" for t in specialist_tasks), (
+    assert len(specialist_tasks) == 3
+    # Plan item 77: the cancel left these planned tasks "skipped" (they were
+    # "pending" before). That they never ran is shown by the start no node
+    # ever wrote.
+    assert all(t.status == "skipped" for t in specialist_tasks)
+    assert all(t.started_at is None for t in specialist_tasks), (
         "cancellation must block dispatch even after a gate was approved"
     )
     assert still_cancelled_run is not None

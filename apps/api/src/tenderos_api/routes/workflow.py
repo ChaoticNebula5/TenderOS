@@ -21,13 +21,16 @@ from tenderos_api.sse_tickets import SCOPE_WORKFLOW_RUN, TICKET_TTL_SECONDS, min
 
 router = APIRouter(tags=["workflow"])
 
-# The 4 outbox event types db/repositories/workflow.py's own choke points
+# The 5 outbox event types db/repositories/workflow.py's own choke points
 # write (see that module's docstring) - the wake-up signals this stream
 # polls the outbox for. Not the same vocabulary GET .../events (audit_events)
 # serves - that route is untouched, out of B14's scope (KNOWN_LIMITATIONS.md).
+# WorkflowTaskStarted joined in Phase 4 plan item 77: G13 fixes the
+# message's metadata-only shape, and task.started keeps it.
 _WORKFLOW_PROGRESS_EVENT_TYPES = (
     "WorkflowRunStatusChanged",
     "WorkflowTaskCreated",
+    "WorkflowTaskStarted",
     "WorkflowTaskCompleted",
     "WorkflowTaskFailed",
 )
@@ -41,6 +44,7 @@ _WORKFLOW_PROGRESS_EVENT_TYPES = (
 _WIRE_EVENT_TYPE = {
     "WorkflowRunStatusChanged": "run.status_changed",
     "WorkflowTaskCreated": "task.created",
+    "WorkflowTaskStarted": "task.started",
     "WorkflowTaskCompleted": "task.completed",
     "WorkflowTaskFailed": "task.failed",
 }
@@ -57,7 +61,7 @@ def _workflow_message(event: OutboxEvent) -> dict:
 
 
 async def _workflow_progress_stream(run_id: UUID) -> AsyncIterator[str]:
-    """The run's progress stream: the four workflow event types for this
+    """The run's progress stream: the five workflow event types for this
     run, as G13's dotted wire names. The polling loop itself lives in
     tenderos_api/outbox_stream.py (moved there in Phase 4 so async
     operations stream the same way); see its docstring for the transport

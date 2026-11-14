@@ -105,8 +105,11 @@ def classify_task_failure(
        asyncio-cancelled, never reach `mark_task_completed` OR
        `mark_task_failed` (CancelledError bypasses `except Exception`),
        and stay `'pending'` - indistinguishable from "never scheduled"
-       because this codebase never writes an intermediate "running"
-       status at all. The retry mechanism THIS function feeds resolves
+       because this codebase then wrote no intermediate "running" status.
+       (Phase 4 plan item 77 added it: a task writes "running" as it
+       starts; a retry puts a cancelled sibling back to "pending", and a
+       run that ends leaves its unfinished tasks "skipped".) The retry
+       mechanism THIS function feeds resolves
        it in practice: resuming the same checkpoint via
        `retry_workflow_run` re-executes the WHOLE aborted super-step,
        cancelled siblings included, not only the task that raised - all
