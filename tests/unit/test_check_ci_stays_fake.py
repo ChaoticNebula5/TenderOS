@@ -185,6 +185,17 @@ def test_a_compose_override_fails_whether_tracked_or_not(tree):
     ]
 
 
+def test_a_workflow_that_sets_the_walk_only_budget_fails(tree):
+    # Plan item 73: CI's E2E must run on the default cost budget.
+    _edit(
+        tree,
+        _CI,
+        "LLM_PROVIDER: fake",
+        "LLM_PROVIDER: fake\n      TENDEROS_E2E_MAX_TENDER_COST_USD: '0'",
+    )
+    assert f"{_CI} names TENDEROS_E2E_MAX_TENDER_COST_USD, the walk-only budget" in _problems(tree)
+
+
 def test_a_workflow_that_names_the_dev_override_fails(tree):
     _edit(
         tree,

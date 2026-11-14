@@ -111,3 +111,10 @@
 .gate-panel__notes-label {
   color: var(--ink-2);
 }
+
+/* Plan item 73: why the run paused at this gate, under its counts, for the
+   gates whose screens have no table explaining them. */
+.gate-panel__description {
+  max-width: 60ch;
+  margin: 0 0 var(--space-4);
+}

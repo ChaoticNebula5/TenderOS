@@ -7,6 +7,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.talent_service import (
     evaluate_role_match,
     extract_and_persist_roles,
@@ -135,10 +136,6 @@ async def resource_selection_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             roles = await uow.talent.list_role_requirements_for_tender(tender_id)
-            all_matches = []
-            for role in roles:
-                all_matches.extend(await uow.talent.list_role_matches_for_role(role.id))
-            pending = [m for m in all_matches if not m.human_selected]
 
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
@@ -148,11 +145,9 @@ async def resource_selection_gate_node(state: TenderState) -> dict:
                 targets=[
                     {"target_type": "role_requirement", "target_id": str(r.id)} for r in roles
                 ],
-                summary={
-                    "role_count": len(roles),
-                    "candidate_count": len(all_matches),
-                    "unselected_count": len(pending),
-                },
+                # Plan item 73: shared with the gates API's live counts; it
+                # adds unselected_role_count, the roles with no pick.
+                summary=await gate_summary_service.resource_selection_summary(uow, tender_id),
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

@@ -16,6 +16,7 @@ import type {
   PricingFindingResponse,
 } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
+import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
@@ -138,6 +139,8 @@ export function CommercialFindings() {
       setError(operation.error_message ?? "Validation failed");
     }
     await refreshFindings(() => tenderIdRef.current !== finishedForTenderId);
+    // Plan item 73: the gate's live counts follow this change.
+    void refreshPendingGate(gate, setGate);
   }
   // Phase 4 Stage 2: one re-validation is one tender-wide operation. It
   // re-checks every pricing document of the tender together (cross-document
@@ -177,6 +180,8 @@ export function CommercialFindings() {
       const updated = await resolvePricingFinding(findingId);
       findingReads.changed(findingId);
       setFindings((prev) => prev.map((f) => (f.id === findingId ? updated : f)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Resolve failed (${err.status})` : "Resolve failed");
     }

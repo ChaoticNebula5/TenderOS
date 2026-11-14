@@ -4,6 +4,7 @@ import { ApiError, decideGate } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
 import { retryTransient } from "../api/retryTransient";
 import { formatDate } from "../format/date";
+import { formatUsd } from "../format/usd";
 import { describeReadiness, describeStatus } from "../status/statusMap";
 import type { StatusDescriptor } from "../status/statusMap";
 import { Button } from "./ui/Button";
@@ -17,6 +18,10 @@ import "./GateDecisionPanel.css";
 interface GateDecisionPanelProps {
   gate: GateResponse;
   onDecided: (updated: GateResponse) => void;
+  // Plan item 73: one sentence on why the run paused here and what deciding
+  // does, shown while the gate is pending (the finding-resolution and
+  // cost-budget gates, whose screens have no table explaining them).
+  description?: string;
 }
 
 type Decision = "approve" | "reject" | "request_changes";
@@ -97,7 +102,7 @@ const DECISIONS: readonly (readonly [Decision, string, ButtonVariant])[] = [
 // own domain needs. A screen collects whatever target_updates it wants
 // and passes them in via decideTargetUpdates; this component only ever
 // asks "what's the decision on the gate overall."
-export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
+export function GateDecisionPanel({ gate, onDecided, description }: GateDecisionPanelProps) {
   const [notes, setNotes] = useState("");
   const [waive, setWaive] = useState(false);
   // The decision in flight, or null. All three buttons are disabled while
@@ -159,17 +164,44 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   // and then this <section> as siblings, and full-flow.spec.ts (gatePanel()) finds the
   // panel that way (following-sibling::section[1]). Nothing may wrap it.
   //
-  // Header: the gate's own status as a badge, decided or not, then the
-  // summary labelled as the snapshot it is - the counts are fixed when the
-  // gate is requested and do not follow later edits (DESIGN.md Gate panel,
-  // "Summary honesty").
+  // Header: the gate's own status as a badge, decided or not, then its
+  // counts. Plan item 73, decision 3 (user, 2026-11-13): a pending gate
+  // shows its counts as they are now first (live_summary, which the screen
+  // re-reads after each row change, gates/refreshGate.ts), then the
+  // snapshot taken when the gate opened, labelled so. When the two agree,
+  // one line says so instead of a second identical grid. A decided gate
+  // shows only its snapshot: the record of what was decided on. Before,
+  // the snapshot alone sat beside live tables ("Pending approval 2" next to
+  // two approved rows; DESIGN.md "Summary honesty").
+  const openedAt = formatDate(gate.requested_at);
+  const live = liveItems(gate);
+  const snapshot = summaryItems(gate, "snapshot");
   const header = (
     <>
       <div className="gate-panel__header">
         <StatusBadge {...describeGate(gate)} />
       </div>
-      <p className="gate-panel__asof">At request time · {formatDate(gate.requested_at)}</p>
-      <GateSummary gate={gate} />
+      {live !== null ? (
+        <>
+          <p className="gate-panel__asof">Now</p>
+          <SummaryGrid items={live} />
+          {snapshot !== null && sameItems(live, snapshot) ? (
+            <p className="gate-panel__asof gate-panel__asof--unchanged">
+              Unchanged since this gate opened · {openedAt}
+            </p>
+          ) : (
+            <>
+              <p className="gate-panel__asof">When this gate opened · {openedAt}</p>
+              <GateSummary gate={gate} />
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="gate-panel__asof">When this gate opened · {openedAt}</p>
+          <GateSummary gate={gate} />
+        </>
+      )}
     </>
   );
 
@@ -205,6 +237,7 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   return (
     <section className="gate-panel">
       {header}
+      {description && <p className="gate-panel__description">{description}</p>}
       {error && (
         <Notice variant="failed" alert>
           {error}
@@ -244,97 +277,136 @@ export function GateDecisionPanel({ gate, onDecided }: GateDecisionPanelProps) {
   );
 }
 
+type SummaryItem = [term: string, value: string];
+
+// The count gates' terms and values, from the snapshot or the live counts.
 // Switches on gate_type - the same discriminant Pydantic uses on the
-// backend - so TypeScript narrows `gate.summary` to the matching interface
-// in each branch instead of the union. Each branch names its own real
-// fields (from schemas/gates.py's now-typed summaries) rather than
-// iterating Object.entries(gate.summary) generically, since a reader
-// benefits from seeing "unverified_mandatory_count" as a real label, not
-// a formatted-from-a-key guess.
-//
-// A definition grid (DESIGN.md Gate panel), not a <ul>: each count is a
-// term and a value, and the values are tabular. No E2E locator reads these
-// counts, and the pages whose spec lines count <li> page-wide (proposal
-// :971/:974, knowledge selections :1253/:1258) render no gate panel
-// (measured before this change: 0 panels on either page).
-function GateSummary({ gate }: { gate: GateResponse }) {
+// backend - so TypeScript narrows `summary` to the matching interface in
+// each branch. Each branch names its own real fields (from schemas/gates.py)
+// rather than iterating Object.entries generically, since a reader benefits
+// from seeing "unverified_mandatory_count" as a real label, not a
+// formatted-from-a-key guess. null for final_readiness, which is not a list
+// of counts, and for live counts the response does not carry.
+function summaryItems(gate: GateResponse, which: "snapshot" | "live"): SummaryItem[] | null {
+  const pick = <T,>(snapshot: T, live: T | null | undefined): T | null =>
+    which === "snapshot" ? snapshot : (live ?? null);
   switch (gate.gate_type) {
-    case "requirement_review":
+    case "requirement_review": {
+      const c = pick(gate.summary, gate.live_summary);
       return (
-        <SummaryGrid
-          items={[
-            ["Requirements", gate.summary.requirement_count],
-            ["Mandatory", gate.summary.mandatory_count],
-            ["Unverified mandatory", gate.summary.unverified_mandatory_count],
-            ["Submission items", gate.summary.submission_item_count],
-            ["Clarifications", gate.summary.clarification_count],
-          ]}
-        />
+        c && [
+          ["Requirements", String(c.requirement_count)],
+          ["Mandatory", String(c.mandatory_count)],
+          ["Unverified mandatory", String(c.unverified_mandatory_count)],
+          ["Submission items", String(c.submission_item_count)],
+          ["Clarifications", String(c.clarification_count)],
+        ]
       );
-    case "compliance_review":
+    }
+    case "compliance_review": {
+      const c = pick(gate.summary, gate.live_summary);
       return (
-        <SummaryGrid
-          items={[
-            ["Compliance entries", gate.summary.compliance_entry_count],
-            ["Pending approval", gate.summary.pending_count],
-            ["High risk", gate.summary.high_risk_count],
-          ]}
-        />
+        c && [
+          ["Compliance entries", String(c.compliance_entry_count)],
+          ["Pending approval", String(c.pending_count)],
+          ["High risk", String(c.high_risk_count)],
+        ]
       );
-    case "resource_selection":
+    }
+    case "resource_selection": {
+      // Plan item 73 (item 79's C3): candidate_count counts (role,
+      // candidate) matches, so it is "Candidate matches", and the
+      // unselected figure is roles with no pick. The old unselected_count
+      // (matches) is no longer shown; a snapshot from before
+      // unselected_role_count existed shows no such line.
+      const c = pick(gate.summary, gate.live_summary);
+      if (c === null) return null;
+      const items: SummaryItem[] = [
+        ["Roles", String(c.role_count)],
+        ["Candidate matches", String(c.candidate_count)],
+      ];
+      if (typeof c.unselected_role_count === "number") {
+        items.push(["Roles without a pick", String(c.unselected_role_count)]);
+      }
+      return items;
+    }
+    case "commercial_approval": {
+      const c = pick(gate.summary, gate.live_summary);
       return (
-        <SummaryGrid
-          items={[
-            ["Roles", gate.summary.role_count],
-            ["Candidates", gate.summary.candidate_count],
-            ["Unselected roles", gate.summary.unselected_count],
-          ]}
-        />
+        c && [
+          ["Findings", String(c.finding_count)],
+          ["Pending", String(c.pending_count)],
+          ["Critical", String(c.critical_count)],
+        ]
       );
-    case "commercial_approval":
+    }
+    case "finding_resolution": {
+      const c = pick(gate.summary, gate.live_summary);
       return (
-        <SummaryGrid
-          items={[
-            ["Findings", gate.summary.finding_count],
-            ["Pending", gate.summary.pending_count],
-            ["Critical", gate.summary.critical_count],
-          ]}
-        />
+        c && [
+          ["Open findings", String(c.open_finding_count)],
+          ["Critical", String(c.critical_count)],
+        ]
       );
-    case "finding_resolution":
+    }
+    case "cost_budget": {
+      // Plan item 73: this run's LLM spend against its budget, in USD
+      // (format/usd.ts); not a count of objects like the gates above.
+      const c = pick(gate.summary, gate.live_summary);
       return (
-        <SummaryGrid
-          items={[
-            ["Open findings", gate.summary.open_finding_count],
-            ["Critical", gate.summary.critical_count],
-          ]}
-        />
+        c && [
+          ["Spent", formatUsd(c.accumulated_cost_usd)],
+          ["Budget", formatUsd(c.budget_usd)],
+          ["Over budget by", formatUsd(c.overage_usd)],
+        ]
       );
+    }
     case "final_readiness":
-      // The readiness verdict - the one place "Ready" may appear
-      // (describeReadiness). Blockers stay a list, each with the blocked
-      // icon. This <ul> sits inside the panel's <section>, so it is never
-      // the "Blockers" <h2>'s following sibling that full-flow.spec.ts (step 13, readiness)
-      // reads on the readiness page (that <ul> is Readiness.tsx's own).
-      return (
-        <div className="gate-summary__readiness">
-          <StatusBadge {...describeReadiness(gate.summary.ready)} />
-          {gate.summary.blockers.length > 0 && (
-            <ul className="gate-blockers">
-              {gate.summary.blockers.map((blocker, i) => (
-                <li key={i}>
-                  <StatusIcon tone="blocked" className="gate-blockers__icon" />
-                  {blocker.message}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      );
+      return null;
   }
 }
 
-function SummaryGrid({ items }: { items: [string, number][] }) {
+// A pending gate's live counts, or null to show the snapshot alone.
+function liveItems(gate: GateResponse): SummaryItem[] | null {
+  return gate.status === "pending" ? summaryItems(gate, "live") : null;
+}
+
+function sameItems(a: SummaryItem[], b: SummaryItem[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The snapshot taken when the gate opened. A definition grid (DESIGN.md
+// Gate panel), not a <ul>: each count is a term and a value, and the
+// values are tabular. No E2E locator reads these counts, and the pages
+// whose spec lines count <li> page-wide (proposal :971/:974, knowledge
+// selections :1253/:1258) render no gate panel.
+function GateSummary({ gate }: { gate: GateResponse }) {
+  if (gate.gate_type === "final_readiness") {
+    // The readiness verdict - the one place "Ready" may appear
+    // (describeReadiness). Blockers stay a list, each with the blocked
+    // icon. This <ul> sits inside the panel's <section>, so it is never
+    // the "Blockers" <h2>'s following sibling that full-flow.spec.ts (step 13, readiness)
+    // reads on the readiness page (that <ul> is Readiness.tsx's own).
+    return (
+      <div className="gate-summary__readiness">
+        <StatusBadge {...describeReadiness(gate.summary.ready)} />
+        {gate.summary.blockers.length > 0 && (
+          <ul className="gate-blockers">
+            {gate.summary.blockers.map((blocker, i) => (
+              <li key={i}>
+                <StatusIcon tone="blocked" className="gate-blockers__icon" />
+                {blocker.message}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+  return <SummaryGrid items={summaryItems(gate, "snapshot") ?? []} />;
+}
+
+function SummaryGrid({ items }: { items: SummaryItem[] }) {
   return (
     <dl className="gate-summary">
       {items.map(([term, value]) => (

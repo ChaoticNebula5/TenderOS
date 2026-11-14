@@ -7,6 +7,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.redteam_service import (
     map_finding_to_corrective_task,
     run_red_team,
@@ -164,7 +165,7 @@ async def finding_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             findings = await uow.redteam.list_open_for_tender(
-                tender_id, severities=("critical", "major")
+                tender_id, severities=gate_summary_service.FINDING_GATE_SEVERITIES
             )
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
@@ -174,10 +175,8 @@ async def finding_gate_node(state: TenderState) -> dict:
                 targets=[
                     {"target_type": "redteam_finding", "target_id": str(f.id)} for f in findings
                 ],
-                summary={
-                    "open_finding_count": len(findings),
-                    "critical_count": sum(1 for f in findings if f.severity == "critical"),
-                },
+                # Plan item 73: shared with the gates API's live counts.
+                summary=await gate_summary_service.finding_resolution_summary(uow, tender_id),
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

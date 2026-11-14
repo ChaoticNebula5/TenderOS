@@ -31,6 +31,26 @@
   scrollbar-width: thin;
 }
 
+/* Plan item 74: the bid's name, first in the bar, plain text. A long name
+   is cut with an ellipsis (its full text is the title attribute) so the
+   steps keep their room; at phone width it takes its own row (below). */
+.tender-bar__name {
+  flex: none;
+  max-width: 28ch;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "at <gate>": which gate the run waits at, linking to its screen. */
+.tender-bar__run-at {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+  white-space: nowrap;
+}
+
 /* "Run" + badge. The label says what the badge is about; on its own,
    "Waiting for review" in a nav bar does not say what is waiting. */
 .tender-bar__run {
@@ -58,6 +78,12 @@
 
   .workflow-nav {
     flex-basis: 100%;
+  }
+
+  .tender-bar__name {
+    flex-basis: 100%;
+    max-width: none;
+    padding-top: var(--space-2);
   }
 
   .tender-bar__run {

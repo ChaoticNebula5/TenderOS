@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import type { ComplianceResponse, GateResponse } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
+import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
@@ -106,6 +107,8 @@ export function ComplianceMatrix() {
     try {
       const updated = await approveCompliance(complianceId);
       setEntries((prev) => prev.map((e) => (e.id === complianceId ? updated : e)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
     }
@@ -119,6 +122,8 @@ export function ComplianceMatrix() {
         reasoning_summary: "Overridden by reviewer.",
       });
       setEntries((prev) => prev.map((e) => (e.id === complianceId ? updated : e)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Override failed (${err.status})` : "Override failed");
     }

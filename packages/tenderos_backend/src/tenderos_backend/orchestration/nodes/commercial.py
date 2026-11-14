@@ -7,6 +7,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.commercial_service import evaluate_commercial_for_tender
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
@@ -88,8 +89,6 @@ async def commercial_approval_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             findings = await uow.commercial.list_pricing_findings_for_tender(tender_id)
-            pending = [f for f in findings if not f.resolved]
-            critical = [f for f in pending if f.severity == "critical"]
 
             gate_id = uuid.uuid4()
             payload = build_gate_payload(
@@ -99,11 +98,8 @@ async def commercial_approval_gate_node(state: TenderState) -> dict:
                 targets=[
                     {"target_type": "pricing_finding", "target_id": str(f.id)} for f in findings
                 ],
-                summary={
-                    "finding_count": len(findings),
-                    "pending_count": len(pending),
-                    "critical_count": len(critical),
-                },
+                # Plan item 73: shared with the gates API's live counts.
+                summary=await gate_summary_service.commercial_approval_summary(uow, tender_id),
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

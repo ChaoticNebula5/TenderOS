@@ -4,6 +4,7 @@ from langgraph.types import interrupt
 
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import gate_summary_service
 from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
 from tenderos_backend.orchestration.gates import build_gate_payload
 from tenderos_backend.orchestration.state import TenderState
@@ -39,13 +40,11 @@ async def cost_budget_gate_node(state: TenderState) -> dict:
         return {"status": "rejected"}
 
     async with UnitOfWork() as uow:
-        # float, not Decimal, from here on - settings.max_tender_cost_usd
-        # is a plain float, and Python allows comparing Decimal to float
-        # but not subtracting one from the other (a real TypeError caught
-        # by this feature's own integration test, not assumed away).
-        accumulated = float(await uow.agent_traces.sum_cost_for_run(workflow_run_id))
+        # Plan item 73: the same counts the gates API shows live. float,
+        # not Decimal (see gate_summary_service.cost_budget_summary).
+        summary = await gate_summary_service.cost_budget_summary(uow, workflow_run_id)
 
-    if accumulated < settings.max_tender_cost_usd:
+    if summary["accumulated_cost_usd"] < settings.max_tender_cost_usd:
         # The common path: under budget, no gate, no interrupt() at all -
         # this node is a no-op the overwhelming majority of the time.
         return {}
@@ -71,7 +70,6 @@ async def cost_budget_gate_node(state: TenderState) -> dict:
 
         if gate is None:
             gate_id = uuid.uuid4()
-            overage = accumulated - settings.max_tender_cost_usd
             payload = build_gate_payload(
                 gate_id,
                 "cost_budget",
@@ -83,11 +81,7 @@ async def cost_budget_gate_node(state: TenderState) -> dict:
                 # a whole. Same empty-list precedent final_readiness's own
                 # gate already uses.
                 targets=[],
-                summary={
-                    "accumulated_cost_usd": accumulated,
-                    "budget_usd": settings.max_tender_cost_usd,
-                    "overage_usd": overage,
-                },
+                summary=summary,
             )
             gate = await uow.gates.create(
                 gate_id=gate_id,

@@ -12,8 +12,9 @@ import {
   reprocessDocument,
   uploadDocument,
 } from "../api/client";
-import type { DocumentResponse, WorkflowTaskResponse } from "../api/client";
+import type { DocumentResponse, GateResponse, WorkflowTaskResponse } from "../api/client";
 import { formatErrorDetail, readEnvelopeCode, readEnvelopeDetail } from "../api/formatErrorDetail";
+import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Field } from "../components/ui/Field";
@@ -48,6 +49,15 @@ const RUN_ERROR_SENTENCES: Record<string, string> = {
   JOB_TIMEOUT:
     "The last run stopped because one step ran past its time limit. Start processing again to run it from the beginning.",
 };
+
+// Plan item 73: the cost-budget gate is decided here. It opens before a
+// run's next expensive stage once the run's LLM spend has reached
+// MAX_TENDER_COST_USD (cost_budget.py); there is no domain screen for
+// spend, and this page is where a run is watched. Before, no screen showed
+// it. Deciding it is for bid manager, approver and admin
+// (approve_cost_budget).
+const COST_GATE_DESCRIPTION =
+  "The run paused before its next stage because its LLM spend has reached the budget. Approve to let it continue and spend more; reject to stop it.";
 
 // Plan item 71: the gate whose Request changes ended the last run, read
 // from that run's gates (GET /workflow-runs/{id}/gates; the notes live on
@@ -109,6 +119,12 @@ export function UploadAndProcessingStatus() {
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const cancelRegionRef = useRef<HTMLDivElement>(null);
+  // Plan item 73: the active run's cost-budget gate, while it waits there.
+  const [costGate, setCostGate] = useState<GateResponse | null>(null);
+  // The active run's status as the run list reported it on load: the cost
+  // gate's lookup uses it until the run stream answers, so a stream that
+  // fails (observed: a 429 on its first read) does not hide the gate.
+  const [listedRunStatus, setListedRunStatus] = useState<string | null>(null);
   const cancelButtonRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,6 +134,7 @@ export function UploadAndProcessingStatus() {
     // lookup effect below skips itself whenever workflowRunId is
     // already set. Without this reset, navigating tender A -> tender B
     // would keep polling and displaying tender A's run.
+    setListedRunStatus(null);
     setWorkflowRunId(null);
     setLastRunStatus(null);
     setLastRunErrorCode(null);
@@ -136,6 +153,7 @@ export function UploadAndProcessingStatus() {
         // so this picks the retry, not the dead run behind it.
         const active = runs.find((run) => NON_TERMINAL_STATUSES.has(run.status));
         if (active) {
+          setListedRunStatus(active.status);
           setWorkflowRunId(active.id);
         } else if (runs.length > 0) {
           // Every run so far is terminal - runs[0] is the most recent
@@ -289,9 +307,40 @@ export function UploadAndProcessingStatus() {
       setLastRunStatus(activeRun.status);
       setLastRunErrorCode(activeRun.error_code ?? null);
       setLastRunId(activeRun.id);
+      setListedRunStatus(null);
       setWorkflowRunId(null);
     }
   }, [activeRun]);
+
+  // Plan item 73: whenever the followed run reports a status, look for a
+  // cost-budget gate it waits at. Only a waiting run can be at one; the
+  // run stream pushes every status change, so a gate opening shows here
+  // without a reload. A gate decided on this page stays shown until the
+  // run's next status says where it went.
+  const activeRunStatus = activeRun?.status ?? listedRunStatus;
+  useEffect(() => {
+    if (workflowRunId === null || activeRunStatus !== "waiting_for_human") {
+      setCostGate(null);
+      return;
+    }
+    let cancelled = false;
+    listGates(workflowRunId)
+      .then((gates) => {
+        if (cancelled) return;
+        const pending = gates.find((g) => g.gate_type === "cost_budget" && g.status === "pending");
+        setCostGate(pending ?? null);
+      })
+      .catch(() => {
+        // The task list and the run badge still show; only this panel is missing.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflowRunId, activeRunStatus]);
+
+  useEffect(() => {
+    setCostGate(null);
+  }, [workflowRunId]);
 
   // Plan item 72: any open confirmation was about the run being followed;
   // when that changes (it ended, or another tender), the confirmation goes.
@@ -320,18 +369,24 @@ export function UploadAndProcessingStatus() {
   }, [lastRunStatus, lastRunId]);
 
   // Focus follows the confirmation: into it on open, on the safe choice
-  // ("Keep running").
+  // ("Keep running"); back to "Cancel run" when it is closed without a
+  // cancel. An effect after the commit, not a requestAnimationFrame: the
+  // button exists by then, however busy the page is (a frame callback lost
+  // that race once, under the full test suite's load, PR 3).
+  const returnFocusToCancel = useRef(false);
   useEffect(() => {
     if (confirmingCancel) {
       cancelRegionRef.current?.querySelector<HTMLButtonElement>(".processing__keep")?.focus();
+    } else if (returnFocusToCancel.current) {
+      returnFocusToCancel.current = false;
+      cancelButtonRef.current?.querySelector("button")?.focus();
     }
   }, [confirmingCancel]);
 
   function closeCancelConfirmation() {
+    returnFocusToCancel.current = true;
     setConfirmingCancel(false);
     setCancelError(null);
-    // Back to "Cancel run", once React has rendered it in the region's place.
-    requestAnimationFrame(() => cancelButtonRef.current?.querySelector("button")?.focus());
   }
 
   async function handleCancelRun() {
@@ -346,6 +401,7 @@ export function UploadAndProcessingStatus() {
         setLastRunStatus(run.status);
         setLastRunErrorCode(run.error_code ?? null);
         setLastRunId(run.id);
+        setListedRunStatus(null);
         setWorkflowRunId(null);
       }
       setConfirmingCancel(false);
@@ -484,6 +540,16 @@ export function UploadAndProcessingStatus() {
                 Live updates are currently unavailable ({formatErrorDetail(streamError)}). The list
                 below may be out of date.
               </Notice>
+            )}
+            {costGate && (
+              <>
+                <h2>Cost budget gate</h2>
+                <GateDecisionPanel
+                  gate={costGate}
+                  onDecided={setCostGate}
+                  description={COST_GATE_DESCRIPTION}
+                />
+              </>
             )}
             {/* Announced politely as tasks change (DESIGN.md Accessibility,
                 "Live regions"). Task types have no hand-written labels, so

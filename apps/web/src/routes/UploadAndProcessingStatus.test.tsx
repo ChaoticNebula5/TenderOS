@@ -255,8 +255,8 @@ describe("restyle batch 3: processing screen", () => {
     );
     const barBadge = container.querySelector(".tender-bar .status-badge");
     expect(barBadge?.closest("main")).toBeNull();
-    // No new call: the run list and documents, as before, and no run fetch.
-    expect(listWorkflowRuns).toHaveBeenCalledTimes(1);
+    // No single-run fetch. Since plan item 74 the tender bar reads the run
+    // list itself too, so the list's calls are not counted here.
     expect(getWorkflowRun).not.toHaveBeenCalled();
   });
 });
@@ -583,5 +583,69 @@ describe("cancelling the active run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
 
     expect(await screen.findByText("Failed to cancel the run.")).toBeInTheDocument();
+  });
+});
+
+// Plan item 73: the cost-budget gate is decided on this page.
+function pendingCostGate(): apiClient.GateResponse {
+  return {
+    gate_id: "gate-cost",
+    gate_type: "cost_budget",
+    workflow_run_id: "run-1",
+    status: "pending",
+    targets: [],
+    summary: { accumulated_cost_usd: 0, budget_usd: 0, overage_usd: 0 },
+    live_summary: { accumulated_cost_usd: 0, budget_usd: 0, overage_usd: 0 },
+    allowed_decisions: ["approve", "reject", "request_changes"],
+    decision_payload: null,
+    decided_by: null,
+    requested_at: "2026-01-01T00:00:00Z",
+    decided_at: null,
+  };
+}
+
+describe("the cost budget gate", () => {
+  it("shows its panel, with why the run paused, while the run waits at it", async () => {
+    const waiting = { ...activeRun(), status: "waiting_for_human" };
+    listWorkflowRuns.mockResolvedValue([waiting]);
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([]);
+    getWorkflowRun.mockResolvedValue(waiting);
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    listGates.mockResolvedValue([pendingCostGate()]);
+    renderAt("tender-1");
+
+    const heading = await screen.findByRole("heading", { name: "Cost budget gate" });
+    expect(heading.nextElementSibling?.tagName).toBe("SECTION");
+    expect(heading.nextElementSibling).toHaveTextContent("its LLM spend has reached the budget");
+    expect(screen.getByText("Spent")).toBeInTheDocument();
+  });
+
+  it("still shows it when the run stream fails, from the run list's status", async () => {
+    // Observed in the PR 3 walk: the stream's first read was refused (429),
+    // and the panel, which then read the status only from the stream, never
+    // appeared although the run waited at the gate.
+    const waiting = { ...activeRun(), status: "waiting_for_human" };
+    listWorkflowRuns.mockResolvedValue([waiting]);
+    listDocuments.mockResolvedValue([]);
+    mintWorkflowEventsTicket.mockRejectedValue(new ApiError(401, { detail: "expired session" }));
+    listGates.mockResolvedValue([pendingCostGate()]);
+    renderAt("tender-1");
+
+    expect(await screen.findByText(/Live updates are currently unavailable/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Cost budget gate" })).toBeInTheDocument();
+  });
+
+  it("shows nothing for a run that is not waiting", async () => {
+    listWorkflowRuns.mockResolvedValue([activeRun()]);
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([]);
+    getWorkflowRun.mockResolvedValue(activeRun());
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    renderAt("tender-1");
+
+    expect(await screen.findByText("Waiting for tasks to start...")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Cost budget gate" })).not.toBeInTheDocument();
+    expect(listGates).not.toHaveBeenCalled();
   });
 });

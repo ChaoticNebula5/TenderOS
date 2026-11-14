@@ -10,6 +10,7 @@ import {
 } from "../api/client";
 import type { GateResponse, RoleMatchResponse, RoleRequirementResponse } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
+import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Notice } from "../components/ui/Notice";
@@ -142,6 +143,8 @@ export function TeamWorkspace() {
         crypto.randomUUID(),
       );
       setMatches((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+      // Plan item 73: the gate's live counts follow this change.
+      void refreshPendingGate(gate, setGate);
     } catch (err) {
       setError(err instanceof ApiError ? `Selection failed (${err.status})` : "Selection failed");
     }

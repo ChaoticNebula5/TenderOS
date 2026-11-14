@@ -7,6 +7,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.domain.services import (
     gate_service,
+    gate_summary_service,
     gate_target_service,
     readiness_service,
     tender_service,
@@ -50,8 +51,9 @@ _GATE_TYPE_TO_RESPONSE_CLASS: dict[str, type[BaseModel]] = {
 }
 
 
-def _gate_to_response(gate: ApprovalGate) -> GateResponse:
+def _gate_to_response(gate: ApprovalGate, live_summary: dict | None = None) -> GateResponse:
     response_class = _GATE_TYPE_TO_RESPONSE_CLASS[gate.gate_type]
+    extra = {} if live_summary is None else {"live_summary": live_summary}
     # cast, not a plain return: the dict lookup above guarantees
     # response_class matches gate.gate_type at runtime (Part C's CHECK
     # constraint backs that), but mypy has no way to narrow a dict's value
@@ -72,8 +74,16 @@ def _gate_to_response(gate: ApprovalGate) -> GateResponse:
             decided_by=gate.decided_by,
             requested_at=gate.requested_at,
             decided_at=gate.decided_at,
+            **extra,
         ),
     )
+
+
+async def _gate_with_live_counts(gate: ApprovalGate) -> GateResponse:
+    """Plan item 73: a pending gate's response carries its counts as they
+    are now (gate_summary_service.live_summary), so the panel can show them
+    above the snapshot taken when the gate opened."""
+    return _gate_to_response(gate, await gate_summary_service.live_summary(gate))
 
 
 @router.get("/workflow-runs/{run_id}/gates", response_model=list[GateResponse])
@@ -81,7 +91,7 @@ async def list_gates(
     run_id: UUID, current_user: User = Depends(require_permission("view_gates"))
 ) -> list[GateResponse]:
     gates = await gate_service.list_gates_for_run(run_id)
-    return [_gate_to_response(g) for g in gates]
+    return [await _gate_with_live_counts(g) for g in gates]
 
 
 @router.get("/gates/{gate_id}", response_model=GateResponse)
@@ -91,7 +101,7 @@ async def get_gate(
     gate = await gate_service.get_gate(gate_id)
     if gate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
-    return _gate_to_response(gate)
+    return await _gate_with_live_counts(gate)
 
 
 @router.post("/gates/{gate_id}/decision", response_model=GateResponse)

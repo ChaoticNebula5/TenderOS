@@ -31,7 +31,9 @@ GATE_TYPE_ACTIONS: dict[str, str] = {
     "compliance_review": "approve_compliance",
     "resource_selection": "select_resource",
     "commercial_approval": "resolve_commercial_finding",
-    "finding_resolution": "resolve_redteam_finding",
+    # Plan item 73, decision 2: its own action, narrower than resolving
+    # one finding (rbac.py).
+    "finding_resolution": "decide_finding_resolution_gate",
     "final_readiness": "final_readiness_approval",
     "cost_budget": "approve_cost_budget",
 }

@@ -100,7 +100,12 @@ _EXPECTED_SUMMARY_KEYS = {
         "clarification_count",
     },
     "compliance_review": {"compliance_entry_count", "pending_count", "high_risk_count"},
-    "resource_selection": {"role_count", "candidate_count", "unselected_count"},
+    "resource_selection": {
+        "role_count",
+        "candidate_count",
+        "unselected_count",
+        "unselected_role_count",
+    },
     "commercial_approval": {"finding_count", "pending_count", "critical_count"},
     "finding_resolution": {"open_finding_count", "critical_count"},
     "final_readiness": {"ready", "blockers", "counts", "degraded_stages"},

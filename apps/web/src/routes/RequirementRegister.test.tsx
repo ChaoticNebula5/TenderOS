@@ -123,12 +123,18 @@ describe("RequirementRegister (restyle batch 3)", () => {
     await screen.findByText("Awaiting decision");
     await waitFor(() => expect(barBadge(container)).toHaveTextContent("Waiting for review"));
     expect(barBadge(container)?.closest("main")).toBeNull();
-    // No new fetch: the same three calls the screen always made, once each,
-    // and no separate run fetch.
+    // The screen's own reads, once each. Since plan item 74 the tender bar
+    // reads the run list and gates itself too (it names the waiting gate),
+    // so those are not counted here; no single-run fetch either way.
     expect(listRequirements).toHaveBeenCalledTimes(1);
-    expect(listWorkflowRuns).toHaveBeenCalledTimes(1);
-    expect(listGates).toHaveBeenCalledTimes(1);
     expect(getWorkflowRun).not.toHaveBeenCalled();
+    // Plan item 74: the bar names the gate the run waits at, with a link.
+    await waitFor(() =>
+      expect(container.querySelector(".tender-bar__run-at a")).toHaveAttribute(
+        "href",
+        "/tenders/t1/requirements",
+      ),
+    );
   });
 
   it("shows no run badge when the tender has no run", async () => {
@@ -160,10 +166,15 @@ describe("RequirementRegister (restyle batch 3)", () => {
     expect(heading.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(heading.nextElementSibling?.tagName).toBe("SECTION");
 
+    // What the server says once the decision has moved the run on.
+    listWorkflowRuns.mockResolvedValue([run("running")]);
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
     expect(await screen.findByText("Approved")).toBeInTheDocument();
-    await waitFor(() => expect(barBadge(container)).toBeNull());
+    // The screen withdraws its now-stale status; since plan item 74 the
+    // bar re-reads and shows the run's new one instead of going blank.
+    await waitFor(() => expect(barBadge(container)).toHaveTextContent("Running"));
+    expect(container.querySelector(".tender-bar__run-at")).toBeNull();
     const decidedHeading = screen.getByRole("heading", { name: "Requirement review gate" });
     expect(decidedHeading.nextElementSibling?.tagName).toBe("SECTION");
     expect(

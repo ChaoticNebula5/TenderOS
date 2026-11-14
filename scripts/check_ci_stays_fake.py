@@ -25,7 +25,11 @@ this fails when:
   image for the dev server) without being named;
 - plan item 27: a workflow, a file a workflow uses, or scripts/fake-stack.ps1
   names docker-compose.dev.yml, the Vite dev-server override. CI's E2E and
-  the local fake stack must test the production build.
+  the local fake stack must test the production build;
+- plan item 73: a workflow names TENDEROS_E2E_MAX_TENDER_COST_USD.
+  docker-compose.e2e-fake.yml reads it, defaulting to the code's budget,
+  only so a local walk can open the cost-budget gate (the fake provider
+  records no cost); CI's E2E must run on the default budget.
 
 Exit 0 when everything holds, 1 with one line per problem otherwise.
 Run: uv run python scripts/check_ci_stays_fake.py   (CI's lint job runs it)
@@ -47,6 +51,7 @@ SCRIPT_PATH = re.compile(r"scripts/[\w./-]+")
 COMPOSE_PATH = re.compile(r"docker-compose[\w.-]*\.ya?ml")
 DEV_FILE = re.compile(r"docker-compose\.dev\.ya?ml", re.IGNORECASE)
 FAKE_STACK_SCRIPT = "scripts/fake-stack.ps1"
+WALK_ONLY_BUDGET = "TENDEROS_E2E_MAX_TENDER_COST_USD"
 OVERRIDE_FILES = (
     "docker-compose.override.yml",
     "docker-compose.override.yaml",
@@ -95,6 +100,8 @@ def _check_workflows(root: Path, own_path: Path) -> list[str]:
             problems.append(f"{name} names the live compose file")
         if DEV_FILE.search(text):
             problems.append(f"{name} names the dev compose file")
+        if WALK_ONLY_BUDGET in text:
+            problems.append(f"{name} names {WALK_ONLY_BUDGET}, the walk-only budget")
         used.update(SCRIPT_PATH.findall(text))
         used.update(COMPOSE_PATH.findall(text))
 
@@ -197,7 +204,8 @@ def main() -> int:
     print(
         "fake provider: no CI workflow reaches docker-compose.live.yml, its e2e keeps "
         f"{FAKE_OVERLAY}, docker-compose.yml sets every service that reads .env to fake, "
-        "no compose override file exists, and neither CI nor fake-stack.ps1 uses the dev override"
+        "no compose override file exists, neither CI nor fake-stack.ps1 uses the dev override, "
+        f"and no workflow sets {WALK_ONLY_BUDGET}"
     )
     return 0
 
