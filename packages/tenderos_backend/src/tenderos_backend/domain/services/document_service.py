@@ -18,7 +18,7 @@ from tenderos_backend.ingestion.embed import embed_texts
 
 
 async def create_synthetic_chunk(
-    uow: UnitOfWork, source_document_id: uuid.UUID, text: str
+    uow: UnitOfWork, source_document_id: uuid.UUID, text: str, *, embed: bool = True
 ) -> DocumentChunk:
     """Retrieval is built entirely on document_chunks (Part C gives
     knowledge_items no embedding column of its own), but some records are
@@ -41,10 +41,14 @@ async def create_synthetic_chunk(
     not duplicating it a third time. document_service.py owns documents/
     document_chunks already; knowledge_service.py and commercial_service.py
     both import this rather than each defining their own copy.
+
+    embed=False stores the chunk with no vector and never loads the model
+    (plan item 82). Only a caller whose chunk no vector search can reach
+    should pass it; see commercial_service._materialize_one_pricing_evidence_link.
     """
     normalized = normalize_text(text)
     existing_count = len(await uow.documents.list_chunks_for_document(source_document_id))
-    embedding = (await embed_texts([normalized]))[0]
+    embedding = (await embed_texts([normalized]))[0] if embed else None
     return await uow.documents.create_chunk(
         document_id=source_document_id,
         chunk_index=existing_count,
