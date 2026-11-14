@@ -44,9 +44,11 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import text
+from tenderos_backend.db.models.workflow import TERMINAL_RUN_STATUSES
 from tenderos_backend.db.session import get_session
 
-_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "changes_requested")
+# The model's set, not a hand-written copy (plan item 87).
+_TERMINAL_STATUSES = TERMINAL_RUN_STATUSES
 
 # Hardcoded, not user input - safe to interpolate directly (SQL identifiers
 # can't be bind parameters; this is the standard pattern for iterating a

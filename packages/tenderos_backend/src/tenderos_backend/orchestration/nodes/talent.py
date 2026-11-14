@@ -13,7 +13,11 @@ from tenderos_backend.domain.services.talent_service import (
     extract_and_persist_roles,
     find_candidate_pool,
 )
-from tenderos_backend.domain.services.workflow_service import is_cancelled, sync_run_status
+from tenderos_backend.domain.services.workflow_service import (
+    is_cancelled,
+    start_task,
+    sync_run_status,
+)
 from tenderos_backend.orchestration.gates import build_gate_payload, derive_gate_key
 from tenderos_backend.orchestration.state import SpecialistTaskState, TenderState
 
@@ -57,6 +61,7 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
     organization_id = uuid.UUID(state["organization_id"])
     task_id = uuid.UUID(state["task_id"])
 
+    await start_task(task_id)
     try:
         client = _build_llm_client()
         roles = await extract_and_persist_roles(

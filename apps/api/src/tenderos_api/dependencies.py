@@ -122,41 +122,59 @@ async def get_current_user_for_sse(
         return user
 
 
+def _path_uuid(name: str, raw: str) -> UUID:
+    """Parse one id from the request's raw path parameters (Phase 4 plan
+    item 76). Dependencies run before FastAPI validates the route's own
+    `UUID`-typed parameters, so a malformed id reached a bare UUID(...) here
+    first, and its ValueError answered 500. Answers 422 instead: the status
+    FastAPI's own validation gives the same id on a route with no
+    dependency that reads it."""
+    try:
+        return UUID(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Malformed {name} in path: not a UUID",
+        ) from exc
+
+
 async def _resolve_organization_id(request: Request) -> UUID:
     org_id = request.path_params.get("org_id")
     if org_id is not None:
-        return UUID(org_id)
+        return _path_uuid("org_id", org_id)
 
     tender_id = request.path_params.get("tender_id")
     if tender_id is not None:
-        tender = await tender_service.get_tender(UUID(tender_id))
+        tender = await tender_service.get_tender(_path_uuid("tender_id", tender_id))
         if tender is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
         return tender.organization_id
 
     run_id = request.path_params.get("run_id")
     if run_id is not None:
-        return await _organization_id_for_run(UUID(run_id))
+        return await _organization_id_for_run(_path_uuid("run_id", run_id))
 
     gate_id = request.path_params.get("gate_id")
     if gate_id is not None:
         async with UnitOfWork() as uow:
-            gate = await uow.gates.get(UUID(gate_id))
+            gate = await uow.gates.get(_path_uuid("gate_id", gate_id))
         if gate is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
         return await _organization_id_for_run(gate.workflow_run_id)
 
     document_id = request.path_params.get("document_id")
     if document_id is not None:
-        return await _organization_id_for_document(UUID(document_id))
+        return await _organization_id_for_document(_path_uuid("document_id", document_id))
 
     requirement_id = request.path_params.get("requirement_id")
     if requirement_id is not None:
-        return await _organization_id_for_requirement(UUID(requirement_id))
+        return await _organization_id_for_requirement(_path_uuid("requirement_id", requirement_id))
 
     submission_item_id = request.path_params.get("submission_item_id")
     if submission_item_id is not None:
-        return await _organization_id_for_submission_item(UUID(submission_item_id))
+        return await _organization_id_for_submission_item(
+            _path_uuid("submission_item_id", submission_item_id)
+        )
 
     # B6 (G6): knowledge_service's own routes never carry org_id/tender_id
     # in most of their paths (e.g. GET /knowledge/{knowledge_item_id},
@@ -168,15 +186,17 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # GET /knowledge/import-batches/{batch_id}/items.
     batch_id = request.path_params.get("batch_id")
     if batch_id is not None:
-        return await _organization_id_for_import_batch(UUID(batch_id))
+        return await _organization_id_for_import_batch(_path_uuid("batch_id", batch_id))
 
     item_id = request.path_params.get("item_id")
     if item_id is not None:
-        return await _organization_id_for_import_item(UUID(item_id))
+        return await _organization_id_for_import_item(_path_uuid("item_id", item_id))
 
     knowledge_item_id = request.path_params.get("knowledge_item_id")
     if knowledge_item_id is not None:
-        return await _organization_id_for_knowledge_item(UUID(knowledge_item_id))
+        return await _organization_id_for_knowledge_item(
+            _path_uuid("knowledge_item_id", knowledge_item_id)
+        )
 
     # B7 (G7): GET/PATCH /compliance/{compliance_id}, .../approve, .../trace
     # all key on compliance_id with no org_id/tender_id alongside it in the
@@ -186,7 +206,9 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # here for its own route shape.
     compliance_id = request.path_params.get("compliance_id")
     if compliance_id is not None:
-        return await _organization_id_for_compliance_entry(UUID(compliance_id))
+        return await _organization_id_for_compliance_entry(
+            _path_uuid("compliance_id", compliance_id)
+        )
 
     # B8A (G8): GET /roles/{role_id}/matches, POST /roles/{role_id}/
     # select-candidate both key on role_id with no tender_id alongside it.
@@ -195,7 +217,7 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # as _organization_id_for_requirement.
     role_id = request.path_params.get("role_id")
     if role_id is not None:
-        return await _organization_id_for_role_requirement(UUID(role_id))
+        return await _organization_id_for_role_requirement(_path_uuid("role_id", role_id))
 
     # B8B (G9): POST /pricing-documents/{pricing_document_id}/validate and
     # POST /pricing-findings/{pricing_finding_id}/resolve both key on their
@@ -204,11 +226,15 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # tender_id directly (Part C).
     pricing_document_id = request.path_params.get("pricing_document_id")
     if pricing_document_id is not None:
-        return await _organization_id_for_pricing_document(UUID(pricing_document_id))
+        return await _organization_id_for_pricing_document(
+            _path_uuid("pricing_document_id", pricing_document_id)
+        )
 
     pricing_finding_id = request.path_params.get("pricing_finding_id")
     if pricing_finding_id is not None:
-        return await _organization_id_for_pricing_finding(UUID(pricing_finding_id))
+        return await _organization_id_for_pricing_finding(
+            _path_uuid("pricing_finding_id", pricing_finding_id)
+        )
 
     # B9 (G10): PATCH /proposal/sections/{section_id} and GET /proposal/
     # claims/{claim_id}/trace both key on their own id with no tender_id
@@ -220,11 +246,11 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # _organization_id_for_compliance_entry.
     section_id = request.path_params.get("section_id")
     if section_id is not None:
-        return await _organization_id_for_proposal_section(UUID(section_id))
+        return await _organization_id_for_proposal_section(_path_uuid("section_id", section_id))
 
     claim_id = request.path_params.get("claim_id")
     if claim_id is not None:
-        return await _organization_id_for_proposal_claim(UUID(claim_id))
+        return await _organization_id_for_proposal_claim(_path_uuid("claim_id", claim_id))
 
     # B11 (G11): POST /redteam-findings/{finding_id}/resolve keys on
     # finding_id alone, no tender_id in the path - one-hop, same shape as
@@ -233,7 +259,7 @@ async def _resolve_organization_id(request: Request) -> UUID:
     # resolves via the tender_id branch above.
     finding_id = request.path_params.get("finding_id")
     if finding_id is not None:
-        return await _organization_id_for_redteam_finding(UUID(finding_id))
+        return await _organization_id_for_redteam_finding(_path_uuid("finding_id", finding_id))
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST, detail="No organization context in path"
@@ -544,7 +570,7 @@ async def require_gate_decision_permission(
     if gate_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No gate_id in path")
     async with UnitOfWork() as uow:
-        gate = await uow.gates.get(UUID(gate_id))
+        gate = await uow.gates.get(_path_uuid("gate_id", gate_id))
     if gate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
 

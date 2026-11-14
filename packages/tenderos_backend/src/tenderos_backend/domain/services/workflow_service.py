@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from tenderos_backend.core.enums import WorkflowStatus, coarse_status_for
 from tenderos_backend.core.prompts import bundle_version
 from tenderos_backend.db.models.audit import AuditEvent
-from tenderos_backend.db.models.workflow import WorkflowRun, WorkflowTask
+from tenderos_backend.db.models.workflow import ACTIVE_RUN_STATUSES, WorkflowRun, WorkflowTask
 from tenderos_backend.db.repositories.workflow import RunNoLongerActiveError
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
@@ -15,7 +15,9 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_run_created_payload,
 )
 
-_CANCELLABLE_STATUSES = frozenset({"queued", "running", "waiting_for_human"})
+# A run can be cancelled while it is active (plan item 87: the model's set,
+# not a hand-written copy).
+_CANCELLABLE_STATUSES = frozenset(ACTIVE_RUN_STATUSES)
 
 
 _ONE_ACTIVE_RUN_INDEX = "uq_workflow_runs_one_active_per_tender"
@@ -198,6 +200,18 @@ async def sync_run_status(run_id: uuid.UUID, status: WorkflowStatus) -> None:
         await uow.commit()
     if not written:
         raise RunNoLongerActiveError(run_id, f"status {status!r}")
+
+
+async def start_task(task_id: uuid.UUID) -> None:
+    """Phase 4 plan item 77: a task node's first step, committed on its own
+    before the node's work, so the task list reads Running while the work
+    runs (WorkflowRepository.mark_task_running). A start refused because
+    the run has ended changes nothing and raises nothing: the node's work
+    goes on as before, and cancellation is still checked where it always
+    was, at the gates and the dispatch."""
+    async with UnitOfWork() as uow:
+        await uow.workflow.mark_task_running(task_id)
+        await uow.commit()
 
 
 async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:

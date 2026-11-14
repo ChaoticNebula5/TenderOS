@@ -3151,6 +3151,15 @@ Each entry:
     which is exactly why B16's own observation ("both at status=
     'pending' with no started_at") could describe the symptom but
     couldn't by itself distinguish the two explanations.
+    **Changed by Phase 4 plan item 77:** a task now writes `running` and
+    `started_at` as it starts (`WorkflowRepository.mark_task_running`,
+    with a `task.started` stream event). A sibling cancelled this way is
+    put back to `pending` when its retry is scheduled
+    (`record_retry_job`), so it reads Queued until the retry reruns it.
+    When a run reaches a terminal status, every task of it still
+    `pending` or `running` becomes `skipped`, on all three writes that
+    end a run (`update_run_status`, `fail_lost_run`,
+    `mark_failed_if_not_terminal`).
   - **Does Group 4's retry work change it? Yes, confirmed directly, not
     assumed from the design.** Calling `retry_workflow_run` (the same
     function the real scheduled RQ job would call) resumes the exact
