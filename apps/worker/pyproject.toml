@@ -3,7 +3,7 @@ name = "tenderos-worker"
 version = "0.1.0"
 requires-python = "==3.12.*"
 dependencies = [
-    "rq>=2.0",
+    "rq>=3.0.0",
     "redis>=5.2",
     "asyncpg>=0.30",
     "pydantic-settings>=2.16.0",

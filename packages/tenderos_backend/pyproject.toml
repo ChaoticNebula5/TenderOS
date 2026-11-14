@@ -25,7 +25,7 @@ dependencies = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "pytesseract>=0.3",
-    "sentence-transformers>=3.3",
+    "sentence-transformers>=6.2.0",
     # Pulled in transitively by sentence-transformers anyway - listed
     # explicitly so the [tool.uv.sources] CPU-only pin below actually applies
     # (uv only honors a source override for a package that is a direct
