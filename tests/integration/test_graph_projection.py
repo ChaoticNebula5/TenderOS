@@ -410,6 +410,42 @@ async def test_removed_employee_still_named_in_claim_found():
     assert "removed_employee_committed" in categories
 
 
+async def test_a_grounded_claim_on_an_archived_source_is_unsupported_and_only_archived_counts():
+    """Plan item 88, fix 5: the Evidence node copies the link's stored
+    validity_status, which an archive never rewrites, so the query also
+    reads the backing fact's status. Archived, not "not active" (user
+    decision): an item edited to expired still counts here, as it does in
+    readiness and the proposal's filter. A document excerpt has no fact."""
+    org_id, tender_id = await _org_and_tender("ArchivedClaimSource")
+    holder = await _employee(org_id, "Cert Holder")
+    claims: dict[str, uuid.UUID] = {}
+    for case in ("archived", "expired", "active"):
+        cert_id = await _certification(org_id, holder)
+        evidence_id = await _evidence_link(tender_id, cert_id)
+        claims[case] = await _proposal_claim(tender_id, f"S {case}", evidence_id=evidence_id)
+        if case != "active":
+            async with UnitOfWork() as uow:
+                await uow.knowledge.update_knowledge_item(cert_id, status=case)
+                await uow.commit()
+    excerpt_id = await _evidence_link(tender_id, None)
+    claims["excerpt"] = await _proposal_claim(tender_id, "S excerpt", evidence_id=excerpt_id)
+    stored_invalid = await _evidence_link(
+        tender_id, await _certification(org_id, holder), validity_status="invalid"
+    )
+    claims["stored_invalid"] = await _proposal_claim(
+        tender_id, "S stored", evidence_id=stored_invalid
+    )
+
+    await graph_service.project_tender(tender_id)
+
+    flagged = {
+        c["claim"]["id"]
+        for c in await graph_service.find_contradictions(tender_id)
+        if c["category"] == "unsupported_grounded_claim"
+    }
+    assert flagged == {str(claims["archived"]), str(claims["stored_invalid"])}
+
+
 # ----------------------------------------------------------------------
 # 7 & 8. Evidence coverage re-evaluated, with and without other evidence left.
 # ----------------------------------------------------------------------

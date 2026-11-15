@@ -87,37 +87,40 @@ _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS = {
 }
 
 
-async def _bump_bids_selecting_on_roster_change(
+async def _bump_bids_on_archive_change(
     uow: UnitOfWork, item: KnowledgeItem, before_status: str
 ) -> list[uuid.UUID]:
-    """Plan item 86 (user decision): archiving or restoring an employee bumps
-    the state version of every bid where that employee is selected, in the
-    caller's transaction. Returns the bumped tender ids.
+    """Archiving or restoring a knowledge item bumps the state version of
+    every bid that rests on it, in the caller's transaction. Returns the
+    bumped tender ids. Plan item 86 built this for employees selected in a
+    bid; plan item 88 (user decision R1) widens it to every item type and to
+    every bid with an evidence link to the item.
 
-    Why: a readiness report is stored once per state version and returned
-    again at the same version, and the graph's freshness is a version check.
-    Without a bump, both kept describing the employee as they were. With it,
-    the next readiness report is computed fresh (and the final gate needs
-    it), and those bids' graphs read stale until re-projected.
+    Which bids: those with an evidence link to the item (any link: the
+    projector projects them all and the item's fact node), and, for an
+    employee, those selecting them. Readiness step 2 and the proposal's
+    evidence filter read the archived state live, but readiness keeps one
+    report per state version and the graph's freshness is a version check,
+    so without a bump both kept describing the item as it was.
 
     Finished bids (final gate approved) are included: the state version
     counts changes to the facts a bid rests on, and this is one. Nothing runs
     on a bump (no outbox event, no job: the user's D3), so a finished bid
-    only shows a new report and a stale graph if someone opens it, which is
-    true. Leaving them out would let a stored report keep claiming to be
-    current.
+    only shows a new report and a stale graph if someone opens it. Leaving
+    them out would let a stored report keep claiming to be current.
 
-    Employees only, and only when the archived state actually changes. Other
-    knowledge items changing outside a bid stay an open plan question (item
-    86's 2b note)."""
-    if item.item_type != "employee":
-        return []
+    Only when the archived state actually changes. Other statuses
+    (expired, unverified) change nothing here, as they change nothing in the
+    live checks (user decision: archived only; one shared definition of
+    "valid now" is a plan item)."""
     if (before_status == KNOWLEDGE_ITEM_ARCHIVED) == (item.status == KNOWLEDGE_ITEM_ARCHIVED):
         return []
-    tender_ids = await uow.talent.list_tender_ids_selecting_employee(item.id)
-    for tender_id in tender_ids:
+    tender_ids = set(await uow.compliance.list_tender_ids_citing_knowledge_item(item.id))
+    if item.item_type == "employee":
+        tender_ids.update(await uow.talent.list_tender_ids_selecting_employee(item.id))
+    for tender_id in sorted(tender_ids):
         await uow.tenders.bump_state_version(tender_id)
-    return tender_ids
+    return sorted(tender_ids)
 
 
 logger = logging.getLogger(__name__)
@@ -428,8 +431,8 @@ async def import_employee_master_row(
                 before_status = existing.status if existing is not None else ""
                 archived = await uow.knowledge.update_knowledge_item(target_id, status=item_status)
                 # A "removed" row for an employee already on file: the same
-                # bump as the talent library's archive (plan item 86).
-                await _bump_bids_selecting_on_roster_change(uow, archived, before_status)
+                # bump as the talent library's archive (plan items 86, 88).
+                await _bump_bids_on_archive_change(uow, archived, before_status)
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
@@ -449,7 +452,17 @@ async def import_employee_master_row(
             current_title=row.role,
         )
         if item_status:
-            await uow.knowledge.update_knowledge_item(knowledge_item_id, status=item_status)
+            # _create_or_get_employee commits on its own and can converge onto
+            # a row that already exists (a retried or concurrent import), so
+            # this write can flip an existing item: it goes through the same
+            # bump (plan item 88). A brand-new row has no links or
+            # selections, and the bump then touches nothing.
+            existing = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+            before_status = existing.status if existing is not None else ""
+            archived = await uow.knowledge.update_knowledge_item(
+                knowledge_item_id, status=item_status
+            )
+            await _bump_bids_on_archive_change(uow, archived, before_status)
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
         )
@@ -1055,7 +1068,7 @@ async def patch_knowledge_item(
             else item
         )
         after = {"title": updated.title, "status": updated.status}
-        await _bump_bids_selecting_on_roster_change(uow, updated, str(before["status"]))
+        await _bump_bids_on_archive_change(uow, updated, str(before["status"]))
 
         await uow.audit.create(
             organization_id=organization_id,
