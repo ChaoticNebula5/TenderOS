@@ -328,6 +328,12 @@ function summaryItems(gate: GateResponse, which: "snapshot" | "live"): SummaryIt
       if (typeof c.unselected_role_count === "number") {
         items.push(["Roles without a pick", String(c.unselected_role_count)]);
       }
+      // Plan item 86: selections whose employee was removed from the roster
+      // after being picked. Absent from a snapshot taken before the count
+      // existed, and then no line, as for unselected_role_count above.
+      if (typeof c.archived_selected_count === "number") {
+        items.push(["Selected but removed from roster", String(c.archived_selected_count)]);
+      }
       return items;
     }
     case "commercial_approval": {

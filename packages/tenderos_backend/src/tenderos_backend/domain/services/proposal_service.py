@@ -128,7 +128,8 @@ def to_llm_facts(prepared: list[PreparedFact]) -> list[GroundedFactRef]:
     return [GroundedFactRef(label=p.label, kind=p.kind, excerpt=p.excerpt) for p in prepared]
 
 
-def _prepare_evidence_facts(
+async def _prepare_evidence_facts(
+    uow: UnitOfWork,
     links: list[EvidenceLink],
     seen_evidence_ids: set[uuid.UUID],
     start_index: int,
@@ -144,13 +145,26 @@ def _prepare_evidence_facts(
     current" standing pattern for why this isn't duplicated per caller.
     `seen_evidence_ids` is mutated in place so callers share one dedup set
     across multiple calls (e.g. per compliance entry, per role match).
+
+    Plan item 86: a link's stored validity_status is set when the link is
+    made and nothing rewrites it when its source knowledge item is archived
+    later (an employee removed from the roster, a certification or a past
+    project withdrawn). So the source's status is read here, live, for every
+    link that has one, and an archived source makes the link invalid.
+    Document excerpts have no knowledge item and are unaffected. Async and
+    given the uow for that read, so no caller can skip it.
     """
+    archived_sources = await uow.knowledge.archived_item_ids(
+        link.knowledge_item_id for link in links if link.knowledge_item_id is not None
+    )
     prepared: list[PreparedFact] = []
     for link in links:
         # Re-filtered here, not trusted from the caller's own decision-time
         # signals - evidence can expire between an approval/selection and a
         # later drafting or trace-viewing run.
         if not (link.verified and link.validity_status == "valid"):
+            continue
+        if link.knowledge_item_id in archived_sources:
             continue
         if link.id in seen_evidence_ids:
             continue
@@ -192,7 +206,9 @@ async def _facts_from_compliance(
         )
 
         links = await uow.compliance.list_evidence_for_compliance_entry(entry.id)
-        new_evidence = _prepare_evidence_facts(links, seen_evidence_ids, start_index=ev_i + 1)
+        new_evidence = await _prepare_evidence_facts(
+            uow, links, seen_evidence_ids, start_index=ev_i + 1
+        )
         prepared.extend(new_evidence)
         ev_i += len(new_evidence)
     return prepared
@@ -206,8 +222,17 @@ async def _facts_from_team(uow: UnitOfWork, tender_id: uuid.UUID) -> list[Prepar
     ev_i = 0
     for role in roles:
         matches = await uow.talent.list_role_matches_for_role(role.id)
+        # Plan item 86, option C: an employee removed from the roster after
+        # being selected is not offered to the drafter, and neither is the
+        # evidence attached to that match (it is offered because of the
+        # selection). The red team and readiness say why the role is short.
+        archived = await uow.knowledge.archived_item_ids(
+            m.employee_knowledge_item_id for m in matches if m.human_selected
+        )
         for match in matches:
             if not match.human_selected:
+                continue
+            if match.employee_knowledge_item_id in archived:
                 continue
             employee = await uow.knowledge.get_employee(match.employee_knowledge_item_id)
             emp_i += 1
@@ -228,7 +253,9 @@ async def _facts_from_team(uow: UnitOfWork, tender_id: uuid.UUID) -> list[Prepar
                 link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
                 if link is not None:
                     links.append(link)
-            new_evidence = _prepare_evidence_facts(links, seen_evidence_ids, start_index=ev_i + 1)
+            new_evidence = await _prepare_evidence_facts(
+                uow, links, seen_evidence_ids, start_index=ev_i + 1
+            )
             prepared.extend(new_evidence)
             ev_i += len(new_evidence)
     return prepared
@@ -914,7 +941,9 @@ async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingRes
         link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
         if link is not None:
             candidate_links.append(link)
-    still_valid = _prepare_evidence_facts(candidate_links, seen_evidence_ids=set(), start_index=1)
+    still_valid = await _prepare_evidence_facts(
+        uow, candidate_links, seen_evidence_ids=set(), start_index=1
+    )
     resolved_evidence_link_ids = [
         fact.evidence_link_id for fact in still_valid if fact.evidence_link_id is not None
     ]

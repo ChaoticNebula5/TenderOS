@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from tenderos_backend.agents.llm.client import LLMClient
@@ -5,8 +6,10 @@ from tenderos_backend.agents.redteam.critique import ClaimForCritique, critique_
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.redteam import RedteamFinding
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import redteam_checks
+from tenderos_backend.domain.services import graph_service, redteam_checks
 from tenderos_backend.domain.services.redteam_checks import RedteamFindingDraft
+
+logger = logging.getLogger(__name__)
 
 # The revision-eligible severity set (Q5's flagged interpretation: R3 locks
 # the state field name open_critical_finding_ids, critical only, not
@@ -162,11 +165,15 @@ async def run_red_team(
         drafts.extend(await redteam_checks.check_missing_mandatory_requirements(uow, tender_id))
         drafts.extend(await redteam_checks.check_unsupported_claims(uow, tender_id))
         drafts.extend(await redteam_checks.check_role_qualification_gaps(uow, tender_id))
+        drafts.extend(await redteam_checks.check_archived_employee_selected(uow, tender_id))
         drafts.extend(await redteam_checks.check_submission_checklist(uow, tender_id))
         drafts.extend(await redteam_checks.check_commercial_findings(uow, tender_id))
         claims_for_critique, label_to_id = await _claims_for_critique(uow, tender_id)
 
-    drafts.extend(await redteam_checks.check_graph_contradictions(tender_id))
+    graph_drafts = await redteam_checks.check_graph_contradictions(tender_id)
+    graph_skipped = graph_drafts is None
+    if graph_drafts is not None:
+        drafts.extend(graph_drafts)
 
     critique = await critique_proposal(
         client,
@@ -200,7 +207,7 @@ async def run_red_team(
         for draft in drafts:
             await persist_finding_draft(uow, tender_id, draft)
 
-        # All 5 checks above (plus the LLM critique) re-derive fully fresh
+        # All 7 checks above (plus the LLM critique) re-derive fully fresh
         # from this tender's CURRENT state on every pass, never
         # incrementally - so an unresolved finding whose fingerprint isn't
         # among what was just (re-)persisted is provably no longer present,
@@ -219,8 +226,31 @@ async def run_red_team(
             )
             for draft in drafts
         }
-        await uow.redteam.auto_retire_undetected_findings(tender_id, still_detected_fingerprints)
+        # Plan item 86: a stale graph means the graph checks did not run, so
+        # their open findings are unchecked, not undetected. They stay open
+        # until a pass on a fresh projection looks again.
+        kept_categories = (
+            graph_service.GRAPH_CONTRADICTION_CATEGORIES if graph_skipped else frozenset()
+        )
+        retired = await uow.redteam.auto_retire_undetected_findings(
+            tender_id, still_detected_fingerprints, keep_categories=kept_categories
+        )
         await uow.commit()
+    if graph_skipped:
+        async with UnitOfWork() as uow:
+            open_graph = [
+                f
+                for f in await uow.redteam.list_for_tender(tender_id)
+                if not f.resolved
+                and f.finding_category in graph_service.GRAPH_CONTRADICTION_CATEGORIES
+            ]
+        logger.warning(
+            "red team: graph checks skipped for tender %s (the graph is stale); "
+            "%d open graph finding(s) left as they were, %d other finding(s) retired",
+            tender_id,
+            len(open_graph),
+            len(retired),
+        )
 
     async with UnitOfWork() as uow:
         open_findings = await uow.redteam.list_open_for_tender(tender_id, _OPEN_SEVERITIES)

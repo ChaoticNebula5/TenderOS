@@ -65,11 +65,22 @@ async def resource_selection_summary(uow: UnitOfWork, tender_id: uuid.UUID) -> d
     four. That is what made the panel read "Unselected roles 4" for one role
     (item 79's C3). `unselected_role_count` is what the panel now shows: the
     roles with no human-selected candidate. The two match counts stay in the
-    payload, so every snapshot keeps the same keys."""
+    payload, so every snapshot keeps the same keys.
+
+    `archived_selected_count` (plan item 86): selected matches whose employee
+    is archived now, read from the knowledge item at this call, so a pending
+    gate's live counts follow an archive made after the gate opened. A
+    snapshot taken before this key existed has none, and the panel shows no
+    line for it."""
     roles = await uow.talent.list_role_requirements_for_tender(tender_id)
     matches_by_role = [await uow.talent.list_role_matches_for_role(role.id) for role in roles]
     all_matches = [m for matches in matches_by_role for m in matches]
+    selected = [m for m in all_matches if m.human_selected]
+    archived = await uow.knowledge.archived_item_ids(m.employee_knowledge_item_id for m in selected)
     return {
+        "archived_selected_count": len(
+            [m for m in selected if m.employee_knowledge_item_id in archived]
+        ),
         "role_count": len(roles),
         "candidate_count": len(all_matches),
         "unselected_count": len([m for m in all_matches if not m.human_selected]),

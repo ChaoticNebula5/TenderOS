@@ -17,6 +17,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from tenderos_backend.db.unit_of_work import UnitOfWork
 
 pytestmark = pytest.mark.asyncio
 
@@ -127,3 +128,51 @@ async def test_readiness_routes_reject_a_caller_outside_the_organization(
     view_response = client.get(f"/tenders/{tender['id']}/readiness", headers=outsider_headers)
     assert view_response.status_code == 403, view_response.text
     assert view_response.json()["error"]["code"] == "ORG_ACCESS_DENIED"
+
+
+async def test_generate_readiness_returns_a_removed_selected_employee_blocker(
+    client: TestClient, register_actor
+):
+    """Plan item 86, through the route: archiving the selected employee in
+    the talent library bumps the bid, the next report carries the new
+    blocker, and the response schema accepts its category (it answered 500
+    on the fake stack before the schema's Literal listed it)."""
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Readiness Removed Employee Bid"},
+        headers=headers,
+    ).json()
+    async with UnitOfWork() as uow:
+        item, _ = await uow.knowledge.create_employee(
+            organization_id=uuid.UUID(org_id),
+            name="Removed Lead",
+            content_fingerprint=uuid.uuid4().hex,
+            title="Removed Lead",
+        )
+        role = await uow.talent.create_role_requirement(
+            tender_id=uuid.UUID(tender["id"]),
+            role_name="Site Lead",
+            content_fingerprint=uuid.uuid4().hex,
+        )
+        match = await uow.talent.create_role_match(role.id, item.id)
+        await uow.talent.update_role_match(match.id, human_selected=True)
+        await uow.commit()
+    before = client.post(f"/tenders/{tender['id']}/readiness/generate", headers=headers).json()
+
+    archived = client.patch(f"/knowledge/{item.id}", json={"status": "archived"}, headers=headers)
+    after = client.post(f"/tenders/{tender['id']}/readiness/generate", headers=headers)
+
+    assert archived.status_code == 200, archived.text
+    assert after.status_code == 200, after.text
+    body = after.json()
+    assert body["tender_state_version"] == before["tender_state_version"] + 1
+    assert [b for b in body["blockers"] if b["category"] == "selected_employee_removed"] == [
+        {
+            "category": "selected_employee_removed",
+            "target_type": "role_match",
+            "target_id": str(match.id),
+            "message": "Role 'Site Lead' is filled by an employee removed from the roster.",
+        }
+    ]
+    assert body["counts"]["selected_employees_removed"] == 1

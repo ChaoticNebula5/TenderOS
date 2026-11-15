@@ -12,7 +12,7 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { formatPercent } from "../format/percent";
 import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
-import { describeSelected } from "../status/statusMap";
+import { REMOVED_FROM_ROSTER, describeSelected } from "../status/statusMap";
 import "./TeamWorkspace.css";
 
 // "5 years", "1 year". chosen, not in DESIGN: the column showed the bare
@@ -243,10 +243,21 @@ export function TeamWorkspace() {
                       <td className="cell-num">{formatPercent(match.score) ?? "Not scored"}</td>
                       <td>
                         <StatusBadge {...describeSelected(match.human_selected)} />
+                        {/* Plan item 86: in this cell, not the first, which the
+                            spec reads as exactly the raw id. */}
+                        {match.employee_archived && (
+                          <>
+                            {" "}
+                            <StatusBadge {...REMOVED_FROM_ROSTER} />
+                          </>
+                        )}
                       </td>
                       <td className="cell-actions">
+                        {/* An archived employee cannot be selected (the api
+                            answers 409); Deselect stays, since it is the fix. */}
                         <Button
                           variant="quiet"
+                          disabled={match.employee_archived === true && !match.human_selected}
                           onClick={() => handleSelectCandidate(match, !match.human_selected)}
                         >
                           {match.human_selected ? "Deselect" : "Select"}

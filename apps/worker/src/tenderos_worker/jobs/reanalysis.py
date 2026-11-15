@@ -251,7 +251,15 @@ async def reanalyze_knowledge_selection_change(
     # the fact still in use": AFTER reevaluation, not a pre-reevaluation
     # snapshot.
     await graph_service.project_tender(tid)
-    contradiction_drafts = await redteam_checks.check_graph_contradictions(tid)
+    checked = await redteam_checks.check_graph_contradictions(tid)
+    if checked is None:
+        # Plan item 86: the graph moved on again after the re-projection
+        # above; this job never retires, so there is nothing to protect,
+        # only nothing found to add.
+        logger.warning(
+            "reanalysis: graph checks skipped for tender=%s (the graph is stale again)", tid
+        )
+    contradiction_drafts = checked or []
     for draft in contradiction_drafts:
         try:
             async with UnitOfWork() as uow:

@@ -16,6 +16,7 @@ from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.auth_service import register
 from tenderos_backend.domain.services.talent_service import (
+    ArchivedEmployeeSelectionError,
     CrossOrganizationRoleError,
     _compute_candidate_talent_signals,
     find_candidate_pool,
@@ -256,3 +257,83 @@ async def test_deselect_candidate_does_not_delete_the_role_match_row():
         employee_still_exists = await uow.knowledge.get_employee(employee_item_id)
     assert still_there is not None, "deselecting must update in place, never delete the row"
     assert employee_still_exists is not None, "deselecting must not delete the employee either"
+
+
+async def test_an_archived_employee_cannot_be_selected_but_can_be_deselected():
+    """Plan item 86, option A. Two candidates for one role, both matched
+    before the archive. The archived one cannot be selected (no write, no
+    audit, no state-version bump); a selection made before the archive can
+    still be undone; restoring the employee makes the select work again."""
+    org_id, tender_id = await _make_org_and_tender("Archived Selection Test")
+    picked_id = await _make_employee(org_id, "Picked Before Archive")
+    other_id = await _make_employee(org_id, "Matched Before Archive")
+    async with UnitOfWork() as uow:
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Site Lead", content_fingerprint=str(uuid.uuid4())
+        )
+        await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=picked_id
+        )
+        await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=other_id
+        )
+        await uow.commit()
+    actor_id = await _make_actor_with_membership(org_id)
+    await set_candidate_selection(role.id, picked_id, actor_id, selected=True)
+
+    async with UnitOfWork() as uow:
+        for item_id in (picked_id, other_id):
+            await uow.knowledge.update_knowledge_item(item_id, status="archived")
+        version_before = (await uow.tenders.get(tender_id)).state_version
+        await uow.commit()
+
+    with pytest.raises(ArchivedEmployeeSelectionError):
+        await set_candidate_selection(role.id, other_id, actor_id, selected=True)
+
+    async with UnitOfWork() as uow:
+        refused = await uow.talent.get_role_match_by_candidate(role.id, other_id)
+        version_after = (await uow.tenders.get(tender_id)).state_version
+        audits = (
+            (
+                await uow.session.execute(
+                    select(AuditEvent).where(AuditEvent.target_id == refused.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert refused.human_selected is False
+    assert version_after == version_before, "a refused select must not bump the state version"
+    assert audits == [], "a refused select must write no audit row"
+
+    # The fix for a selection made before the archive: deselecting is allowed.
+    deselected = await set_candidate_selection(role.id, picked_id, actor_id, selected=False)
+    assert deselected.human_selected is False
+
+    # Restored: selectable again.
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(other_id, status="active")
+        await uow.commit()
+    restored = await set_candidate_selection(role.id, other_id, actor_id, selected=True)
+    assert restored.human_selected is True
+
+
+async def test_an_employee_with_an_archived_profile_review_status_is_still_selectable():
+    """The refusal reads the knowledge item's status, the column the import
+    and the talent library write (decision 0097), not employees.
+    profile_review_status, which also allows 'archived' but nothing writes."""
+    org_id, tender_id = await _make_org_and_tender("Archived Column Test")
+    employee_id = await _make_employee(org_id, "Other Column", profile_review_status="archived")
+    async with UnitOfWork() as uow:
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Analyst", content_fingerprint=str(uuid.uuid4())
+        )
+        await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=employee_id
+        )
+        await uow.commit()
+    actor_id = await _make_actor_with_membership(org_id)
+
+    updated = await set_candidate_selection(role.id, employee_id, actor_id, selected=True)
+
+    assert updated.human_selected is True

@@ -81,6 +81,9 @@ class ResourceSelectionSummary(BaseModel):
     # panel shows as "Roles without a pick". None on a gate opened before
     # this field existed; its snapshot never counted roles.
     unselected_role_count: int | None = None
+    # Plan item 86: selections whose employee is archived now. None on a
+    # gate opened before this field existed, the same way.
+    archived_selected_count: int | None = None
 
 
 class CommercialApprovalSummary(BaseModel):

@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, date, datetime
 
 from sqlalchemy import func, or_, select, update
@@ -24,8 +25,10 @@ from tenderos_backend.db.models.knowledge import (
 # (knowledge_service._EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS) and the talent
 # library's status edit can set it. This is the one place "archived" is read
 # for employees: the candidate pool, the bid-eligible list and verification
-# all use it. employees.profile_review_status also allows 'archived' in its
-# CHECK, but nothing writes that value.
+# all use it, and since plan item 86 so do selection, the resource gate's
+# counts, the red team, readiness and the proposal's facts (through
+# archived_item_ids below). employees.profile_review_status also allows
+# 'archived' in its CHECK, but nothing writes that value.
 KNOWLEDGE_ITEM_ARCHIVED = "archived"
 
 
@@ -151,6 +154,25 @@ class KnowledgeRepository:
 
     async def get_knowledge_item(self, knowledge_item_id: uuid.UUID) -> KnowledgeItem | None:
         return await self._session.get(KnowledgeItem, knowledge_item_id)
+
+    async def archived_item_ids(self, knowledge_item_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
+        """The ids among these whose knowledge item is archived now.
+
+        Plan item 86: archiving changes only knowledge_items.status. Nothing
+        rewrites a role match, an evidence link's stored validity_status or
+        the graph when it happens, so every reader that must not trust an
+        archived employee, certification or project asks here, at the time
+        it runs. One query for the whole set; an empty set queries nothing.
+        """
+        ids = set(knowledge_item_ids)
+        if not ids:
+            return set()
+        result = await self._session.execute(
+            select(KnowledgeItem.id).where(
+                KnowledgeItem.id.in_(ids), KnowledgeItem.status == KNOWLEDGE_ITEM_ARCHIVED
+            )
+        )
+        return set(result.scalars().all())
 
     async def get_knowledge_item_by_fingerprint(
         self, organization_id: uuid.UUID, item_type: str, content_fingerprint: str

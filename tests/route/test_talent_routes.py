@@ -221,3 +221,78 @@ async def test_talent_routes_reject_a_role_outside_select_resource(
     response = client.get(f"/roles/{role_id}/matches", headers=member_headers)
 
     assert response.status_code == 403, response.text
+
+
+async def _archive(knowledge_item_id: str, status: str = "archived") -> None:
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(uuid.UUID(knowledge_item_id), status=status)
+        await uow.commit()
+
+
+async def test_an_archived_candidate_is_flagged_and_cannot_be_selected(
+    client: TestClient, register_actor
+):
+    """Plan item 86, options A and B (the team page): the matches list says
+    the employee was removed from the roster; selecting answers 409; the
+    idempotency key is released, so the same click works once restored."""
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Archived Candidate Bid"}, headers=headers
+    ).json()
+    role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
+    listed = client.get(f"/roles/{role_id}/matches", headers=headers).json()
+    assert listed[0]["employee_archived"] is False
+
+    await _archive(employee_id)
+    listed = client.get(f"/roles/{role_id}/matches", headers=headers).json()
+    refused = client.post(
+        f"/roles/{role_id}/select-candidate",
+        json={"employee_knowledge_item_id": employee_id, "selected": True},
+        headers={**headers, "Idempotency-Key": "archived-select"},
+    )
+
+    assert listed[0]["employee_archived"] is True
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "EMPLOYEE_ARCHIVED"
+    assert (
+        client.get(f"/roles/{role_id}/matches", headers=headers).json()[0]["human_selected"]
+        is False
+    )
+
+    await _archive(employee_id, "active")
+    retried = client.post(
+        f"/roles/{role_id}/select-candidate",
+        json={"employee_knowledge_item_id": employee_id, "selected": True},
+        headers={**headers, "Idempotency-Key": "archived-select"},
+    )
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["human_selected"] is True
+    assert retried.json()["employee_archived"] is False
+
+
+async def test_deselecting_an_archived_employee_is_allowed_and_keeps_the_flag(
+    client: TestClient, register_actor
+):
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Archived Deselect Bid"}, headers=headers
+    ).json()
+    role_id, employee_id = await _role_with_candidate(tender["id"], org_id)
+    selected = client.post(
+        f"/roles/{role_id}/select-candidate",
+        json={"employee_knowledge_item_id": employee_id, "selected": True},
+        headers={**headers, "Idempotency-Key": "select-before-archive"},
+    )
+    assert selected.status_code == 200, selected.text
+    await _archive(employee_id)
+
+    deselected = client.post(
+        f"/roles/{role_id}/select-candidate",
+        json={"employee_knowledge_item_id": employee_id, "selected": False},
+        headers={**headers, "Idempotency-Key": "deselect-after-archive"},
+    )
+
+    assert deselected.status_code == 200, deselected.text
+    assert deselected.json()["human_selected"] is False
+    # The page replaces its row with this response: the badge must stay.
+    assert deselected.json()["employee_archived"] is True

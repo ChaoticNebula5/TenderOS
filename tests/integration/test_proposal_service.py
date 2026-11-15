@@ -829,3 +829,142 @@ async def test_facts_from_pricing_leaves_evidence_link_id_unset_for_an_unresolve
         facts = await proposal_service._facts_from_pricing(uow, tender_id, start_index=1)
 
     assert facts == []
+
+
+# ----------------------------------------------------------------------
+# Plan item 86: an archived knowledge item is read live. Archiving changes
+# only knowledge_items.status, never a role match or an evidence link's
+# stored validity_status, so these tests archive exactly that column.
+# ----------------------------------------------------------------------
+
+
+async def _set_item_status(knowledge_item_id: uuid.UUID, status: str) -> None:
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(knowledge_item_id, status=status)
+        await uow.commit()
+
+
+async def _item_evidence(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, source_kind: str, excerpt: str
+) -> uuid.UUID:
+    async with UnitOfWork() as uow:
+        link = await uow.compliance.create_evidence_link(
+            tender_id=tender_id,
+            source_kind=source_kind,
+            content_fingerprint=str(uuid.uuid4()),
+            knowledge_item_id=knowledge_item_id,
+            excerpt=excerpt,
+            verified=True,
+            validity_status="valid",
+        )
+        await uow.commit()
+        return link.id
+
+
+async def test_facts_from_team_leaves_out_an_archived_selected_employee_and_their_evidence():
+    """Option C: both candidates were selected before one was archived. The
+    archived one, and the evidence attached to their match, are not offered;
+    the other keeps label employee_1."""
+    org_id, tender_id = await _make_org_and_tender("Team Facts Archived Test")
+    ids = {}
+    async with UnitOfWork() as uow:
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Site Lead", content_fingerprint=str(uuid.uuid4())
+        )
+        for name in ("Removed", "Kept"):
+            item, _ = await uow.knowledge.create_employee(
+                organization_id=org_id,
+                name=name,
+                content_fingerprint=str(uuid.uuid4()),
+                title=name,
+                current_title=f"{name} Engineer",
+            )
+            match = await uow.talent.create_role_match(
+                role_requirement_id=role.id, employee_knowledge_item_id=item.id
+            )
+            await uow.talent.update_role_match(match.id, human_selected=True)
+            ids[name] = (item.id, match.id)
+        await uow.commit()
+    for name, (item_id, match_id) in ids.items():
+        link_id = await _item_evidence(tender_id, item_id, "employee", f"{name} track record.")
+        async with UnitOfWork() as uow:
+            await uow.talent.link_role_match_evidence(match_id, link_id, "experience")
+            await uow.commit()
+    await _set_item_status(ids["Removed"][0], "archived")
+
+    async with UnitOfWork() as uow:
+        facts = await proposal_service._facts_from_team(uow, tender_id)
+
+    assert [(f.kind, f.label, f.excerpt) for f in facts] == [
+        ("employee", "employee_1", "Kept Engineer, selected for role: Site Lead"),
+        ("evidence", "evidence_1", "Kept track record."),
+    ]
+
+
+async def test_the_evidence_filter_reads_an_archived_source_live_for_every_item_type():
+    """2c: an employee, a certification and a past project, each archived
+    after its evidence link was made with validity_status 'valid'. The one
+    shared filter (_prepare_evidence_facts, behind the compliance facts, the
+    team facts, the trace and re-grounding) drops all three, and keeps the
+    active certification's link."""
+    org_id, tender_id = await _make_org_and_tender("Archived Sources Test")
+    async with UnitOfWork() as uow:
+        employee, _ = await uow.knowledge.create_employee(
+            organization_id=org_id, name="E", content_fingerprint=str(uuid.uuid4()), title="E"
+        )
+        cert, _ = await uow.knowledge.create_certification(
+            organization_id=org_id, title="ISO 27001", content_fingerprint=str(uuid.uuid4())
+        )
+        project, _ = await uow.knowledge.create_past_project(
+            organization_id=org_id, title="Metro rollout", content_fingerprint=str(uuid.uuid4())
+        )
+        kept_cert, _ = await uow.knowledge.create_certification(
+            organization_id=org_id, title="ISO 9001", content_fingerprint=str(uuid.uuid4())
+        )
+        await uow.commit()
+    sources = [
+        (employee.id, "employee"),
+        (cert.id, "certification"),
+        (project.id, "past_project"),
+        (kept_cert.id, "certification"),
+    ]
+    link_ids = [await _item_evidence(tender_id, i, kind, kind) for i, kind in sources]
+    for item_id in (employee.id, cert.id, project.id):
+        await _set_item_status(item_id, "archived")
+
+    async with UnitOfWork() as uow:
+        links = [await uow.compliance.get_evidence_link(i) for i in link_ids]
+        facts = await proposal_service._prepare_evidence_facts(uow, links, set(), start_index=1)
+
+    assert [f.evidence_link_id for f in facts] == [link_ids[3]]
+    assert all(link.validity_status == "valid" for link in links), (
+        "the stored column is untouched: the filter reads the source's status live"
+    )
+
+
+async def test_reground_claim_becomes_unsupported_when_its_evidence_source_is_archived():
+    """2c for an existing claim: drafted grounded on a certification's
+    evidence, the certification is then archived. Re-grounding reads the
+    source live and finds no valid evidence; restored, it is grounded again."""
+    org_id, tender_id = await _make_org_and_tender("Reground Archived Source Test")
+    async with UnitOfWork() as uow:
+        cert, _ = await uow.knowledge.create_certification(
+            organization_id=org_id, title="ISO 27001", content_fingerprint=str(uuid.uuid4())
+        )
+        await uow.commit()
+    link_id = await _item_evidence(tender_id, cert.id, "certification", "Holds ISO 27001.")
+    claim_id = await _draft_one_grounded_claim(tender_id, uuid.uuid4(), link_id)
+
+    await _set_item_status(cert.id, "archived")
+    async with UnitOfWork() as uow:
+        archived = await proposal_service.reground_claim(uow, claim_id)
+        await uow.commit()
+    assert archived.status == "unsupported"
+    assert archived.evidence_link_ids_considered == []
+
+    await _set_item_status(cert.id, "active")
+    async with UnitOfWork() as uow:
+        restored = await proposal_service.reground_claim(uow, claim_id)
+        await uow.commit()
+    assert restored.status == "grounded"
+    assert restored.evidence_link_ids_considered == [link_id]

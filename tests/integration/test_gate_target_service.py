@@ -18,7 +18,7 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import gate_target_service
+from tenderos_backend.domain.services import gate_target_service, talent_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -327,3 +327,42 @@ async def test_a_later_dispatch_failure_rolls_back_an_earlier_success(actor_id, 
         "dispatch in the same batch fails, even for a reason unrelated to "
         "ownership - the whole batch shares one transaction now"
     )
+
+
+async def test_a_batch_naming_an_archived_employee_applies_nothing(actor_id):
+    """Plan item 86 (user decision): one archived employee in the resource
+    gate's selections refuses the whole batch. The active candidate listed
+    first is rolled back with it, through the batch's one transaction."""
+    org_id, tender_id = await _org_and_tender("ArchivedInBatch")
+    active_match_id = await _role_match(tender_id, org_id)
+    archived_match_id = await _role_match(tender_id, org_id)
+    async with UnitOfWork() as uow:
+        archived_match = await uow.talent.get_role_match(archived_match_id)
+        await uow.knowledge.update_knowledge_item(
+            archived_match.employee_knowledge_item_id, status="archived"
+        )
+        await uow.commit()
+
+    with pytest.raises(talent_service.ArchivedEmployeeSelectionError):
+        await gate_target_service.apply_target_updates(
+            tender_id,
+            [
+                {
+                    "target_type": "role_match",
+                    "target_id": str(active_match_id),
+                    "decision": "approve",
+                },
+                {
+                    "target_type": "role_match",
+                    "target_id": str(archived_match_id),
+                    "decision": "approve",
+                },
+            ],
+            actor_id,
+        )
+
+    async with UnitOfWork() as uow:
+        active = await uow.talent.get_role_match(active_match_id)
+        archived = await uow.talent.get_role_match(archived_match_id)
+    assert active.human_selected is False, "the earlier selection must be rolled back too"
+    assert archived.human_selected is False

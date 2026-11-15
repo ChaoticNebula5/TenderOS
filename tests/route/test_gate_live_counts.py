@@ -250,3 +250,89 @@ async def test_the_finding_gate_is_decided_by_an_admin(client: TestClient, regis
 
     assert body["live_summary"] == {"open_finding_count": 1, "critical_count": 1}
     assert decided.status_code == 200, decided.text
+
+
+async def _resource_role_with_two_candidates(
+    tender_id: uuid.UUID, org_id: str
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A role with two unselected candidates. Returns (first match id,
+    second match id, second employee's knowledge item id)."""
+    async with UnitOfWork() as uow:
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Site lead", content_fingerprint=uuid.uuid4().hex
+        )
+        made = []
+        for n in range(2):
+            item, _ = await uow.knowledge.create_employee(
+                organization_id=uuid.UUID(org_id),
+                name=f"Candidate {n}",
+                content_fingerprint=uuid.uuid4().hex,
+                title="Candidate",
+            )
+            made.append((await uow.talent.create_role_match(role.id, item.id, score=0.5), item))
+        await uow.commit()
+    return made[0][0].id, made[1][0].id, made[1][1].id
+
+
+async def _set_item_status(knowledge_item_id: uuid.UUID, status: str) -> None:
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(knowledge_item_id, status=status)
+        await uow.commit()
+
+
+async def test_a_pending_resource_gate_counts_a_selection_archived_after_it_opened(
+    client: TestClient, register_actor
+):
+    """Plan item 86, option B: the live count follows an archive made after
+    the gate opened; the snapshot keeps what the gate opened with."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    first_match_id, _, _ = await _resource_role_with_two_candidates(tender_id, org_id)
+    async with UnitOfWork() as uow:
+        match = await uow.talent.update_role_match(first_match_id, human_selected=True)
+        await uow.commit()
+    _, gate_id = await _open_gate(tender_id, "resource_selection")
+
+    await _set_item_status(match.employee_knowledge_item_id, "archived")
+    body = client.get(f"/gates/{gate_id}", headers=headers).json()
+
+    assert body["summary"]["archived_selected_count"] == 0
+    assert body["live_summary"]["archived_selected_count"] == 1
+
+
+async def test_a_resource_gate_decision_naming_an_archived_employee_is_refused_whole(
+    client: TestClient, register_actor
+):
+    """Plan item 86 (user decision): 409, nothing applied, the gate still
+    pending; the key is released, so the same decision works once the
+    employee is restored."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    first_id, second_id, second_item_id = await _resource_role_with_two_candidates(
+        tender_id, org_id
+    )
+    _, gate_id = await _open_gate(tender_id, "resource_selection")
+    await _set_item_status(second_item_id, "archived")
+    decision = {
+        "decision": "approve",
+        "target_updates": [
+            {"target_type": "role_match", "target_id": str(first_id), "decision": "approve"},
+            {"target_type": "role_match", "target_id": str(second_id), "decision": "approve"},
+        ],
+    }
+    key = {**headers, "Idempotency-Key": f"archived-gate-{gate_id}"}
+
+    refused = client.post(f"/gates/{gate_id}/decision", json=decision, headers=key)
+    gate = client.get(f"/gates/{gate_id}", headers=headers).json()
+    async with UnitOfWork() as uow:
+        first = await uow.talent.get_role_match(first_id)
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["error"]["code"] == "EMPLOYEE_ARCHIVED"
+    assert gate["status"] == "pending"
+    assert first.human_selected is False, "the active candidate's selection must not land either"
+
+    await _set_item_status(second_item_id, "active")
+    retried = client.post(f"/gates/{gate_id}/decision", json=decision, headers=key)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["status"] == "approved"

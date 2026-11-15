@@ -327,6 +327,14 @@ export function describeSelected(selected: boolean): StatusDescriptor {
     : { tone: "neutral", label: "Not selected" };
 }
 
+// Plan item 86: a candidate whose employee is archived. Warning, the tone of
+// the red team's major archived_employee_selected finding for the same
+// state; the talent library's own "Archived" status stays Neutral.
+export const REMOVED_FROM_ROSTER: StatusDescriptor = {
+  tone: "warning",
+  label: "Removed from roster",
+};
+
 // Red-team and commercial findings. DESIGN.md:287-289: 'A resolved finding
 // shows the Ready treatment with the label "Resolved", whatever its
 // severity; an open one shows its severity badge.' DESIGN.md:317's
