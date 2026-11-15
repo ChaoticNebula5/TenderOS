@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   approveImportItem,
@@ -12,6 +12,7 @@ import {
 import type { ImportBatchResponse, ImportItemDetailResponse } from "../api/client";
 import { useAuth } from "../auth/useAuth";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
+import { PollStoppedNotice } from "../components/PollStoppedNotice";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Field } from "../components/ui/Field";
@@ -19,16 +20,18 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { formatDate } from "../format/date";
+import { useBoundedPoll } from "../hooks/useBoundedPoll";
 import { describeImportBatch, describeStatus } from "../status/statusMap";
 import { importTypeLabel, payloadFields, sourceRefLabel } from "./talentImportValues";
 import "./TalentImportReview.css";
 
 // Screen 3 (Part J). Three upload routes feed one shared batch/review
-// queue - no live worker in the browser either, so a freshly created
-// batch legitimately sits at "queued" (0 items) until the worker picks
-// up the KnowledgeDocumentUploaded event; re-selecting the batch (or a
-// page refresh) is how progress becomes visible, matching this screen's
-// own polling-free design (B14 owns real-time updates project-wide).
+// queue. A freshly created batch sits at "queued" (0 items) until the
+// worker picks up the KnowledgeDocumentUploaded event. Plan item 78: the
+// page follows a batch's progress on its own (it said "reload it to see a
+// batch's progress", observed in the item 66 walk). No event stream covers
+// imports, so while any batch is queued or processing the batch list, and
+// the open batch's items, are read again, bounded (useBoundedPoll.ts).
 //
 // Restyle batch 6 - what full-flow.spec.ts reads here (setup's résumé import), and so
 // what must not move:
@@ -46,8 +49,17 @@ import "./TalentImportReview.css";
 //   per item, each with its own "Approve" button while needs_review. That
 //   locator also matches ANY ancestor section of the heading, so the Items
 //   <section> is a direct child of <main>, never nested.
+// - A batch's status is computed from its items on every read
+//   (knowledge_service._compute_batch_progress), so after an Approve or
+//   Reject the batch list is read again too (item 66 walk: the batch row
+//   said "Needs review" after the last item was rejected).
 // - No skeleton rows in either table: setup's résumé import and setup's résumé import count `tbody tr` as
 //   "loaded". A table shows aria-busy while its fetch is in flight instead.
+// Plan item 78: a batch in one of these is still being imported, so the
+// page keeps reading (ck_knowledge_import_batch_status; needs_review,
+// completed and failed wait on nothing but a reviewer).
+const UNFINISHED_BATCH_STATUSES = new Set(["queued", "processing"]);
+
 export function TalentImportReview() {
   const { organizationId } = useAuth();
   const [batches, setBatches] = useState<ImportBatchResponse[] | null>(null);
@@ -70,16 +82,39 @@ export function TalentImportReview() {
     null,
   );
 
-  const refreshBatches = useCallback(async () => {
-    if (!organizationId) return;
-    try {
-      setBatches(await listImportBatches(organizationId));
-    } catch {
-      setError("Failed to load import batches");
-    } finally {
-      setBatchesLoaded(true);
+  // `quiet` for the poll's reads: a failed one shows no error (the rows
+  // stay, and the next read tries again).
+  const refreshBatches = useCallback(
+    async (quiet = false) => {
+      if (!organizationId) return;
+      try {
+        setBatches(await listImportBatches(organizationId));
+      } catch {
+        if (!quiet) setError("Failed to load import batches");
+      } finally {
+        setBatchesLoaded(true);
+      }
+    },
+    [organizationId],
+  );
+
+  // Plan item 78: the open batch's items are read from three places (the
+  // poll, and after an Approve or Reject), and a read can answer out of
+  // order. An answer is applied only if no later read's answer has been,
+  // and only while its batch is still the one open: a poll read sent before
+  // an Approve must not bring back the Approve button the refresh after it
+  // removed. The same rule as useEventStream.ts's reads.
+  const openBatchId = useRef<string | null>(null);
+  openBatchId.current = selectedBatchId;
+  const itemReads = useRef({ started: 0, applied: 0 });
+  const readOpenBatchItems = useCallback(async (batchId: string) => {
+    const read = ++itemReads.current.started;
+    const result = await listImportItems(batchId);
+    if (read > itemReads.current.applied && openBatchId.current === batchId) {
+      itemReads.current.applied = read;
+      setItems(result);
     }
-  }, [organizationId]);
+  }, []);
 
   useEffect(() => {
     void refreshBatches();
@@ -163,8 +198,11 @@ export function TalentImportReview() {
     }
   }
 
+  // After an Approve or Reject: the item's row, and its batch's status,
+  // which the server computes from the items.
   async function refreshSelectedItems() {
-    if (selectedBatchId) setItems(await listImportItems(selectedBatchId));
+    if (selectedBatchId) await readOpenBatchItems(selectedBatchId);
+    void refreshBatches(true);
   }
 
   async function handleApprove(itemId: string) {
@@ -195,6 +233,26 @@ export function TalentImportReview() {
 
   const selectedBatch = batches?.find((b) => b.id === selectedBatchId) ?? null;
 
+  // Plan item 78: the open batch's items are read again too while that
+  // batch is unfinished, including once more on the read that finds it
+  // finished, so its last items show.
+  const openBatchUnfinished =
+    selectedBatch !== null && UNFINISHED_BATCH_STATUSES.has(selectedBatch.status);
+  const batchPoll = useBoundedPoll(
+    async () => {
+      await refreshBatches(true);
+      if (selectedBatchId !== null && openBatchUnfinished) {
+        await readOpenBatchItems(selectedBatchId).catch(() => {
+          // As the batch read: quiet, the next read tries again.
+        });
+      }
+    },
+    (batches ?? []).some((b) => UNFINISHED_BATCH_STATUSES.has(b.status)),
+    (batches ?? [])
+      .map((b) => `${b.id}:${b.status}:${b.total_items}:${b.completed_items}:${b.failed_items}`)
+      .join(","),
+  );
+
   return (
     <main>
       <h1>Talent import and review queue</h1>
@@ -219,8 +277,7 @@ export function TalentImportReview() {
           </Field>
         </div>
         <p className="talent-import__hint">
-          Each upload becomes a batch below. This page does not refresh on its own: reload it to see
-          a batch's progress.
+          Each upload becomes a batch below, and its progress shows there as the import runs.
         </p>
       </section>
 
@@ -278,6 +335,9 @@ export function TalentImportReview() {
           <EmptyState title="No import batches yet">
             Upload an employee master, certifications or resumes above to start one.
           </EmptyState>
+        )}
+        {batchPoll.stopped && (
+          <PollStoppedNotice what="import progress" onCheckAgain={batchPoll.checkAgain} />
         )}
       </section>
 

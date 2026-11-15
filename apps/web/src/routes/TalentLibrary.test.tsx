@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
-import type { KnowledgeItemResponse } from "../api/client";
+import type { ImportBatchResponse, KnowledgeItemResponse } from "../api/client";
 import { TalentLibrary } from "./TalentLibrary";
 
 // Restyle batch 6. Pins what full-flow.spec.ts :476-492 reads - one
@@ -17,6 +17,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listOrganizationKnowledge: vi.fn(),
     patchKnowledgeItem: vi.fn(),
     uploadKnowledgeDocument: vi.fn(),
+    getImportBatch: vi.fn(),
   };
 });
 
@@ -25,6 +26,24 @@ vi.mock("../auth/useAuth", () => ({
 }));
 
 const listOrganizationKnowledge = vi.mocked(apiClient.listOrganizationKnowledge);
+const uploadKnowledgeDocument = vi.mocked(apiClient.uploadKnowledgeDocument);
+const getImportBatch = vi.mocked(apiClient.getImportBatch);
+
+// Plan item 78: the capability statement's upload answers with its batch.
+function capabilityBatch(overrides: Partial<ImportBatchResponse> = {}): ImportBatchResponse {
+  return {
+    id: "cap-batch",
+    organization_id: "org-1",
+    import_type: "manual",
+    source_document_id: "doc-cap",
+    status: "queued",
+    total_items: 0,
+    completed_items: 0,
+    failed_items: 0,
+    created_at: "2026-10-10T08:00:00Z",
+    ...overrides,
+  };
+}
 
 function ki(
   id: string,
@@ -180,7 +199,8 @@ describe("a status change that lands while the re-read after an upload is in fli
         answerReread = r;
       }),
     );
-    vi.mocked(apiClient.uploadKnowledgeDocument).mockResolvedValue(undefined);
+    uploadKnowledgeDocument.mockResolvedValue(capabilityBatch());
+    getImportBatch.mockResolvedValue(capabilityBatch());
     vi.mocked(apiClient.patchKnowledgeItem).mockResolvedValue({ ...pmp, status: "active" });
     const { container } = renderScreen();
 
@@ -203,5 +223,87 @@ describe("a status change that lands while the re-read after an upload is in fli
     expect(
       (screen.getByRole("combobox", { name: "Status of PMP" }) as HTMLSelectElement).value,
     ).toBe("active");
+  });
+});
+
+describe("plan item 78: a capability statement's projects appear without a reload", () => {
+  async function advance(ms: number) {
+    if (ms === 0) {
+      await act(async () => {});
+      return;
+    }
+    for (let left = ms; left > 0; left -= 1_000) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(Math.min(left, 1_000));
+      });
+    }
+  }
+
+  function upload(container: HTMLElement) {
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "capability.pdf")] } });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks for no reload any more", async () => {
+    renderScreen();
+    await advance(0);
+    expect(screen.queryByText(/reload/i)).not.toBeInTheDocument();
+  });
+
+  it("follows the upload's batch, then reads the library once it is done", async () => {
+    listOrganizationKnowledge.mockReset();
+    listOrganizationKnowledge.mockResolvedValue([ki("k1", "employee", "Avery Quill")]);
+    uploadKnowledgeDocument.mockResolvedValue(capabilityBatch());
+    getImportBatch
+      .mockResolvedValueOnce(capabilityBatch({ status: "processing", total_items: 2 }))
+      .mockResolvedValue(
+        capabilityBatch({ status: "completed", total_items: 2, completed_items: 2 }),
+      );
+    const { container } = renderScreen();
+    await advance(0);
+
+    upload(container);
+    await advance(0);
+    expect(screen.getByText("Importing capability.pdf...")).toBeInTheDocument();
+    expect(screen.queryByText("Harbour Systems")).not.toBeInTheDocument();
+
+    listOrganizationKnowledge.mockResolvedValue([
+      ki("k1", "employee", "Avery Quill"),
+      ki("k4", "past_project", "Harbour Systems"),
+    ]);
+    await advance(2_000);
+    expect(getImportBatch).toHaveBeenCalledWith("cap-batch");
+    expect(screen.getByText("Importing capability.pdf...")).toBeInTheDocument();
+    await advance(2_000);
+
+    expect(screen.getByText("Harbour Systems")).toBeInTheDocument();
+    expect(screen.queryByText("Importing capability.pdf...")).not.toBeInTheDocument();
+    const batchReads = getImportBatch.mock.calls.length;
+    await advance(10 * 60_000);
+    expect(getImportBatch).toHaveBeenCalledTimes(batchReads);
+  });
+
+  it("says so when the import failed", async () => {
+    uploadKnowledgeDocument.mockResolvedValue(capabilityBatch());
+    getImportBatch.mockResolvedValue(
+      capabilityBatch({ status: "failed", total_items: 1, failed_items: 1 }),
+    );
+    const { container } = renderScreen();
+    await advance(0);
+
+    upload(container);
+    await advance(0);
+    await advance(2_000);
+
+    expect(screen.getByText("Importing capability.pdf failed.")).toBeInTheDocument();
+    expect(screen.queryByText("Importing capability.pdf...")).not.toBeInTheDocument();
   });
 });

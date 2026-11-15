@@ -15,6 +15,7 @@ import {
 import type { DocumentResponse, GateResponse, WorkflowTaskResponse } from "../api/client";
 import { formatErrorDetail, readEnvelopeCode, readEnvelopeDetail } from "../api/formatErrorDetail";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
+import { PollStoppedNotice } from "../components/PollStoppedNotice";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Field } from "../components/ui/Field";
@@ -22,18 +23,18 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { humanize } from "../format/humanize";
+import { useBoundedPoll } from "../hooks/useBoundedPoll";
 import { useEventStream } from "../hooks/useEventStream";
 import { useListReads } from "../hooks/useListReads";
 import { useReportRunStatus } from "../shell/runStatus";
+import { isActiveRunStatus } from "../status/runStatuses";
 import { describeStatus } from "../status/statusMap";
 import "./UploadAndProcessingStatus.css";
 
-// Module-level, not inside the component: this Set never changes, so
-// creating it once here (instead of on every render) is both cheaper and
-// what fixes the useEffect dependency warning below - a value declared
-// inside the component is a "new" value to React on every render, even
-// with identical contents, so React can't tell it's safe to skip.
-const NON_TERMINAL_STATUSES = new Set(["queued", "running", "waiting_for_human"]);
+// Plan item 78: a document in one of these is still being parsed, so the
+// page keeps reading the list (useBoundedPoll) until none is. "parsed" and
+// "failed" are final (db/models/document.py's ck_document_parse_status).
+const UNFINISHED_PARSE_STATUSES = new Set(["uploaded", "queued", "parsing"]);
 
 // Plan item 19: the sentence under "Last run" for each reason the backend
 // records on a failed run (WorkflowRunResponse.error_code). Each says only
@@ -151,7 +152,7 @@ export function UploadAndProcessingStatus() {
         // still in progress, if any. A cancelled run followed by a real
         // retry has its retry earlier in this list than the cancelled run,
         // so this picks the retry, not the dead run behind it.
-        const active = runs.find((run) => NON_TERMINAL_STATUSES.has(run.status));
+        const active = runs.find((run) => isActiveRunStatus(run.status));
         if (active) {
           setListedRunStatus(active.status);
           setWorkflowRunId(active.id);
@@ -193,18 +194,33 @@ export function UploadAndProcessingStatus() {
 
   // After a change: the server's list, so the screen does not rest on the
   // upload's own answer alone. Dropped if the user has moved to another
-  // tender meanwhile; a failure keeps the rows already shown.
-  function rereadDocuments(forTenderId: string) {
+  // tender meanwhile; a failure keeps the rows already shown. Plan item 78:
+  // also the parse poll's read below, which is `quiet`: a failed poll read
+  // shows no error (the rows stay, and the next read tries again).
+  async function rereadDocuments(forTenderId: string, quiet = false): Promise<void> {
     const startedAt = documentReads.start();
-    listDocuments(forTenderId)
-      .then((result) => {
-        if (tenderIdRef.current !== forTenderId) return;
-        setDocuments((current) => documentReads.merge(startedAt, result, current));
-      })
-      .catch(() => {
-        if (tenderIdRef.current === forTenderId) setError("Failed to load documents");
-      });
+    try {
+      const result = await listDocuments(forTenderId);
+      if (tenderIdRef.current !== forTenderId) return;
+      setDocuments((current) => documentReads.merge(startedAt, result, current));
+    } catch {
+      if (!quiet && tenderIdRef.current === forTenderId) setError("Failed to load documents");
+    }
   }
+
+  // Plan item 78: parse status updates on its own. Observed in the item 66
+  // walk: 20 s after upload every row still said "Uploaded" until a reload.
+  // No event stream covers documents, so the list is read again, bounded
+  // (useBoundedPoll.ts), while any row is still being parsed. This page
+  // opens no new event stream: full-flow.spec.ts's step 8 counts this
+  // page's workflow stream requests.
+  const parsePoll = useBoundedPoll(
+    async () => {
+      if (tenderId) await rereadDocuments(tenderId, true);
+    },
+    documents.some((doc) => UNFINISHED_PARSE_STATUSES.has(doc.parse_status)),
+    documents.map((doc) => `${doc.id}:${doc.parse_status}`).join(","),
+  );
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -218,7 +234,7 @@ export function UploadAndProcessingStatus() {
         const withoutDuplicate = prev.filter((d) => d.id !== uploaded.id);
         return [...withoutDuplicate, uploaded];
       });
-      rereadDocuments(tenderId);
+      void rereadDocuments(tenderId);
     } catch (err) {
       setError(err instanceof ApiError ? `Upload failed (${err.status})` : "Upload failed");
     } finally {
@@ -303,7 +319,7 @@ export function UploadAndProcessingStatus() {
   useReportRunStatus(workflowRunId !== null ? (activeRun?.status ?? null) : lastRunStatus);
 
   useEffect(() => {
-    if (activeRun && !NON_TERMINAL_STATUSES.has(activeRun.status)) {
+    if (activeRun && !isActiveRunStatus(activeRun.status)) {
       setLastRunStatus(activeRun.status);
       setLastRunErrorCode(activeRun.error_code ?? null);
       setLastRunId(activeRun.id);
@@ -397,7 +413,7 @@ export function UploadAndProcessingStatus() {
       const run = await cancelWorkflowRun(workflowRunId);
       // The answer is the run's status now: "cancelled", or the terminal
       // status it reached first (a cancel on an ended run is a no-op).
-      if (!NON_TERMINAL_STATUSES.has(run.status)) {
+      if (!isActiveRunStatus(run.status)) {
         setLastRunStatus(run.status);
         setLastRunErrorCode(run.error_code ?? null);
         setLastRunId(run.id);
@@ -486,6 +502,9 @@ export function UploadAndProcessingStatus() {
               </tbody>
             </table>
           </TableScroll>
+        )}
+        {parsePoll.stopped && (
+          <PollStoppedNotice what="parse progress" onCheckAgain={parsePoll.checkAgain} />
         )}
       </section>
 

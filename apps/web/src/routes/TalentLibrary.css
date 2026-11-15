@@ -9,6 +9,14 @@
   max-width: var(--width-form);
 }
 
+/* Plan item 78: the uploads still importing, one line each. */
+.talent-library__importing {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  color: var(--ink-2);
+}
+
 /* Title is the sticky first column (TableScroll): long titles wrap rather
    than set its width at 390px. */
 .talent-library__title {

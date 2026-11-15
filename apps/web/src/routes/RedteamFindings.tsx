@@ -2,13 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
-  listGates,
   listRedteamFindings,
-  listWorkflowRuns,
   resolveRedteamFinding,
   triggerRedTeam,
 } from "../api/client";
-import type { GateResponse, OperationResponse, RedteamFindingResponse } from "../api/client";
+import type { OperationResponse, RedteamFindingResponse } from "../api/client";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { Button } from "../components/ui/Button";
@@ -19,6 +17,7 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { useListReads } from "../hooks/useListReads";
 import { refreshPendingGate } from "../gates/refreshGate";
 import { useTenderOperation } from "../hooks/useTenderOperation";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeStatusKeepingRawWord } from "../status/statusMap";
 import "./RedteamFindings.css";
@@ -65,8 +64,22 @@ export function RedteamFindings() {
   const findingReads = useListReads();
   const [error, setError] = useState<string | null>(null);
   const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
-  const [gate, setGate] = useState<GateResponse | null>(null);
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    setGate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "finding_resolution",
+    () => setError("Failed to load the finding resolution gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
 
   // The tender on screen now, kept fresh on every render, so a read that
@@ -97,42 +110,13 @@ export function RedteamFindings() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenderId]);
+  }, [tenderId, rowsVersion]);
 
   // Phase 4: the POST returns 202 and the worker runs the red team. The
   // button stays busy until the run is finished and the findings it wrote
   // have been re-read (useTenderOperation), and a run started before a
   // reload is picked up again on load. On failure, the operation's own
   // message (LLM timeout, worker lost, ...).
-  // The latest run's finding-resolution gate, if it has one (plan item 73).
-  useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    setGate(null);
-    setRunStatus(null);
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const findingGate = gates.find((g) => g.gate_type === "finding_resolution");
-        if (!cancelled && findingGate) setGate(findingGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the finding resolution gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
-
-  // As the other gate screens: a decision moves the run on server-side, and
-  // this screen does not re-read the run, so the badge goes blank.
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
-  }
-
   async function handleFinished(operation: OperationResponse) {
     const finishedForTenderId = tenderId;
     const isCancelled = () => tenderIdRef.current !== finishedForTenderId;

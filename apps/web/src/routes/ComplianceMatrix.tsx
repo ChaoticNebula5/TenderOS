@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import {
-  ApiError,
-  approveCompliance,
-  listCompliance,
-  listGates,
-  listWorkflowRuns,
-  patchCompliance,
-} from "../api/client";
-import type { ComplianceResponse, GateResponse } from "../api/client";
+import { ApiError, approveCompliance, listCompliance, patchCompliance } from "../api/client";
+import type { ComplianceResponse } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
@@ -17,6 +10,7 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { formatPercent } from "../format/percent";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeApproved, describeStatus } from "../status/statusMap";
 import "./ComplianceMatrix.css";
@@ -47,11 +41,23 @@ export function ComplianceMatrix() {
   // Set once listCompliance answers, so the empty state only claims "no
   // entries" after the response says so (DESIGN.md Copy rules).
   const [entriesLoaded, setEntriesLoaded] = useState(false);
-  const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The latest run's status, from the listWorkflowRuns call this screen
-  // already makes for the gate - reported to the tender bar. No extra fetch.
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    setGate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "compliance_review",
+    () => setError("Failed to load the compliance review gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
 
   useEffect(() => {
@@ -70,37 +76,7 @@ export function ComplianceMatrix() {
     return () => {
       cancelled = true;
     };
-  }, [tenderId]);
-
-  useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    // A tender change keeps this component mounted; the previous tender's
-    // run status must not show against the new one while it loads.
-    setRunStatus(null);
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const complianceGate = gates.find((g) => g.gate_type === "compliance_review");
-        if (!cancelled && complianceGate) setGate(complianceGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the compliance review gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
-
-  // A decision moves the run on server-side, but this screen does not
-  // re-fetch the run, so the badge goes blank until the next load rather
-  // than show a status the decision just made stale (as RequirementRegister).
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
-  }
+  }, [tenderId, rowsVersion]);
 
   async function handleApprove(complianceId: string) {
     setError(null);

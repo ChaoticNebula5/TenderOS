@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import {
-  ApiError,
-  listGates,
-  listMatches,
-  listRoles,
-  listWorkflowRuns,
-  selectCandidate,
-} from "../api/client";
-import type { GateResponse, RoleMatchResponse, RoleRequirementResponse } from "../api/client";
+import { ApiError, listMatches, listRoles, selectCandidate } from "../api/client";
+import type { RoleMatchResponse, RoleRequirementResponse } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
@@ -17,6 +10,7 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { formatPercent } from "../format/percent";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeSelected } from "../status/statusMap";
 import "./TeamWorkspace.css";
@@ -49,11 +43,23 @@ export function TeamWorkspace() {
   // state only: without it the screen said "No candidates found" during
   // the fetch, before the response could confirm it.
   const [matchesLoading, setMatchesLoading] = useState(false);
-  const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The latest run's status, from the listWorkflowRuns call this screen
-  // already makes for the gate - reported to the tender bar. No extra fetch.
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    setGate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "resource_selection",
+    () => setError("Failed to load the resource selection gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
   // The last role a candidate fetch was actually requested for - lets
   // handleSelectRole tell whether ITS OWN listMatches response is still
@@ -77,36 +83,7 @@ export function TeamWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [tenderId]);
-
-  useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    // A tender change keeps this component mounted; the previous tender's
-    // run status must not show against the new one while it loads.
-    setRunStatus(null);
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const resourceGate = gates.find((g) => g.gate_type === "resource_selection");
-        if (!cancelled && resourceGate) setGate(resourceGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the resource selection gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
-
-  // As RequirementRegister: the decision moves the run on server-side and
-  // this screen does not re-fetch it, so the badge goes blank, not stale.
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
-  }
+  }, [tenderId, rowsVersion]);
 
   async function handleSelectRole(roleId: string) {
     setSelectedRoleId(roleId);

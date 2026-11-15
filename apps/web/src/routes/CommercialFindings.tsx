@@ -2,15 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
-  listGates,
   listPricingDocuments,
   listPricingFindings,
-  listWorkflowRuns,
   resolvePricingFinding,
   validatePricingDocument,
 } from "../api/client";
 import type {
-  GateResponse,
   OperationResponse,
   PricingDocumentResponse,
   PricingFindingResponse,
@@ -25,6 +22,7 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { humanize } from "../format/humanize";
 import { useListReads } from "../hooks/useListReads";
 import { useTenderOperation } from "../hooks/useTenderOperation";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeFinding } from "../status/statusMap";
 import "./CommercialFindings.css";
@@ -50,11 +48,23 @@ export function CommercialFindings() {
   // A resolve can land while the re-read after an operation is in flight;
   // that read's answer must not undo it (useListReads.ts).
   const findingReads = useListReads();
-  const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The latest run's status, from the listWorkflowRuns call this screen
-  // already makes for the gate - reported to the tender bar. No extra fetch.
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    setGate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "commercial_approval",
+    () => setError("Failed to load the commercial approval gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
   // handleValidate's own guard, not the mount effect's - see below.
   const tenderIdRef = useRef(tenderId);
@@ -93,39 +103,7 @@ export function CommercialFindings() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenderId]);
-
-  useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    // A stale gate from the PREVIOUS tender must not stay visible (and
-    // actionable) while this tender's own lookup is still in flight, or
-    // if this tender turns out to have no matching gate at all.
-    setGate(null);
-    // Same for the run status shown in the tender bar.
-    setRunStatus(null);
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const commercialGate = gates.find((g) => g.gate_type === "commercial_approval");
-        if (!cancelled && commercialGate) setGate(commercialGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the commercial approval gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
-
-  // As RequirementRegister: the decision moves the run on server-side and
-  // this screen does not re-fetch it, so the badge goes blank, not stale.
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
-  }
+  }, [tenderId, rowsVersion]);
 
   // Once the operation is finished, and before the buttons are released:
   // re-read the findings, and on failure show the operation's own message.

@@ -1,7 +1,7 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
 import type {
@@ -26,6 +26,8 @@ vi.mock("../api/client", async (importOriginal) => {
     listWorkflowRuns: vi.fn(),
     listGates: vi.fn(),
     selectCandidate: vi.fn(),
+    getWorkflowRun: vi.fn(),
+    mintWorkflowEventsTicket: vi.fn(),
   };
 });
 
@@ -34,10 +36,42 @@ const listMatches = vi.mocked(apiClient.listMatches);
 const listWorkflowRuns = vi.mocked(apiClient.listWorkflowRuns);
 const listGates = vi.mocked(apiClient.listGates);
 const selectCandidate = vi.mocked(apiClient.selectCandidate);
+const getWorkflowRun = vi.mocked(apiClient.getWorkflowRun);
+const mintWorkflowEventsTicket = vi.mocked(apiClient.mintWorkflowEventsTicket);
+
+// Plan item 78: jsdom has no EventSource; the same minimal fake as
+// useEventStream.test.ts, so the gate's run stream can be driven here.
+class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+
+  readyState = FakeEventSource.CONNECTING;
+  onopen: (() => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+beforeEach(() => {
+  FakeEventSource.instances = [];
+  vi.stubGlobal("EventSource", FakeEventSource);
+  mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+  getWorkflowRun.mockResolvedValue(run("waiting_for_human"));
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const EMPLOYEE_ID = "eeeeeeee-0000-0000-0000-000000000001";
@@ -201,6 +235,38 @@ describe("TeamWorkspace (restyle batch 4)", () => {
     resolve([]);
     expect(await screen.findByText("No candidates for this role yet")).toBeInTheDocument();
     expect(screen.queryByText("Loading candidates...")).toBeNull();
+  });
+
+  it("shows the resource gate that opens after the page loaded, without a reload (plan item 78)", async () => {
+    // No roles yet at load: talent analysis writes them before the gate opens.
+    listRoles.mockResolvedValueOnce([]).mockResolvedValue([role({})]);
+    // Loaded while the compliance gate's approval is still moving the run on.
+    listWorkflowRuns.mockResolvedValue([run("running")]);
+    getWorkflowRun.mockResolvedValue(run("running"));
+    listGates.mockResolvedValue([]);
+    renderScreen();
+
+    await screen.findByText("No open resource selection gate for this tender yet.");
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const stream = FakeEventSource.instances[0]!;
+    expect(stream.url).toContain("/workflow-runs/run-1/events/stream");
+    act(() => stream.onopen?.());
+
+    // The gate opens: the run waits for a human, and its stream says so.
+    getWorkflowRun.mockResolvedValue(run("waiting_for_human"));
+    listGates.mockResolvedValue([gate()]);
+    act(() => stream.onmessage?.(new MessageEvent("message", { data: "{}" })));
+
+    await screen.findByText("Awaiting decision");
+    expect(screen.queryByText("No open resource selection gate for this tender yet.")).toBeNull();
+    // The roles the gate covers are read again as it opens.
+    await waitFor(() => expect(listRoles).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Project Manager")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.querySelector(".tender-bar .status-badge")).toHaveTextContent(
+        "Waiting for review",
+      ),
+    );
   });
 
   it("puts the pending gate first, its panel the heading's next sibling and not the Candidates section (full-flow.spec.ts:56), and reports the run", async () => {
