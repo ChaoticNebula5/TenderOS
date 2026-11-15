@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +35,7 @@ const listImportBatches = vi.mocked(apiClient.listImportBatches);
 const listImportItems = vi.mocked(apiClient.listImportItems);
 const approveImportItem = vi.mocked(apiClient.approveImportItem);
 const uploadResumes = vi.mocked(apiClient.uploadResumes);
+const rejectImportItem = vi.mocked(apiClient.rejectImportItem);
 
 function batch(overrides: Partial<ImportBatchResponse> = {}): ImportBatchResponse {
   return {
@@ -330,5 +331,125 @@ describe("TalentImportReview (restyle batch 6)", () => {
     const { container } = renderScreen();
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load import batches");
     expect(container.querySelector("table")!.hasAttribute("aria-busy")).toBe(false);
+  });
+});
+
+describe("plan item 78: batches update without a reload", () => {
+  function batchRow(): HTMLElement {
+    return document.querySelector("table tbody tr") as HTMLElement;
+  }
+
+  it("asks for no reload any more", async () => {
+    renderScreen();
+    await screen.findByText("Needs review");
+    expect(screen.queryByText(/reload/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/refresh/i)).not.toBeInTheDocument();
+  });
+
+  it("reads the batch list again after a Reject, so the batch row follows its items", async () => {
+    const user = userEvent.setup();
+    listImportBatches
+      .mockResolvedValueOnce([batch()])
+      .mockResolvedValue([batch({ status: "completed" })]);
+    listImportItems
+      .mockResolvedValueOnce([item(), NEEDS_REVIEW, FAILED])
+      .mockResolvedValue([item(), { ...NEEDS_REVIEW, status: "rejected" }, FAILED]);
+    rejectImportItem.mockResolvedValue({ ...NEEDS_REVIEW, status: "rejected" });
+    renderScreen();
+    await screen.findByText("Needs review");
+    await user.click(screen.getByRole("button", { name: "Review items" }));
+    await user.click(await screen.findByRole("button", { name: "Reject" }));
+
+    await waitFor(() => expect(within(batchRow()).getByText("Done with failures")).toBeTruthy());
+    expect(listImportBatches).toHaveBeenCalledTimes(2);
+  });
+
+  describe("with fake timers", () => {
+    async function advance(ms: number) {
+      if (ms === 0) {
+        await act(async () => {});
+        return;
+      }
+      for (let left = ms; left > 0; left -= 1_000) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(Math.min(left, 1_000));
+        });
+      }
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("follows a batch from queued to done, with the open batch's items, and then stops reading", async () => {
+      listImportBatches
+        .mockResolvedValueOnce([
+          batch({ status: "queued", total_items: 0, completed_items: 0, failed_items: 0 }),
+        ])
+        .mockResolvedValueOnce([
+          batch({ status: "processing", total_items: 1, completed_items: 0, failed_items: 0 }),
+        ])
+        .mockResolvedValue([
+          batch({ status: "completed", total_items: 1, completed_items: 1, failed_items: 0 }),
+        ]);
+      listImportItems
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([item({ status: "pending" })])
+        .mockResolvedValue([item()]);
+
+      renderScreen();
+      await advance(0);
+      expect(within(batchRow()).getByText("Queued")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Review items" }));
+      await advance(0);
+
+      await advance(2_000);
+      expect(within(batchRow()).getByText("Processing")).toBeTruthy();
+      await advance(2_000);
+      expect(within(batchRow()).getByText("Done")).toBeTruthy();
+      expect(
+        within(screen.getByRole("region", { name: "Import items" })).getAllByText("Approved"),
+      ).toHaveLength(1);
+
+      const batchReads = listImportBatches.mock.calls.length;
+      const itemReads = listImportItems.mock.calls.length;
+      await advance(10 * 60_000);
+      expect(listImportBatches).toHaveBeenCalledTimes(batchReads);
+      expect(listImportItems).toHaveBeenCalledTimes(itemReads);
+    });
+
+    it("does not bring back Approve from a read sent before the Approve", async () => {
+      const processing = batch({ status: "processing", total_items: 2, completed_items: 1 });
+      listImportBatches.mockResolvedValue([processing]);
+      listImportItems.mockResolvedValue([item(), NEEDS_REVIEW]);
+
+      renderScreen();
+      await advance(0);
+      fireEvent.click(screen.getByRole("button", { name: "Review items" }));
+      await advance(0);
+      expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+
+      // The poll's read of the items goes out, and is slow.
+      let answerSlowRead: (items: ImportItemDetailResponse[]) => void = () => {};
+      listImportItems.mockImplementationOnce(
+        () => new Promise((resolve) => (answerSlowRead = resolve)),
+      );
+      await advance(2_000);
+
+      // Approve, and the read after it, both answer first.
+      approveImportItem.mockResolvedValue({ ...NEEDS_REVIEW, status: "approved" });
+      listImportItems.mockResolvedValue([item(), { ...NEEDS_REVIEW, status: "approved" }]);
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      await advance(0);
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+
+      // The slow read answers with the item still needing review: dropped.
+      await act(async () => answerSlowRead([item(), NEEDS_REVIEW]));
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    });
   });
 });

@@ -649,3 +649,94 @@ describe("the cost budget gate", () => {
     expect(listGates).not.toHaveBeenCalled();
   });
 });
+
+describe("plan item 78: parse status updates without a reload", () => {
+  // Only the timers and the clock are faked (the poll's idle limit reads
+  // Date.now()): the page's reads are mocked promises, and
+  // each 1 s step gets its own act() so a read's answer schedules the next
+  // read before time moves on (as in useBoundedPoll.test.ts).
+  async function advance(ms: number) {
+    if (ms === 0) {
+      await act(async () => {}); // let answered reads apply
+      return;
+    }
+    for (let left = ms; left > 0; left -= 1_000) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(Math.min(left, 1_000));
+      });
+    }
+  }
+
+  function documentWith(parse_status: string): DocumentResponse {
+    return { ...parsedDocument(), parse_status } as DocumentResponse;
+  }
+
+  function parseCell(): string | null | undefined {
+    return document.querySelector("table tbody tr td:nth-child(3)")?.textContent;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    listWorkflowRuns.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reads the list again while a document is being parsed, and stops once none is", async () => {
+    listDocuments
+      .mockResolvedValueOnce([documentWith("uploaded")])
+      .mockResolvedValueOnce([documentWith("parsing")])
+      .mockResolvedValue([parsedDocument()]);
+
+    renderAt("tender-1");
+    await advance(0);
+    expect(parseCell()).toBe("uploaded");
+
+    await advance(2_000);
+    expect(parseCell()).toBe("parsing");
+    await advance(2_000);
+    expect(parseCell()).toBe("parsed");
+
+    const reads = listDocuments.mock.calls.length;
+    await advance(10 * 60_000);
+    expect(listDocuments).toHaveBeenCalledTimes(reads);
+  });
+
+  it("says it stopped checking after 15 minutes with no change, and Check again reads at once", async () => {
+    listDocuments.mockResolvedValue([documentWith("parsing")]);
+
+    renderAt("tender-1");
+    await advance(15 * 60_000 + 30_000);
+    expect(
+      screen.getByText("Stopped checking parse progress: nothing has changed for 15 minutes."),
+    ).toBeInTheDocument();
+    const reads = listDocuments.mock.calls.length;
+    await advance(60 * 60_000);
+    expect(listDocuments).toHaveBeenCalledTimes(reads);
+
+    listDocuments.mockResolvedValue([parsedDocument()]);
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await advance(0);
+    expect(listDocuments).toHaveBeenCalledTimes(reads + 1);
+    expect(parseCell()).toBe("parsed");
+    expect(screen.queryByText(/Stopped checking/)).not.toBeInTheDocument();
+  });
+
+  it("shows no error for a failed poll read, and the next read still lands", async () => {
+    listDocuments
+      .mockResolvedValueOnce([documentWith("parsing")])
+      .mockRejectedValueOnce(new ApiError(503, { detail: "busy" }))
+      .mockResolvedValue([parsedDocument()]);
+
+    renderAt("tender-1");
+    await advance(0);
+    await advance(2_000);
+    expect(screen.queryByText("Failed to load documents")).not.toBeInTheDocument();
+    expect(parseCell()).toBe("parsing");
+
+    await advance(4_000);
+    expect(parseCell()).toBe("parsed");
+  });
+});

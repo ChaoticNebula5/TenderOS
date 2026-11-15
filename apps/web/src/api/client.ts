@@ -126,13 +126,12 @@ async function handleResponse<T>(response: Response): Promise<T> {
       parseRetryAfter(response.headers.get("Retry-After")),
     );
   }
-  // 204 is the only status this used to special-case, but
-  // uploadKnowledgeDocument documents a real 202-with-no-body response
-  // (extraction hasn't run yet) - awaiting .json() on an empty body
-  // throws a SyntaxError, failing every successful call. Checking the
-  // body text itself, not a fixed status list, covers that and any
-  // other no-content 2xx response without hard-coding which statuses
-  // the API happens to use that way today.
+  // 204 is the only status this used to special-case, but a 2xx can come
+  // with no body (uploadKnowledgeDocument's 202 had none until plan item
+  // 78) - awaiting .json() on an empty body throws a SyntaxError, failing
+  // every successful call. Checking the body text itself, not a fixed
+  // status list, covers any no-content 2xx response without hard-coding
+  // which statuses the API happens to use that way today.
   const text = await response.text();
   if (text === "") return undefined as T;
   return JSON.parse(text) as T;
@@ -966,8 +965,10 @@ export function uploadResumes(orgId: string, files: File[]): Promise<ImportBatch
 
 // 202, no body (route returns None - extraction hasn't run yet, poll
 // listOrganizationKnowledge for the result).
-export function uploadKnowledgeDocument(orgId: string, file: File): Promise<void> {
-  return apiUpload<void>(`/organizations/${orgId}/knowledge/documents`, file);
+// Plan item 78: answers 202 with the capability statement's import batch
+// (it had no body), which the talent library follows until it finishes.
+export function uploadKnowledgeDocument(orgId: string, file: File): Promise<ImportBatchResponse> {
+  return apiUpload<ImportBatchResponse>(`/organizations/${orgId}/knowledge/documents`, file);
 }
 
 export function listImportBatches(orgId: string): Promise<ImportBatchResponse[]> {

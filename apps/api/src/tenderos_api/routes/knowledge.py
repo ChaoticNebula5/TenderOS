@@ -190,21 +190,22 @@ async def upload_resumes(
 
 @router.post(
     "/organizations/{org_id}/knowledge/documents",
-    response_model=KnowledgeItemResponse | None,
+    response_model=ImportBatchResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def upload_knowledge_document(
     org_id: UUID,
     file: UploadFile = File(...),
     current_user: User = Depends(require_permission(_MANAGE)),
-) -> None:
+) -> ImportBatchResponse:
     """G6's generic org-knowledge document upload - the capability
     statement's route (Part C's import_type enum has no dedicated value
     for it, so this uses "manual", same as knowledge_service's own
-    create_import_batch call sites for it). Returns nothing meaningful yet
-    (202, no body) since extraction hasn't run - poll
-    GET /organizations/{org_id}/knowledge for the resulting projects/
-    capabilities once processing completes.
+    create_import_batch call sites for it). 202: extraction runs on the
+    worker. Plan item 78: returns the import batch, as the other upload
+    routes do (it answered with no body before), so the talent library
+    can follow GET /knowledge/import-batches/{id} and re-read
+    GET /organizations/{org_id}/knowledge once the batch has finished.
     """
     filename = file.filename or "document.docx"
     content = await _read_and_validate_upload(file, filename, file.content_type)
@@ -226,6 +227,7 @@ async def upload_knowledge_document(
     await knowledge_service.queue_knowledge_document_import(
         document.id, batch.id, request_id=uuid.uuid4()
     )
+    return ImportBatchResponse.model_validate(batch, from_attributes=True)
 
 
 @router.get(

@@ -238,9 +238,12 @@ async def test_upload_resumes_creates_one_batch_for_multiple_files(
     assert response.json()["import_type"] == "bulk_resumes"
 
 
-async def test_upload_knowledge_document_returns_202_with_no_body(
+async def test_upload_knowledge_document_returns_202_with_its_import_batch(
     client: TestClient, register_actor
 ):
+    """Plan item 78: the capability statement's upload answers 202 with
+    its import batch (it had no body), so the talent library can follow
+    that batch until it finishes, then re-read the library."""
     headers, _, org_id = register_actor()
 
     response = client.post(
@@ -256,6 +259,15 @@ async def test_upload_knowledge_document_returns_202_with_no_body(
     )
 
     assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["import_type"] == "manual"
+    assert body["organization_id"] == str(org_id)
+    assert body["status"] == "queued"
+    assert body["source_document_id"] is not None
+
+    followed = client.get(f"/knowledge/import-batches/{body['id']}", headers=headers)
+    assert followed.status_code == 200, followed.text
+    assert followed.json()["source_document_id"] == body["source_document_id"]
 
 
 # ----------------------------------------------------------------------

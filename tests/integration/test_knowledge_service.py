@@ -672,6 +672,39 @@ async def test_record_batch_parse_failure_gives_the_batch_a_real_terminal_status
     assert progress_after.failed_items == 1
 
 
+async def test_a_finished_batch_with_no_items_reads_completed_not_queued():
+    """Plan item 78: a capability statement whose extraction finds nothing
+    creates no import items; the worker still stamps completed_at. The
+    batch must read "completed" then, or the talent library, which follows
+    the batch its upload returned, waits on a "queued" that never ends."""
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Empty Capability Statement Org",
+    )
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=registered.organization.id,
+            import_type="manual",
+            source_document_id=None,
+            created_by=registered.user.id,
+        )
+        await uow.commit()
+
+    before = await knowledge_service.get_import_batch(batch.id)
+    assert before.status == "queued", "an unfinished batch with no items is still queued"
+
+    async with UnitOfWork() as uow:
+        assert await uow.knowledge.mark_import_batch_completed(batch.id)
+        await uow.commit()
+
+    after = await knowledge_service.get_import_batch(batch.id)
+    assert after.status == "completed"
+    assert after.total_items == 0
+    listed = await knowledge_service.list_import_batches(registered.organization.id)
+    assert [b.status for b in listed if b.id == batch.id] == ["completed"]
+
+
 async def test_record_batch_parse_failure_is_idempotent_on_retry():
     registered = await register(
         email=f"{uuid.uuid4().hex}@example.com",

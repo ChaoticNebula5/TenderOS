@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import type { GateResponse, RequirementResponse } from "../api/client";
-import {
-  ApiError,
-  listGates,
-  listRequirements,
-  listWorkflowRuns,
-  patchRequirement,
-  verifyRequirement,
-} from "../api/client";
+import type { RequirementResponse } from "../api/client";
+import { ApiError, listRequirements, patchRequirement, verifyRequirement } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
@@ -16,6 +9,7 @@ import { Notice } from "../components/ui/Notice";
 import { StatusBadge } from "../components/ui/StatusBadge";
 import { TableScroll } from "../components/ui/TableScroll";
 import { useListReads } from "../hooks/useListReads";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import { describeVerified } from "../status/statusMap";
 import "./RequirementRegister.css";
@@ -36,13 +30,23 @@ export function RequirementRegister() {
   const requirementReads = useListReads();
   const tenderIdRef = useRef(tenderId);
   tenderIdRef.current = tenderId;
-  const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The latest run's status, from the listWorkflowRuns call below that this
-  // screen already makes for the gate - kept so the tender bar can show it
-  // (useReportRunStatus). No extra fetch. null = not known (no run yet, or
-  // invalidated by a gate decision below), which shows no badge.
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    setGate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "requirement_review",
+    () => setError("Failed to load the requirement review gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
 
   useEffect(() => {
@@ -61,40 +65,7 @@ export function RequirementRegister() {
     return () => {
       cancelled = true;
     };
-  }, [tenderId, requirementReads]);
-
-  useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    // A tender change keeps this component mounted; the previous tender's
-    // run status must not show against the new one while it loads.
-    setRunStatus(null);
-    // The requirement_review gate lives on a workflow run, not the
-    // tender directly - runs are newest-first (listWorkflowRuns' own
-    // ordering), so the most recent run is the one whose gate matters.
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const requirementGate = gates.find((g) => g.gate_type === "requirement_review");
-        if (!cancelled && requirementGate) setGate(requirementGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the requirement review gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
-
-  // A decision moves the run on server-side, but this screen does not
-  // re-fetch the run. Rather than keep showing a status the decision just
-  // made stale, the badge goes blank until the next load.
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
-  }
+  }, [tenderId, requirementReads, rowsVersion]);
 
   async function handleConfirm(requirementId: string) {
     setError(null);

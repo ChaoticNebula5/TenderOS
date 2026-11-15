@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import {
-  ApiError,
-  generateReadiness,
-  getReadiness,
-  listGates,
-  listWorkflowRuns,
-} from "../api/client";
-import type { GateResponse, ReadinessReportResponse } from "../api/client";
+import { ApiError, generateReadiness, getReadiness } from "../api/client";
+import type { ReadinessReportResponse } from "../api/client";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -15,6 +9,7 @@ import { StatusIcon } from "../components/ui/icons";
 import { Notice } from "../components/ui/Notice";
 import { formatDate } from "../format/date";
 import { humanize } from "../format/humanize";
+import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import "./Readiness.css";
 
@@ -127,12 +122,23 @@ export function Readiness() {
   // Set once GET /readiness has answered (a report or a 404), so the empty
   // state only claims "none yet" after the response says so.
   const [reportLoaded, setReportLoaded] = useState(false);
-  const [gate, setGate] = useState<GateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  // The latest run's status, from the listWorkflowRuns call this screen
-  // already makes for the gate - reported to the tender bar. No extra fetch.
-  const [runStatus, setRunStatus] = useState<string | null>(null);
+  // Plan item 78: bumped when this screen's gate opens while it is shown,
+  // so the rows that gate covers are read again (useLatestRunGate.ts).
+  const [rowsVersion, setRowsVersion] = useState(0);
+  // Plan item 78: the gate, kept current from the run's event stream
+  // while the run is active (useLatestRunGate.ts).
+  const {
+    gate,
+    runStatus,
+    onDecided: handleGateDecided,
+  } = useLatestRunGate(
+    tenderId,
+    "final_readiness",
+    () => setError("Failed to load the final readiness gate"),
+    () => setRowsVersion((n) => n + 1),
+  );
   useReportRunStatus(runStatus);
 
   async function refreshReport() {
@@ -160,25 +166,13 @@ export function Readiness() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenderId]);
 
+  // Plan item 78: the final gate opens once the run has written its report;
+  // read it again then, without the first load's resets.
   useEffect(() => {
-    if (!tenderId) return;
-    let cancelled = false;
-    setRunStatus(null);
-    listWorkflowRuns(tenderId)
-      .then(async (runs) => {
-        if (cancelled || runs.length === 0) return;
-        setRunStatus(runs[0].status);
-        const gates = await listGates(runs[0].id);
-        const readinessGate = gates.find((g) => g.gate_type === "final_readiness");
-        if (!cancelled && readinessGate) setGate(readinessGate);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load the final readiness gate");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tenderId]);
+    if (rowsVersion === 0) return;
+    refreshReport().catch(() => setError("Failed to load the readiness report"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowsVersion]);
 
   async function handleGenerate() {
     if (!tenderId) return;
@@ -195,13 +189,6 @@ export function Readiness() {
     } finally {
       setGenerating(false);
     }
-  }
-
-  // As the other gate screens: a decision moves the run on server-side and
-  // this screen does not re-fetch it, so the badge goes blank, not stale.
-  function handleGateDecided(updated: GateResponse) {
-    setGate(updated);
-    setRunStatus(null);
   }
 
   return (

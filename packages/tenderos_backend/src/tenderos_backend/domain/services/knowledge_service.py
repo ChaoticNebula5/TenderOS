@@ -1243,7 +1243,12 @@ def _compute_batch_progress(
     completed = total - failed - in_progress
 
     if total == 0:
-        computed_status = "queued"
+        # Plan item 78: a capability statement whose extraction found
+        # nothing creates no items, but the worker stamps completed_at when
+        # it finishes (only that path does). Without this it read "queued"
+        # forever, and the talent library, which now follows the batch its
+        # upload returned, would wait on it until its poll gave up.
+        computed_status = "completed" if batch.completed_at is not None else "queued"
     elif in_progress > 0:
         computed_status = "processing"
     elif any(item.status == "needs_review" for item in items):
