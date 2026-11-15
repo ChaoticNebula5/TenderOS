@@ -17,7 +17,9 @@ from tenderos_backend.domain.services import (
 from tenderos_api.dependencies import require_gate_decision_permission, require_permission
 from tenderos_api.errors import (
     ArchivedEmployeeSelectionAPIError,
+    FinalGateTargetUpdatesError,
     GateAlreadyDecidedError,
+    ReadinessChangedError,
     ReadinessNotWaivedError,
     TargetOwnershipDeniedError,
 )
@@ -148,28 +150,42 @@ async def decide_gate(
     # True only when there really were outstanding blockers this decision
     # bypassed - body.waive=true on an already-ready gate asked for
     # nothing and bypassed nothing, and must not be recorded as a waiver.
+    #
+    # Plan item 93 (W2, user decision): the approval recomputes readiness
+    # instead of trusting the latest stored report, because much of what
+    # readiness reads (red-team findings, pricing findings, the graph's
+    # projection, Neo4j's reachability) changes without moving the bid's
+    # state version. The report current before this request (the one the
+    # Readiness page shows) is read first; the generate then stores or
+    # reuses one report per content and makes it the newest. A different id
+    # means readiness changed since that report, so the approval is refused
+    # with READINESS_CHANGED; the recomputed report is now the current one,
+    # so a second attempt passes. The gate's own degraded stages (written by
+    # final_gate_node into its payload) are passed, so a red-team failure in
+    # the run is not dropped. The decision is then recorded only if the
+    # bid's version is still the recomputed report's (a conditional write).
+    if gate.gate_type == "final_readiness" and body.target_updates:
+        # Its targets list is always empty, and target updates are applied
+        # in their own transaction and move the version the conditional
+        # write checks (user decision while building item 93).
+        raise FinalGateTargetUpdatesError()
     waived = False
     waived_blockers: list[dict] | None = None
+    required_version: int | None = None
     if gate.gate_type == "final_readiness" and body.decision == "approve":
-        readiness = await readiness_service.get_latest_readiness(gate.tender_id)
-        # Same staleness shape graph_service.check_freshness already
-        # guards against: a human can sit on this gate for a while, and
-        # something else may bump tender.state_version after readiness_
-        # generation_node last ran. Comparing versions here means a STALE
-        # ready=True can never silently bypass the waiver requirement -
-        # only a report generated against the tender's CURRENT state does.
-        is_current = (
-            readiness is not None and readiness.tender_state_version == tender.state_version
+        shown = await readiness_service.get_latest_readiness(gate.tender_id)
+        summary = (gate.request_payload or {}).get("summary") or {}
+        fresh = await readiness_service.evaluate_readiness(
+            gate.tender_id, degraded_stages=summary.get("degraded_stages") or None
         )
-        # `readiness is None or` first: the same truth value as before (is_current
-        # is already False when readiness is None), but stated where mypy can
-        # see it, so readiness is narrowed for the .ready read.
-        not_ready = readiness is None or not is_current or not readiness.ready
-        if not_ready and not body.waive:
+        if shown is None or fresh.report_id != shown.report_id:
+            raise ReadinessChangedError()
+        required_version = fresh.tender_state_version
+        if not fresh.ready and not body.waive:
             raise ReadinessNotWaivedError()
-        if not_ready and body.waive:
+        if not fresh.ready and body.waive:
             waived = True
-            waived_blockers = readiness.blockers if readiness is not None else []
+            waived_blockers = fresh.blockers
 
     # Q1: applied unconditionally, before the gate's own decision is
     # recorded, regardless of what that decision turns out to be - a
@@ -202,9 +218,12 @@ async def decide_gate(
             notes=body.notes,
             waived=waived,
             waived_blockers=waived_blockers,
+            require_tender_state_version=required_version,
         )
     except gate_service.GateAlreadyDecidedError as exc:
         raise GateAlreadyDecidedError() from exc
+    except gate_service.TenderStateMovedError as exc:
+        raise ReadinessChangedError() from exc
 
     response = _gate_to_response(updated)
     await idempotency.finalize(200, response.model_dump(mode="json"))

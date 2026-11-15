@@ -99,15 +99,16 @@ async def _bump_bids_on_archive_change(
     Which bids: those with an evidence link to the item (any link: the
     projector projects them all and the item's fact node), and, for an
     employee, those selecting them. Readiness step 2 and the proposal's
-    evidence filter read the archived state live, but readiness keeps one
-    report per state version and the graph's freshness is a version check,
-    so without a bump both kept describing the item as it was.
+    evidence filter read the archived state live, but the graph's freshness
+    is a version check, so without a bump the graph kept the item's old
+    status and still read fresh. (Until plan item 93, readiness also kept one
+    report per state version; it now computes on every generate.)
 
     Finished bids (final gate approved) are included: the state version
     counts changes to the facts a bid rests on, and this is one. Nothing runs
     on a bump (no outbox event, no job: the user's D3), so a finished bid
-    only shows a new report and a stale graph if someone opens it. Leaving
-    them out would let a stored report keep claiming to be current.
+    only shows a stale graph if someone opens it. Leaving them out would let
+    its graph keep claiming to be current.
 
     Only when the archived state actually changes. Other statuses
     (expired, unverified) change nothing here, as they change nothing in the

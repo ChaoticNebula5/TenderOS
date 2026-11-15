@@ -368,9 +368,9 @@ async def persist_compliance_decision(
         # state-version bump below commit together or not at all. A link
         # whose stored verified/validity_status changed is a material change
         # even when the entry's status and evidence set are the same: other
-        # entries and claims in this bid may cite the same row, and readiness
-        # keeps one report per version. The stored value now means "as of the
-        # last evaluation that cited it".
+        # entries and claims in this bid may cite the same row, and the link
+        # is projected into the bid's graph. The stored value now means "as
+        # of the last evaluation that cited it".
         for evidence in materialized_evidence:
             if await uow.compliance.refresh_evidence_link_signals(
                 evidence.id, evidence.verified, evidence.validity_status

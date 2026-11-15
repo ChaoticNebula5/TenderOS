@@ -74,8 +74,9 @@ class ComplianceRepository:
         to what a compliance evaluation just computed for its source. True
         only when a value actually changed (one conditional UPDATE, so an
         unchanged link writes nothing). The caller must commit this together
-        with the bid's state-version bump: readiness keeps one report per
-        version, and a changed link changes what that report would say."""
+        with the bid's state-version bump: the link is projected into the
+        bid's graph, so a changed link makes it stale (since plan item 93
+        readiness computes on every generate and no longer depends on it)."""
         result = await self._session.execute(
             update(EvidenceLink)
             .where(

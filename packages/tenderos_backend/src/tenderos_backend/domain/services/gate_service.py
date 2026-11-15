@@ -15,6 +15,13 @@ class GateAlreadyDecidedError(Exception):
     pass
 
 
+class TenderStateMovedError(Exception):
+    """Plan item 93: the decision was conditional on the bid's state version
+    (the final gate's approval, at the version its readiness was just
+    recomputed at), and the version moved before the decision could be
+    recorded. Nothing was written; the route answers READINESS_CHANGED."""
+
+
 def _replay_or_conflict(gate: ApprovalGate, decision: str) -> tuple[ApprovalGate, bool]:
     """The answer for a decision on a gate that is no longer pending: the
     same decision as the one recorded is a replay (is_new_decision=False, no
@@ -44,6 +51,7 @@ async def record_decision(
     notes: str | None,
     waived: bool = False,
     waived_blockers: list | None = None,
+    require_tender_state_version: int | None = None,
 ) -> tuple[ApprovalGate, bool]:
     """Record a gate decision. Returns (gate, is_new_decision).
 
@@ -71,6 +79,10 @@ async def record_decision(
     a waiver enforced but not recorded is an auditable bypass with no
     audit trail, which defeats the entire reason this was built as a
     distinct act instead of letting a bare "approve" through.
+
+    require_tender_state_version (plan item 93): the decision is recorded
+    only if the gate's tender is still at that version, in the same
+    conditional UPDATE; otherwise TenderStateMovedError, nothing written.
     """
     async with UnitOfWork() as uow:
         gate = await uow.gates.get(gate_id)
@@ -89,6 +101,7 @@ async def record_decision(
             decided_by=decided_by,
             status=status_for_decision(decision),
             decision_payload=decision_payload,
+            require_tender_state_version=require_tender_state_version,
         )
         if updated is None:
             # Plan item 57: another request decided (or a cancel closed) the
@@ -97,6 +110,10 @@ async def record_decision(
             # written. Answer as for a decision arriving after that one did:
             # the winner's decision, re-read now that it has committed.
             await uow.session.refresh(gate)
+            if gate.status == "pending":
+                # Plan item 93: still pending, so the update's other
+                # condition failed: the bid's state version moved.
+                raise TenderStateMovedError()
             return _replay_or_conflict(gate, decision)
         await uow.outbox.create(
             aggregate_type=AGGREGATE_APPROVAL_GATE,

@@ -1,9 +1,10 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.db.repositories.workflow import RunNoLongerActiveError, WorkflowRepository
 
@@ -99,10 +100,17 @@ class GateRepository:
         decided_by: uuid.UUID,
         status: str,
         decision_payload: dict,
+        require_tender_state_version: int | None = None,
     ) -> ApprovalGate | None:
         """Record the decision on a gate that is still pending, and return
         the decided gate; None if it is no longer pending (decided, or
         closed by a cancel, since the caller read it).
+
+        Plan item 93: with require_tender_state_version, the same statement
+        also requires the gate's tender to still be at that state version
+        (the version readiness was just recomputed at, for the final gate),
+        so a change landing between the recompute and this write is refused
+        too; None then as well, and the caller tells the two apart.
 
         Plan item 57: one conditional UPDATE (compare-and-swap), like
         close_pending_for_run. Of two concurrent decisions, the second waits
@@ -113,7 +121,20 @@ class GateRepository:
         route answered with a 500 (observed 2026-11-11: 4 of 5 races)."""
         result = await self._session.execute(
             update(ApprovalGate)
-            .where(ApprovalGate.id == gate_id, ApprovalGate.status == "pending")
+            .where(
+                ApprovalGate.id == gate_id,
+                ApprovalGate.status == "pending",
+                *(
+                    []
+                    if require_tender_state_version is None
+                    else [
+                        exists().where(
+                            Tender.id == ApprovalGate.tender_id,
+                            Tender.state_version == require_tender_state_version,
+                        )
+                    ]
+                ),
+            )
             .values(
                 status=status,
                 decided_by=decided_by,

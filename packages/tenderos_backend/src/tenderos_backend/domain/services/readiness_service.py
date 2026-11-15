@@ -1,14 +1,16 @@
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy.exc import IntegrityError
-
+from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services.graph_service import GraphStaleError, check_freshness
-from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
+from tenderos_backend.domain.services.graph_service import (
+    GraphStaleError,
+    check_freshness_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,32 @@ def _result_from_report(report: Any) -> ReadinessResult:
         blockers=report.blockers,
         counts=report.counts,
     )
+
+
+def report_content_hash(ready: bool, blockers: list[dict[str, Any]], counts: dict[str, int]) -> str:
+    """Plan item 93: what makes two reports at one version the same report.
+    Canonical JSON over ready, the blockers sorted on a fixed key and the
+    counts, with sorted keys and no whitespace, then SHA-256. Every field is
+    content: a blocker carries only its category, target and a message built
+    from ids, codes and names, and counts are integers, so no timestamp or
+    per-generate id enters the hash. Blocker order is not content, so the
+    same blockers in another order hash the same."""
+    ordered = sorted(
+        blockers,
+        key=lambda b: (
+            b["category"],
+            b["target_type"],
+            b["target_id"] or "",
+            b["message"],
+        ),
+    )
+    canonical = json.dumps(
+        {"ready": ready, "blockers": ordered, "counts": counts},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return sha256_hex(canonical.encode("utf-8"))
 
 
 def _blocker(category: str, target_type: str, target_id: uuid.UUID | None, message: str) -> dict:
@@ -215,8 +243,7 @@ async def _evaluate_readiness_once(
         # nothing. So the source's archived state is read here, now, for
         # every link at once (one query), the same check the proposal's
         # evidence filter makes. A document excerpt has no source item and
-        # is unaffected. Archiving bumps the bids citing the item
-        # (knowledge_service), so this report is computed fresh after one.
+        # is unaffected. Every generate computes this afresh (plan item 93).
         archived_sources = await uow.knowledge.archived_item_ids(
             link.knowledge_item_id
             for links in evidence_by_entry.values()
@@ -378,9 +405,13 @@ async def _evaluate_readiness_once(
     # project_graph sits in this run's fixed path," true unconditionally
     # in the current topology; see the B12 plan's Q5/design notes).
     # ------------------------------------------------------------
+    # Plan item 85 (folded into 93): through check_freshness_with_retry, so a
+    # TransientError (a read overlapping a projection) is retried instead of
+    # becoming "could not be verified"; an outage still fails fast. Since
+    # item 93 that blocker is not stored for good at this version either:
+    # the next generate after Neo4j recovers stores a new report.
     try:
-        async with get_neo4j_session() as session:
-            await check_freshness(tender_id, session)
+        await check_freshness_with_retry(tender_id)
     except GraphStaleError:
         blockers.append(
             _blocker(STALE_GRAPH_PROJECTION, "tender", tender_id, "Graph projection is stale.")
@@ -457,36 +488,22 @@ async def _evaluate_readiness_once(
         if current_tender.state_version != state_version:
             return None
 
-        existing = await uow.readiness.get_by_version(tender_id, state_version)
-        if existing is not None:
-            return _result_from_report(existing)
-
-        try:
-            report = await uow.readiness.create(tender_id, state_version, counts, blockers, ready)
-            await uow.commit()
-            return _result_from_report(report)
-        except IntegrityError:
-            # uq_readiness_report_version (Part C) PREVENTS a duplicate
-            # row - it does not, by itself, make concurrent generation
-            # idempotent (migration 013's own comment previously claimed
-            # it did; corrected there too). This is the idempotency: two
-            # concurrent evaluate_readiness calls for the same tender_id/
-            # state_version both pass the get_by_version check above
-            # (neither sees the other's not-yet-committed insert), both
-            # attempt create(), the constraint lets exactly one through -
-            # the loser rolls back its own failed insert and reads back
-            # the winner's row instead of propagating an unhandled 500.
-            await uow.rollback()
-            async with UnitOfWork() as reread_uow:
-                existing = await reread_uow.readiness.get_by_version(tender_id, state_version)
-            if existing is None:
-                # The constraint just fired, which only happens if a
-                # matching row exists - not finding it a moment later
-                # would mean something deleted it in between, a
-                # genuinely exceptional state worth surfacing rather
-                # than masking.
-                raise
-            return _result_from_report(existing)
+        # Plan item 93: computed on every generate, and stored as one row
+        # per distinct content at this version. The upsert reuses the row
+        # that already has this content, or appends one, and either way
+        # makes it the newest, so the current report always describes what
+        # was just computed. Two concurrent generates of the same content
+        # meet on uq_readiness_report_content and end on one row.
+        report = await uow.readiness.upsert_report(
+            tender_id,
+            state_version,
+            report_content_hash(ready, blockers, counts),
+            counts,
+            blockers,
+            ready,
+        )
+        await uow.commit()
+        return _result_from_report(report)
 
 
 async def get_report(report_id: uuid.UUID) -> ReadinessResult | None:
@@ -500,12 +517,12 @@ async def get_report(report_id: uuid.UUID) -> ReadinessResult | None:
 
 
 async def get_latest_readiness(tender_id: uuid.UUID) -> ReadinessResult | None:
-    # routes/gates.py's own read - decide_gate has no TenderState to pull
-    # readiness_report_id from (it's a checkpointed graph field, not
-    # request data), so the waiver check goes through the tender directly.
-    # None means no readiness report has ever been generated for this
-    # tender - treated as "not ready" by the caller, never as "nothing to
-    # waive."
+    # The current report: the newest generated or reused (plan item 93,
+    # ordered by last_generated_at, ties by id). Read by GET
+    # /tenders/{id}/readiness (the Readiness page) and by the final gate's
+    # approval in routes/gates.py, which reads it before its own generate
+    # and refuses when the generate lands on a different report. None means
+    # no report was ever generated for this tender.
     async with UnitOfWork() as uow:
         report = await uow.readiness.get_latest_for_tender(tender_id)
     return _result_from_report(report) if report is not None else None
