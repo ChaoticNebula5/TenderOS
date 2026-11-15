@@ -236,6 +236,20 @@ async def check_freshness(tender_id: uuid.UUID, session: Neo4jSession) -> GraphP
     return latest
 
 
+async def check_freshness_with_retry(tender_id: uuid.UUID) -> GraphProjectionRun:
+    """check_freshness in its own Neo4j session, retried on a TransientError
+    (plan items 85 and 93): readiness's freshness read. A TransientError,
+    for example a read overlapping a projection
+    (Neo.TransientError.Transaction.Outdated), is retried; GraphStaleError,
+    an outage and every other error are raised at once, as
+    _read_with_retry does for the other graph reads (plan item 81)."""
+
+    async def read(session: Neo4jSession) -> GraphProjectionRun:
+        return await check_freshness(tender_id, session)
+
+    return await _read_with_retry("freshness", tender_id, read)
+
+
 async def get_graph_status(tender_id: uuid.UUID) -> dict[str, Any]:
     async with UnitOfWork() as uow:
         tender = await uow.tenders.get(tender_id)

@@ -10,11 +10,13 @@ contaminates an otherwise-clean assertion.
 Same self-built-fixture-helper convention as test_redteam_service.py.
 """
 
+import asyncio
 import uuid
 from datetime import date
 
 import pytest
 import pytest_asyncio
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, TransientError
 from sqlalchemy import select
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.readiness import ReadinessReport
@@ -732,54 +734,22 @@ async def test_repeated_evaluation_at_the_same_version_returns_the_same_report()
 # ----------------------------------------------------------------------
 
 
-async def test_concurrent_generation_race_returns_the_winners_report(monkeypatch):
-    """Simulates two evaluate_readiness calls racing for the same tender_id/
-    state_version: both would see get_by_version return None (neither has
-    committed yet) and both attempt create() - Postgres's own unique
-    constraint lets exactly one through. Here, a "winner" row is inserted
-    directly first (a real, already-committed row - not a mock), then
-    ReadinessRepository.get_by_version is monkeypatched to report "nothing
-    exists yet" on its first call, widening the real race window so this
-    process's own create() genuinely collides with the real constraint.
-    Everything after that first patched call - the actual IntegrityError,
-    the rollback, the re-read - is real code, not simulated.
-    """
-    from tenderos_backend.db.repositories.readiness import ReadinessRepository
-
+async def test_concurrent_identical_generations_end_on_one_report():
+    """Two evaluate_readiness calls racing at one version with the same
+    content: both reach the upsert, uq_readiness_report_content lets one
+    insert through and turns the other into a reuse, and both return the same
+    report (plan item 93; before it, the same race was handled by catching
+    IntegrityError on the per-version key)."""
     _org_id, tender_id = await _org_and_tender("ConcurrentRace")
     await _project(tender_id)
 
-    async with UnitOfWork() as uow:
-        tender = await uow.tenders.get(tender_id)
-        state_version = tender.state_version
-        winner = await uow.readiness.create(
-            tender_id, state_version, {"concurrent": True}, [], True
-        )
-        await uow.commit()
-
-    original_get_by_version = ReadinessRepository.get_by_version
-    call_count = {"n": 0}
-
-    async def _flaky_get_by_version(self, tender_id_arg, state_version_arg):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return None
-        return await original_get_by_version(self, tender_id_arg, state_version_arg)
-
-    monkeypatch.setattr(ReadinessRepository, "get_by_version", _flaky_get_by_version)
-
-    result = await readiness_service.evaluate_readiness(tender_id)
-
-    assert result.report_id == winner.id, (
-        "losing the race must return the WINNER's already-committed report, "
-        "not raise an unhandled IntegrityError"
+    first, second = await asyncio.gather(
+        readiness_service.evaluate_readiness(tender_id),
+        readiness_service.evaluate_readiness(tender_id),
     )
 
-    async with UnitOfWork() as uow:
-        reports = await uow.session.execute(
-            select(ReadinessReport).where(ReadinessReport.tender_id == tender_id)
-        )
-    assert len(list(reports.scalars().all())) == 1, "must not leave two rows for the same version"
+    assert first.report_id == second.report_id
+    assert len(await _reports(tender_id)) == 1, "must not leave two rows for the same content"
 
 
 async def test_state_version_bump_during_computation_triggers_a_retry(monkeypatch):
@@ -876,3 +846,217 @@ async def test_batched_compliance_and_evidence_queries_scale_with_requests_not_r
         f"requirement count, got {query_count['n']} for {requirement_count} requirements - "
         "blockers 1 and/or 2 may have regressed back to one query per item"
     )
+
+
+# ----------------------------------------------------------------------
+# Plan item 93: readiness computes on every generate. One report per
+# distinct content at a version; a reuse makes its row the newest.
+# ----------------------------------------------------------------------
+
+
+async def _reports(tender_id: uuid.UUID) -> list[ReadinessReport]:
+    async with UnitOfWork() as uow:
+        result = await uow.session.execute(
+            select(ReadinessReport).where(ReadinessReport.tender_id == tender_id)
+        )
+        return list(result.scalars().all())
+
+
+def _categories(result: readiness_service.ReadinessResult) -> set[str]:
+    return {b["category"] for b in result.blockers}
+
+
+async def _latest_id(tender_id: uuid.UUID) -> uuid.UUID | None:
+    latest = await readiness_service.get_latest_readiness(tender_id)
+    return latest.report_id if latest is not None else None
+
+
+async def test_a_report_made_on_a_stale_graph_is_replaced_after_a_reprojection():
+    """The case observed in PR 8: a report generated while the graph was
+    stale kept "Graph projection is stale" after a re-projection, which
+    moves no version."""
+    _org_id, tender_id = await _org_and_tender("StaleThenProjected")
+    await _project(tender_id)
+    async with UnitOfWork() as uow:
+        await uow.tenders.bump_state_version(tender_id)
+        await uow.commit()
+
+    stale = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.STALE_GRAPH_PROJECTION in _categories(stale)
+
+    await _project(tender_id)
+    fresh = await readiness_service.evaluate_readiness(tender_id)
+
+    assert fresh.tender_state_version == stale.tender_state_version
+    assert readiness_service.STALE_GRAPH_PROJECTION not in _categories(fresh)
+    assert fresh.report_id != stale.report_id
+    assert await _latest_id(tender_id) == fresh.report_id
+
+
+async def test_a_red_team_finding_retired_or_raised_after_a_report_shows_in_the_next():
+    """The other case observed in PR 8: red-team findings change without a
+    version move, so a stored report kept a retired critical finding (and
+    would have missed a new one)."""
+    _org_id, tender_id = await _org_and_tender("FindingChanges")
+    finding_id = await _redteam_finding(tender_id, severity="critical")
+    await _project(tender_id)
+
+    with_finding = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.CRITICAL_REDTEAM_FINDING in _categories(with_finding)
+
+    async with UnitOfWork() as uow:
+        await uow.redteam.resolve_finding(finding_id, "fixed")
+        await uow.commit()
+    retired = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.CRITICAL_REDTEAM_FINDING not in _categories(retired)
+    assert retired.report_id != with_finding.report_id
+
+    await _redteam_finding(tender_id, severity="critical")
+    raised = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.CRITICAL_REDTEAM_FINDING in _categories(raised)
+    assert raised.tender_state_version == with_finding.tender_state_version
+
+
+async def test_a_pricing_finding_resolved_after_a_report_drops_out_of_the_next():
+    _org_id, tender_id = await _org_and_tender("PricingResolved")
+    finding_id = await _pricing_finding(tender_id, severity="critical")
+    await _project(tender_id)
+
+    before = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.UNAPPROVED_REQUIRED_COMMERCIAL_ITEM in _categories(before)
+
+    async with UnitOfWork() as uow:
+        await uow.commercial.update_pricing_finding(finding_id, resolved=True)
+        await uow.commit()
+    after = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.UNAPPROVED_REQUIRED_COMMERCIAL_ITEM not in _categories(after)
+
+
+async def test_content_that_goes_x_y_x_reuses_x_and_makes_it_the_latest():
+    """The A-B-A case (user decision): reusing an identical report must also
+    make it the newest, or the page and the final gate stay on Y."""
+    _org_id, tender_id = await _org_and_tender("ContentABA")
+    await _project(tender_id)
+
+    x1 = await readiness_service.evaluate_readiness(tender_id)
+    finding_id = await _redteam_finding(tender_id, severity="critical")
+    y = await readiness_service.evaluate_readiness(tender_id)
+    assert y.report_id != x1.report_id
+    assert await _latest_id(tender_id) == y.report_id
+
+    async with UnitOfWork() as uow:
+        await uow.redteam.resolve_finding(finding_id, "fixed")
+        await uow.commit()
+    x2 = await readiness_service.evaluate_readiness(tender_id)
+
+    assert x2.report_id == x1.report_id, "the same content at the same version reuses its row"
+    assert await _latest_id(tender_id) == x1.report_id, "and the reused row is now the latest"
+    assert len(await _reports(tender_id)) == 2
+
+
+async def test_two_generates_with_nothing_changed_store_one_content_hash():
+    _org_id, tender_id = await _org_and_tender("StableHash")
+    await _redteam_finding(tender_id, severity="critical")
+    await _project(tender_id)
+
+    first = await readiness_service.evaluate_readiness(tender_id)
+    second = await readiness_service.evaluate_readiness(tender_id)
+
+    [report] = await _reports(tender_id)
+    assert first.report_id == second.report_id == report.id
+    assert report.content_hash == readiness_service.report_content_hash(
+        report.ready, report.blockers, report.counts
+    )
+    assert not report.content_hash.startswith("legacy-")
+
+
+async def test_a_manual_report_does_not_hide_the_runs_degraded_red_team():
+    """Before item 93, a manual generate (degraded_stages=None) stored first
+    made the readiness node's later call at the same version return that
+    report, without "red-team review incomplete". Now the node's report has
+    different content, is stored, and its id is the one final_gate_node
+    reads."""
+    _org_id, tender_id = await _org_and_tender("DegradedAfterManual")
+    await _project(tender_id)
+
+    manual = await readiness_service.evaluate_readiness(tender_id, degraded_stages=None)
+    node = await readiness_service.evaluate_readiness(
+        tender_id, degraded_stages=["red_team:LLMTimeoutError"]
+    )
+
+    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE not in _categories(manual)
+    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in _categories(node)
+    assert node.report_id != manual.report_id
+    stored = await readiness_service.get_report(node.report_id)
+    assert stored is not None
+    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in _categories(stored)
+
+
+# ----------------------------------------------------------------------
+# Plan item 85, folded into 93: the freshness read retries a TransientError
+# only, and a "could not be verified" report no longer outlives an outage.
+# ----------------------------------------------------------------------
+
+
+def _outdated() -> Exception:
+    error = Neo4jError._hydrate_neo4j(
+        code="Neo.TransientError.Transaction.Outdated", message="outdated"
+    )
+    assert isinstance(error, TransientError)
+    return error
+
+
+def _scripted_freshness(
+    monkeypatch: pytest.MonkeyPatch, outcomes: list[Exception | None]
+) -> list[int]:
+    """graph_service.check_freshness answers from `outcomes` in order (an
+    exception raised, or None for the real check), then the real check."""
+    real = graph_service.check_freshness
+    calls: list[int] = []
+
+    async def _check(tender_id, session):
+        calls.append(1)
+        outcome = outcomes.pop(0) if outcomes else None
+        if outcome is not None:
+            raise outcome
+        return await real(tender_id, session)
+
+    async def _no_pause(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(graph_service, "check_freshness", _check)
+    monkeypatch.setattr(graph_service.asyncio, "sleep", _no_pause)
+    return calls
+
+
+_COULD_NOT_VERIFY = "Graph freshness could not be verified (the graph store was unreachable)."
+
+
+def _messages(result: readiness_service.ReadinessResult) -> set[str]:
+    return {b["message"] for b in result.blockers}
+
+
+async def test_a_transient_error_on_the_freshness_read_is_retried(monkeypatch):
+    _org_id, tender_id = await _org_and_tender("FreshnessTransient")
+    await _project(tender_id)
+    calls = _scripted_freshness(monkeypatch, [_outdated()])
+
+    result = await readiness_service.evaluate_readiness(tender_id)
+
+    assert len(calls) == 2
+    assert readiness_service.STALE_GRAPH_PROJECTION not in _categories(result)
+
+
+async def test_an_outage_is_not_retried_and_its_blocker_does_not_outlive_it(monkeypatch):
+    _org_id, tender_id = await _org_and_tender("FreshnessOutage")
+    await _project(tender_id)
+    calls = _scripted_freshness(monkeypatch, [ServiceUnavailable("Neo4j is down")])
+
+    during = await readiness_service.evaluate_readiness(tender_id)
+    assert len(calls) == 1, "an outage must fail fast, not be retried"
+    assert _COULD_NOT_VERIFY in _messages(during)
+
+    after = await readiness_service.evaluate_readiness(tender_id)
+    assert _COULD_NOT_VERIFY not in _messages(after)
+    assert after.report_id != during.report_id
+    assert await _latest_id(tender_id) == after.report_id

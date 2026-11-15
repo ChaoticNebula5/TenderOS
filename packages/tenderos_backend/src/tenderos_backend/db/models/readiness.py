@@ -11,7 +11,16 @@ from tenderos_backend.db.models.base import Base, UUIDPrimaryKeyMixin
 class ReadinessReport(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "readiness_reports"
     __table_args__ = (
-        UniqueConstraint("tender_id", "tender_state_version", name="uq_readiness_report_version"),
+        # Plan item 93 (migration 030): one row per distinct content at a
+        # version, not one per version. A generate whose content already has
+        # a row reuses it and moves its last_generated_at, so the newest by
+        # last_generated_at (ties by id) is the current report.
+        UniqueConstraint(
+            "tender_id",
+            "tender_state_version",
+            "content_hash",
+            name="uq_readiness_report_content",
+        ),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(
@@ -30,5 +39,14 @@ class ReadinessReport(UUIDPrimaryKeyMixin, Base):
     blockers: Mapped[list] = mapped_column(JSONB, nullable=False)
     ready: Mapped[bool] = mapped_column(Boolean, nullable=False)
     generated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Canonical JSON over ready, blockers and counts, hashed
+    # (readiness_service.report_content_hash). Rows from before migration 030
+    # hold 'legacy-' plus their id, which no real hash equals.
+    content_hash: Mapped[str] = mapped_column(nullable=False)
+    # Set on insert and again whenever a generate reuses this row: "the latest
+    # report" orders by it, so content that goes X, Y, X makes X current again.
+    last_generated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

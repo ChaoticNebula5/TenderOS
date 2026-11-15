@@ -74,6 +74,36 @@ class ReadinessNotWaivedError(APIError):
         )
 
 
+class ReadinessChangedError(APIError):
+    # Plan item 93 (W2): the final gate's approval recomputes readiness and
+    # refuses when the result is not the report that was current before it
+    # (the one the Readiness page shows), or when the bid's state moved
+    # before the decision could be recorded. The recomputed report is now
+    # the current one, so reviewing it and approving again goes through.
+    def __init__(self) -> None:
+        super().__init__(
+            409,
+            "READINESS_CHANGED",
+            "Readiness changed since the report you saw. Review the current readiness "
+            "report, then decide again.",
+        )
+
+
+class FinalGateTargetUpdatesError(APIError):
+    # Plan item 93 (user decision while building): the final readiness
+    # gate's targets list is always empty, and its decision is recorded only
+    # if the bid's state has not moved since readiness was recomputed. Target
+    # updates are applied in their own transaction before the decision and
+    # move that state, so they are refused before anything is applied.
+    def __init__(self) -> None:
+        super().__init__(
+            422,
+            "FINAL_GATE_TARGET_UPDATES",
+            "The final readiness gate takes no target_updates; resolve those items on "
+            "their own screens, then decide.",
+        )
+
+
 class TargetOwnershipDeniedError(APIError):
     # B12: routes/gates.py's own translation of gate_target_service.
     # TargetOwnershipError - same 403 shape as OrgAccessDeniedError, since
