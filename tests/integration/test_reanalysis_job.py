@@ -161,11 +161,12 @@ async def test_reanalyze_knowledge_selection_change_reopens_compliance_and_regro
     )
     claim_id = await _draft_one_grounded_claim(tender_id, evidence_link_id)
 
-    # The deselection's real effect on the world: the evidence this
-    # requirement/claim relied on is no longer valid. The job's own job is
-    # to notice this, not to invalidate it - that already happens via
-    # whatever selection/evidence-lifecycle change triggered this job in
-    # the first place (out of this test's own scope).
+    # Stands in for evidence this requirement/claim relied on no longer
+    # being valid. Plan item 88 corrected this comment: a deselection does
+    # not invalidate a link, and no other lifecycle change does either. The
+    # one writer after creation is a compliance re-evaluation that cites
+    # the link again (persist_compliance_decision's refresh). The job's own
+    # job is to notice the change, so the test writes the stored value.
     async with get_session() as session:
         link = await session.get(EvidenceLink, evidence_link_id)
         link.validity_status = "expired"

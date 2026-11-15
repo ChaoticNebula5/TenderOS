@@ -160,8 +160,10 @@ async def _prepare_evidence_facts(
     prepared: list[PreparedFact] = []
     for link in links:
         # Re-filtered here, not trusted from the caller's own decision-time
-        # signals - evidence can expire between an approval/selection and a
-        # later drafting or trace-viewing run.
+        # signals. The stored values change only when a compliance
+        # re-evaluation cites the link again (plan item 88); an archived
+        # source is caught by the live check below, and an expiry date
+        # passing is not caught here at all (a plan item).
         if not (link.verified and link.validity_status == "valid"):
             continue
         if link.knowledge_item_id in archived_sources:
@@ -295,13 +297,13 @@ async def _facts_from_pricing(
             fingerprint = pricing_finding_evidence_fingerprint(finding.id, suffix)
             link = await uow.compliance.get_evidence_link_by_fingerprint(tender_id, fingerprint)
             # Same re-check _prepare_evidence_facts does for every other
-            # evidence path, and for the same reason its own docstring
-            # gives - evidence can expire between when it was materialized
-            # (at resolve time here) and a later drafting run. Missing
-            # here would let a since-invalidated pricing evidence link
-            # keep getting cited as if still eligible, even though the
-            # identical evidence flowing through _facts_from_compliance/
-            # _facts_from_team would correctly be excluded.
+            # evidence path. A pricing link is a document excerpt: nothing
+            # rewrites its stored values after resolve time (plan item 88
+            # corrected "it can expire"), so this guards a row written
+            # invalid, and any future writer. Missing here would let such a
+            # link be cited as if eligible, even though the identical
+            # evidence flowing through _facts_from_compliance/_facts_from_team
+            # would correctly be excluded.
             if link is not None and link.verified and link.validity_status == "valid":
                 evidence_link_ids.append(link.id)
 
@@ -790,6 +792,15 @@ async def _resolve_evidence_trace_entry(
     knowledge_item = None
     if link.knowledge_item_id is not None:
         knowledge_item = await uow.knowledge.get_knowledge_item(link.knowledge_item_id)
+    # Plan item 88: the stored validity_status is as of the last evaluation
+    # that cited the link, and archiving its source rewrites nothing. The
+    # source's archived state is read now through archived_item_ids, the one
+    # check readiness, the evidence filter and the compliance trace use, so
+    # this view never says Valid for a link readiness rejects.
+    archived = link.knowledge_item_id is not None and bool(
+        await uow.knowledge.archived_item_ids([link.knowledge_item_id])
+    )
+    validity_status = "invalid" if archived else link.validity_status
 
     document_id = None
     document_filename = None
@@ -806,7 +817,7 @@ async def _resolve_evidence_trace_entry(
         source_kind=link.source_kind,
         excerpt=link.excerpt,
         verified=link.verified,
-        validity_status=link.validity_status,
+        validity_status=validity_status,
         knowledge_item_id=link.knowledge_item_id,
         knowledge_item_title=knowledge_item.title if knowledge_item else None,
         document_id=document_id,

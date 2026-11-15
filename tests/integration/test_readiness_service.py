@@ -550,6 +550,109 @@ async def test_a_selected_employee_removed_from_the_roster_blocks_until_restored
 
 
 # ----------------------------------------------------------------------
+# Plan item 88: step 2 reads each link's source archived state live, and
+# archiving any knowledge item bumps the bids citing it.
+# ----------------------------------------------------------------------
+
+
+async def _certification(org_id: uuid.UUID, title: str) -> uuid.UUID:
+    async with UnitOfWork() as uow:
+        knowledge_item, _cert = await uow.knowledge.create_certification(
+            organization_id=org_id, title=title, content_fingerprint=uuid.uuid4().hex
+        )
+        await uow.commit()
+        return knowledge_item.id
+
+
+async def _document_excerpt_link(tender_id: uuid.UUID, chunk_id: uuid.UUID) -> uuid.UUID:
+    async with UnitOfWork() as uow:
+        link = await uow.compliance.create_evidence_link(
+            tender_id=tender_id,
+            source_kind="document_excerpt",
+            content_fingerprint=uuid.uuid4().hex,
+            source_chunk_id=chunk_id,
+            verified=True,
+            validity_status="valid",
+        )
+        await uow.commit()
+        return link.id
+
+
+async def _version(tender_id: uuid.UUID) -> int:
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+        assert tender is not None
+        return tender.state_version
+
+
+def _step2_targets(result: readiness_service.ReadinessResult) -> set[str]:
+    return {
+        b["target_id"]
+        for b in result.blockers
+        if b["category"] == readiness_service.COMPLIANT_DECISION_WITHOUT_VALID_EVIDENCE
+    }
+
+
+async def test_compliant_evidence_from_an_archived_certification_blocks_until_restored():
+    org_id, tender_id = await _org_and_tender("ArchivedCertEvidence")
+    chunk_id = await _chunk(tender_id)
+    archived_cert = await _certification(org_id, "ISO 27001")
+    other_cert = await _certification(org_id, "ISO 9001")
+    archived_link = await _evidence_link(tender_id, archived_cert)
+    other_link = await _evidence_link(tender_id, other_cert)
+    excerpt_link = await _document_excerpt_link(tender_id, chunk_id)
+    only_archived = await _compliance_entry(
+        await _requirement(tender_id, chunk_id), evidence_ids=[archived_link]
+    )
+    # Another valid path remains, so this one stays clear.
+    await _compliance_entry(
+        await _requirement(tender_id, chunk_id), evidence_ids=[archived_link, other_link]
+    )
+    # A document excerpt has no source item and is never affected.
+    await _compliance_entry(await _requirement(tender_id, chunk_id), evidence_ids=[excerpt_link])
+    await _project(tender_id)
+
+    before = await readiness_service.evaluate_readiness(tender_id)
+    assert _step2_targets(before) == set()
+    version_before = await _version(tender_id)
+
+    await _set_item_status(org_id, archived_cert, "archived")
+    assert await _version(tender_id) == version_before + 1, (
+        "archiving a certification the bid cites bumps it, so readiness computes afresh"
+    )
+    blocked = await readiness_service.evaluate_readiness(tender_id)
+    assert blocked.report_id != before.report_id
+    assert _step2_targets(blocked) == {str(only_archived)}
+    assert blocked.counts["requirements_lacking_valid_evidence"] == 1
+
+    await _set_item_status(org_id, archived_cert, "active")
+    await _project(tender_id)
+    restored = await readiness_service.evaluate_readiness(tender_id)
+    assert _step2_targets(restored) == set()
+    assert restored.ready is True
+
+
+async def test_an_unselected_employees_archived_evidence_blocks_through_the_citing_bump():
+    """Item 86's bump covered only bids selecting the employee. A bid that
+    cites their evidence without selecting them is bumped too now, because
+    step 2 changes there."""
+    org_id, tender_id = await _org_and_tender("UnselectedEmployeeEvidence")
+    chunk_id = await _chunk(tender_id)
+    employee_id = await _employee(org_id, "Cited Not Selected")
+    link_id = await _evidence_link(tender_id, employee_id)
+    entry_id = await _compliance_entry(
+        await _requirement(tender_id, chunk_id), evidence_ids=[link_id]
+    )
+    await _project(tender_id)
+    before = await readiness_service.evaluate_readiness(tender_id)
+    assert _step2_targets(before) == set()
+
+    await _set_item_status(org_id, employee_id, "archived")
+    blocked = await readiness_service.evaluate_readiness(tender_id)
+    assert _step2_targets(blocked) == {str(entry_id)}
+
+
+# ----------------------------------------------------------------------
 # Blocker 7: stale graph projection - the one test that deliberately never
 # calls _project.
 # ----------------------------------------------------------------------

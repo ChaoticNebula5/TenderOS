@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +64,46 @@ class ComplianceRepository:
         # correctly, not just the currently-valid subset.
         result = await self._session.execute(
             select(EvidenceLink).where(EvidenceLink.tender_id == tender_id)
+        )
+        return list(result.scalars().all())
+
+    async def refresh_evidence_link_signals(
+        self, evidence_link_id: uuid.UUID, verified: bool, validity_status: str
+    ) -> bool:
+        """Plan item 88: rewrite a link's stored verified and validity_status
+        to what a compliance evaluation just computed for its source. True
+        only when a value actually changed (one conditional UPDATE, so an
+        unchanged link writes nothing). The caller must commit this together
+        with the bid's state-version bump: readiness keeps one report per
+        version, and a changed link changes what that report would say."""
+        result = await self._session.execute(
+            update(EvidenceLink)
+            .where(
+                EvidenceLink.id == evidence_link_id,
+                or_(
+                    EvidenceLink.verified.is_distinct_from(verified),
+                    EvidenceLink.validity_status.is_distinct_from(validity_status),
+                ),
+            )
+            .values(verified=verified, validity_status=validity_status)
+            .returning(EvidenceLink.id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def list_tender_ids_citing_knowledge_item(
+        self, knowledge_item_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Every bid with an evidence link to this knowledge item, each once,
+        in a stable order (plan item 88: archiving or restoring the item
+        bumps each one). Every link counts, attached or not: the projector
+        projects all of a bid's links and the item's fact node, so the graph
+        of each is stale after the change. No index on knowledge_item_id
+        yet (a plan item)."""
+        result = await self._session.execute(
+            select(EvidenceLink.tender_id)
+            .where(EvidenceLink.knowledge_item_id == knowledge_item_id)
+            .distinct()
+            .order_by(EvidenceLink.tender_id)
         )
         return list(result.scalars().all())
 

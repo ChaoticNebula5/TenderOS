@@ -28,7 +28,10 @@ from tenderos_backend.db.models.knowledge import (
 # all use it, and since plan item 86 so do selection, the resource gate's
 # counts, the red team, readiness and the proposal's facts (through
 # archived_item_ids below). employees.profile_review_status also allows
-# 'archived' in its CHECK, but nothing writes that value.
+# 'archived' in its CHECK, but nothing writes that value. Since plan item 88
+# the same status is read for every item type wherever evidence is judged:
+# readiness step 2, the proposal's evidence filter, both trace views and the
+# graph's grounded-claim check; archiving any item bumps the bids citing it.
 KNOWLEDGE_ITEM_ARCHIVED = "archived"
 
 
@@ -163,6 +166,12 @@ class KnowledgeRepository:
         the graph when it happens, so every reader that must not trust an
         archived employee, certification or project asks here, at the time
         it runs. One query for the whole set; an empty set queries nothing.
+
+        Plan item 88: readiness step 2 and both trace views ask here too. The
+        compliance sufficiency check instead judges the fresh signals of the
+        evaluation it is part of, which also see expiry by date and an
+        unverified status: two definitions of "valid now", accepted for one
+        PR, with one shared definition a plan item.
         """
         ids = set(knowledge_item_ids)
         if not ids:

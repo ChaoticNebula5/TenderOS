@@ -10,7 +10,7 @@ from tenderos_backend.agents.knowledge.retrieval import (
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
 from tenderos_backend.core.hashing import sha256_hex
-from tenderos_backend.db.models.compliance import ComplianceEntry, EvidenceLink
+from tenderos_backend.db.models.compliance import ComplianceEntry
 from tenderos_backend.db.unit_of_work import UnitOfWork
 
 
@@ -125,9 +125,29 @@ def to_llm_candidates(prepared: list[PreparedEvidence]) -> list[EvidenceCandidat
 # ----------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class MaterializedEvidence:
+    """One cited evidence link and the signals this evaluation computed for
+    its source just now (plan item 88).
+
+    `verified` and `validity_status` are the fresh values, not the stored
+    row's. A reused link keeps whatever was stored when it was made (an
+    archive or a restore since then rewrites nothing), so the sufficiency
+    check judges these instead, and persist_compliance_decision writes them
+    onto the row in the same transaction as the bid's state-version bump.
+    materialize_evidence itself never rewrites a reused row: a failure
+    between it and persist (the sufficiency step, the persist transaction
+    itself) must leave the stored row and the bid's version as they were.
+    """
+
+    id: uuid.UUID
+    verified: bool
+    validity_status: str
+
+
 async def materialize_evidence(
     tender_id: uuid.UUID, prepared: list[PreparedEvidence], cited_labels: list[str]
-) -> list[EvidenceLink]:
+) -> list[MaterializedEvidence]:
     """Turns the LLM's cited labels back into real, persisted evidence_link
     rows - only for what was actually cited, not every retrieval candidate
     (a compliance decision's evidence should reflect what backed it, not
@@ -135,9 +155,13 @@ async def materialize_evidence(
     uq_evidence_link_fingerprint: re-running compliance analysis for the
     same requirement against the same retrieval result reuses the existing
     row rather than raising or duplicating.
+
+    A reused row is returned with this evaluation's fresh signals, not its
+    stored ones (MaterializedEvidence above); the row is not written here.
+    A new row is created from the fresh signals, so the two agree.
     """
     by_label = {p.label: p for p in prepared}
-    materialized: list[EvidenceLink] = []
+    materialized: list[MaterializedEvidence] = []
     async with UnitOfWork() as uow:
         for label in cited_labels:
             p = by_label.get(label)
@@ -151,9 +175,10 @@ async def materialize_evidence(
             fingerprint = _fingerprint(
                 str(tender_id), str(p.result.knowledge_item_id), str(p.result.chunk_id)
             )
+            fresh = (p.signals.verified, p.signals.validity_status)
             existing = await uow.compliance.get_evidence_link_by_fingerprint(tender_id, fingerprint)
             if existing is not None:
-                materialized.append(existing)
+                materialized.append(MaterializedEvidence(existing.id, *fresh))
                 continue
             link = await uow.compliance.create_evidence_link(
                 tender_id=tender_id,
@@ -166,7 +191,7 @@ async def materialize_evidence(
                 verified=p.signals.verified,
                 validity_status=p.signals.validity_status,
             )
-            materialized.append(link)
+            materialized.append(MaterializedEvidence(link.id, *fresh))
         await uow.commit()
     return materialized
 
@@ -189,7 +214,7 @@ class SufficiencyResult:
 # advisory (unlike B6's disagreement-routing, there is no human step
 # between this function and the database row).
 def enforce_evidence_sufficiency(
-    proposal: ComplianceProposal, materialized_evidence: list[EvidenceLink]
+    proposal: ComplianceProposal, materialized_evidence: list[MaterializedEvidence]
 ) -> SufficiencyResult:
     if proposal.status not in {"fully_compliant", "partially_compliant"}:
         return SufficiencyResult(
@@ -198,6 +223,8 @@ def enforce_evidence_sufficiency(
             reason="evidence sufficiency does not apply to this compliance status",
         )
 
+    # The fresh signals this evaluation computed (MaterializedEvidence), not
+    # a reused row's stored ones (plan item 88).
     sufficient_evidence = [
         evidence
         for evidence in materialized_evidence
@@ -252,7 +279,7 @@ async def persist_compliance_decision(
     requirement_id: uuid.UUID,
     proposal: ComplianceProposal,
     sufficiency: SufficiencyResult,
-    materialized_evidence: list[EvidenceLink],
+    materialized_evidence: list[MaterializedEvidence],
 ) -> ComplianceEntry:
     """Writes (or re-writes, on retry) the one compliance_entries row a
     requirement is allowed to have (requirement_id UNIQUE), attaches every
@@ -335,6 +362,20 @@ async def persist_compliance_decision(
                         after={"status": sufficiency.status, "human_approved": False},
                     )
             entry = await uow.compliance.update_compliance_entry(existing.id, **update_fields)
+
+        # Plan item 88 (user condition on S2): a reused link's stored signals
+        # are rewritten here, in this transaction, so the refresh and the
+        # state-version bump below commit together or not at all. A link
+        # whose stored verified/validity_status changed is a material change
+        # even when the entry's status and evidence set are the same: other
+        # entries and claims in this bid may cite the same row, and readiness
+        # keeps one report per version. The stored value now means "as of the
+        # last evaluation that cited it".
+        for evidence in materialized_evidence:
+            if await uow.compliance.refresh_evidence_link_signals(
+                evidence.id, evidence.verified, evidence.validity_status
+            ):
+                materially_changed = True
 
         for evidence in materialized_evidence:
             await uow.compliance.link_evidence(entry.id, evidence.id)
@@ -604,6 +645,13 @@ async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrac
             raise RequirementNotFoundError()
 
         links = await uow.compliance.list_evidence_for_compliance_entry(entry.id)
+        # Plan item 88: the stored validity_status is as of the last
+        # evaluation that cited the link; an archive since then rewrites
+        # nothing. Read the source's archived state now, as readiness does,
+        # so this view never says Valid for a link readiness rejects.
+        archived_sources = await uow.knowledge.archived_item_ids(
+            link.knowledge_item_id for link in links if link.knowledge_item_id is not None
+        )
         evidence_entries: list[EvidenceTraceEntry] = []
         for link in links:
             knowledge_item = None
@@ -630,7 +678,11 @@ async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrac
                     source_kind=link.source_kind,
                     excerpt=link.excerpt,
                     verified=link.verified,
-                    validity_status=link.validity_status,
+                    validity_status=(
+                        "invalid"
+                        if link.knowledge_item_id in archived_sources
+                        else link.validity_status
+                    ),
                     knowledge_item_id=link.knowledge_item_id,
                     knowledge_item_title=knowledge_item.title if knowledge_item else None,
                     document_id=document_id,

@@ -210,6 +210,19 @@ async def _evaluate_readiness_once(
         evidence_by_entry = await uow.compliance.list_evidence_for_compliance_entries(
             [e.id for e in compliance_entries]
         )
+        # Plan item 88: a link's stored validity_status is as of the last
+        # evaluation that cited it, and archiving its source rewrites
+        # nothing. So the source's archived state is read here, now, for
+        # every link at once (one query), the same check the proposal's
+        # evidence filter makes. A document excerpt has no source item and
+        # is unaffected. Archiving bumps the bids citing the item
+        # (knowledge_service), so this report is computed fresh after one.
+        archived_sources = await uow.knowledge.archived_item_ids(
+            link.knowledge_item_id
+            for links in evidence_by_entry.values()
+            for link in links
+            if link.knowledge_item_id is not None
+        )
         awaiting_approval = 0
         without_valid_evidence = 0
         for entry in compliance_entries:
@@ -218,7 +231,12 @@ async def _evaluate_readiness_once(
             if entry.status not in _COMPLIANT_STATUSES:
                 continue
             evidence = evidence_by_entry.get(entry.id, [])
-            has_valid = any(e.verified and e.validity_status == "valid" for e in evidence)
+            has_valid = any(
+                e.verified
+                and e.validity_status == "valid"
+                and e.knowledge_item_id not in archived_sources
+                for e in evidence
+            )
             if not has_valid:
                 without_valid_evidence += 1
                 blockers.append(

@@ -196,12 +196,22 @@ async def find_unsupported_grounded_claim_contradictions(
     session: AsyncSession, tender_id: str
 ) -> list[dict[str, Any]]:
     # D6: a claim persisted as grounding_status='grounded' with no valid,
-    # verified CITED_IN evidence path remaining (evidence can have expired or
-    # been invalidated after the claim was drafted).
+    # verified CITED_IN evidence path remaining.
+    #
+    # Plan item 88: the Evidence node copies the link's stored validity_status,
+    # which archiving its source never rewrites. So evidence also stops
+    # counting when the fact that PROVIDES it is archived (the fact node's
+    # status is the knowledge item's, as of this projection). Archived, not
+    # "not active" (user decision): the same meaning as readiness and the
+    # proposal's filter. Evidence with no backing fact (a document excerpt)
+    # is unaffected. Archiving bumps the bid, so this reads stale until a
+    # re-projection, and the red team skips it until then.
     result = await session.run(
         "MATCH (claim:ProposalClaim {tender_id: $tenderId, grounding_status: 'grounded'}) "
         "OPTIONAL MATCH (claim)<-[:CITED_IN]-(evidence:Evidence "
         "{verified: true, validity_status: 'valid'}) "
+        "WHERE NOT EXISTS { MATCH (fact)-[:PROVIDES]->(evidence) "
+        "WHERE fact.status = 'archived' } "
         "WITH claim, count(evidence) AS valid_evidence_count "
         "WHERE valid_evidence_count = 0 "
         "RETURN claim",

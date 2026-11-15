@@ -474,6 +474,54 @@ async def test_get_proposal_trace_walks_claim_to_evidence_to_source():
     assert trace.evidence[0].evidence_link_id == real_links[0].id
 
 
+async def test_the_claim_trace_reads_an_archived_source_as_invalid():
+    """Plan item 88, fix 9: the cited evidence's validity in the claim trace
+    reads the source's archived state live; the stored row is unchanged."""
+    org_id, tender_id = await _make_org_and_tender("Claim Trace Archived Source")
+    _, entry_id = await _make_approved_requirement_with_evidence(tender_id=tender_id, org_id=org_id)
+    async with UnitOfWork() as uow:
+        project, _ = await uow.knowledge.create_past_project(
+            organization_id=org_id, title="Metro Rollout", content_fingerprint=uuid.uuid4().hex
+        )
+        link = (await uow.compliance.list_evidence_for_compliance_entry(entry_id))[0]
+        link.knowledge_item_id = project.id
+        await uow.commit()
+    prepared = [
+        proposal_service.PreparedFact(
+            label="evidence_1", kind="evidence", excerpt="Delivered.", evidence_link_id=link.id
+        )
+    ]
+    draft = _section_draft(
+        [
+            ProposalClaimDraft(
+                claim_text="The company delivered the metro rollout.",
+                claim_type="experience",
+                is_factual=True,
+                evidence_refs=["evidence_1"],
+            )
+        ]
+    )
+    section = await proposal_service.persist_section_and_claims(
+        tender_id, "Relevant Experience", draft, prepared, {}
+    )
+    async with UnitOfWork() as uow:
+        claim = (await uow.proposal.list_proposal_claims_for_section(section.id))[0]
+
+    async def _cited_validity() -> list[str]:
+        trace = await proposal_service.get_proposal_trace(claim.id)
+        return [e.validity_status for e in trace.evidence]
+
+    assert await _cited_validity() == ["valid"]
+    for status, expected in (("archived", ["invalid"]), ("active", ["valid"])):
+        async with UnitOfWork() as uow:
+            await uow.knowledge.update_knowledge_item(project.id, status=status)
+            await uow.commit()
+        assert await _cited_validity() == expected
+    async with UnitOfWork() as uow:
+        stored = await uow.compliance.get_evidence_link(link.id)
+    assert stored is not None and stored.validity_status == "valid"
+
+
 async def test_get_proposal_trace_shows_currently_in_scope_evidence_for_unsupported_claim():
     # The concrete "thin vs. uncited" case this whole feature exists to
     # distinguish: a real approved compliance entry + verified evidence
@@ -666,14 +714,13 @@ async def test_reground_claim_is_a_no_op_when_evidence_is_unchanged():
 
 
 async def test_reground_claim_becomes_unsupported_when_its_evidence_goes_invalid():
-    # The concrete case B14 exists for: a knowledge-selection deselection
-    # (or a certification expiring) invalidates evidence a claim already
-    # cites. No repository write path exists for mutating an evidence
-    # link's own validity_status today (real invalidation happens
-    # elsewhere - a reevaluation, an expiry check - not through
-    # proposal_service), so this test reaches past the repository to
-    # simulate that external change directly, the same way a real
-    # deselection would leave the link behind it.
+    # The case B14 exists for: evidence a claim already cites stops being
+    # valid. Plan item 88 corrected this comment: nothing invalidates a
+    # stored link on a deselection or an expiry date. The one writer after
+    # creation is a compliance re-evaluation that cites the link again
+    # (persist_compliance_decision's refresh), and an archived source is
+    # read live by the filter instead. So this test writes the stored value
+    # directly, as that refresh would.
     org_id, tender_id = await _make_org_and_tender("Reground Invalidated Evidence Test")
     _, entry_id = await _make_approved_requirement_with_evidence(
         tender_id=tender_id, org_id=org_id, category="technical"
@@ -748,11 +795,12 @@ async def test_facts_from_pricing_excludes_a_resolved_findings_evidence_once_it_
     explicit re-filter, with its own docstring explaining why - evidence
     can expire between materialization and a later drafting run). Same
     real ingest -> resolve pipeline as the grounded-finding test above,
-    then the same "reach past the repository to simulate an external
-    invalidation" technique test_reground_claim_becomes_unsupported_
-    when_its_evidence_goes_invalid already uses (no repository write path
-    mutates validity_status directly today - real invalidation happens
-    elsewhere, a reevaluation or an expiry check).
+    then the same "write the stored value directly" technique test_reground_
+    claim_becomes_unsupported_when_its_evidence_goes_invalid already uses.
+    Plan item 88 corrected this docstring: no expiry check rewrites a link;
+    the one writer after creation is a compliance re-evaluation that cites
+    the link again (persist_compliance_decision's refresh), which never
+    reaches a pricing link.
     """
     org_id, tender_id = await _make_org_and_tender("Pricing Facts Invalidated Evidence Test")
     content = (_PRICING_FIXTURES_DIR / "pricing_schedule_1.xlsx").read_bytes()

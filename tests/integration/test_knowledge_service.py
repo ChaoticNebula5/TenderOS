@@ -976,3 +976,181 @@ async def test_archiving_or_restoring_a_selected_employee_bumps_only_the_bids_se
 
     # D3: no re-analysis event comes with these bumps.
     assert await _outbox_count() == outbox_before
+
+
+# ----------------------------------------------------------------------
+# Plan item 88 (user decision R1): archiving or restoring any knowledge item
+# bumps every bid with an evidence link to it, and an employee's also every
+# bid selecting them.
+# ----------------------------------------------------------------------
+
+
+async def _link(tender_id: uuid.UUID, knowledge_item_id: uuid.UUID) -> None:
+    async with UnitOfWork() as uow:
+        await uow.compliance.create_evidence_link(
+            tender_id=tender_id,
+            source_kind="certification",
+            content_fingerprint=uuid.uuid4().hex,
+            knowledge_item_id=knowledge_item_id,
+            verified=True,
+            validity_status="valid",
+        )
+        await uow.commit()
+
+
+async def _finish(tender_id: uuid.UUID, actor_id: uuid.UUID) -> None:
+    """A bid whose final gate is approved."""
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.create_run(tender_id, "test", {})
+        gate = await uow.gates.create(
+            gate_id=uuid.uuid4(),
+            tender_id=tender_id,
+            workflow_run_id=run.id,
+            gate_key="final_readiness",
+            gate_type="final_readiness",
+            request_payload={},
+        )
+        await uow.gates.record_decision(gate.id, actor_id, "approved", {})
+        await uow.commit()
+
+
+async def test_archiving_any_knowledge_item_bumps_every_bid_citing_it():
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Archive Citing Org",
+    )
+    org_id, actor_id = registered.organization.id, registered.user.id
+    async with UnitOfWork() as uow:
+        cert, _ = await uow.knowledge.create_certification(
+            organization_id=org_id, title="ISO 27001", content_fingerprint=uuid.uuid4().hex
+        )
+        project, _ = await uow.knowledge.create_past_project(
+            organization_id=org_id, title="Metro Rollout", content_fingerprint=uuid.uuid4().hex
+        )
+        capability, _ = await uow.knowledge.create_capability(
+            organization_id=org_id, title="24x7 NOC", content_fingerprint=uuid.uuid4().hex
+        )
+        await uow.commit()
+    citing = await create_tender(organization_id=org_id, name="Citing", created_by=actor_id)
+    finished = await create_tender(organization_id=org_id, name="Finished", created_by=actor_id)
+    unrelated = await create_tender(organization_id=org_id, name="Unrelated", created_by=actor_id)
+    for item in (cert, project, capability):
+        await _link(citing.id, item.id)
+    await _link(finished.id, cert.id)
+    await _finish(finished.id, actor_id)
+    tenders = (citing.id, finished.id, unrelated.id)
+    start = await _versions(*tenders)
+    outbox_before = await _outbox_count()
+
+    await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, title="ISO/IEC 27001")
+    assert await _versions(*tenders) == start, "a title edit bumps nothing"
+
+    await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="archived")
+    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]], (
+        "both citing bids, the finished one included; not the unrelated one"
+    )
+    await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="archived")
+    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]]
+
+    # Archived only (user decision): another status change bumps nothing.
+    await knowledge_service.patch_knowledge_item(project.id, org_id, actor_id, status="expired")
+    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]]
+
+    await knowledge_service.patch_knowledge_item(project.id, org_id, actor_id, status="archived")
+    await knowledge_service.patch_knowledge_item(capability.id, org_id, actor_id, status="archived")
+    await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="active")
+    assert await _versions(*tenders) == [start[0] + 4, start[1] + 2, start[2]]
+    assert await _outbox_count() == outbox_before, "D3: no event comes with these bumps"
+
+
+async def test_an_employees_archive_bumps_bids_citing_them_and_bids_selecting_them():
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Archive Union Org",
+    )
+    org_id, actor_id = registered.organization.id, registered.user.id
+    async with UnitOfWork() as uow:
+        employee, _ = await uow.knowledge.create_employee(
+            organization_id=org_id,
+            name="Union Person",
+            content_fingerprint=uuid.uuid4().hex,
+            title="Lead",
+        )
+        await uow.commit()
+    cites = await create_tender(organization_id=org_id, name="Cites", created_by=actor_id)
+    selects = await create_tender(organization_id=org_id, name="Selects", created_by=actor_id)
+    both = await create_tender(organization_id=org_id, name="Both", created_by=actor_id)
+    for tender in (cites, both):
+        await _link(tender.id, employee.id)
+    async with UnitOfWork() as uow:
+        for tender in (selects, both):
+            role = await uow.talent.create_role_requirement(
+                tender_id=tender.id, role_name="Lead", content_fingerprint=uuid.uuid4().hex
+            )
+            match = await uow.talent.create_role_match(role.id, employee.id)
+            await uow.talent.update_role_match(match.id, human_selected=True)
+        await uow.commit()
+    tenders = (cites.id, selects.id, both.id)
+    start = await _versions(*tenders)
+
+    await knowledge_service.patch_knowledge_item(employee.id, org_id, actor_id, status="archived")
+    assert await _versions(*tenders) == [v + 1 for v in start], "a bid in both sets bumps once"
+
+
+async def test_a_new_import_row_converging_on_an_existing_employee_bumps_its_bids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The master import's NEW path: _create_or_get_employee commits on its
+    own and converges onto a row that already exists when two imports both
+    decided NEW for the same person (its own docstring's race). Its "removed"
+    status then flips an existing item and must bump like any other
+    archive. The race is forced here by making the duplicate check answer
+    NEW while the row exists."""
+    from tenderos_backend.agents.knowledge.dedup import DuplicateResolution, DuplicateVerdict
+
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Converging Import Org",
+    )
+    org_id, actor_id = registered.organization.id, registered.user.id
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id,
+            import_type="employee_master_csv",
+            source_document_id=None,
+            created_by=actor_id,
+        )
+        await uow.commit()
+    first = await knowledge_service.import_employee_master_row(
+        org_id,
+        batch.id,
+        EmployeeMasterRow(
+            row_number=2, employee_code="EMP-90", name="Kai Converge", role="Lead", status="active"
+        ),
+    )
+    employee_id = first.target_knowledge_item_id
+    assert employee_id is not None
+    citing = await create_tender(organization_id=org_id, name="Citing", created_by=actor_id)
+    await _link(citing.id, employee_id)
+    start = await _versions(citing.id)
+
+    monkeypatch.setattr(
+        knowledge_service,
+        "resolve_employee_duplicate",
+        lambda *args, **kwargs: DuplicateResolution(DuplicateVerdict.NEW, None, "forced NEW"),
+    )
+    removed = await knowledge_service.import_employee_master_row(
+        org_id,
+        batch.id,
+        EmployeeMasterRow(
+            row_number=3, employee_code="EMP-90", name="Kai Converge", role="Lead", status="removed"
+        ),
+    )
+    assert removed.target_knowledge_item_id == employee_id, "converged onto the existing row"
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.get_knowledge_item(employee_id)
+    assert item is not None and item.status == "archived"
+    assert await _versions(citing.id) == [start[0] + 1]
