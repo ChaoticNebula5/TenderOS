@@ -296,6 +296,11 @@ async def _materialize_one_pricing_evidence_link(
         verified=True,
         validity_status="valid",
     )
+    # An evidence link is a graph node, so the bid's graph is stale until
+    # re-projected, even though no check reads an unlinked one yet (plan
+    # item 95, user decision Q3: no exception). Once per transaction, so a
+    # cross-document finding's two links bump once.
+    await uow.tenders.bump_state_version(finding.tender_id)
 
 
 async def _ground_pricing_finding(uow: UnitOfWork, finding: PricingFinding) -> None:

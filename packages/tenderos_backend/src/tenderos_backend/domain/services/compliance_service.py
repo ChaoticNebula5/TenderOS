@@ -1,3 +1,4 @@
+import struct
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -163,6 +164,7 @@ async def materialize_evidence(
     by_label = {p.label: p for p in prepared}
     materialized: list[MaterializedEvidence] = []
     async with UnitOfWork() as uow:
+        created_any = False
         for label in cited_labels:
             p = by_label.get(label)
             if p is None:
@@ -192,6 +194,11 @@ async def materialize_evidence(
                 validity_status=p.signals.validity_status,
             )
             materialized.append(MaterializedEvidence(link.id, *fresh))
+            created_any = True
+        if created_any:
+            # Evidence links are graph nodes, with a PROVIDES edge from their
+            # fact (plan item 95). In a run this is before project_graph.
+            await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
     return materialized
 
@@ -275,6 +282,17 @@ def enforce_evidence_sufficiency(
 # ----------------------------------------------------------------------
 
 
+def _same_real(stored: float | None, proposed: float | None) -> bool:
+    """Whether two confidences are the same value once stored.
+    compliance_entries.confidence is REAL (4 bytes), so a stored 0.8 reads
+    back as 0.800000011920929 and never equals the 0.8 that produced it;
+    comparing both at the column's own precision avoids counting every
+    re-evaluation as a change (plan item 95)."""
+    if stored is None or proposed is None:
+        return stored is proposed
+    return struct.pack("<f", stored) == struct.pack("<f", proposed)
+
+
 async def persist_compliance_decision(
     requirement_id: uuid.UUID,
     proposal: ComplianceProposal,
@@ -313,9 +331,12 @@ async def persist_compliance_decision(
                 e.id for e in await uow.compliance.list_evidence_for_compliance_entry(existing.id)
             }
             new_evidence_ids = {e.id for e in materialized_evidence}
+            # The confidence is on the graph's Compliance node too (plan item
+            # 95), and a re-evaluation rewrites it every time.
             materially_changed = (
                 existing.status != sufficiency.status
                 or not new_evidence_ids.issubset(already_linked_ids)
+                or not _same_real(existing.confidence, proposal.confidence)
             )
 
         if existing is None:
@@ -516,8 +537,11 @@ async def approve_compliance_entry_in_uow(
     # the listed graph-relevant mutations, bumped in the same
     # transaction as the write it accompanies (KNOWN_LIMITATIONS.md:
     # "[B7/B8] tenders.state_version was never bumped" - this call was
-    # missing from B7 through this fix in B8).
-    await uow.tenders.bump_state_version(tender.id)
+    # missing from B7 through this fix in B8). Only when it changed (plan
+    # item 95): approving an entry already approved changes no graph, and
+    # gate decisions resend approvals.
+    if not before["human_approved"]:
+        await uow.tenders.bump_state_version(tender.id)
     return updated
 
 
@@ -581,8 +605,12 @@ async def override_compliance_entry(
                 "human_approved": True,
             },
         )
-        # See approve_compliance_entry's own comment - same invariant, same fix.
-        await uow.tenders.bump_state_version(tender.id)
+        # See approve_compliance_entry's own comment - same invariant, same
+        # fix. The graph's Compliance node carries the status and the
+        # approval, not the reasoning, so a reasoning-only override of an
+        # approved entry changes no graph (plan item 95).
+        if before["status"] != updated.status or not before["human_approved"]:
+            await uow.tenders.bump_state_version(tender.id)
         await uow.commit()
         return updated
 

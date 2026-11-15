@@ -36,9 +36,11 @@ _PROJECTION_ATTEMPTS = 3
 # (2026-11-05): the slowest tender's projection takes 427 to 784 ms, 1,448 ms at
 # worst across all runs, and 12 queued at once finish in 5.18 s. So 15 s is about
 # 10 times the slowest projection seen, and about 3 times a queue far longer than
-# the three callers that can project (the workflow node, the manual route, the
-# reanalysis job) could form. A stuck holder fails a caller in about 46 s at
-# worst: 3 waits plus the pauses.
+# the four callers that can project (the workflow node, the manual route, which
+# Graph Explorer and the impact preview's retry use, the reanalysis job, and,
+# since plan item 95, the manual red-team operation when the graph is stale)
+# could form. A stuck holder fails a caller in about 46 s at worst: 3 waits plus
+# the pauses.
 _PROJECTION_LOCK_TIMEOUT_MS = 15_000
 
 # Phase 4 plan item 81. The reads below run auto-commit queries

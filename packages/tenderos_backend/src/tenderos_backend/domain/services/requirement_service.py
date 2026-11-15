@@ -92,6 +92,7 @@ async def persist_extraction_results(
     """
     persisted: list[Requirement] = []
     async with UnitOfWork() as uow:
+        created_any = False
         for draft in drafts:
             normalized = normalize_text(draft.requirement_text)
             fingerprint = _fingerprint(
@@ -125,6 +126,11 @@ async def persist_extraction_results(
                 confidence=draft.confidence,
             )
             persisted.append(created)
+            created_any = True
+        if created_any:
+            # Requirements are graph nodes: one bump for the whole batch
+            # (plan item 95). It runs before the run's project_graph step.
+            await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
     return persisted
 
@@ -184,15 +190,15 @@ async def patch_submission_item(
     status"). Same before/after audit-event shape as patch_requirement
     above.
 
-    Bumps tenders.state_version deliberately, not because Part D's
-    projection contract requires it - SubmissionItem is not one of Part
-    D1's 11 node labels and no D2 relationship touches it, confirmed by
-    reading Part D directly, not assumed. The bump exists purely so a
-    stale readiness_reports row (UNIQUE(tender_id, tender_state_version))
-    doesn't silently keep reporting a blocker that's already cleared -
-    readiness-report freshness, not a graph invariant. If this ever reads
-    as wrong because Part D still shows no SubmissionItem node, that's
-    not a contradiction to "fix" by removing the bump.
+    Does not bump tenders.state_version (plan item 95): submission items are
+    not projected (no graph node or relationship), so a tick must not make
+    the graph stale. The bump used to be here only so readiness's stored
+    report, then one per state version, would refresh; since plan item 93
+    readiness computes on every generate, so the next generate drops a
+    cleared blocker at the same version. Accepted with it (decision 0103): a
+    tick landing between the final gate approval's recompute and its
+    version-conditional write is not caught by that write, as red-team
+    findings already are not (decision 0102).
     """
     async with UnitOfWork() as uow:
         item = await uow.requirements.get_submission_item(item_id)
@@ -205,17 +211,6 @@ async def patch_submission_item(
                 str(item.matched_document_id) if item.matched_document_id else None
             ),
         }
-        # matched_document_id=None means "don't touch this field" (see
-        # `fields` below - it's only ever included when not None), not
-        # "clear it." materially_changed has to honor that same meaning:
-        # comparing None against an already-set item.matched_document_id
-        # unconditionally would read a PATCH that only touches status as
-        # having also changed the document, bumping state_version for a
-        # field nothing actually wrote (CodeRabbit-caught).
-        materially_changed = status != item.status or (
-            matched_document_id is not None and matched_document_id != item.matched_document_id
-        )
-
         fields: dict[str, object] = {"status": status}
         if matched_document_id is not None:
             fields["matched_document_id"] = matched_document_id
@@ -238,14 +233,6 @@ async def patch_submission_item(
             before=before,
             after=after,
         )
-
-        # See docstring: deliberate for readiness-report freshness, not a
-        # Part D projection requirement. Gated the same way compliance_
-        # service.py gates its own bump (materially_changed) - a no-op
-        # PATCH (same status, no new document) shouldn't mark an
-        # otherwise-fresh graph/readiness state stale for nothing.
-        if materially_changed:
-            await uow.tenders.bump_state_version(updated.tender_id)
 
         await uow.commit()
         return updated
@@ -340,6 +327,12 @@ async def patch_requirement(
             "human_reviewed": updated.human_reviewed,
             "rejected_at": updated.rejected_at.isoformat() if updated.rejected_at else None,
         }
+        # The graph's Requirement node carries the category and mandatory
+        # flag; the text, the reviewed flag and rejected_at are not projected
+        # (rejected requirements are projected like live ones, plan item 97),
+        # so a confirm, a text edit or a reject changes no graph (plan item 95).
+        if before["category"] != after["category"] or before["mandatory"] != after["mandatory"]:
+            await uow.tenders.bump_state_version(updated.tender_id)
         await uow.audit.create(
             organization_id=organization_id,
             actor_type="user",
@@ -428,6 +421,10 @@ async def merge_requirements(
             before=before,
             after={"id": str(merged.id), "requirement_text": merged.requirement_text},
         )
+        # A new requirement node, and the originals' nodes gone with what
+        # their delete cascades to (compliance entries, claim links, role
+        # sources): the graph changed (plan item 95).
+        await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
         return merged
 
@@ -495,6 +492,8 @@ async def split_requirement(
             before=before,
             after={"split_into": [str(r.id) for r in created]},
         )
+        # As merge_requirements: new nodes, the original's gone (plan item 95).
+        await uow.tenders.bump_state_version(original.tender_id)
         await uow.commit()
         return created
 

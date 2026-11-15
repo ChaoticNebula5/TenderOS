@@ -2,10 +2,11 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.knowledge import (
     Capability,
     Certification,
@@ -19,6 +20,21 @@ from tenderos_backend.db.models.knowledge import (
     PastProject,
     TenderKnowledgeSelection,
 )
+from tenderos_backend.db.models.proposal import (
+    ProposalClaim,
+    ProposalClaimEmployee,
+    ProposalSection,
+)
+from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
+
+# The knowledge item types the graph has a node for (D1): the projector's four
+# typed branches (graph_projection/projector.py). The other types
+# (company_document, client_reference, partner) are never projected, so a
+# change to one makes no graph stale (plan item 95).
+# tests/integration/test_projection_reach.py keeps the two in step.
+PROJECTED_KNOWLEDGE_ITEM_TYPES = frozenset(
+    {"employee", "certification", "past_project", "capability"}
+)
 
 # An employee removed from the roster: its knowledge item's status (Phase 4
 # plan item 79, C1). The employee-master import writes it for a "removed" row
@@ -31,7 +47,9 @@ from tenderos_backend.db.models.knowledge import (
 # 'archived' in its CHECK, but nothing writes that value. Since plan item 88
 # the same status is read for every item type wherever evidence is judged:
 # readiness step 2, the proposal's evidence filter, both trace views and the
-# graph's grounded-claim check; archiving any item bumps the bids citing it.
+# graph's grounded-claim check. Since plan item 95 any status change (archiving
+# included) bumps every bid whose graph includes the item
+# (list_tender_ids_projecting below).
 KNOWLEDGE_ITEM_ARCHIVED = "archived"
 
 
@@ -181,6 +199,62 @@ class KnowledgeRepository:
                 KnowledgeItem.id.in_(ids), KnowledgeItem.status == KNOWLEDGE_ITEM_ARCHIVED
             )
         )
+        return set(result.scalars().all())
+
+    async def list_tender_ids_projecting(self, knowledge_item_id: uuid.UUID) -> list[uuid.UUID]:
+        """Every bid whose graph includes this knowledge item's node, each once,
+        sorted (plan item 95). A change to a projected field of the item makes
+        each of these graphs stale, so each is bumped, in this order, so two
+        edits bumping overlapping bids take the row locks in the same order.
+
+        The same reach the projector walks (graph_projection/projector.py,
+        "Reachable shared knowledge_item_id set"), five paths:
+        1. a selection row for the item, selected or not;
+        2. an evidence link to the item;
+        3. a human-selected role match for the employee;
+        4. a proposal claim naming the employee;
+        5. for an employee, holding a certification the bid reaches by 1 to 4
+           (the projector pulls a reached certificate's holder in for HOLDS).
+        An item of a type the projector has no node for reaches no bid.
+        tests/integration/test_projection_reach.py ties this to the projector.
+        """
+        item = await self._session.get(KnowledgeItem, knowledge_item_id)
+        if item is None or item.item_type not in PROJECTED_KNOWLEDGE_ITEM_TYPES:
+            return []
+        tender_ids = await self._tender_ids_reaching({knowledge_item_id})
+        if item.item_type == "employee":
+            held = await self._session.execute(
+                select(Certification.knowledge_item_id).where(
+                    Certification.holder_employee_item_id == knowledge_item_id
+                )
+            )
+            tender_ids |= await self._tender_ids_reaching(set(held.scalars().all()))
+        return sorted(tender_ids)
+
+    async def _tender_ids_reaching(self, knowledge_item_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+        """Paths 1 to 4 of list_tender_ids_projecting, for a set of items."""
+        if not knowledge_item_ids:
+            return set()
+        ids = knowledge_item_ids
+        statement = union(
+            select(TenderKnowledgeSelection.tender_id).where(
+                TenderKnowledgeSelection.knowledge_item_id.in_(ids)
+            ),
+            select(EvidenceLink.tender_id).where(EvidenceLink.knowledge_item_id.in_(ids)),
+            select(RoleRequirement.tender_id)
+            .join(RoleMatch, RoleMatch.role_requirement_id == RoleRequirement.id)
+            .where(
+                RoleMatch.employee_knowledge_item_id.in_(ids),
+                RoleMatch.human_selected.is_(True),
+            ),
+            select(ProposalSection.tender_id)
+            .join(ProposalClaim, ProposalClaim.section_id == ProposalSection.id)
+            .join(
+                ProposalClaimEmployee, ProposalClaimEmployee.proposal_claim_id == ProposalClaim.id
+            )
+            .where(ProposalClaimEmployee.employee_knowledge_item_id.in_(ids)),
+        )
+        result = await self._session.execute(statement)
         return set(result.scalars().all())
 
     async def get_knowledge_item_by_fingerprint(

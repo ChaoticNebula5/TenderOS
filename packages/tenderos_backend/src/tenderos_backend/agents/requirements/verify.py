@@ -151,7 +151,16 @@ async def verify_and_persist(
 
     verified = output.supported_by_source and output.mandatory_language_supported
     async with UnitOfWork() as uow:
+        requirement = await uow.requirements.get(requirement_id)
+        if requirement is None:
+            raise RequirementNotFoundError()
+        was_verified = requirement.verified
         await uow.requirements.set_verified(requirement_id, verified)
+        # verified is on the graph's Requirement node (plan item 95). In a
+        # run this happens in the extraction node, before project_graph; from
+        # the Verify button it can happen any time after.
+        if verified != was_verified:
+            await uow.tenders.bump_state_version(requirement.tender_id)
         await uow.commit()
 
     return output

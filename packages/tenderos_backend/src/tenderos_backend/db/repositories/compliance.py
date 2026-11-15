@@ -91,23 +91,6 @@ class ComplianceRepository:
         )
         return result.scalar_one_or_none() is not None
 
-    async def list_tender_ids_citing_knowledge_item(
-        self, knowledge_item_id: uuid.UUID
-    ) -> list[uuid.UUID]:
-        """Every bid with an evidence link to this knowledge item, each once,
-        in a stable order (plan item 88: archiving or restoring the item
-        bumps each one). Every link counts, attached or not: the projector
-        projects all of a bid's links and the item's fact node, so the graph
-        of each is stale after the change. No index on knowledge_item_id
-        yet (a plan item)."""
-        result = await self._session.execute(
-            select(EvidenceLink.tender_id)
-            .where(EvidenceLink.knowledge_item_id == knowledge_item_id)
-            .distinct()
-            .order_by(EvidenceLink.tender_id)
-        )
-        return list(result.scalars().all())
-
     # ------------------------------------------------------------------
     # compliance_entries
     # ------------------------------------------------------------------

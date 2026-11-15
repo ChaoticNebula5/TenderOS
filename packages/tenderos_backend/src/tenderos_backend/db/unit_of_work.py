@@ -94,7 +94,16 @@ class UnitOfWork:
         await self._session_cm.__aexit__(exc_type, exc, tb)
 
     async def commit(self) -> None:
-        await self.session.commit()
+        # The bumps belonged to the transaction that just ended, committed or
+        # not (a failed commit rolls back), so the next bump moves the version
+        # again (plan item 95).
+        try:
+            await self.session.commit()
+        finally:
+            self.tenders.forget_bumps()
 
     async def rollback(self) -> None:
-        await self.session.rollback()
+        try:
+            await self.session.rollback()
+        finally:
+            self.tenders.forget_bumps()

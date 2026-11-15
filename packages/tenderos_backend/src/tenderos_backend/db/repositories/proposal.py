@@ -154,14 +154,18 @@ class ProposalRepository:
 
     async def link_claim_evidence(
         self, proposal_claim_id: uuid.UUID, evidence_link_id: uuid.UUID
-    ) -> None:
+    ) -> bool:
+        """True when a new link row was added (False: it already existed). Plan
+        item 95: a new link is a new graph edge."""
         stmt = (
             pg_insert(ProposalClaimEvidence)
             .values(proposal_claim_id=proposal_claim_id, evidence_link_id=evidence_link_id)
             .on_conflict_do_nothing(constraint="uq_proposal_claim_evidence")
+            .returning(ProposalClaimEvidence.id)
         )
-        await self._session.execute(stmt)
+        result = await self._session.execute(stmt)
         await self._session.flush()
+        return result.scalar_one_or_none() is not None
 
     async def list_evidence_for_claim(
         self, proposal_claim_id: uuid.UUID
@@ -175,14 +179,18 @@ class ProposalRepository:
 
     async def link_claim_requirement(
         self, proposal_claim_id: uuid.UUID, requirement_id: uuid.UUID
-    ) -> None:
+    ) -> bool:
+        """True when a new link row was added (False: it already existed). Plan
+        item 95: a new link is a new graph edge."""
         stmt = (
             pg_insert(ProposalClaimRequirement)
             .values(proposal_claim_id=proposal_claim_id, requirement_id=requirement_id)
             .on_conflict_do_nothing(constraint="uq_proposal_claim_requirement")
+            .returning(ProposalClaimRequirement.id)
         )
-        await self._session.execute(stmt)
+        result = await self._session.execute(stmt)
         await self._session.flush()
+        return result.scalar_one_or_none() is not None
 
     async def list_requirements_for_claim(
         self, proposal_claim_id: uuid.UUID
@@ -196,7 +204,9 @@ class ProposalRepository:
 
     async def link_claim_employee(
         self, proposal_claim_id: uuid.UUID, employee_knowledge_item_id: uuid.UUID
-    ) -> None:
+    ) -> bool:
+        """True when a new link row was added (False: it already existed). Plan
+        item 95: a new link is a new graph edge."""
         stmt = (
             pg_insert(ProposalClaimEmployee)
             .values(
@@ -204,9 +214,11 @@ class ProposalRepository:
                 employee_knowledge_item_id=employee_knowledge_item_id,
             )
             .on_conflict_do_nothing(constraint="uq_proposal_claim_employee")
+            .returning(ProposalClaimEmployee.id)
         )
-        await self._session.execute(stmt)
+        result = await self._session.execute(stmt)
         await self._session.flush()
+        return result.scalar_one_or_none() is not None
 
     async def list_employees_for_claim(
         self, proposal_claim_id: uuid.UUID

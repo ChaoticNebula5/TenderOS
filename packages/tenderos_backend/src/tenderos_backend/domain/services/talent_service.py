@@ -116,6 +116,7 @@ async def persist_extracted_roles(
     persisted: list[RoleRequirement] = []
 
     async with UnitOfWork() as uow:
+        created_any = False
         for role in extraction.roles:
             resolved_refs = [
                 by_label[label] for label in role.source_requirement_refs if label in by_label
@@ -151,7 +152,12 @@ async def persist_extracted_roles(
                     role_requirement.id, ref.requirement_id
                 )
             persisted.append(role_requirement)
+            created_any = True
 
+        if created_any:
+            # Roles are graph nodes, with SATISFIES edges to their sources:
+            # one bump for the batch (plan item 95), before project_graph.
+            await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
     return persisted
 
@@ -531,6 +537,7 @@ async def evaluate_role_match(
                 existing.id, score=scoring.score, strengths=enforced.strengths, gaps=enforced.gaps
             )
 
+        created_link = False
         for strength in enforced.strengths:
             ref_label = strength.get("evidence_ref")
             candidate = by_label.get(ref_label) if ref_label else None
@@ -555,8 +562,14 @@ async def evaluate_role_match(
                     verified=True,
                     validity_status=validity_status,
                 )
+                created_link = True
             await uow.talent.link_role_match_evidence(match.id, link.id, strength["criterion"])
 
+        # The match itself is not projected (only a human-selected one is);
+        # an evidence link is a graph node (plan item 95). Before
+        # project_graph in a run.
+        if created_link:
+            await uow.tenders.bump_state_version(role.tender_id)
         await uow.commit()
         return match
 
@@ -662,8 +675,10 @@ async def _set_human_selected_in_uow(
         after={"human_selected": selected},
     )
     # Part C's State-version invariant: "role assignment change" is one
-    # of the listed graph-relevant mutations.
-    await uow.tenders.bump_state_version(tender.id)
+    # of the listed graph-relevant mutations. Only when it changed (plan
+    # item 95): re-selecting a selected candidate changes no FILLS edge.
+    if before["human_selected"] != selected:
+        await uow.tenders.bump_state_version(tender.id)
     return updated
 
 

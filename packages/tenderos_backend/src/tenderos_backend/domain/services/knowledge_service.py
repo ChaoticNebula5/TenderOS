@@ -30,6 +30,7 @@ from tenderos_backend.db.models.knowledge import (
     KnowledgeRelationship,
     TenderKnowledgeSelection,
 )
+from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.repositories.knowledge import KNOWLEDGE_ITEM_ARCHIVED
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -87,41 +88,50 @@ _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS = {
 }
 
 
-async def _bump_bids_on_archive_change(
-    uow: UnitOfWork, item: KnowledgeItem, before_status: str
-) -> list[uuid.UUID]:
-    """Archiving or restoring a knowledge item bumps the state version of
-    every bid that rests on it, in the caller's transaction. Returns the
-    bumped tender ids. Plan item 86 built this for employees selected in a
-    bid; plan item 88 (user decision R1) widens it to every item type and to
-    every bid with an evidence link to the item.
+# The knowledge item types whose graph node carries knowledge_items.title
+# (graph_projection/projector.py: certification_rows, project_rows,
+# capability_rows; employee_rows use the employee's own name).
+_TITLED_NODE_ITEM_TYPES = frozenset({"certification", "past_project", "capability"})
 
-    Which bids: those with an evidence link to the item (any link: the
-    projector projects them all and the item's fact node), and, for an
-    employee, those selecting them. Readiness step 2 and the proposal's
-    evidence filter read the archived state live, but the graph's freshness
-    is a version check, so without a bump the graph kept the item's old
-    status and still read fresh. (Until plan item 93, readiness also kept one
-    report per state version; it now computes on every generate.)
 
-    Finished bids (final gate approved) are included: the state version
-    counts changes to the facts a bid rests on, and this is one. Nothing runs
-    on a bump (no outbox event, no job: the user's D3), so a finished bid
-    only shows a stale graph if someone opens it. Leaving them out would let
-    its graph keep claiming to be current.
+async def _bump_bids_projecting(uow: UnitOfWork, knowledge_item_id: uuid.UUID) -> list[uuid.UUID]:
+    """A projected field of this knowledge item changed: bump every bid whose
+    graph includes the item, in the caller's transaction, in sorted order (two
+    edits bumping overlapping bids take the row locks in one order). Returns
+    the bumped tender ids.
 
-    Only when the archived state actually changes. Other statuses
-    (expired, unverified) change nothing here, as they change nothing in the
-    live checks (user decision: archived only; one shared definition of
-    "valid now" is a plan item)."""
-    if (before_status == KNOWLEDGE_ITEM_ARCHIVED) == (item.status == KNOWLEDGE_ITEM_ARCHIVED):
-        return []
-    tender_ids = set(await uow.compliance.list_tender_ids_citing_knowledge_item(item.id))
-    if item.item_type == "employee":
-        tender_ids.update(await uow.talent.list_tender_ids_selecting_employee(item.id))
-    for tender_id in sorted(tender_ids):
+    Plan item 95 (user decisions Q2 and Q6): any change to a field the
+    projector copies onto the item's node, not only archiving or restoring
+    (plan items 86 and 88 built this for that case). The graph's coverage
+    grading counts a backing fact only while its status is exactly 'active',
+    so an 'expired' or 'unverified' status changes graph answers too. The
+    caller compares before and after and calls this only on a change; a write
+    of a field the graph does not show (an email, a resume) does not bump.
+
+    Which bids: KnowledgeRepository.list_tender_ids_projecting, the
+    projector's own reach (selection, evidence link, selected role match,
+    claim naming the employee, a held certificate). Finished bids (final gate
+    approved) are included: the state version counts changes to the facts a
+    bid rests on. Nothing runs on a bump (no outbox event, no job: the user's
+    D3), so a finished bid only shows a stale graph if someone opens it."""
+    tender_ids = await uow.knowledge.list_tender_ids_projecting(knowledge_item_id)
+    for tender_id in tender_ids:
         await uow.tenders.bump_state_version(tender_id)
-    return sorted(tender_ids)
+    return tender_ids
+
+
+async def _bump_bids_projecting_both(
+    uow: UnitOfWork, source_item_id: uuid.UUID, target_item_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """A new verified relationship is projected only into bids whose graph
+    includes both of its ends (the projector skips it otherwise), so only
+    those are bumped, in sorted order (plan item 95)."""
+    source_bids = set(await uow.knowledge.list_tender_ids_projecting(source_item_id))
+    target_bids = set(await uow.knowledge.list_tender_ids_projecting(target_item_id))
+    tender_ids = sorted(source_bids & target_bids)
+    for tender_id in tender_ids:
+        await uow.tenders.bump_state_version(tender_id)
+    return tender_ids
 
 
 logger = logging.getLogger(__name__)
@@ -424,16 +434,21 @@ async def import_employee_master_row(
             # path, treated as more current than whatever was already on
             # file - unlike a resume's free-text self-report (import_resume
             # below), which corroborates rather than overwrites.
-            await uow.knowledge.update_employee(
-                target_id, current_title=row.role or resolution.matched_employee.current_title
-            )
+            # Read before the write: matched_employee is the identity-mapped
+            # row update_employee changes.
+            before_title = resolution.matched_employee.current_title
+            new_title = row.role or before_title
+            await uow.knowledge.update_employee(target_id, current_title=new_title)
+            projected_changed = new_title != before_title
             if item_status:
                 existing = await uow.knowledge.get_knowledge_item(target_id)
                 before_status = existing.status if existing is not None else ""
-                archived = await uow.knowledge.update_knowledge_item(target_id, status=item_status)
-                # A "removed" row for an employee already on file: the same
-                # bump as the talent library's archive (plan items 86, 88).
-                await _bump_bids_on_archive_change(uow, archived, before_status)
+                await uow.knowledge.update_knowledge_item(target_id, status=item_status)
+                projected_changed = projected_changed or item_status != before_status
+            if projected_changed:
+                # The title and status are on the employee's graph node
+                # (plan item 95; a "removed" row archives, plan items 86, 88).
+                await _bump_bids_projecting(uow, target_id)
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
@@ -456,14 +471,13 @@ async def import_employee_master_row(
             # _create_or_get_employee commits on its own and can converge onto
             # a row that already exists (a retried or concurrent import), so
             # this write can flip an existing item: it goes through the same
-            # bump (plan item 88). A brand-new row has no links or
-            # selections, and the bump then touches nothing.
+            # bump (plan items 88 and 95). A brand-new row reaches no bid,
+            # and the bump then touches nothing.
             existing = await uow.knowledge.get_knowledge_item(knowledge_item_id)
             before_status = existing.status if existing is not None else ""
-            archived = await uow.knowledge.update_knowledge_item(
-                knowledge_item_id, status=item_status
-            )
-            await _bump_bids_on_archive_change(uow, archived, before_status)
+            await uow.knowledge.update_knowledge_item(knowledge_item_id, status=item_status)
+            if item_status != before_status:
+                await _bump_bids_projecting(uow, knowledge_item_id)
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
         )
@@ -544,10 +558,13 @@ async def import_resume(
         if resolution.verdict == DuplicateVerdict.DUPLICATE:
             assert resolution.matched_employee is not None
             target_id = resolution.matched_employee.knowledge_item_id
+            # Read before the write (the same identity-mapped row): of these
+            # fields only current_title is on the graph node (plan item 95).
+            before_title = resolution.matched_employee.current_title
             await uow.knowledge.update_employee(
                 target_id,
                 email=profile.email or resolution.matched_employee.email,
-                current_title=profile.current_title or resolution.matched_employee.current_title,
+                current_title=profile.current_title or before_title,
                 professional_location=(
                     profile.professional_location
                     or resolution.matched_employee.professional_location
@@ -571,6 +588,8 @@ async def import_resume(
             # document that really said that), not obvious - see
             # KNOWN_LIMITATIONS.md.
             await uow.knowledge.associate_knowledge_item_chunks(target_id, resume_chunk_ids)
+            if (profile.current_title or before_title) != before_title:
+                await _bump_bids_projecting(uow, target_id)
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
@@ -638,6 +657,12 @@ async def import_worked_on_relationship(
             verified=resolution.verdict == RelationshipVerdict.VERIFIED,
             content_fingerprint=fingerprint,
         )
+        if relationship.verified:
+            # The graph projects verified relationships between two items a
+            # bid includes (plan item 95).
+            await _bump_bids_projecting_both(
+                uow, employee_knowledge_item_id, candidate.project.knowledge_item_id
+            )
         await uow.commit()
         return relationship
 
@@ -675,6 +700,12 @@ async def import_demonstrates_relationship(
             verified=resolution.verdict == RelationshipVerdict.VERIFIED,
             content_fingerprint=fingerprint,
         )
+        if relationship.verified:
+            # The graph projects verified relationships between two items a
+            # bid includes (plan item 95).
+            await _bump_bids_projecting_both(
+                uow, project_knowledge_item_id, candidate.capability.knowledge_item_id
+            )
         await uow.commit()
         return relationship
 
@@ -1069,7 +1100,15 @@ async def patch_knowledge_item(
             else item
         )
         after = {"title": updated.title, "status": updated.status}
-        await _bump_bids_on_archive_change(uow, updated, str(before["status"]))
+        # The status is on every projected item's graph node, any status, not
+        # only archiving (plan item 95, Q2). The title is on a certificate's,
+        # a project's and a capability's node, not an employee's (whose node
+        # carries the employee row's name).
+        title_projected = updated.item_type in _TITLED_NODE_ITEM_TYPES
+        if before["status"] != after["status"] or (
+            title_projected and before["title"] != after["title"]
+        ):
+            await _bump_bids_projecting(uow, knowledge_item_id)
 
         await uow.audit.create(
             organization_id=organization_id,
@@ -1194,8 +1233,18 @@ async def patch_employee_profile(
             before=before,
             after=after,
         )
+        # Of these fields the employee's graph node carries the name, title
+        # and availability (plan item 95); email, location and experience
+        # are not projected.
+        if any(before[field] != after[field] for field in _PROJECTED_PROFILE_FIELDS):
+            await _bump_bids_projecting(uow, knowledge_item_id)
         await uow.commit()
         return updated
+
+
+# The patch_employee_profile fields the projector copies onto the Employee
+# node (graph_projection/projector.py, employee_rows).
+_PROJECTED_PROFILE_FIELDS = ("name", "current_title", "availability_status")
 
 
 async def verify_employee_profile(
@@ -1252,6 +1301,10 @@ async def verify_employee_profile(
             before=before,
             after=after,
         )
+        # Both are on the employee's graph node (plan item 95); the
+        # verification stamp is not.
+        if before != after:
+            await _bump_bids_projecting(uow, knowledge_item_id)
         await uow.commit()
         return updated
 
@@ -1506,27 +1559,53 @@ async def set_knowledge_selection(
             )
             raise CrossOrganizationKnowledgeItemError()
 
-        updated = await uow.knowledge.upsert_selection(
-            tender_id, knowledge_item_id, selected, actor_user_id, change_reason
-        )
-        await uow.tenders.bump_state_version(tender_id)
-        # tender is the same ORM instance bump_state_version's own
-        # uow.session.get(Tender, tender_id) call resolved (one session,
-        # one identity map for this whole UnitOfWork) - its state_version
-        # already reflects the increment above with no extra query needed.
-        await uow.outbox.create(
-            aggregate_type=AGGREGATE_KNOWLEDGE_SELECTION,
-            aggregate_id=updated.id,
-            event_type=EVENT_KNOWLEDGE_SELECTION_CHANGED,
-            payload=knowledge_selection_changed_payload(
-                tender_id, knowledge_item_id, selected, tender.state_version
-            ),
-            idempotency_key=knowledge_selection_changed_idempotency_key(
-                tender_id, tender.state_version
-            ),
+        updated = await record_knowledge_selection_in_uow(
+            uow, tender, knowledge_item_id, selected, actor_user_id, change_reason
         )
         await uow.commit()
         return updated
+
+
+async def record_knowledge_selection_in_uow(
+    uow: UnitOfWork,
+    tender: Tender,
+    knowledge_item_id: uuid.UUID,
+    selected: bool,
+    actor_user_id: uuid.UUID,
+    change_reason: str | None = None,
+) -> TenderKnowledgeSelection:
+    """The transaction-open, no-commit core of set_knowledge_selection: the
+    selection row, a new state version and its KnowledgeSelectionChanged
+    event, for a caller that has already checked access.
+
+    increment_state_version, not bump_state_version (plan item 95): the new
+    version is this event's identity (its outbox key, the reanalysis job id
+    and the reanalysis claim are keyed on it), so two selection changes in
+    one transaction must each move it, or the second event would share the
+    first's key and be dropped as a duplicate. Today every selection change
+    commits on its own (set_knowledge_selection, one per request), but
+    nothing structural stops a batch.
+    """
+    updated = await uow.knowledge.upsert_selection(
+        tender.id, knowledge_item_id, selected, actor_user_id, change_reason
+    )
+    await uow.tenders.increment_state_version(tender.id)
+    # tender is the same ORM instance increment_state_version's own
+    # uow.session.get(Tender, tender_id) call resolved (one session,
+    # one identity map for this whole UnitOfWork) - its state_version
+    # already reflects the increment above with no extra query needed.
+    await uow.outbox.create(
+        aggregate_type=AGGREGATE_KNOWLEDGE_SELECTION,
+        aggregate_id=updated.id,
+        event_type=EVENT_KNOWLEDGE_SELECTION_CHANGED,
+        payload=knowledge_selection_changed_payload(
+            tender.id, knowledge_item_id, selected, tender.state_version
+        ),
+        idempotency_key=knowledge_selection_changed_idempotency_key(
+            tender.id, tender.state_version
+        ),
+    )
+    return updated
 
 
 async def replace_employee_resume(
