@@ -159,6 +159,19 @@ describe("GateSummary - each gate_type renders its own typed fields", () => {
     expectSummaryItem("Roles without a pick", "0");
   });
 
+  it("resource_selection: 'Selected but removed from roster' only when the count exists (plan item 86)", () => {
+    const counted: ResourceSelectionGateResponse = {
+      ...resourceSelectionGate(),
+      summary: { ...resourceSelectionGate().summary, archived_selected_count: 1 },
+    };
+    const { unmount } = render(<GateDecisionPanel gate={counted} onDecided={vi.fn()} />);
+    expectSummaryItem("Selected but removed from roster", "1");
+    unmount();
+
+    render(<GateDecisionPanel gate={resourceSelectionGate()} onDecided={vi.fn()} />);
+    expect(screen.queryByText("Selected but removed from roster")).not.toBeInTheDocument();
+  });
+
   it("commercial_approval", () => {
     render(<GateDecisionPanel gate={commercialApprovalGate()} onDecided={vi.fn()} />);
     expectSummaryItem("Findings", "6");

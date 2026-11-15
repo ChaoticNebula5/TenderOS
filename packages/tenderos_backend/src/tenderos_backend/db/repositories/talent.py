@@ -144,6 +144,24 @@ class TalentRepository:
         )
         return list(result.scalars().all())
 
+    async def list_tender_ids_selecting_employee(
+        self, employee_knowledge_item_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Every tender with a human-selected match for this employee, each
+        once, in a stable order (plan item 86: archiving or restoring the
+        employee bumps each one's state version)."""
+        result = await self._session.execute(
+            select(RoleRequirement.tender_id)
+            .join(RoleMatch, RoleMatch.role_requirement_id == RoleRequirement.id)
+            .where(
+                RoleMatch.employee_knowledge_item_id == employee_knowledge_item_id,
+                RoleMatch.human_selected.is_(True),
+            )
+            .distinct()
+            .order_by(RoleRequirement.tender_id)
+        )
+        return list(result.scalars().all())
+
     async def update_role_match(self, role_match_id: uuid.UUID, **fields: object) -> RoleMatch:
         match = await self._session.get(RoleMatch, role_match_id)
         if match is None:

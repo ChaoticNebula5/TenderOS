@@ -893,3 +893,86 @@ async def test_an_employee_verified_then_removed_is_not_listed_as_bid_eligible()
     listed = await knowledge_service.list_bid_eligible_employees(org_id)
 
     assert {e.name for e in listed} == {"Avery Active"}
+
+
+# ----------------------------------------------------------------------
+# Plan item 86 (user decision): archiving or restoring an employee bumps the
+# state version of every bid where they are selected, with no outbox event.
+# ----------------------------------------------------------------------
+
+
+async def _versions(*tender_ids: uuid.UUID) -> list[int]:
+    async with UnitOfWork() as uow:
+        return [(await uow.tenders.get(t)).state_version for t in tender_ids]
+
+
+async def _outbox_count() -> int:
+    async with UnitOfWork() as uow:
+        return len((await uow.session.execute(select(OutboxEvent))).scalars().all())
+
+
+async def test_archiving_or_restoring_a_selected_employee_bumps_only_the_bids_selecting_them():
+    registered = await register(
+        email=f"{uuid.uuid4().hex}@example.com",
+        password="hunter2hunter2",
+        organization_name="Roster Change Org",
+    )
+    org_id, actor_id = registered.organization.id, registered.user.id
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.create_import_batch(
+            organization_id=org_id,
+            import_type="employee_master_csv",
+            source_document_id=None,
+            created_by=actor_id,
+        )
+        await uow.commit()
+    imported = await knowledge_service.import_employee_master_row(
+        org_id,
+        batch.id,
+        EmployeeMasterRow(
+            row_number=2, employee_code="EMP-88", name="Sasha Roster", role="Lead", status="active"
+        ),
+    )
+    employee_id = imported.target_knowledge_item_id
+    assert employee_id is not None
+    selecting = await create_tender(organization_id=org_id, name="Selecting", created_by=actor_id)
+    matched_only = await create_tender(organization_id=org_id, name="Matched", created_by=actor_id)
+    async with UnitOfWork() as uow:
+        for tender, selected in ((selecting, True), (matched_only, False)):
+            role = await uow.talent.create_role_requirement(
+                tender_id=tender.id, role_name="Lead", content_fingerprint=uuid.uuid4().hex
+            )
+            match = await uow.talent.create_role_match(role.id, employee_id)
+            await uow.talent.update_role_match(match.id, human_selected=selected)
+        await uow.commit()
+    start = await _versions(selecting.id, matched_only.id)
+    outbox_before = await _outbox_count()
+
+    # A title edit is not a roster change.
+    await knowledge_service.patch_knowledge_item(employee_id, org_id, actor_id, title="Sasha R.")
+    assert await _versions(selecting.id, matched_only.id) == start
+
+    await knowledge_service.patch_knowledge_item(employee_id, org_id, actor_id, status="archived")
+    assert await _versions(selecting.id, matched_only.id) == [start[0] + 1, start[1]]
+
+    # Already archived: no change, no bump.
+    await knowledge_service.patch_knowledge_item(employee_id, org_id, actor_id, status="archived")
+    assert await _versions(selecting.id, matched_only.id) == [start[0] + 1, start[1]]
+
+    await knowledge_service.patch_knowledge_item(employee_id, org_id, actor_id, status="active")
+    assert await _versions(selecting.id, matched_only.id) == [start[0] + 2, start[1]]
+
+    # The master import's "removed" row for the same person (its duplicate
+    # path) is the other archive path.
+    removed = await knowledge_service.import_employee_master_row(
+        org_id,
+        batch.id,
+        EmployeeMasterRow(
+            row_number=3, employee_code="EMP-88", name="Sasha Roster", role="Lead", status="removed"
+        ),
+    )
+    assert removed.target_knowledge_item_id == employee_id
+    assert await _versions(selecting.id, matched_only.id) == [start[0] + 3, start[1]]
+
+    # D3: no re-analysis event comes with these bumps.
+    assert await _outbox_count() == outbox_before

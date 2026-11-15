@@ -10,11 +10,13 @@ from tenderos_backend.domain.services import (
     gate_summary_service,
     gate_target_service,
     readiness_service,
+    talent_service,
     tender_service,
 )
 
 from tenderos_api.dependencies import require_gate_decision_permission, require_permission
 from tenderos_api.errors import (
+    ArchivedEmployeeSelectionAPIError,
     GateAlreadyDecidedError,
     ReadinessNotWaivedError,
     TargetOwnershipDeniedError,
@@ -184,6 +186,12 @@ async def decide_gate(
         )
     except gate_target_service.TargetOwnershipError as exc:
         raise TargetOwnershipDeniedError() from exc
+    except talent_service.ArchivedEmployeeSelectionError as exc:
+        # Plan item 86 (user decision): one archived employee in the
+        # selections refuses the whole decision. apply_target_updates applies
+        # every update in one transaction, and the decision below is not
+        # recorded, so nothing is half-applied.
+        raise ArchivedEmployeeSelectionAPIError() from exc
 
     try:
         updated, _is_new = await gate_service.record_decision(

@@ -23,6 +23,7 @@ from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import (
     graph_service,
+    knowledge_service,
     readiness_service,
     redteam_checks,
     requirement_service,
@@ -241,6 +242,7 @@ _EXPECTED_COUNTS_KEYS = {
     "resource_gaps",
     "proposal_claims_needing_review",
     "open_clarifications",
+    "selected_employees_removed",
 }
 
 
@@ -477,6 +479,74 @@ async def test_role_with_no_selected_candidate_blocks_and_clears():
     cleared = await readiness_service.evaluate_readiness(tender_id)
     categories = {b["category"] for b in cleared.blockers}
     assert readiness_service.ROLE_WITH_NO_SELECTED_CANDIDATE not in categories
+
+
+async def _set_item_status(org_id: uuid.UUID, knowledge_item_id: uuid.UUID, status: str) -> None:
+    # The talent library's status edit, the real archive path: since plan
+    # item 86 it bumps the state version of every bid selecting the employee.
+    await knowledge_service.patch_knowledge_item(
+        knowledge_item_id, org_id, uuid.uuid4(), status=status
+    )
+
+
+async def test_a_selected_employee_removed_from_the_roster_blocks_until_restored_or_deselected():
+    """Plan item 86, option B: its own blocker, not a step 6 gap (the role
+    does have a selected candidate). The archive bumps the bid's state
+    version, so the next report is computed fresh rather than the stored one
+    returned; the graph then reads stale until it is re-projected."""
+    org_id, tender_id = await _org_and_tender("RemovedSelected")
+    role_id = await _role_requirement(tender_id)
+    employee_id = await _employee(org_id, "Removed From Roster")
+    match_id = await _role_match(role_id, employee_id, selected=True)
+    await _project(tender_id)
+
+    before = await readiness_service.evaluate_readiness(tender_id)
+    assert readiness_service.SELECTED_EMPLOYEE_REMOVED not in {
+        b["category"] for b in before.blockers
+    }
+    assert before.counts["selected_employees_removed"] == 0
+
+    await _set_item_status(org_id, employee_id, "archived")
+    blocked = await readiness_service.evaluate_readiness(tender_id)
+    categories = {b["category"] for b in blocked.blockers}
+    removed = [
+        b for b in blocked.blockers if b["category"] == readiness_service.SELECTED_EMPLOYEE_REMOVED
+    ]
+    assert removed == [
+        {
+            "category": readiness_service.SELECTED_EMPLOYEE_REMOVED,
+            "target_type": "role_match",
+            "target_id": str(match_id),
+            "message": (
+                "Role 'Solution Architect' is filled by an employee removed from the roster."
+            ),
+        }
+    ]
+    assert blocked.counts["selected_employees_removed"] == 1
+    assert readiness_service.ROLE_WITH_NO_SELECTED_CANDIDATE not in categories
+    assert readiness_service.STALE_GRAPH_PROJECTION in categories, (
+        "the archive bumped the bid's state version, so its graph reads stale"
+    )
+
+    await _set_item_status(org_id, employee_id, "active")
+    await _project(tender_id)
+    restored = await readiness_service.evaluate_readiness(tender_id)
+    categories = {b["category"] for b in restored.blockers}
+    assert readiness_service.SELECTED_EMPLOYEE_REMOVED not in categories
+    assert readiness_service.STALE_GRAPH_PROJECTION not in categories
+
+    await _set_item_status(org_id, employee_id, "archived")
+    async with UnitOfWork() as uow:
+        await uow.talent.update_role_match(match_id, human_selected=False)
+        await uow.tenders.bump_state_version(tender_id)
+        await uow.commit()
+    await _project(tender_id)
+    deselected = await readiness_service.evaluate_readiness(tender_id)
+    categories = {b["category"] for b in deselected.blockers}
+    assert readiness_service.SELECTED_EMPLOYEE_REMOVED not in categories
+    assert readiness_service.STALE_GRAPH_PROJECTION not in categories
+    # Deselected, the role now has no candidate: step 6 says so.
+    assert readiness_service.ROLE_WITH_NO_SELECTED_CANDIDATE in categories
 
 
 # ----------------------------------------------------------------------

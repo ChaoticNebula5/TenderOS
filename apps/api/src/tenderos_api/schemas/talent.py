@@ -22,6 +22,10 @@ class RoleMatchResponse(BaseModel):
     strengths: list = Field(default_factory=list)
     gaps: list = Field(default_factory=list)
     human_selected: bool
+    # Plan item 86: the employee's knowledge item is archived (removed from
+    # the roster) now. Not a role_matches column: the routes read it at
+    # request time, so the team page shows it the moment someone archives.
+    employee_archived: bool = False
 
     model_config = {"from_attributes": True}
 

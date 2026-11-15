@@ -119,6 +119,83 @@ async def check_role_qualification_gaps(
     return drafts
 
 
+ARCHIVED_EMPLOYEE_SELECTED = "archived_employee_selected"
+
+
+async def check_archived_employee_selected(
+    uow: UnitOfWork, tender_id: uuid.UUID
+) -> list[RedteamFindingDraft]:
+    """Plan item 86, option B: a selected candidate, or an employee a
+    proposal claim names, whose knowledge item is archived (removed from the
+    roster). Its own category, not D6's removed_employee_committed: the
+    Build Guide words D6 as a tender-level deselection (USED_IN.selected =
+    false), and that stays as written (user decision).
+
+    Read from Postgres, not the graph: archiving bumps no state version, so
+    the graph's Employee.status can be old while its freshness check passes.
+
+    Major, not critical (user decision): readiness's own blocker for the
+    same state is read fresh on every report and clears the moment the
+    selection is fixed, where an open critical finding would keep readiness
+    blocked until the next red-team pass retired it. Major still shows here
+    and counts at the finding-resolution gate.
+    """
+    drafts: list[RedteamFindingDraft] = []
+
+    role_requirements = await uow.talent.list_role_requirements_for_tender(tender_id)
+    selected = [
+        (role, match)
+        for role in role_requirements
+        for match in await uow.talent.list_role_matches_for_role(role.id)
+        if match.human_selected
+    ]
+    archived = await uow.knowledge.archived_item_ids(
+        match.employee_knowledge_item_id for _, match in selected
+    )
+    for role, match in selected:
+        if match.employee_knowledge_item_id not in archived:
+            continue
+        drafts.append(
+            RedteamFindingDraft(
+                target_type="role_match",
+                target_id=match.id,
+                finding_category=ARCHIVED_EMPLOYEE_SELECTED,
+                severity="major",
+                finding_text=(
+                    f"The selected candidate for role {role.role_name} has been removed "
+                    "from the roster."
+                ),
+                violated_condition=(
+                    f"role_match_id={match.id}; "
+                    f"employee_knowledge_item_id={match.employee_knowledge_item_id}"
+                ),
+            )
+        )
+
+    named: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for section in await uow.proposal.list_proposal_sections_for_tender(tender_id):
+        for claim in await uow.proposal.list_proposal_claims_for_section(section.id):
+            for link in await uow.proposal.list_employees_for_claim(claim.id):
+                named.append((claim.id, link.employee_knowledge_item_id))
+    archived_named = await uow.knowledge.archived_item_ids(eid for _, eid in named)
+    for claim_id, employee_id in named:
+        if employee_id not in archived_named:
+            continue
+        drafts.append(
+            RedteamFindingDraft(
+                target_type="proposal_claim",
+                target_id=claim_id,
+                finding_category=ARCHIVED_EMPLOYEE_SELECTED,
+                severity="major",
+                finding_text="A proposal claim names an employee removed from the roster.",
+                violated_condition=(
+                    f"proposal_claim_id={claim_id}; employee_knowledge_item_id={employee_id}"
+                ),
+            )
+        )
+    return drafts
+
+
 # ----------------------------------------------------------------------
 # 2. submission checklist checks
 # ----------------------------------------------------------------------
@@ -219,8 +296,8 @@ def _graph_target(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     )
 
 
-async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindingDraft]:
-    """One of run_red_team's 5 independent checks - the other 4 have no
+async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindingDraft] | None:
+    """One of run_red_team's 7 independent checks - the other 6 have no
     graph dependency and can always contribute findings, so this one being
     unable to run yet (no projection has succeeded since the tender's last
     change - GraphStaleError, `graph_service.check_freshness`'s documented
@@ -233,11 +310,18 @@ async def check_graph_contradictions(tender_id: uuid.UUID) -> list[RedteamFindin
     trigger, routes/redteam.py) are asking a broader question ("what can
     Red Team find right now"), where a stale graph just means this one
     check has nothing to add this pass, not that the whole run should fail.
+
+    None, not an empty list, when the graph is stale (plan item 86): "did
+    not run" and "ran and found nothing" must not look alike. An empty list
+    let run_red_team retire every open graph finding as no longer detected
+    when the checks had not looked at all (observed: three critical
+    deselected_fact_in_use findings retired by a manual run on a bid whose
+    state had moved since its last projection).
     """
     try:
         rows = await graph_service.find_contradictions_for_redteam(tender_id)
     except graph_service.GraphStaleError:
-        return []
+        return None
     drafts: list[RedteamFindingDraft] = []
     for row in rows:
         category = row["category"]

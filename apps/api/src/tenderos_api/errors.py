@@ -87,6 +87,19 @@ class TargetOwnershipDeniedError(APIError):
         )
 
 
+class ArchivedEmployeeSelectionAPIError(APIError):
+    # Plan item 86, option A: routes/talent.py's and routes/gates.py's
+    # translation of talent_service.ArchivedEmployeeSelectionError. 409, as
+    # verify answers for the same employee: the request is well formed, the
+    # employee's state refuses it, and restoring the employee clears it.
+    def __init__(self) -> None:
+        super().__init__(
+            409,
+            "EMPLOYEE_ARCHIVED",
+            "Employee is archived (removed from the roster); restore it before selecting.",
+        )
+
+
 class UserNotFoundError(APIError):
     def __init__(self) -> None:
         super().__init__(404, "USER_NOT_FOUND", "No user is registered with that email.")

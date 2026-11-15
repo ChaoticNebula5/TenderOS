@@ -105,6 +105,7 @@ _EXPECTED_SUMMARY_KEYS = {
         "candidate_count",
         "unselected_count",
         "unselected_role_count",
+        "archived_selected_count",
     },
     "commercial_approval": {"finding_count", "pending_count", "critical_count"},
     "finding_resolution": {"open_finding_count", "critical_count"},

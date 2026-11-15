@@ -389,6 +389,13 @@ into words:
     other status humanised. The labels match the ones the projector writes
     (`graph_projection/cypher/nodes.py`: `merge_compliance_nodes`, `merge_proposal_section_nodes`,
     and the `merge_*_nodes` for Employee, Certification, Project and Capability).
+- **Plan item 86 (chosen, in code):** a team-page candidate whose employee is
+  archived shows a Warning "Removed from roster" badge beside its Selected
+  badge (`REMOVED_FROM_ROSTER`, `status/statusMap.ts`), the tone of the red
+  team's major `archived_employee_selected` finding for the same state; its
+  Select is disabled, Deselect is not. The talent library's own "Archived"
+  stays Neutral: there the status is the record, here it is a problem with a
+  pick.
 
 ### Named Rules
 

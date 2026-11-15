@@ -128,7 +128,10 @@ class RedteamRepository:
         return finding
 
     async def auto_retire_undetected_findings(
-        self, tender_id: uuid.UUID, still_detected_fingerprints: set[str]
+        self,
+        tender_id: uuid.UUID,
+        still_detected_fingerprints: set[str],
+        keep_categories: frozenset[str] = frozenset(),
     ) -> list[RedteamFinding]:
         """run_red_team's own check list always covers the tender's ENTIRE
         current state on every pass (all 5 steps re-derive fresh from
@@ -154,6 +157,11 @@ class RedteamRepository:
             conditions.append(
                 RedteamFinding.content_fingerprint.notin_(still_detected_fingerprints)
             )
+        # Plan item 86: categories whose check did not run this pass (the
+        # graph checks on a stale graph) are unchecked, not undetected, and
+        # are never retired by it. Same empty-collection branch as above.
+        if keep_categories:
+            conditions.append(RedteamFinding.finding_category.notin_(keep_categories))
         result = await self._session.execute(select(RedteamFinding).where(*conditions))
         stale = list(result.scalars().all())
         for finding in stale:

@@ -277,20 +277,28 @@ async def preview_impact(
     return await _read_with_retry("impact", tender_id, read)
 
 
+_CONTRADICTION_FINDERS = (
+    (queries.find_expired_certification_contradictions, "expired_certification"),
+    (queries.find_deselected_fact_still_used_contradictions, "deselected_fact_in_use"),
+    (
+        queries.find_removed_employee_still_committed_contradictions,
+        "removed_employee_committed",
+    ),
+    (queries.find_unsupported_grounded_claim_contradictions, "unsupported_grounded_claim"),
+)
+
+# D6's categories, the findings only the graph can produce. run_red_team
+# leaves open findings in these categories alone when the graph is stale and
+# its checks could not run (plan item 86).
+GRAPH_CONTRADICTION_CATEGORIES = frozenset(category for _, category in _CONTRADICTION_FINDERS)
+
+
 async def find_contradictions(tender_id: uuid.UUID) -> list[dict[str, Any]]:
     async def read(session: Neo4jSession) -> list[dict[str, Any]]:
         await check_freshness(tender_id, session)
         tid = str(tender_id)
         contradictions: list[dict[str, Any]] = []
-        for finder, category in (
-            (queries.find_expired_certification_contradictions, "expired_certification"),
-            (queries.find_deselected_fact_still_used_contradictions, "deselected_fact_in_use"),
-            (
-                queries.find_removed_employee_still_committed_contradictions,
-                "removed_employee_committed",
-            ),
-            (queries.find_unsupported_grounded_claim_contradictions, "unsupported_grounded_claim"),
-        ):
+        for finder, category in _CONTRADICTION_FINDERS:
             for row in await finder(session, tid):
                 contradictions.append({"category": category} | row)
         return contradictions

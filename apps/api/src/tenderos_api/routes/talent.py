@@ -1,10 +1,12 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from tenderos_backend.db.models.talent import RoleMatch
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import talent_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.errors import ArchivedEmployeeSelectionAPIError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.talent import (
     RoleMatchResponse,
@@ -30,7 +32,16 @@ async def list_matches(
     current_user: User = Depends(require_permission("select_resource")),
 ) -> list[RoleMatchResponse]:
     matches = await talent_service.list_role_matches_for_role(role_id)
-    return [RoleMatchResponse.model_validate(m, from_attributes=True) for m in matches]
+    archived = await talent_service.archived_employee_ids(
+        [m.employee_knowledge_item_id for m in matches]
+    )
+    return [_match_response(m, m.employee_knowledge_item_id in archived) for m in matches]
+
+
+def _match_response(match: RoleMatch, employee_archived: bool) -> RoleMatchResponse:
+    response = RoleMatchResponse.model_validate(match, from_attributes=True)
+    response.employee_archived = employee_archived
+    return response
 
 
 @router.post("/roles/{role_id}/select-candidate", response_model=RoleMatchResponse)
@@ -85,6 +96,14 @@ async def select_candidate(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Role match not found for this candidate"
         ) from exc
-    response = RoleMatchResponse.model_validate(updated, from_attributes=True)
+    except talent_service.ArchivedEmployeeSelectionError as exc:
+        # The idempotency dependency releases the key on this raise, so the
+        # same click can succeed once the employee is restored.
+        raise ArchivedEmployeeSelectionAPIError() from exc
+    # The page replaces its row with this response, so it carries the same
+    # archived flag the list does: deselecting an archived employee keeps
+    # the badge, and the Select stays off.
+    archived = await talent_service.archived_employee_ids([updated.employee_knowledge_item_id])
+    response = _match_response(updated, updated.employee_knowledge_item_id in archived)
     await idempotency.finalize(200, response.model_dump(mode="json"))
     return response

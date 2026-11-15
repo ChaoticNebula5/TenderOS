@@ -251,6 +251,45 @@ describe("Readiness (restyle batch 5)", () => {
     expect(container.querySelectorAll(".readiness__counts dt")).toHaveLength(3);
   });
 
+  it("labels item 86's blocker and count, and shows no row for a count the stored report never had", async () => {
+    getReadiness.mockResolvedValue(
+      report({
+        ready: false,
+        counts: {
+          requirements_total: 2,
+          selected_employees_removed: 1,
+        } as unknown as ReadinessReportResponse["counts"],
+        blockers: [
+          {
+            category: "selected_employee_removed",
+            target_type: "role_match",
+            target_id: "m1",
+            message: "Role 'Site Lead' is filled by an employee removed from the roster.",
+          },
+        ],
+      }),
+    );
+    listWorkflowRuns.mockResolvedValue([]);
+    const { unmount } = renderScreen();
+
+    expect(await screen.findByText("Selected employee removed from roster")).toBeInTheDocument();
+    expect(screen.getByText("Selected employees removed from roster")).toBeInTheDocument();
+    unmount();
+
+    getReadiness.mockResolvedValue(
+      report({
+        counts: {
+          requirements_total: 2,
+          selected_employees_removed: null,
+        } as unknown as ReadinessReportResponse["counts"],
+      }),
+    );
+    const { container } = renderScreen();
+    await screen.findByText("Requirements");
+    expect(screen.queryByText("Selected employees removed from roster")).toBeNull();
+    expect(container.querySelectorAll(".readiness__counts dt")).toHaveLength(1);
+  });
+
   it("reports the run status, keeps the gate below the report, heading and panel adjacent (full-flow.spec.ts:56)", async () => {
     getReadiness.mockResolvedValue(report());
     listWorkflowRuns.mockResolvedValue([run("waiting_for_human")]);

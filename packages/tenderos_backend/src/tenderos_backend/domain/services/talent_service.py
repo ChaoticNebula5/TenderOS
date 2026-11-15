@@ -33,6 +33,14 @@ class RoleMatchNotFoundError(Exception):
     pass
 
 
+class ArchivedEmployeeSelectionError(Exception):
+    """Selecting an employee removed from the roster (plan item 86, option
+    A). A match made before the archive still exists, and the pool no
+    longer offers the employee for new ones (decision 0097), so this is the
+    one place a removed employee could still be picked. Deselecting stays
+    allowed: it is how the user fixes a selection made before the archive."""
+
+
 class CrossOrganizationRoleError(Exception):
     """Raised when actor_user_id has no membership (or an insufficiently
     privileged one) in role_requirement_id's own tender's organization -
@@ -633,6 +641,12 @@ async def _set_human_selected_in_uow(
     tender = await uow.tenders.get(role.tender_id)
     if tender is None:
         raise TenderNotFoundError()
+    # Plan item 86, option A: read now, not from the match, which records
+    # nothing about the employee's roster status. Both callers reach here:
+    # the team page's select route and the resource gate's target updates,
+    # whose shared transaction this raise rolls back whole.
+    if selected and await uow.knowledge.archived_item_ids([match.employee_knowledge_item_id]):
+        raise ArchivedEmployeeSelectionError()
 
     before = {"human_selected": match.human_selected}
     updated = await uow.talent.update_role_match(role_match_id, human_selected=selected)
@@ -685,3 +699,10 @@ async def list_role_requirements_for_tender(tender_id: uuid.UUID) -> list[RoleRe
 async def list_role_matches_for_role(role_requirement_id: uuid.UUID) -> list[RoleMatch]:
     async with UnitOfWork() as uow:
         return await uow.talent.list_role_matches_for_role(role_requirement_id)
+
+
+async def archived_employee_ids(employee_knowledge_item_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of these candidates are archived now (plan item 86): the team
+    page shows them as removed from the roster and offers no Select."""
+    async with UnitOfWork() as uow:
+        return await uow.knowledge.archived_item_ids(employee_knowledge_item_ids)

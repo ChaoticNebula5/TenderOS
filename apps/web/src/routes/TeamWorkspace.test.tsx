@@ -221,6 +221,39 @@ describe("TeamWorkspace (restyle batch 4)", () => {
     expect(within(row).getByText("Selected")).toBeInTheDocument();
   });
 
+  it("an archived candidate reads 'Removed from roster', with Select off and Deselect on (plan item 86)", async () => {
+    const user = userEvent.setup();
+    listRoles.mockResolvedValue([role({})]);
+    listWorkflowRuns.mockResolvedValue([]);
+    listMatches.mockResolvedValue([
+      match({ employee_archived: true }),
+      match({
+        id: "m2",
+        employee_knowledge_item_id: "picked",
+        human_selected: true,
+        employee_archived: true,
+      }),
+      match({ id: "m3", employee_knowledge_item_id: "active", employee_archived: false }),
+    ]);
+    const { container } = renderScreen();
+
+    await user.click(await screen.findByRole("button", { name: "View candidates" }));
+    const rows = await waitFor(() => {
+      const found = candidateSection(container).querySelectorAll("tbody tr");
+      expect(found).toHaveLength(3);
+      return Array.from(found) as HTMLElement[];
+    });
+    const [archived, archivedPicked, active] = rows;
+    expect(within(archived).getByText("Removed from roster")).toBeInTheDocument();
+    expect(within(archived).getByRole("button", { name: "Select", exact: true })).toBeDisabled();
+    expect(within(archivedPicked).getByText("Removed from roster")).toBeInTheDocument();
+    expect(within(archivedPicked).getByRole("button", { name: "Deselect" })).toBeEnabled();
+    expect(within(active).queryByText("Removed from roster")).toBeNull();
+    expect(within(active).getByRole("button", { name: "Select", exact: true })).toBeEnabled();
+    // The spec reads the first cell as exactly the raw id: the badge is not there.
+    expect(archived.querySelector("td")!.textContent).toBe(EMPLOYEE_ID);
+  });
+
   it("does not say 'no candidates' while the role's candidates are still loading", async () => {
     const user = userEvent.setup();
     listRoles.mockResolvedValue([role({})]);

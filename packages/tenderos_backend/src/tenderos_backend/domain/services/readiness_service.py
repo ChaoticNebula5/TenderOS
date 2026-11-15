@@ -37,6 +37,7 @@ CRITICAL_REDTEAM_FINDING = "critical_redteam_finding"
 MISSING_MANDATORY_SUBMISSION_ITEM = "missing_mandatory_submission_item"
 UNAPPROVED_REQUIRED_COMMERCIAL_ITEM = "unapproved_required_commercial_item"
 ROLE_WITH_NO_SELECTED_CANDIDATE = "role_with_no_selected_candidate"
+SELECTED_EMPLOYEE_REMOVED = "selected_employee_removed"
 STALE_GRAPH_PROJECTION = "stale_graph_projection"
 RED_TEAM_REVIEW_INCOMPLETE = "red_team_review_incomplete"
 
@@ -290,9 +291,11 @@ async def _evaluate_readiness_once(
         # 6. Required role with no human-selected candidate
         # ------------------------------------------------------------
         role_requirements = await uow.talent.list_role_requirements_for_tender(tender_id)
+        role_matches_by_role = [
+            await uow.talent.list_role_matches_for_role(role.id) for role in role_requirements
+        ]
         resource_gaps = 0
-        for role in role_requirements:
-            matches = await uow.talent.list_role_matches_for_role(role.id)
+        for role, matches in zip(role_requirements, role_matches_by_role, strict=True):
             if not any(m.human_selected for m in matches):
                 resource_gaps += 1
                 blockers.append(
@@ -304,6 +307,36 @@ async def _evaluate_readiness_once(
                     )
                 )
         counts["resource_gaps"] = resource_gaps
+
+        # ------------------------------------------------------------
+        # 6b. A role filled by an employee removed from the roster (plan
+        # item 86). Read from the knowledge item now: archiving writes
+        # nothing else a report could see. Its own blocker, not a step 6
+        # gap, which would tell the user the role has no candidate.
+        # ------------------------------------------------------------
+        selected = [
+            (role, match)
+            for role, matches in zip(role_requirements, role_matches_by_role, strict=True)
+            for match in matches
+            if match.human_selected
+        ]
+        archived = await uow.knowledge.archived_item_ids(
+            match.employee_knowledge_item_id for _, match in selected
+        )
+        removed_selected = 0
+        for role, match in selected:
+            if match.employee_knowledge_item_id not in archived:
+                continue
+            removed_selected += 1
+            blockers.append(
+                _blocker(
+                    SELECTED_EMPLOYEE_REMOVED,
+                    "role_match",
+                    match.id,
+                    f"Role '{role.role_name}' is filled by an employee removed from the roster.",
+                )
+            )
+        counts["selected_employees_removed"] = removed_selected
 
         # ------------------------------------------------------------
         # Proposal claims requiring review (PRD count, not a Build Guide

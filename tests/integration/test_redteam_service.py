@@ -625,3 +625,114 @@ async def test_resolving_a_finding_whose_tender_is_missing_fails_before_any_writ
         refetched = await uow.redteam.get(target.id)
     assert refetched is not None
     assert refetched.resolved is False, "nothing may be written when the tender is missing"
+
+
+# ----------------------------------------------------------------------
+# Plan item 86: an employee removed from the roster who is still selected,
+# or still named in a claim.
+# ----------------------------------------------------------------------
+
+
+async def _set_item_status(knowledge_item_id: uuid.UUID, status: str) -> None:
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_knowledge_item(knowledge_item_id, status=status)
+        await uow.commit()
+
+
+async def _archived_findings(tender_id: uuid.UUID) -> dict[tuple[str, uuid.UUID], tuple]:
+    async with UnitOfWork() as uow:
+        findings = await uow.redteam.list_for_tender(tender_id)
+    return {
+        (f.target_type, f.target_id): (f.severity, f.resolved)
+        for f in findings
+        if f.finding_category == "archived_employee_selected"
+    }
+
+
+async def test_a_selected_or_named_archived_employee_is_a_major_finding_until_fixed():
+    org_id, tender_id = await _org_and_tender("ArchivedSelected")
+    employee_id = await _employee(org_id, "Removed From Roster")
+    async with UnitOfWork() as uow:
+        role = await uow.talent.create_role_requirement(
+            tender_id=tender_id, role_name="Site Lead", content_fingerprint=uuid.uuid4().hex
+        )
+        match = await uow.talent.create_role_match(
+            role_requirement_id=role.id, employee_knowledge_item_id=employee_id
+        )
+        await uow.talent.update_role_match(match.id, human_selected=True)
+        await uow.commit()
+    claim_id = await _proposal_claim(tender_id, employee_id=employee_id)
+
+    await _run(tender_id)
+    assert await _archived_findings(tender_id) == {}
+
+    await _set_item_status(employee_id, "archived")
+    await _run(tender_id)
+    assert await _archived_findings(tender_id) == {
+        ("role_match", match.id): ("major", False),
+        ("proposal_claim", claim_id): ("major", False),
+    }
+
+    # Restored: the next pass retires both.
+    await _set_item_status(employee_id, "active")
+    await _run(tender_id)
+    assert await _archived_findings(tender_id) == {
+        ("role_match", match.id): ("major", True),
+        ("proposal_claim", claim_id): ("major", True),
+    }
+
+    # Archived again, then deselected: the selection's finding retires; the
+    # claim still names the employee, so its finding stays open.
+    await _set_item_status(employee_id, "archived")
+    async with UnitOfWork() as uow:
+        await uow.talent.update_role_match(match.id, human_selected=False)
+        await uow.commit()
+    await _run(tender_id)
+    assert await _archived_findings(tender_id) == {
+        ("role_match", match.id): ("major", True),
+        ("proposal_claim", claim_id): ("major", False),
+    }
+
+
+async def test_a_red_team_pass_on_a_stale_graph_leaves_open_graph_findings_open(caplog):
+    """Plan item 86, found in its reproduction: on a stale graph the graph
+    checks cannot run, so their open findings are unchecked, not
+    undetected. They stay open, and the pass says the checks were skipped.
+    A pass on a fresh projection still retires one whose cause is gone."""
+    org_id, tender_id = await _org_and_tender("StaleGraphKeepsFindings")
+    employee_id = await _employee(org_id, "Deselected But Named")
+    await _select(tender_id, employee_id, selected=True)
+    await _select(tender_id, employee_id, selected=False)
+    await _proposal_claim(tender_id, employee_id=employee_id)
+    await graph_service.project_tender(tender_id)
+    await _run(tender_id)
+
+    async def open_graph_findings() -> set[str]:
+        async with UnitOfWork() as uow:
+            findings = await uow.redteam.list_for_tender(tender_id)
+        return {
+            f.finding_category
+            for f in findings
+            if not f.resolved and f.finding_category in graph_service.GRAPH_CONTRADICTION_CATEGORIES
+        }
+
+    assert "removed_employee_committed" in await open_graph_findings()
+
+    # Something moves the bid's state on; the graph is now stale.
+    async with UnitOfWork() as uow:
+        await uow.tenders.bump_state_version(tender_id)
+        await uow.commit()
+    with caplog.at_level("WARNING"):
+        await _run(tender_id)
+    assert "removed_employee_committed" in await open_graph_findings()
+    assert any("graph checks skipped" in r.getMessage() for r in caplog.records)
+
+    # Fresh again, with the cause gone (the employee selected for the bid
+    # again): the next pass retires the finding as before.
+    await _select(tender_id, employee_id, selected=True)
+    async with UnitOfWork() as uow:
+        await uow.tenders.bump_state_version(tender_id)
+        await uow.commit()
+    await graph_service.project_tender(tender_id)
+    await _run(tender_id)
+    assert "removed_employee_committed" not in await open_graph_findings()

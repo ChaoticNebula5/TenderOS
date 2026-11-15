@@ -695,12 +695,15 @@ export interface ComplianceReviewGateResponse extends GateResponseBase {
 
 // candidate_count and unselected_count count (role, candidate) matches;
 // unselected_role_count counts roles with no pick (plan item 73), absent
-// from a snapshot taken before it existed.
+// from a snapshot taken before it existed. archived_selected_count counts
+// selections whose employee is now archived (plan item 86), absent from
+// older snapshots the same way.
 export interface ResourceSelectionSummary {
   role_count: number;
   candidate_count: number;
   unselected_count: number;
   unselected_role_count?: number | null;
+  archived_selected_count?: number | null;
 }
 
 export interface ResourceSelectionGateResponse extends GateResponseBase {
@@ -1120,6 +1123,10 @@ export interface RoleMatchResponse {
   strengths: unknown[];
   gaps: unknown[];
   human_selected: boolean;
+  // Plan item 86: the employee is archived (removed from the roster), read
+  // by the api at request time. Optional only for a response from an api
+  // older than this field.
+  employee_archived?: boolean;
 }
 
 export function listRoles(tenderId: string): Promise<RoleRequirementResponse[]> {
@@ -1417,6 +1424,8 @@ export interface ReadinessCounts {
   resource_gaps: number;
   proposal_claims_needing_review: number;
   open_clarifications: number;
+  // Plan item 86: null on a report stored before this count existed.
+  selected_employees_removed?: number | null;
 }
 
 export interface ReadinessReportResponse {
