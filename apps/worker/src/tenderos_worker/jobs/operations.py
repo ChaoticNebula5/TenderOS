@@ -22,6 +22,7 @@ from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.session import engine
 from tenderos_backend.domain.services import (
     commercial_service,
+    graph_service,
     operation_service,
     proposal_service,
     redteam_service,
@@ -44,9 +45,36 @@ def _build_llm_client() -> LLMClient:
 
 
 async def _run_redteam(operation: AsyncOperation) -> None:
+    await _project_if_stale(operation.tender_id)
     await redteam_service.run_red_team(
         _build_llm_client(), settings.reasoning_model, operation.tender_id
     )
+
+
+async def _project_if_stale(tender_id: uuid.UUID) -> None:
+    """A red-team pass the user asked for looks at the current graph (plan
+    item 95, user decision Q4). Without this, any graph-relevant edit since
+    the last projection made run_red_team skip its four graph checks (and,
+    since plan item 86, leave their open findings alone), and item 95 adds
+    bumps to more edits. The run's own red_team node needs nothing: it
+    follows project_graph directly.
+
+    A projection that fails is logged and the pass goes on: run_red_team
+    then finds the graph stale and skips the graph checks, as before. A job
+    timeout is not swallowed (run_operation handles it).
+    """
+    try:
+        status = await graph_service.get_graph_status(tender_id)
+        if not status["fresh"]:
+            await graph_service.project_tender(tender_id)
+    except JobTimeoutException:
+        raise
+    except Exception:
+        logger.exception(
+            "red team: could not project the stale graph for tender %s first; "
+            "its graph checks will be skipped",
+            tender_id,
+        )
 
 
 async def _run_proposal_generation(operation: AsyncOperation) -> None:

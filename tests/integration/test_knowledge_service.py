@@ -948,7 +948,8 @@ async def test_archiving_or_restoring_a_selected_employee_bumps_only_the_bids_se
     start = await _versions(selecting.id, matched_only.id)
     outbox_before = await _outbox_count()
 
-    # A title edit is not a roster change.
+    # A title edit is not a roster change, and an employee's graph node
+    # carries no item title, so it bumps nothing (plan item 95).
     await knowledge_service.patch_knowledge_item(employee_id, org_id, actor_id, title="Sasha R.")
     assert await _versions(selecting.id, matched_only.id) == start
 
@@ -1043,24 +1044,27 @@ async def test_archiving_any_knowledge_item_bumps_every_bid_citing_it():
     start = await _versions(*tenders)
     outbox_before = await _outbox_count()
 
+    # Plan item 95: a certificate's graph node carries its title, so a title
+    # edit now bumps the bids whose graph includes it.
     await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, title="ISO/IEC 27001")
-    assert await _versions(*tenders) == start, "a title edit bumps nothing"
+    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]]
 
     await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="archived")
-    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]], (
+    assert await _versions(*tenders) == [start[0] + 2, start[1] + 2, start[2]], (
         "both citing bids, the finished one included; not the unrelated one"
     )
     await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="archived")
-    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]]
+    assert await _versions(*tenders) == [start[0] + 2, start[1] + 2, start[2]]
 
-    # Archived only (user decision): another status change bumps nothing.
+    # Plan item 95 (user decision Q2): any status change bumps, not only
+    # archiving; the graph's coverage grading counts only 'active' facts.
     await knowledge_service.patch_knowledge_item(project.id, org_id, actor_id, status="expired")
-    assert await _versions(*tenders) == [start[0] + 1, start[1] + 1, start[2]]
+    assert await _versions(*tenders) == [start[0] + 3, start[1] + 2, start[2]]
 
     await knowledge_service.patch_knowledge_item(project.id, org_id, actor_id, status="archived")
     await knowledge_service.patch_knowledge_item(capability.id, org_id, actor_id, status="archived")
     await knowledge_service.patch_knowledge_item(cert.id, org_id, actor_id, status="active")
-    assert await _versions(*tenders) == [start[0] + 4, start[1] + 2, start[2]]
+    assert await _versions(*tenders) == [start[0] + 6, start[1] + 3, start[2]]
     assert await _outbox_count() == outbox_before, "D3: no event comes with these bumps"
 
 

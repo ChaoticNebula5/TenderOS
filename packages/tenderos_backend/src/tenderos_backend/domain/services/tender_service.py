@@ -80,6 +80,21 @@ async def update_tender(
     status: str | None = None,
 ) -> Tender | None:
     async with UnitOfWork() as uow:
+        current = await uow.tenders.get(tender_id)
+        if current is None:
+            return None
+        # The bid's graph node carries its name, status and submission date
+        # (the expired-certification check compares against the date); the
+        # client name is not projected (plan item 95). Bumped before the
+        # update, not after: update() refreshes the row so the route can read
+        # updated_at after this session closes, and a later flush would
+        # expire it again.
+        if (
+            (name is not None and name != current.name)
+            or (submission_date is not None and submission_date != current.submission_date)
+            or (status is not None and status != current.status)
+        ):
+            await uow.tenders.bump_state_version(tender_id)
         tender = await uow.tenders.update(
             tender_id,
             name=name,

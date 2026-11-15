@@ -548,20 +548,26 @@ async def persist_section_and_claims(
     section's latest version has moved to 'review'/'approved', a re-draft
     creates version+1 instead, leaving the reviewed/approved row untouched -
     the "auditable before/after" half of E7's own versioning rule. Bumps
-    tenders.state_version ("proposal claim change", Part C) only when a
-    claim was actually created or its grounding_status actually changed by
-    this call, not on a pure no-op retry.
+    tenders.state_version once when this call changed the graph: a section
+    created (or a new version), a claim created or regrounded, or a claim
+    link added (plan item 95, which added the section and link cases); not on
+    a pure no-op retry, and not for a draft's rewritten content.
     """
     async with UnitOfWork() as uow:
         tender = await uow.tenders.get(tender_id)
         if tender is None:
             raise TenderNotFoundError()
 
+        # graph_changed (plan item 95): a new section node (version 1, or a
+        # new version after review) or a new or regrounded claim or claim
+        # link. Rewriting a draft section's content is not projected.
+        graph_changed = False
         existing_section = await uow.proposal.get_latest_proposal_section(tender_id, section_name)
         if existing_section is None:
             section = await uow.proposal.create_proposal_section(
                 tender_id=tender_id, section_name=section_name, content=draft.content, version=1
             )
+            graph_changed = True
         elif existing_section.status == "draft":
             section = await uow.proposal.update_proposal_section(
                 existing_section.id, content=draft.content
@@ -573,8 +579,8 @@ async def persist_section_and_claims(
                 content=draft.content,
                 version=existing_section.version + 1,
             )
+            graph_changed = True
 
-        claims_changed = False
         for claim_draft in draft.claims:
             requirement_ids, evidence_ids, employee_ids = await materialize_claim_links(
                 prepared, claim_draft
@@ -600,23 +606,26 @@ async def persist_section_and_claims(
                     grounding_status=grounding.status,
                     content_fingerprint=fingerprint,
                 )
-                claims_changed = True
+                graph_changed = True
             else:
                 claim = existing_claim
                 if claim.grounding_status != grounding.status:
                     claim = await uow.proposal.update_proposal_claim(
                         claim.id, grounding_status=grounding.status
                     )
-                    claims_changed = True
+                    graph_changed = True
 
             for requirement_id in requirement_ids:
-                await uow.proposal.link_claim_requirement(claim.id, requirement_id)
+                if await uow.proposal.link_claim_requirement(claim.id, requirement_id):
+                    graph_changed = True
             for evidence_link_id in evidence_ids:
-                await uow.proposal.link_claim_evidence(claim.id, evidence_link_id)
+                if await uow.proposal.link_claim_evidence(claim.id, evidence_link_id):
+                    graph_changed = True
             for employee_id in employee_ids:
-                await uow.proposal.link_claim_employee(claim.id, employee_id)
+                if await uow.proposal.link_claim_employee(claim.id, employee_id):
+                    graph_changed = True
 
-        if claims_changed:
+        if graph_changed:
             # Part C's State-version invariant: "proposal claim change" is
             # one of the listed graph-relevant mutations.
             await uow.tenders.bump_state_version(tender.id)
@@ -718,6 +727,10 @@ async def update_section_content(
         updated = await uow.proposal.update_proposal_section(
             section_id, content=content, status="review"
         )
+        # The section's status is on its graph node; its content is not
+        # (plan item 95). A first edit moves a draft to review.
+        if before["status"] != updated.status:
+            await uow.tenders.bump_state_version(tender.id)
         await uow.audit.create(
             organization_id=tender.organization_id,
             actor_type="user",
@@ -930,11 +943,14 @@ async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingRes
     Writes back grounding_status only when it actually changed, mirroring
     persist_section_and_claims's own materially_changed gate - a
     regrounding call against unchanged evidence is a no-op write, not a
-    forced update. Does not bump tenders.state_version and does not emit
-    anything itself: B14's reanalysis job (the caller) owns the outbox
-    write, using evidence_link_ids_considered below to record what this
-    call actually saw - the free instrument this project's own citation-
-    correctness investigation has been missing since B9/B12.
+    forced update. Bumps tenders.state_version when it writes (plan item 95:
+    grounding_status is on the claim's graph node, and the graph's
+    unsupported_grounded_claim check reads it); the reanalysis job re-projects
+    after its regrounds, so its own graph ends current. Emits nothing itself:
+    B14's reanalysis job (the caller) owns the outbox write, using
+    evidence_link_ids_considered below to record what this call actually saw -
+    the free instrument this project's own citation-correctness
+    investigation has been missing since B9/B12.
     """
     claim = await uow.proposal.get_proposal_claim(claim_id)
     if claim is None:
@@ -967,6 +983,7 @@ async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingRes
 
     if claim.grounding_status != grounding.status:
         await uow.proposal.update_proposal_claim(claim_id, grounding_status=grounding.status)
+        await uow.tenders.bump_state_version(section.tender_id)
 
     return RegroundingResult(
         status=grounding.status,
