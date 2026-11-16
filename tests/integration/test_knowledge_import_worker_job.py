@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import docx
 import pytest
 from openpyxl import Workbook
+from tenderos_backend.db.models.document import CHUNK_ORIGIN_SYNTHETIC
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import auth_service, document_service, knowledge_service
 from tenderos_worker.jobs import knowledge_import
@@ -133,14 +134,20 @@ async def test_certification_documents_import_builds_its_own_chunk_without_gener
 
     async with UnitOfWork() as uow:
         items = await uow.knowledge.list_import_items_for_batch(batch.id)
-        chunks = await uow.documents.list_chunks_for_document(document.id)
+        parsed = await uow.documents.list_chunks_for_document(document.id)
+        synthetic = await uow.documents.list_chunks_for_document(
+            document.id, origin=CHUNK_ORIGIN_SYNTHETIC
+        )
 
     assert len(items) == 1
     assert items[0].status == "approved"
     assert items[0].target_knowledge_item_id is not None
     # Exactly one synthetic chunk (import_certification_row's own), not
-    # whatever a generic XLSX-as-pricing-sheet chunker would produce.
-    assert len(chunks) == 1
+    # whatever a generic XLSX-as-pricing-sheet chunker would produce. Plan
+    # item 83: listed by origin, since a document's chunk list is now the
+    # parser's chunks unless asked otherwise.
+    assert parsed == []
+    assert len(synthetic) == 1
 
 
 async def test_a_duplicate_capability_statement_delivery_makes_no_llm_call_and_no_rows(

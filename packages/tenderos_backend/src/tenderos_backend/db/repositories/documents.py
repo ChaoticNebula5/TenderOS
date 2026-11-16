@@ -7,7 +7,13 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tenderos_backend.db.models.document import Document, DocumentChunk, DocumentIngestionRun
+from tenderos_backend.db.models.document import (
+    CHUNK_ORIGIN_PARSED,
+    CHUNK_ORIGIN_SYNTHETIC,
+    Document,
+    DocumentChunk,
+    DocumentIngestionRun,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,13 +149,38 @@ class DocumentRepository:
         run.error_message = error_message
         await self._session.flush()
 
-    async def list_chunks_for_document(self, document_id: uuid.UUID) -> list[DocumentChunk]:
+    async def list_chunks_for_document(
+        self, document_id: uuid.UUID, *, origin: str = CHUNK_ORIGIN_PARSED
+    ) -> list[DocumentChunk]:
+        """One origin's chunks, in index order. Parsed by default: the
+        ingestion job's reconcile and the knowledge imports read the file's
+        own text, and a synthetic chunk (a finding's note, a certification
+        row) is not part of it (plan item 83)."""
         result = await self._session.execute(
             select(DocumentChunk)
-            .where(DocumentChunk.document_id == document_id)
+            .where(DocumentChunk.document_id == document_id, DocumentChunk.origin == origin)
             .order_by(DocumentChunk.chunk_index)
         )
         return list(result.scalars().all())
+
+    async def next_synthetic_chunk_index(self, document_id: uuid.UUID) -> int:
+        """The index for a new synthetic chunk on this document: one past
+        the highest synthetic index, or, for the first, one past the highest
+        index of any chunk, so synthetic chunks keep following the parsed
+        ones as before. Never a count: a count reuses an index once the
+        synthetic chunks sit after the parsed ones (plan item 83)."""
+        highest = await self._session.execute(
+            select(
+                sa.func.coalesce(
+                    sa.func.max(DocumentChunk.chunk_index).filter(
+                        DocumentChunk.origin == CHUNK_ORIGIN_SYNTHETIC
+                    ),
+                    sa.func.max(DocumentChunk.chunk_index),
+                    -1,
+                )
+            ).where(DocumentChunk.document_id == document_id)
+        )
+        return int(highest.scalar_one()) + 1
 
     async def get_chunk(self, chunk_id: uuid.UUID) -> DocumentChunk | None:
         return await self._session.get(DocumentChunk, chunk_id)
@@ -159,10 +190,13 @@ class DocumentRepository:
         # batcher sees each document's chunks contiguously and in original
         # reading order - it groups consecutive same-provenance chunks, which
         # only means something if the input is already in that order.
+        # Parsed chunks only: its readers (requirement extraction, the eval
+        # runners in scripts/) read the bid's documents, and a pricing finding's note
+        # is not tender text (plan item 83).
         result = await self._session.execute(
             select(DocumentChunk)
             .join(Document, DocumentChunk.document_id == Document.id)
-            .where(Document.tender_id == tender_id)
+            .where(Document.tender_id == tender_id, DocumentChunk.origin == CHUNK_ORIGIN_PARSED)
             .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
         )
         return list(result.scalars().all())
@@ -184,6 +218,11 @@ class DocumentRepository:
         10-14 terms, and AND made almost no knowledge chunk match at all.
         ts_rank still scores chunks that share more terms higher. The GIN
         index supports "|" as well as "&".
+
+        Both origins on purpose (plan item 83): an imported certification
+        is found through its synthetic chunk, the only text it has. A
+        pricing finding's synthetic chunk sits on a tender document, which
+        the organization filter already excludes.
         """
         tsvector = sa.func.to_tsvector("english", DocumentChunk.normalized_text)
         tsquery = sa.cast(
@@ -221,6 +260,8 @@ class DocumentRepository:
         distance order; the caller fuses ranks (RRF) and reranks anyway.
         SET LOCAL ends with the transaction, so it cannot leak to a later
         query on a pooled connection.
+
+        Both origins on purpose, as in the lexical search above.
         """
         await self._session.execute(sa.text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
         distance = DocumentChunk.embedding.cosine_distance(query_embedding)
@@ -265,10 +306,12 @@ class DocumentRepository:
         heading_path: list | None = None,
         token_count: int | None = None,
         embedding: list[float] | None = None,
+        origin: str = CHUNK_ORIGIN_PARSED,
     ) -> DocumentChunk:
         chunk = DocumentChunk(
             document_id=document_id,
             chunk_index=chunk_index,
+            origin=origin,
             chunk_text=chunk_text,
             normalized_text=normalized_text,
             content_hash=content_hash,
