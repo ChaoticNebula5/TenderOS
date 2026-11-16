@@ -28,8 +28,8 @@ _ALLOWED_TYPES: dict[str, set[str]] = {
     ".xlsx": {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     },
-    # G6: "Employee-master imports accept CSV or XLSX with a documented
-    # template." Added here rather than only for that one route, since
+    # G6: an employee-master import takes CSV as well as XLSX, against a
+    # documented template. Added here rather than only for that one route, since
     # _validate_upload is shared - a CSV uploaded where CSV isn't a valid
     # import type still fails loudly at the parser, the same posture this
     # function already takes for any other type/content mismatch.

@@ -19,9 +19,9 @@ async def readiness_generation_node(state: TenderState) -> dict:
     B12-era retargeting in routing.py) - the third "review_router" branch
     R2's topology diagram names but B11's build list explicitly scoped out.
 
-    No LLM call, matching "readiness is deterministic over current
-    records... the LLM may summarize blockers but does not decide
-    ready=true" (Build Guide, verbatim) - evaluate_readiness is pure
+    No LLM call, matching the Build Guide's rule that readiness is a
+    deterministic function of the current records (an LLM can describe the
+    blockers in words, but never sets ready=true) - evaluate_readiness is pure
     Postgres/Neo4j-freshness reads, same posture project_graph_node's own
     docstring establishes for graph projection.
 

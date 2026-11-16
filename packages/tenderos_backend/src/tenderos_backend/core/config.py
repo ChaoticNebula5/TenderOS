@@ -127,9 +127,10 @@ class Settings(BaseSettings):
     # Either violation now fails at Settings() construction.
     graph_max_hops: int = Field(default=4, ge=1, le=6)
 
-    # I5 (Build Guide :2755-2763): "Every workflow tracks estimated model
-    # cost. When projected cost exceeds MAX_TENDER_COST_USD: pause, show
-    # current progress, require bid-manager approval to continue." A spec
+    # I5 (Build Guide :2755-2763), paraphrased: each workflow keeps an
+    # estimate of its model cost, and once the projected cost passes
+    # MAX_TENDER_COST_USD it pauses, shows how far it got, and waits for a bid
+    # manager to approve going on. A spec
     # deviation now closed, not a feature added - this env var sat in
     # .env.example claiming a real cap for 16 blocks (deleted as dead
     # config in B16 once agent_traces.estimated_cost_usd was found to have

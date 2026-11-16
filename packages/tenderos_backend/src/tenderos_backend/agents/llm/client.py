@@ -89,7 +89,7 @@ async def call_with_repair[T: BaseModel](
     user_prompt: str,
     response_schema: type[T],
 ) -> LLMResult[T]:
-    """I4: 'malformed structured output: one repair attempt, then fail task.'
+    """I4: when structured output is malformed, try one repair, then fail the task.
     Shared by every agent (extract.py, verify.py, and whatever B6+ adds)
     rather than each reimplementing the same one-retry-with-the-error-
     appended shape. A second MalformedOutputError propagates - this

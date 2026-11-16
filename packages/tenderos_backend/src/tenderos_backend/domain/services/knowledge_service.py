@@ -1131,8 +1131,9 @@ async def get_employee(knowledge_item_id: uuid.UUID) -> Employee | None:
 
 async def list_bid_eligible_employees(organization_id: uuid.UUID) -> list[Employee]:
     """G6's GET /organizations/{org_id}/employees, bid-eligible-only view -
-    "new-tender candidate search sees only verified bid-eligible profiles"
-    (B6 smoke test). Backed by KnowledgeRepository.list_bid_eligible_employees,
+    B6's smoke test wants a candidate search for a new tender to find only
+    profiles that are verified and bid-eligible. Backed by
+    KnowledgeRepository.list_bid_eligible_employees,
     which already filters eligible_for_bid=true AND profile_review_status=
     'verified' at the query level - not a filter applied after the fact,
     so there's no path that accidentally returns an unreviewed profile.
@@ -1162,8 +1163,8 @@ async def patch_employee_profile(
     profile_review_status looking more authoritative than it is. Does not
     accept eligible_for_bid - that decision is verify_employee_profile's,
     an explicit approval action, not a side effect of a field edit (B6's
-    own "do not proceed if": imported profiles become bid-eligible without
-    human approval).
+    own "do not proceed if" condition: an imported profile turning
+    bid-eligible with no human approving it).
     """
     async with UnitOfWork() as uow:
         employee = await uow.knowledge.get_employee(knowledge_item_id)
@@ -1259,8 +1260,8 @@ async def verify_employee_profile(
     reviewer to make an explicit eligible_for_bid decision as part of
     approving (not a separate call, not a default) - this is the only
     place in the codebase that can set eligible_for_bid=true, satisfying
-    B6's "imported profiles become bid-eligible without human approval"
-    do-not-proceed-if item by construction: there is no path to eligibility
+    B6's do-not-proceed-if item (an imported profile turning bid-eligible
+    with no human approving it) by construction: there is no path to eligibility
     that does not go through this reviewer-invoked action.
     """
     async with UnitOfWork() as uow:
@@ -1485,9 +1486,10 @@ async def set_knowledge_selection(
     change_reason: str | None = None,
 ) -> TenderKnowledgeSelection:
     """G6's PUT /tenders/{tender_id}/knowledge-selections/{knowledge_item_id}.
-    The Build Guide's full selection-change flow (impact preview -> confirm
-    -> update selection -> bump state version -> outbox
-    ImpactReanalysisRequested -> projection -> targeted re-evaluation) needed
+    The Build Guide's full selection-change flow (preview the impact, the
+    user confirms, write the selection, bump the state version, emit
+    ImpactReanalysisRequested through the outbox, re-project, re-evaluate
+    only what was affected) needed
     graph projection (B10) and targeted re-evaluation (B14) to exist first -
     both now do. B14 wires the last two steps in: this call writes a
     KnowledgeSelectionChanged outbox event in the same transaction as the
@@ -1616,8 +1618,8 @@ async def replace_employee_resume(
     content: bytes,
     mime_type: str | None,
 ) -> Employee:
-    """G6's POST /employees/{id}/resume - "replacing a resume preserves the
-    prior document version" (B6 smoke test). Creates a genuinely new
+    """G6's POST /employees/{id}/resume - B6's smoke test: a replaced resume
+    keeps its earlier document version. Creates a genuinely new
     Document row (version = old + 1, supersedes_document_id = old.id) for
     genuinely new content - the prior version's row is never touched, only
     superseded, so it stays queryable for anyone tracing what an old

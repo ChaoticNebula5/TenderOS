@@ -50,9 +50,9 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 @dataclass
 class ExtractedBlock:
     """One natively-structured unit of extracted text, at whatever
-    granularity the source format itself provides - one per PDF page, one
-    per DOCX paragraph, one per XLSX sheet. Produced by parse_pdf.py/
-    parse_docx.py/parse_xlsx.py; consumed by build_chunks() below.
+    granularity the source format itself provides - a PDF gives one per
+    page, a DOCX one per paragraph, an XLSX one per sheet. Produced by
+    parse_pdf.py/parse_docx.py/parse_xlsx.py; consumed by build_chunks() below.
     """
 
     text: str

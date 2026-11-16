@@ -453,8 +453,8 @@ class GroundableClaim(Protocol):
 #     function.
 #
 # Why this is worth writing by hand: this is the one place PRD 8.5's
-# invariant ("a factual proposal claim cannot be treated as grounded if it
-# has no valid supporting evidence") and E7's compliance-position rule stop
+# invariant (a factual claim in a proposal never counts as grounded without
+# valid evidence behind it) and E7's compliance-position rule stop
 # being something the model might get right and become a fact about what
 # proposal_claims.grounding_status actually persists. Get step 1 wrong and
 # an entire section of the proposal (Company Overview) becomes an

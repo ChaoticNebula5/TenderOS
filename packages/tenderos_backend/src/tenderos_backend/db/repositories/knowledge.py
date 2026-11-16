@@ -458,9 +458,10 @@ class KnowledgeRepository:
         Guide test: "employee not eligible for bid use excluded" has no
         "unless reviewed" exception), but 'needs_review' and 'stale'
         profiles pass through here rather than being hidden - PRD 10.9
-        asks the system to "surface explicit gaps and stale or unknown
-        profile facts," not silently exclude them, and B8A's own test
-        wording ("stale profile visibly warned OR excluded by policy")
+        asks the system to show gaps, and profile facts that are stale or
+        unknown, explicitly, not silently exclude them, and B8A's own test
+        wording (a stale profile is either visibly warned about or excluded
+        by policy)
         treats warning as an acceptable alternative to exclusion. Only an
         archived employee (removed from the roster, PRD 10.9's "not
         archived") and a 'rejected' profile (explicitly disqualified) are

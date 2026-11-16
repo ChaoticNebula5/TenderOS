@@ -1,6 +1,6 @@
 # TenderOS
 
-Evidence-grounded, human-supervised bid operations platform for IT services and consulting firms.
+A platform for running bids at IT services and consulting firms, grounded in evidence and supervised by people.
 
 `TenderOS-PRD.md` and `TenderOS-Build-Guide.md` are the authoritative product and technical specification. Read them before changing anything here. The project is being built strictly in the dependency order defined in the Build Guide's Part J (B0 → B17); this repository currently reflects **B13 — Functional UI**. Login through readiness runs end to end against the real stack: 17 screens, a full FastAPI surface, LangGraph orchestration, Postgres/Neo4j/Redis, and a Playwright scenario that drives the golden path through a real browser with no direct database edits or Swagger calls.
 

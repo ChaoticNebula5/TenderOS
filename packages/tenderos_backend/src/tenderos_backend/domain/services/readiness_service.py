@@ -110,9 +110,9 @@ def _blocker(category: str, target_type: str, target_id: uuid.UUID | None, messa
 async def evaluate_readiness(
     tender_id: uuid.UUID, degraded_stages: list[str] | None = None
 ) -> ReadinessResult:
-    """B12's deterministic readiness policy - "readiness is deterministic
-    over current records... the LLM may summarize blockers but does not
-    decide ready=true" (Build Guide, verbatim). No LLM call anywhere in
+    """B12's deterministic readiness policy - the Build Guide makes readiness
+    a deterministic function of the current records: an LLM can describe the
+    blockers in words, but never sets ready=true. No LLM call anywhere in
     this function.
 
     Public entry point - a thin bounded-retry wrapper around

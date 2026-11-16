@@ -309,8 +309,8 @@ async def list_organization_knowledge(
 async def list_bid_eligible_employees(
     org_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
 ) -> list[EmployeeResponse]:
-    """ "New tender candidate search sees only verified bid-eligible
-    profiles" (B6 smoke test) - the ONLY employee-listing route, and it is
+    """B6's smoke test: a candidate search for a new tender finds only profiles
+    that are verified and bid-eligible - the ONLY employee-listing route, and it is
     bid-eligible-only by construction (see
     KnowledgeRepository.list_bid_eligible_employees). There is no route
     that lists every employee regardless of review state; a reviewer works

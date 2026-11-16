@@ -228,8 +228,8 @@ Each entry:
   those require similarity scoring, not exact matching on a normalized
   form, and no such scoring is implemented.
 - **Risk:** low and deliberate, not an oversight. Build Guide line 3069
-  requires duplicate detection "using employee code, email, normalized
-  name, and resume hash" — normalized-name matching is exactly what's
+  requires duplicate detection on employee code, resume hash, email and
+  normalized name — normalized-name matching is exactly what's
   implemented. Fuzzy/similarity matching (nicknames, typos) is not on the
   B6 build list and was never in scope; adding it later would mean a
   similarity threshold and likely the Postgres `pg_trgm` extension, both
@@ -594,8 +594,9 @@ Each entry:
   alternative (building partial-branch rejection now) during B8 planning:
   that needs a replanning executor plus a finding-category →
   corrective-task mapping, which the Build Guide explicitly scopes to
-  **B11** ("supervisor mapping from finding category to corrective task,"
-  "bounded revision loop," B2.4's "Proposal ↔ Red-Team loop"). Building it
+  **B11** (its build list: the supervisor mapping each finding category to
+  a corrective task, a revision loop with a bound, and B2.4's loop between
+  Proposal and Red Team). Building it
   in B8 would jump the build order for a mechanism that already has a
   named future home. Real fix: **B11's bounded revision loop.** Not
   revisited again before then.
@@ -632,11 +633,11 @@ Each entry:
 - **Discovered:** B8 planning — while proactively checking whether
   `_resolve_organization_id` needed new branches for B8A/B8B's routes
   (KNOWN_LIMITATIONS' own standing pattern of checking this function every
-  block), also re-read Part C's State-version invariant: "every
-  graph-relevant mutation increments `tenders.state_version` in the same
-  transaction," listing knowledge selection change, evidence change,
-  compliance change, role assignment change, proposal claim change, and
-  amendment impact change. `TenderRepository.bump_state_version` has
+  block), also re-read Part C's State-version invariant: any change that
+  matters to the graph must increment `tenders.state_version` inside the
+  same transaction as the change. Its list: changes to a knowledge
+  selection, to evidence, to compliance, to a role assignment, to a
+  proposal claim, and to an amendment's impact. `TenderRepository.bump_state_version` has
   existed since B1/B2, but a repo-wide search found **zero call sites** —
   B7's `approve_compliance_entry` and `override_compliance_entry` never
   called it, despite "compliance change" being explicitly on that list.
@@ -1720,8 +1721,8 @@ Each entry:
   way it silently sat unowned from B7 through B9.
 
   **Why B12, not B11:** B11's build list (structured findings,
-  finding-resolution gate, supervisor mapping from finding category to
-  corrective task, bounded revision loop) is about *post-hoc* correction
+  a gate for resolving findings, the supervisor mapping each finding
+  category to a corrective task, a revision loop with a bound) is about *post-hoc* correction
   after a red-team finding, not the original approval path - it's
   thematically adjacent (already the scheduled home for the gate-
   rejection limitation, same "what does a gate decision actually do"
@@ -1736,8 +1737,8 @@ Each entry:
   *"compliant decision without valid evidence"* and *"required role with
   no human-selected candidate"* - exactly the two flags this bug leaves
   silently unset even when every gate shows `approved`. B12's own
-  stop-gate ("seed each blocker and confirm readiness refuses approval
-  until resolved") cannot be honestly satisfied while this bug stands: a
+  stop-gate (plant each blocker in turn and check that readiness refuses
+  approval until it is resolved) cannot be honestly satisfied while this bug stands: a
   reviewer who approves every gate the normal way (no manual per-target
   G7/G8/G9 workaround - nothing in the current gate UI/API prompts for
   one) would hit a readiness report stuck refusing approval with no
@@ -1945,9 +1946,9 @@ Each entry:
   reading is plausible, not confirmed - nobody has traced it end to end.
   **Why this matters at the product level, not just as a metric:**
   claim-level evidence grounding is the PRD's own core thesis for this
-  product (§5's "Grounded proposal generation" JTBD: "I want factual
-  claims to remain linked to approved evidence rather than being
-  invented by the model") - not one feature among many. Measured twice,
+  product (§5's job-to-be-done for grounded proposal generation: a user
+  wants every factual claim to stay tied to approved evidence, never made
+  up by the model) - not one feature among many. Measured twice,
   independently, against the same real fixture package, under two
   different sets of upstream fixes: it currently works for roughly 1 in
   10 factual claims. Not investigated further here - B12 is complete and
@@ -2159,7 +2160,7 @@ Each entry:
   from any locked table: `view_graph` (all 4 read/compute routes - status,
   impact, contradictions, trace - full 7-role breadth, same width as
   `resolve_redteam_finding`, justified by PRD 27.13's own invariant that
-  traceability must be accessible from normal workflows, not admin-only)
+  people reach traceability in their everyday workflows, not only on an admin screen)
   and `trigger_graph_projection` (the manual `POST .../graph/project`
   trigger - narrower, same 4-role set as `edit_proposal`, since forcing a
   recompute reads closer to a content-management action than passive
@@ -3238,9 +3239,9 @@ Each entry:
   59/12/243 unchanged.
 - **`[I5]` Cost budget enforcement - RESOLVED, post-B16. A spec deviation
   now closed, not a feature added.** I5 (Build Guide `:2755-2763`,
-  verbatim): *"Every workflow tracks estimated model cost. When
-  projected cost exceeds `MAX_TENDER_COST_USD`: pause, show current
-  progress, require bid-manager approval to continue."* `MAX_TENDER_COST_
+  paraphrased): each workflow keeps an estimate of its model cost, and
+  once the projected cost passes `MAX_TENDER_COST_USD` it pauses, shows
+  how far it got, and waits for a bid manager to approve going on. `MAX_TENDER_COST_
   USD` sat in `.env.example`/`.env` for 16 blocks reading like a real,
   enforced cap while this gate was never built at all - undetected the
   same way the `preview_impact`/`USED_IN` gap was: spec names a real
@@ -3506,7 +3507,7 @@ Each entry:
     additionally catches a broken Alembic migration via the dedicated
     script, not by changing how the test suite builds its own schema.
   - **Worker image: RESOLVED in B16.** `apps/worker/Dockerfile` now bakes
-    the embedding model (`sentence-transformers/all-MiniLM-L6-v2`) into its
+    `sentence-transformers/all-MiniLM-L6-v2`, the embedding model, into its
     own layer, placed after `uv sync` (so the package is installed) but
     before the app-code `COPY`s (so it stays cached across ordinary code
     changes). Verified against a real build, not assumed: rebuilt the
@@ -5111,9 +5112,9 @@ edits, not code bugs.
   (`PATCH /proposal/sections/{section_id}`, `POST
   /tenders/{tender_id}/proposal/generate` share the same action). What's
   arguably missing is a *read* action, a different, narrower thing than
-  adding Approver to an authoring one. PRD 27.13's own invariant
-  ("Traceability must be accessible from normal workflows, not hidden in
-  an admin-only screen") is arguably satisfied as written even without
+  adding Approver to an authoring one. PRD 27.13's own invariant (people
+  reach traceability through their everyday workflows, not only through a
+  screen kept for admins) is arguably satisfied as written even without
   Approver - 3 of the 4 roles `edit_proposal` grants are non-admin.
 - **Risk:** an approver approving a bid whose claims they structurally
   cannot inspect sits directly against B13's own functional requirements
@@ -7028,8 +7029,8 @@ edits, not code bugs.
 - **Status:** open. **Owner: B14** - not by default assignment, but
   because B14's own scope (SSE progress streaming, replacing
   `usePolling`'s interval with a push subscription per `usePolling`'s
-  own docstring: "Progress updates through polling initially; SSE by
-  B14") is specifically the mechanism that answers "work is still in
+  own docstring, which plans polling for progress at first and SSE by
+  B14) is specifically the mechanism that answers "work is still in
   flight," which is exactly what this gap needs and nothing already
   built provides. Recorded as the first concrete demonstration of why
   B14 exists, not a theoretical nicety it happens to also cover - this
@@ -9214,8 +9215,8 @@ edits, not code bugs.
   `TenderOS-Build-Guide.md` and `TenderOS-PRD.md` for "tool-calling",
   "function calling", "tool_choice," and every phrasing of an agent
   choosing or selecting a tool - zero hits in either document. Part F
-  never specifies LLM-directed selection. F1 (line 2323) says "Agents
-  invoke tools directly inside the Python application process" - in-
+  never specifies LLM-directed selection. F1 (line 2323) has agents call
+  their tools directly, within the Python application's own process - in-
   process and direct, consistent with A3.3 excluding MCP immediately
   after. An "agent" in this codebase's own vocabulary is a module
   (`agents/knowledge/`, `agents/compliance/`, ...), not an LLM turn
@@ -9224,13 +9225,13 @@ edits, not code bugs.
   operation), not a pattern it doesn't have. The original framing would
   have retired a locked authorization requirement on the strength of an
   architecture the spec never asked for.
-- **The actual load-bearing line, A3.2 (Build Guide line 246):** "The
-  tool layer applies organization authorization and calls domain
-  services directly." The layer's specified job is organization
+- **The actual load-bearing line, A3.2 (Build Guide line 246):** the tool
+  layer checks the organization's authorization, then calls the domain
+  services directly. The layer's specified job is organization
   authorization at one choke point in front of F3's seven operations,
-  independent of who the caller is. F5's "Validate organization and
-  tender ownership on every invocation" and "Reject tools not present in
-  the current agent's allowlist" are both satisfiable by deterministic
+  independent of who the caller is. F5's two rules, that each invocation
+  checks ownership of the organization and the tender, and that a tool
+  missing from the current agent's allowlist is rejected, are both satisfiable by deterministic
   callers - nothing about either requirement needs an LLM in the loop.
 - **Confirmed via call-site reading, not inferred from a module being
   empty:** none of F3's seven operations goes through any single choke
@@ -9282,10 +9283,10 @@ edits, not code bugs.
   branches (`pricing_document_id`, `tender_id`, ...) checked at the route
   layer, not inside the "tool" itself, but checked. **What remains
   genuinely unmet, not closed by this finding:** F5's other two
-  requirements - "Record tool name, latency, status, and referenced IDs"
+  requirements - each call records the tool's name, its latency and status, and the IDs it referenced
   (no invocation-level audit trail exists for any of the seven F3
   operations; `AgentTraceRepository` records LLM calls, not these) and
-  "Reject tools not present in the current agent's allowlist" (no
+  that any tool missing from the current agent's allowlist is refused (no
   allowlist exists in any form, confirmed directly - so nothing today
   would catch a FUTURE call site that forgets the equivalent of
   `require_permission`, the way the current seven all happen to remember
@@ -9370,8 +9371,8 @@ edits, not code bugs.
   a failure inside `run_workflow`/`resume_workflow`/`retry_workflow_run`
   themselves. No API route, no manual trigger, nothing resumes an already-
   `"failed"` run on demand, for this failure or any other kind this
-  codebase has ever produced. Part N line 3918 ("the workflow pauses and
-  resumes after process restart") is a different guarantee - a still-
+  codebase has ever produced. Part N line 3918 (a paused workflow picks
+  up again after the process restarts) is a different guarantee - a still-
   active run (`queued`/`running`/`waiting_for_human`) surviving a worker
   process restart via LangGraph's own Postgres checkpointer, not "can a
   human retry a run already marked failed." Pre-existing, not introduced
@@ -9606,8 +9607,8 @@ Query | Server state`) - load-bearing, no qualifier in the spec
   This is permanent for this project as built, not a gap scheduled to
   close.
 
-### React Hook Form + Zod (Build Guide A2, line 165: `Forms | React Hook
-Form + Zod | Client validation only; backend revalidates`) - degraded UX,
+### React Hook Form + Zod (Build Guide A2, line 165: the forms row, with
+validation on the client only and the backend checking again) - degraded UX,
 not a correctness or security gap
 
 - **The unbuilt locked requirement:** line 165 names React Hook Form +
@@ -9885,9 +9886,9 @@ of a third and fourth hand-rolled copy.
 
 ## [B17 Phase 0, resolved] D4's 6-hop ceiling existed only as a comment
 
-- **Spec, quoted:** Build Guide D4 (:1940): "The code permits
-  configuration up to 6 for experiments, but the public application
-  defaults to 4."
+- **Spec, paraphrased:** Build Guide D4 (:1940): the code allows a
+  setting as high as 6 for experiments, while the public application's
+  default is 4.
 - **Before:** `core/config.py` declared `graph_max_hops: int = 4` with a
   comment saying "The code may configure up to 6"; nothing enforced it.
   `GRAPH_MAX_HOPS=50` would have been accepted and interpolated into the
@@ -9906,12 +9907,12 @@ of a third and fourth hand-rolled copy.
 
 ## [B17 Phase 0, design limitation, documented] B14 scenario lines 3562-3563 ("compliance task reopens", "claim becomes needs_review") are not demonstrable by design
 
-- **Spec, quoted:** Build Guide B14 scenario test (:3555-3564):
-  "Project A supports Requirement R1 and Claim C1 → user requests
-  deselection → impact preview lists R1 and C1 → user confirms →
-  selection=false → projection refresh → evidence coverage = 0 →
-  **compliance task reopens** → **claim becomes needs_review** → readiness
-  blocker appears".
+- **Spec, paraphrased:** Build Guide B14 scenario test (:3555-3564): Project
+  A backs both Requirement R1 and Claim C1; the user asks to deselect it;
+  the impact preview names R1 and C1; the user confirms; the selection
+  becomes false; the projection is refreshed; evidence coverage drops to
+  0; **the compliance task is reopened**; **the claim moves to
+  needs_review**; and a readiness blocker shows up.
 - **Why neither step can happen on a deselection, from the code:**
   - Compliance cannot reopen: re-evaluation (`reanalysis.py:152`,
     `evaluate_compliance_for_requirement`) retrieves evidence with
@@ -10118,8 +10119,8 @@ The original entry, as found:
   nothing.
 - **Why this is not a one-line fix:**
   - **Identity.** The fingerprint includes `target_type` (Build Guide
-    `:2726`: "Red-team finding: target_type + target_id + finding_category
-    + violated_condition"; code `redteam_service.py:24-37`). Correcting the
+    `:2726` defines a red-team finding's identity as `target_type`,
+    `target_id`, `finding_category` and `violated_condition`; code `redteam_service.py:24-37`). Correcting the
     label changes every affected finding's fingerprint, so the next
     detection would create a NEW row while the old one stays - a
     duplicate, and a human resolution on the old row would no longer

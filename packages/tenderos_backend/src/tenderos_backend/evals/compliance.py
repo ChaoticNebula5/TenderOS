@@ -71,8 +71,9 @@ async def evaluate_compliance(
 ) -> ComplianceEvalReport:
     """Not a blocking gate (B7's stop-gate is invariant-based, not numeric -
     see KNOWN_LIMITATIONS.md/the B7 plan) - this is the separate,
-    reported-only Evaluation section (Build Guide: compliance macro-F1,
-    confusion matrix, unsupported-compliance rate).
+    reported-only Evaluation section of the Build Guide: macro-F1 over the
+    compliance statuses, their confusion matrix, and the rate of compliant
+    decisions with no support.
 
     "needs_review" ground-truth rows (~55 of 74 in this package) are
     excluded from scoring entirely, not mapped to any status - they were
@@ -88,8 +89,8 @@ async def evaluate_compliance(
     evidence_unavailable (seeded with no valid evidence), what fraction
     the pipeline nonetheless scored as fully_compliant or
     partially_compliant - the empirical counterpart to the stop-gate's
-    structural "zero schema-valid compliant decisions without required
-    evidence" check. A nonzero rate here on this package would mean
+    structural check (no compliant decision that passes the schema may lack
+    its required evidence). A nonzero rate here on this package would mean
     enforce_evidence_sufficiency has a real gap the stop-gate's own seeded
     test didn't happen to exercise.
     """

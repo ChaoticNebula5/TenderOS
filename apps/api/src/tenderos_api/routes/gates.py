@@ -133,9 +133,9 @@ async def decide_gate(
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
 
-    # B12/Q3: the ONLY enforcement point for "refuses approval until
-    # resolved or explicitly waived by authorized actor" (Build Guide
-    # stop-gate, verbatim). Must happen here, synchronously, before
+    # B12/Q3: the ONLY enforcement point for the Build Guide's stop-gate rule
+    # (paraphrased): approval is refused until every blocker is resolved or an
+    # authorized actor explicitly waives it. Must happen here, synchronously, before
     # record_decision - final_gate_node's own interrupt() only receives
     # decision_payload asynchronously, after resume_workflow's RQ job
     # picks up the GateDecisionRecorded event, by which point the decision

@@ -37,9 +37,9 @@ class GateDecisionRequest(BaseModel):
     target_updates: list[TargetUpdate] = []
     notes: str | None = None
     # B12: only meaningful for gate_type="final_readiness" with
-    # decision="approve" - see routes/gates.py's decide_gate. "refuses
-    # approval until resolved or explicitly waived by authorized actor"
-    # (Build Guide stop-gate, verbatim) - this is the explicit act. Ignored
+    # decision="approve" - see routes/gates.py's decide_gate. The Build
+    # Guide's stop-gate refuses approval until every blocker is resolved or
+    # an authorized actor explicitly waives it - this is the explicit act. Ignored
     # for every other gate type/decision combination, not just permitted
     # but meaningless there (no readiness concept applies).
     waive: bool = False
