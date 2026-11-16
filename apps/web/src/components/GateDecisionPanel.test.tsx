@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   CommercialApprovalGateResponse,
@@ -7,6 +8,7 @@ import type {
   CostBudgetGateResponse,
   FinalReadinessGateResponse,
   FindingResolutionGateResponse,
+  GateResponse,
   RequirementReviewGateResponse,
   ResourceSelectionGateResponse,
 } from "../api/client";
@@ -246,6 +248,95 @@ describe("final_readiness waive flag", () => {
       expect.objectContaining({ waive: false }),
       expect.any(String),
     );
+  });
+});
+
+describe("notes and the waive box belong to their gate (plan item 102)", () => {
+  function notesBox(): HTMLInputElement | HTMLTextAreaElement {
+    return screen.getByLabelText("Notes (optional)") as HTMLInputElement | HTMLTextAreaElement;
+  }
+  function waiveBox(): HTMLInputElement {
+    return screen.getByLabelText("Waive outstanding blockers") as HTMLInputElement;
+  }
+
+  it("keeps them through a fresher read of the same gate, and clears them for another gate", () => {
+    const gateA = finalReadinessGate({ ready: false });
+    const { rerender } = render(<GateDecisionPanel gate={gateA} onDecided={vi.fn()} />);
+    fireEvent.change(notesBox(), { target: { value: "Waiving REQ-001 for this bid only." } });
+    fireEvent.click(waiveBox());
+    expect(waiveBox()).toBeChecked();
+
+    // The screen re-reads gate A (a new object, the same gate).
+    rerender(<GateDecisionPanel gate={{ ...gateA }} onDecided={vi.fn()} />);
+    expect(notesBox()).toHaveValue("Waiving REQ-001 for this bid only.");
+    expect(waiveBox()).toBeChecked();
+
+    // The screen now shows a different gate: nothing typed for A carries over.
+    const gateB = {
+      ...finalReadinessGate({ ready: false }),
+      gate_id: "44444444-4444-4444-4444-444444444444",
+    };
+    rerender(<GateDecisionPanel gate={gateB} onDecided={vi.fn()} />);
+    expect(notesBox()).toHaveValue("");
+    expect(waiveBox()).not.toBeChecked();
+  });
+});
+
+describe("a decision answered after the shown gate changed (plan item 102)", () => {
+  it("is dropped, so the newer gate stays on screen", async () => {
+    const gateA = requirementReviewGate();
+    const gateB: GateResponse = {
+      ...requirementReviewGate(),
+      gate_id: "55555555-5555-5555-5555-555555555555",
+    };
+    let answer: (gate: GateResponse) => void = () => {};
+    decideGate.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    let showGate: (gate: GateResponse) => void = () => {};
+    // A screen as the real ones are: it holds the shown gate and puts a
+    // decision's answer on screen through onDecided.
+    function Screen() {
+      const [gate, setGate] = useState<GateResponse>(gateA);
+      showGate = setGate;
+      return (
+        <>
+          <p>
+            Shown gate: {gate.gate_id} ({gate.status})
+          </p>
+          <GateDecisionPanel gate={gate} onDecided={setGate} />
+        </>
+      );
+    }
+    render(<Screen />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(decideGate).toHaveBeenCalledWith(gateA.gate_id, expect.anything(), expect.any(String));
+
+    // The screen moves on to a newer gate before the decision answers.
+    act(() => showGate(gateB));
+    await act(async () => answer({ ...gateA, status: "approved" } as GateResponse));
+
+    expect(screen.getByText(`Shown gate: ${gateB.gate_id} (pending)`)).toBeInTheDocument();
+  });
+
+  it("is applied when the decided gate is still the one shown", async () => {
+    const gateA = requirementReviewGate();
+    decideGate.mockResolvedValue({ ...gateA, status: "approved" } as GateResponse);
+    function Screen() {
+      const [gate, setGate] = useState<GateResponse>(gateA);
+      return (
+        <>
+          <p>
+            Shown gate: {gate.gate_id} ({gate.status})
+          </p>
+          <GateDecisionPanel gate={gate} onDecided={setGate} />
+        </>
+      );
+    }
+    render(<Screen />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText(`Shown gate: ${gateA.gate_id} (approved)`)).toBeInTheDocument();
   });
 });
 
