@@ -1,6 +1,7 @@
 import logging
 import uuid
 
+from tenderos_backend.db.models.document import CHUNK_ORIGIN_PARSED
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.ingestion.chunk import ChunkDraft, ExtractedBlock, build_chunks
@@ -69,10 +70,21 @@ async def _persist_chunks(
     fixed further here - a stale requirement citation needs a human to
     look at it, which is a real, separate re-extraction-cascade question,
     not something this fix silently papers over.
+
+    Plan item 83 corrects two things above. The reconcile covers only the
+    parser's own chunks (origin "parsed"): a synthetic chunk, added later
+    by pricing grounding or certification import, was never in the file,
+    so the new parse can never contain it, and deleting it was wrong. And
+    the evidence links' SET NULL does not always succeed silently: a
+    pricing link has no knowledge item, so losing its chunk broke
+    ck_evidence_link_has_source, which failed the parse on every retry and
+    left the bid unable to start a run (observed on the fake stack).
     """
     existing_by_hash = {
         chunk.content_hash: chunk
-        for chunk in await uow.documents.list_chunks_for_document(document_id)
+        for chunk in await uow.documents.list_chunks_for_document(
+            document_id, origin=CHUNK_ORIGIN_PARSED
+        )
     }
     reused_ids: set[uuid.UUID] = set()
 

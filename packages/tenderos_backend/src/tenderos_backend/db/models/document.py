@@ -106,11 +106,26 @@ class DocumentIngestionRun(UUIDPrimaryKeyMixin, Base):
     error_message: Mapped[str | None] = mapped_column(nullable=True)
 
 
+# Who made a chunk (plan item 83, migration 031). The ingestion job's parser
+# makes "parsed" chunks from the file's own text, and owns them: a re-parse
+# reconciles them against the new parse and deletes the ones it no longer
+# produces. Other code adds "synthetic" chunks to an already-uploaded
+# document (document_service.create_synthetic_chunk: a resolved pricing
+# finding's note, an imported certification row), whose text was never in
+# the file, so a re-parse must leave them alone.
+CHUNK_ORIGIN_PARSED = "parsed"
+CHUNK_ORIGIN_SYNTHETIC = "synthetic"
+
+
 class DocumentChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "document_chunks"
     __table_args__ = (
-        UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk_index"),
-        UniqueConstraint("document_id", "content_hash", name="uq_document_chunk_hash"),
+        # Each origin numbers and dedupes its own chunks, so a re-parse that
+        # yields more chunks than before cannot collide with a synthetic
+        # chunk's index, nor a parsed chunk with a synthetic one's text.
+        UniqueConstraint("document_id", "origin", "chunk_index", name="uq_document_chunk_index"),
+        UniqueConstraint("document_id", "origin", "content_hash", name="uq_document_chunk_hash"),
+        CheckConstraint("origin IN ('parsed', 'synthetic')", name="ck_document_chunk_origin"),
         # 003_documents.py. The full-text index is on the same expression
         # search_chunks_lexical_for_org queries, so the planner can use it.
         Index("idx_document_chunks_document", "document_id", "chunk_index"),
@@ -136,6 +151,9 @@ class DocumentChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         nullable=True,
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    origin: Mapped[str] = mapped_column(
+        nullable=False, default=CHUNK_ORIGIN_PARSED, server_default=CHUNK_ORIGIN_PARSED
+    )
     page_num: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sheet_name: Mapped[str | None] = mapped_column(nullable=True)
     cell_range: Mapped[str | None] = mapped_column(nullable=True)

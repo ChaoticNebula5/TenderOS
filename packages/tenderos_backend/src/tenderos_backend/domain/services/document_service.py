@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 
 from tenderos_backend.core.hashing import sha256_hex
-from tenderos_backend.db.models.document import Document, DocumentChunk
+from tenderos_backend.db.models.document import CHUNK_ORIGIN_SYNTHETIC, Document, DocumentChunk
 from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
@@ -28,11 +28,21 @@ async def create_synthetic_chunk(
     does for prose: render it to text, embed it, and store it as a real
     document_chunks row against the already-uploaded source document, so
     the record can still set a real source_chunk_id and be found by
-    retrieval. chunk_index is derived from the existing chunk count for
-    source_document_id - safe for this codebase's sequential (not
-    concurrent within one document) callers, same caveat B4's own
-    _persist_chunks never needed to consider for a single document's
-    chunks.
+    retrieval.
+
+    The chunk is stored with origin "synthetic" (plan item 83), whoever
+    calls this, so a later re-parse of the document, which reconciles only
+    the parser's own chunks, leaves it and the row citing it alone. The
+    app's two callers are pricing grounding and certification import;
+    migration 031's backfill recognised only their citation shapes, so a
+    synthetic chunk made some other way before 031 reads "parsed", which is
+    harmless on an organization document (reprocess_document refuses one,
+    and retrieval reads both origins). Its index comes from
+    next_synthetic_chunk_index (one past the highest synthetic index), not
+    a count of the document's chunks, which reused an index once synthetic
+    chunks followed the parsed ones. Two callers adding to one document at
+    the same moment can still pick the same index; the unique key then
+    fails the second (a plan note with item 59).
 
     Moved here from knowledge_service.py (B16 Group 3) once a third
     caller (commercial_service.py's pricing-finding grounding, B16
@@ -47,15 +57,16 @@ async def create_synthetic_chunk(
     should pass it; see commercial_service._materialize_one_pricing_evidence_link.
     """
     normalized = normalize_text(text)
-    existing_count = len(await uow.documents.list_chunks_for_document(source_document_id))
+    chunk_index = await uow.documents.next_synthetic_chunk_index(source_document_id)
     embedding = (await embed_texts([normalized]))[0] if embed else None
     return await uow.documents.create_chunk(
         document_id=source_document_id,
-        chunk_index=existing_count,
+        chunk_index=chunk_index,
         chunk_text=text,
         normalized_text=normalized,
         content_hash=sha256_hex(normalized.encode("utf-8")),
         embedding=embedding,
+        origin=CHUNK_ORIGIN_SYNTHETIC,
     )
 
 
