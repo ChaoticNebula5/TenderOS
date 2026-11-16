@@ -164,8 +164,9 @@ def upgrade() -> None:
         ),
     )
 
-    # E1: every LLM-backed agent "records model, tokens, latency, cost, and
-    # tool names" - this table is where that goes. B5 is the first block with
+    # E1: every LLM-backed agent records which model it used, its tokens,
+    # latency and cost, and the names of the tools it called - this table is
+    # where that goes. B5 is the first block with
     # a real (non-stub) agent, so it's the first one that needs this table to
     # exist, even though Part C lists it in the general schema block rather
     # than naming a specific build block as its owner.

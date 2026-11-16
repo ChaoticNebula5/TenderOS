@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 # "critical_or_major" - major findings always surface via finding_gate for
 # human judgment, never auto-revised).
 _AUTO_REVISION_SEVERITIES = ("critical",)
-# E8: "Critical findings must be explicitly resolved, accepted, or
-# escalated" - major findings need a human's eyes too, just never trigger
+# E8: a critical finding has to be resolved, accepted or escalated by an
+# explicit act - major findings need a human's eyes too, just never trigger
 # the automatic loop.
 _OPEN_SEVERITIES = ("critical", "major")
 
@@ -45,8 +45,8 @@ def finding_fingerprint(
     finding_category: str,
     violated_condition: str,
 ) -> str:
-    # E8: "Finding identity is based on the violated condition, not
-    # free-text wording" - same _fingerprint(*parts) shape pricing_checks.py
+    # E8: a finding is identified by the condition it violates, not by how
+    # its text is worded - same _fingerprint(*parts) shape pricing_checks.py
     # already uses, deliberately excluding finding_text/rebuttal so a
     # differently-worded re-detection of the SAME underlying problem still
     # upserts onto the same row instead of creating a duplicate.
@@ -145,8 +145,8 @@ async def run_red_team(
     task_id: uuid.UUID | None = None,
 ) -> list[str]:
     """Red Team's full 5-step check list (B11 build item), run in the order
-    E8 requires: "Deterministic checks and graph queries run before LLM
-    critique." Persists every finding via the upsert-by-fingerprint pattern
+    E8 requires: the deterministic checks and the graph queries first, the
+    LLM critique after them. Persists every finding via the upsert-by-fingerprint pattern
     (persist_finding_draft) and returns the tender's CURRENT full set of open
     critical+major finding ids - queried fresh after every upsert, not
     accumulated locally, since a finding from a previous pass that's no

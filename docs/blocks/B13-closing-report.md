@@ -10,9 +10,9 @@ being re-derivable from memory.
 
 ## Part J's gate, and what ran end to end
 
-Part J's own stop-gate for this block is a negative: *"do not proceed if
-the system can only be demonstrated through direct database edits or
-Swagger."* Met. A live Playwright run (`apps/web/e2e/full-flow.spec.ts`)
+Part J's own stop-gate for this block is a negative: the block fails if the
+only way to demonstrate the system is by editing the database directly or
+calling the API through Swagger. Met. A live Playwright run (`apps/web/e2e/full-flow.spec.ts`)
 drove the full golden path through a real browser against the real
 `web`/`api`/`worker` containers — no mocked network layer, no seeded
 state via `UnitOfWork`, no Swagger calls anywhere in the run:

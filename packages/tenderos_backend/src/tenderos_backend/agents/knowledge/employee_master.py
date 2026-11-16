@@ -4,10 +4,11 @@ from dataclasses import dataclass
 
 from openpyxl import load_workbook
 
-# PRD line 774 (data minimization): "store professional bid-relevant
-# information, not unrelated sensitive HR data such as salary, bank details,
-# home address, medical records, government identifiers, or private
-# performance notes." This is the PRD's own denylist, not an open design
+# PRD line 774 (data minimization), paraphrased: keep the professional
+# information a bid needs, and leave out sensitive HR data the bid does not
+# need, for example medical records, salary, home address, bank details,
+# private performance notes or government identifiers. This is the PRD's
+# own denylist, not an open design
 # call - matched as a case-insensitive substring against each column header
 # so a template deviation (someone adds a "Salary" or "SSN" column) is
 # rejected at parse time rather than silently imported.
@@ -120,8 +121,8 @@ def parse_employee_master(content: bytes) -> list[EmployeeMasterRow]:
 
 
 def parse_employee_master_csv(content: bytes) -> list[EmployeeMasterRow]:
-    """G6: "Employee-master imports accept CSV or XLSX with a documented
-    template" - the CSV half. utf-8-sig strips a leading BOM (Excel's own
+    """G6: an employee-master import takes CSV as well as XLSX, against a
+    documented template - this is the CSV half. utf-8-sig strips a leading BOM (Excel's own
     "Save As CSV" writes one; a plain utf-8 decode would leave it stuck to
     the first header cell, e.g. '\\ufeffEmployee Code', silently failing
     the header-recognition check below rather than raising a clear error).

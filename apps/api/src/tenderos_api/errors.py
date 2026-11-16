@@ -57,9 +57,9 @@ class OrgAccessDeniedError(APIError):
 
 
 class ReadinessNotWaivedError(APIError):
-    # B12: routes/gates.py's own enforcement of "refuses approval until
-    # resolved or explicitly waived by authorized actor" (Build Guide
-    # stop-gate, verbatim) - decide_gate raises this instead of ever
+    # B12: routes/gates.py's own enforcement of the Build Guide's stop-gate
+    # rule (paraphrased): approval is refused until every blocker is resolved
+    # or an authorized actor explicitly waives it - decide_gate raises this instead of ever
     # calling gate_service.record_decision when a final_readiness gate's
     # "approve" arrives with outstanding blockers and no waive:true.
     # RBAC already restricts who can reach this route at all for this gate
@@ -207,8 +207,8 @@ class IdempotencyKeyRequiredError(APIError):
 
 
 class GraphStaleAPIError(APIError):
-    """G12: "Graph endpoints return 409 with code GRAPH_STALE when required
-    projection version is behind" - the API-layer wrapper around domain.
+    """G12: a graph endpoint answers 409 GRAPH_STALE when the projection is
+    older than the version the request needs - the API-layer wrapper around domain.
     services.graph_service.GraphStaleError, same "domain exception -> APIError
     subclass -> registered handler" translation every other *NotFoundError
     already goes through in routes/proposal.py etc.

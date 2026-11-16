@@ -142,9 +142,10 @@ def get_idempotency_context(
     operation: str, required: bool = False
 ) -> Callable[[Request, Response], AsyncIterator[IdempotencyContext]]:
     """Idempotency-Key was optional-but-honored for every B2 operation: Part I1
-    only requires it for create workflow run / gate decision / resource
-    selection / knowledge selection change / proposal generation / graph
-    projection trigger, none of which existed in B2. B3 introduces the first
+    only requires it for six operations (starting a workflow run, deciding a
+    gate, selecting a resource, changing a knowledge selection, generating a
+    proposal, triggering a graph projection), none of which existed in B2.
+    B3 introduces the first
     two of those (create_workflow_run, gate_decision) - `required=True` on
     those call sites makes the header actually mandatory (400
     IDEMPOTENCY_KEY_REQUIRED if absent) rather than silently falling back to

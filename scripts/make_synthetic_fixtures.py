@@ -1,8 +1,9 @@
 """Generates B4's synthetic fixtures into data/synthetic/.
 
-B4 names six explicitly: native-text RFP PDF, scanned two-page RFP, DOCX
-annexure with tables, XLSX pricing workbook with formulas, corrupted file,
-duplicate upload. A seventh, dense_compliance_matrix.pdf, was added after
+B4 names six explicitly: an RFP PDF with real text, a two-page RFP that was
+scanned, a DOCX annexure containing tables, an XLSX pricing workbook that
+uses formulas, a corrupted file, and a duplicate upload. A seventh,
+dense_compliance_matrix.pdf, was added after
 those six turned out to all be too short to ever fill chunk.py's packer
 buffer - every packed piece measured under 65 tokens against a 256-token
 cap, so the six-fixture bisection-rate measurement was 0% for the wrong

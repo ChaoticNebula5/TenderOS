@@ -1,9 +1,9 @@
 """B7's evaluation (non-blocking - see the plan/KNOWN_LIMITATIONS.md for why
 B7's real stop-gate is invariant-based, not numeric): run the full B7
 pipeline (requirement extraction -> B6 knowledge import -> compliance
-analysis) against the synthetic tender_a package and report compliance
-macro-F1 / confusion matrix / unsupported-compliance rate against
-expected_compliance in Part L2 ground truth.
+analysis) against the synthetic tender_a package, and report macro-F1 over
+the compliance statuses, their confusion matrix and the rate of unsupported
+compliant decisions, all against expected_compliance in Part L2 ground truth.
 
 Mirrors scripts/run_retrieval_eval.py's own self-contained shape (tender
 setup, extraction, knowledge import all reimplemented here rather than

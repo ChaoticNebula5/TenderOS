@@ -55,9 +55,9 @@ ACTION_ROLES: dict[str, frozenset[Role]] = {
     # B10 (G12): Part H's matrix has no "Graph" row at all. view_graph covers
     # the 4 read/compute routes (status, impact, contradictions, trace) -
     # full 7-role breadth, same as resolve_redteam_finding (the widest
-    # existing action), justified by PRD 27.13's own invariant ("Traceability
-    # must be accessible from normal workflows, not hidden in an admin-only
-    # screen") and by impact/contradiction analysis being inherently
+    # existing action), justified by PRD 27.13's own invariant (people reach
+    # traceability through their everyday workflows, not only through a
+    # screen kept for admins) and by impact/contradiction analysis being inherently
     # cross-cutting across compliance/talent/proposal, not owned by one
     # specialist role. trigger_graph_projection (the manual POST .../
     # graph/project trigger) is narrower - same set as edit_proposal, since

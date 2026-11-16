@@ -107,8 +107,8 @@ export function KnowledgeSelections() {
       try {
         rows = await previewGraphImpact(tenderId, itemId);
       } catch (err) {
-        // Part I4's own documented retry policy: "graph stale: enqueue
-        // projection, retry query once after completion." Retried
+        // Part I4's own documented retry policy: on a stale graph, queue a
+        // projection and, once it finishes, run the query one more time. Retried
         // exactly once, not looped - a second staleness in a row is a
         // real failure, not something to keep silently retrying.
         if (err instanceof ApiError && err.status === 409) {

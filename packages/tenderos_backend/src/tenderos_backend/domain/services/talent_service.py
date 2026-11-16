@@ -387,8 +387,8 @@ def _mentions_availability(criterion: str) -> bool:
 #     just deciding what the persisted row must show given them.
 #
 # Why this is worth writing by hand: this is B8A's exact analog of B7's
-# enforce_evidence_sufficiency - the one place PRD 10.9's promise ("surface
-# explicit gaps and stale or unknown profile facts") stops being a hope
+# enforce_evidence_sufficiency - the one place PRD 10.9's promise (show gaps,
+# and profile facts that are stale or unknown, explicitly) stops being a hope
 # about the model's own diligence and becomes a fact about what
 # role_matches actually persists. Get it wrong and either a real
 # disqualifying gap (an expired required cert, an unknown-availability
