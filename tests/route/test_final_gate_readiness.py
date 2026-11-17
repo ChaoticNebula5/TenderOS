@@ -7,6 +7,12 @@ target_updates is refused 422 before anything is applied.
 No route test covered the waiver check before this file. Gates are
 hand-built rows (no graph run), as in test_gate_live_counts.py; the graph is
 projected for real, since readiness checks its freshness.
+
+Plan items 94, 96 and 99: a clean bid also has a parsed document and a
+complete red-team pass recorded at its current version
+(tests/readiness_facts.py), and the approval's recompute reads the same
+recorded passes as the page's generate, never the gate payload's frozen
+degraded stages.
 """
 
 import uuid
@@ -14,6 +20,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
+from readiness_facts import add_parsed_document, project_and_review, record_complete_pass
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service, readiness_service
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
@@ -116,7 +123,8 @@ async def test_a_ready_bid_is_approved_against_the_report_that_was_shown(
 ):
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     shown = _generate(client, headers, tender_id)
     assert shown["ready"] is True
@@ -138,7 +146,8 @@ async def test_a_report_changed_since_it_was_shown_is_refused_then_approved(
     waiver, since it is not ready) goes through and records its blockers."""
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     shown = _generate(client, headers, tender_id)
     assert shown["ready"] is True
@@ -182,7 +191,8 @@ async def test_after_readiness_changed_the_panels_next_click_goes_through(
     so it goes through."""
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     _generate(client, headers, tender_id)
     await _critical_finding(tender_id)
@@ -205,7 +215,8 @@ async def test_after_readiness_changed_the_same_key_runs_again_not_replayed(
     progress, so the same key sent again runs the decision again."""
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     _generate(client, headers, tender_id)
     await _critical_finding(tender_id)
@@ -222,7 +233,8 @@ async def test_not_ready_without_a_waiver_is_still_refused(client: TestClient, r
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
     await _critical_finding(tender_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     _generate(client, headers, tender_id)
 
@@ -237,7 +249,8 @@ async def test_with_no_report_ever_shown_the_first_approval_is_refused(
 ):
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
 
     first = _decide(client, headers, gate_id)
@@ -248,31 +261,80 @@ async def test_with_no_report_ever_shown_the_first_approval_is_refused(
     assert second.status_code == 200, second.text
 
 
-async def test_the_gates_own_degraded_stages_reach_the_recompute(
+async def test_the_page_and_the_approval_read_the_same_red_team_facts(
     client: TestClient, register_actor
 ):
-    """The run's red team failed (the gate's payload says so); the page's
-    manual generate passes no degraded stages and reads ready. The approval
-    recomputes with the gate's stages, so it is not ready and needs a
-    waiver."""
+    """Plan item 94. The gate's payload still says the run's red team
+    failed, but a complete pass is recorded at the current version (a later
+    successful pass). The page's generate and the approval's recompute read
+    the same recorded passes, so they agree, and the approval goes through
+    with no READINESS_CHANGED and no waiver."""
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id, degraded_stages=["red_team:LLMTimeoutError"])
     assert _generate(client, headers, tender_id)["ready"] is True
 
-    changed = _decide(client, headers, gate_id)
-    not_waived = _decide(client, headers, gate_id)
-    waived = _decide(client, headers, gate_id, waive=True)
+    response = _decide(client, headers, gate_id)
 
-    assert changed.json()["error"]["code"] == "READINESS_CHANGED"
-    assert not_waived.json()["error"]["code"] == "READINESS_NOT_WAIVED"
-    assert waived.status_code == 200, waived.text
+    assert response.status_code == 200, response.text
     gate = await _gate(gate_id)
-    assert gate is not None
-    assert [b["category"] for b in gate.decision_payload["waived_blockers"]] == [
+    assert gate is not None and gate.decision_payload["waived"] is False
+
+
+async def test_a_failed_pass_blocks_the_page_and_the_approval_alike_until_a_pass_completes(
+    client: TestClient, register_actor
+):
+    """The run's pass failed and nothing has completed at this version: the
+    page shows the red-team blocker, and the approval sees the same report
+    (READINESS_NOT_WAIVED, not READINESS_CHANGED). A complete pass then
+    clears both."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await graph_service.project_tender(tender_id)
+    async with UnitOfWork() as uow:
+        await uow.redteam.record_pass(tender_id, outcome="failed", error_code="LLMTimeoutError")
+        await uow.commit()
+    gate_id = await _final_gate(tender_id, degraded_stages=["red_team:LLMTimeoutError"])
+    shown = _generate(client, headers, tender_id)
+    assert [b["category"] for b in shown["blockers"]] == [
         readiness_service.RED_TEAM_REVIEW_INCOMPLETE
     ]
+
+    refused = _decide(client, headers, gate_id)
+    assert refused.json()["error"]["code"] == "READINESS_NOT_WAIVED"
+
+    await record_complete_pass(tender_id)
+    assert _generate(client, headers, tender_id)["ready"] is True
+    approved = _decide(client, headers, gate_id)
+    assert approved.status_code == 200, approved.text
+
+
+async def test_a_pass_finishing_between_the_page_and_the_approval_is_readiness_changed(
+    client: TestClient, register_actor
+):
+    """W2 with the new fact: a pass completing after the page's report moves
+    no version but changes readiness, so the approval's recompute lands on a
+    different report and is refused once; approving again goes through, and
+    nothing is waived since the bid is now ready."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await graph_service.project_tender(tender_id)
+    gate_id = await _final_gate(tender_id)
+    shown = _generate(client, headers, tender_id)
+    assert shown["ready"] is False
+    await record_complete_pass(tender_id)
+
+    changed = _decide(client, headers, gate_id, waive=True)
+    approved = _decide(client, headers, gate_id, waive=True)
+
+    assert changed.json()["error"]["code"] == "READINESS_CHANGED"
+    assert approved.status_code == 200, approved.text
+    gate = await _gate(gate_id)
+    assert gate is not None and gate.decision_payload["waived"] is False
 
 
 async def test_a_version_move_between_the_recompute_and_the_write_is_refused(
@@ -283,14 +345,15 @@ async def test_a_version_move_between_the_recompute_and_the_write_is_refused(
     the recompute is refused too and nothing is recorded."""
     headers, _, org_id = register_actor()
     tender_id = _tender(client, headers, org_id)
-    await graph_service.project_tender(tender_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
     gate_id = await _final_gate(tender_id)
     _generate(client, headers, tender_id)
 
     real = readiness_service.evaluate_readiness
 
-    async def _then_something_moves(tid, degraded_stages=None):
-        result = await real(tid, degraded_stages=degraded_stages)
+    async def _then_something_moves(tid):
+        result = await real(tid)
         async with UnitOfWork() as uow:
             await uow.tenders.bump_state_version(tid)
             await uow.commit()

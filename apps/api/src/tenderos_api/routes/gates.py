@@ -160,10 +160,12 @@ async def decide_gate(
     # reuses one report per content and makes it the newest. A different id
     # means readiness changed since that report, so the approval is refused
     # with READINESS_CHANGED; the recomputed report is now the current one,
-    # so a second attempt passes. The gate's own degraded stages (written by
-    # final_gate_node into its payload) are passed, so a red-team failure in
-    # the run is not dropped. The decision is then recorded only if the
-    # bid's version is still the recomputed report's (a conditional write).
+    # so a second attempt passes. Plan items 94 and 96: the recompute reads
+    # the same facts as the Readiness page's generate (the recorded red-team
+    # passes, not the gate payload's frozen degraded stages), so the two
+    # agree, and a later successful red-team pass is seen here too. The
+    # decision is then recorded only if the bid's version is still the
+    # recomputed report's (a conditional write).
     if gate.gate_type == "final_readiness" and body.target_updates:
         # Its targets list is always empty, and target updates are applied
         # in their own transaction and move the version the conditional
@@ -174,10 +176,7 @@ async def decide_gate(
     required_version: int | None = None
     if gate.gate_type == "final_readiness" and body.decision == "approve":
         shown = await readiness_service.get_latest_readiness(gate.tender_id)
-        summary = (gate.request_payload or {}).get("summary") or {}
-        fresh = await readiness_service.evaluate_readiness(
-            gate.tender_id, degraded_stages=summary.get("degraded_stages") or None
-        )
+        fresh = await readiness_service.evaluate_readiness(gate.tender_id)
         if shown is None or fresh.report_id != shown.report_id:
             raise ReadinessChangedError()
         required_version = fresh.tender_state_version

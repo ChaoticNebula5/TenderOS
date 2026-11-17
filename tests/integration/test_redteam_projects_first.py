@@ -51,13 +51,20 @@ async def _make_stale(tender_id: uuid.UUID) -> None:
     assert not (await graph_service.get_graph_status(tender_id))["fresh"]
 
 
+OPERATION_ID = uuid.uuid4()
+passed_operation_ids: list[uuid.UUID | None] = []
+
+
 def _record_red_team(monkeypatch) -> list[bool]:
     """Replace run_red_team with a recorder of the graph's freshness when the
-    pass starts."""
+    pass starts, and of the operation id it was given (plan items 94 and 96:
+    the pass is recorded as the operation's)."""
     fresh_at_start: list[bool] = []
+    passed_operation_ids.clear()
 
-    async def recorder(_client, _model, tender_id):
+    async def recorder(_client, _model, tender_id, *, operation_id=None):
         fresh_at_start.append((await graph_service.get_graph_status(tender_id))["fresh"])
+        passed_operation_ids.append(operation_id)
 
     monkeypatch.setattr(redteam_service, "run_red_team", recorder)
     monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: None)
@@ -68,8 +75,9 @@ async def test_a_red_team_run_on_a_stale_graph_projects_it_first(monkeypatch):
     tender_id = await _bid()
     await _make_stale(tender_id)
     fresh_at_start = _record_red_team(monkeypatch)
-    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id))
+    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id, id=OPERATION_ID))
     assert fresh_at_start == [True]
+    assert passed_operation_ids == [OPERATION_ID]
 
 
 async def test_a_fresh_graph_is_not_projected_again(monkeypatch):
@@ -78,7 +86,7 @@ async def test_a_fresh_graph_is_not_projected_again(monkeypatch):
     projections: list[uuid.UUID] = []
     monkeypatch.setattr(graph_service, "project_tender", projections.append)
     fresh_at_start = _record_red_team(monkeypatch)
-    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id))
+    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id, id=OPERATION_ID))
     assert projections == [] and fresh_at_start == [True]
 
 
@@ -91,7 +99,7 @@ async def test_a_failed_projection_is_logged_and_the_pass_goes_on(monkeypatch, c
 
     monkeypatch.setattr(graph_service, "project_tender", failing)
     fresh_at_start = _record_red_team(monkeypatch)
-    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id))
+    await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id, id=OPERATION_ID))
     assert fresh_at_start == [False], "the pass still runs, on the stale graph"
     assert "could not project the stale graph" in caplog.text
 
@@ -106,5 +114,5 @@ async def test_a_job_timeout_during_the_projection_is_not_swallowed(monkeypatch)
     monkeypatch.setattr(graph_service, "project_tender", timing_out)
     fresh_at_start = _record_red_team(monkeypatch)
     with pytest.raises(JobTimeoutException):
-        await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id))
+        await operation_jobs._run_redteam(SimpleNamespace(tender_id=tender_id, id=OPERATION_ID))
     assert fresh_at_start == []

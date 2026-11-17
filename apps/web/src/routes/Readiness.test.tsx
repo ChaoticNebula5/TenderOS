@@ -290,6 +290,36 @@ describe("Readiness (restyle batch 5)", () => {
     expect(container.querySelectorAll(".readiness__counts dt")).toHaveLength(1);
   });
 
+  it("labels item 99's blocker and count", async () => {
+    getReadiness.mockResolvedValue(
+      report({
+        ready: false,
+        counts: {
+          requirements_total: 2,
+          documents_not_parsed: 1,
+        } as unknown as ReadinessReportResponse["counts"],
+        blockers: [
+          {
+            category: "document_not_parsed",
+            target_type: "document",
+            target_id: "d1",
+            message: "Document 'pricing.xlsx' failed to parse. Retry it on the Upload page.",
+          },
+        ],
+      }),
+    );
+    listWorkflowRuns.mockResolvedValue([]);
+    renderScreen();
+
+    expect(await screen.findByText("Document not parsed")).toBeInTheDocument();
+    expect(screen.getByText("Documents not parsed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Document 'pricing.xlsx' failed to parse. Retry it on the Upload page.", {
+        exact: false,
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("reports the run status, keeps the gate below the report, heading and panel adjacent (full-flow.spec.ts:56)", async () => {
     getReadiness.mockResolvedValue(report());
     listWorkflowRuns.mockResolvedValue([run("waiting_for_human")]);

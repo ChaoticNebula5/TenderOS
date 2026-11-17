@@ -42,6 +42,9 @@ ROLE_WITH_NO_SELECTED_CANDIDATE = "role_with_no_selected_candidate"
 SELECTED_EMPLOYEE_REMOVED = "selected_employee_removed"
 STALE_GRAPH_PROJECTION = "stale_graph_projection"
 RED_TEAM_REVIEW_INCOMPLETE = "red_team_review_incomplete"
+# Plan item 99: a tender document that is not parsed has had no requirements
+# extracted, and a new run is refused until it is (DOCUMENTS_NOT_READY).
+DOCUMENT_NOT_PARSED = "document_not_parsed"
 
 _COMPLIANT_STATUSES = ("fully_compliant", "partially_compliant")
 _UNRESOLVED_COMPLIANCE_STATUSES = ("not_reviewed", "clarification_required", "evidence_unavailable")
@@ -107,9 +110,7 @@ def _blocker(category: str, target_type: str, target_id: uuid.UUID | None, messa
     }
 
 
-async def evaluate_readiness(
-    tender_id: uuid.UUID, degraded_stages: list[str] | None = None
-) -> ReadinessResult:
+async def evaluate_readiness(tender_id: uuid.UUID) -> ReadinessResult:
     """B12's deterministic readiness policy - the Build Guide makes readiness
     a deterministic function of the current records: an LLM can describe the
     blockers in words, but never sets ready=true. No LLM call anywhere in
@@ -136,7 +137,7 @@ async def evaluate_readiness(
     genuine distributed transaction.
     """
     for _attempt in range(_MAX_READINESS_ATTEMPTS):
-        result = await _evaluate_readiness_once(tender_id, degraded_stages)
+        result = await _evaluate_readiness_once(tender_id)
         if result is not None:
             return result
     raise RuntimeError(
@@ -146,9 +147,7 @@ async def evaluate_readiness(
     )
 
 
-async def _evaluate_readiness_once(
-    tender_id: uuid.UUID, degraded_stages: list[str] | None = None
-) -> ReadinessResult | None:
+async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | None:
     """One attempt. Returns None (signaling "retry me") if tender.state_
     version moved between the read at the top and the persist at the
     bottom, rather than persisting a report whose contents may already be
@@ -399,6 +398,63 @@ async def _evaluate_readiness_once(
         clarifications = await uow.requirements.list_clarification_items_for_tender(tender_id)
         counts["open_clarifications"] = sum(1 for c in clarifications if c.status == "open")
 
+        # ------------------------------------------------------------
+        # 8. Red-team review (plan items 94 and 96). Read from the passes
+        # recorded by run_red_team, never from the caller: the Readiness
+        # page, the run's node and the final gate's approval all ask the same
+        # question, so they agree. The question: has a complete pass, graph
+        # checks included, seen this state version? A later failed attempt
+        # does not undo a complete pass at this version (user decision, Q1):
+        # it wrote no findings, so that pass's findings are still current.
+        # Otherwise the message says why, from the newest pass.
+        # ------------------------------------------------------------
+        if not await uow.redteam.has_complete_pass_at(tender_id, state_version):
+            latest_pass = await uow.redteam.latest_pass(tender_id)
+            if latest_pass is None:
+                message = "No red-team pass has been recorded for this bid. Run the red team."
+            elif latest_pass.outcome == "failed":
+                message = "The most recent red-team pass failed. Run the red team again."
+            elif latest_pass.graph_checks == "skipped":
+                message = (
+                    "The most recent red-team pass could not check the graph (it was stale). "
+                    "Run the red team again."
+                )
+            else:
+                message = (
+                    f"The red-team review checked graph version {latest_pass.graph_state_version}; "
+                    f"the bid is now at version {state_version}. Run the red team again."
+                )
+            blockers.append(_blocker(RED_TEAM_REVIEW_INCOMPLETE, "tender", tender_id, message))
+
+        # ------------------------------------------------------------
+        # 9. Documents not parsed (plan item 99). Every tender document
+        # counts: tender documents are never superseded (only an employee's
+        # resume, an organization document, sets supersedes_document_id). A
+        # failed parse says how to retry it. Any other unfinished status is
+        # named as it is, never as "still being processed": a document left
+        # in uploaded or queued may be stuck. A bid with no documents is
+        # blocked too, as a new run is (user decision, Q4).
+        # ------------------------------------------------------------
+        documents = await uow.documents.list_for_tender(tender_id)
+        if not documents:
+            blockers.append(
+                _blocker(DOCUMENT_NOT_PARSED, "tender", tender_id, "The bid has no documents.")
+            )
+        not_parsed = [doc for doc in documents if doc.parse_status != "parsed"]
+        for doc in not_parsed:
+            blockers.append(
+                _blocker(
+                    DOCUMENT_NOT_PARSED,
+                    "document",
+                    doc.id,
+                    f"Document '{doc.filename}' failed to parse. Retry it on the Upload page."
+                    if doc.parse_status == "failed"
+                    else f"Document '{doc.filename}' has not finished processing "
+                    f"(status: {doc.parse_status}).",
+                )
+            )
+        counts["documents_not_parsed"] = len(not_parsed)
+
     # ------------------------------------------------------------
     # 7. Stale graph projection (reuses graph_service.check_freshness
     # directly - "when graph checks are required" reads as "whenever
@@ -438,35 +494,6 @@ async def _evaluate_readiness_once(
                 "tender",
                 tender_id,
                 "Graph freshness could not be verified (the graph store was unreachable).",
-            )
-        )
-
-    # ------------------------------------------------------------
-    # 8. Red-team review degraded (this block's own addition, Q5).
-    # degraded_stages is LangGraph checkpoint state, not a persisted
-    # column (final_gate_node's own docstring: it's only ever written into
-    # approval_gates.request_payload, per-run) - readiness_generation_node
-    # passes state["degraded_stages"] through directly rather than this
-    # function querying a workflow_runs column that doesn't exist. A
-    # standalone call (e.g. from the manual POST /readiness/generate route,
-    # outside any live graph run) has no state to pass and gets None -
-    # correctly treated as "nothing known to be degraded," not "not stale."
-    # ------------------------------------------------------------
-    # Entries are "{stage}:{ExceptionType}" (red_team_node/proposal_
-    # drafting_node/project_graph_node all format degraded_stages the same
-    # way) - a bare `"red_team" in degraded_stages` checks LIST membership
-    # of the exact string "red_team", which never matches an entry that
-    # always carries an exception-type suffix. Caught by this file's own
-    # test (test_red_team_degraded_stage_blocks failed against exactly
-    # this before the prefix check was added) rather than left silently
-    # broken - the blocker this was meant to add would never have fired.
-    if degraded_stages and any(stage.startswith("red_team:") for stage in degraded_stages):
-        blockers.append(
-            _blocker(
-                RED_TEAM_REVIEW_INCOMPLETE,
-                "tender",
-                tender_id,
-                "The most recent red-team pass failed and its findings may be stale.",
             )
         )
 

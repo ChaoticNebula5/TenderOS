@@ -1,9 +1,9 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tenderos_backend.db.models.redteam import RedteamFinding
+from tenderos_backend.db.models.redteam import RedteamFinding, RedteamPass
 
 
 class RedteamRepository:
@@ -173,3 +173,64 @@ class RedteamRepository:
         if stale:
             await self._session.flush()
         return stale
+
+    # ------------------------------------------------------------------
+    # Red-team passes (plan items 94 and 96, migration 032)
+    # ------------------------------------------------------------------
+
+    async def record_pass(
+        self,
+        tender_id: uuid.UUID,
+        *,
+        outcome: str,
+        graph_checks: str | None = None,
+        graph_state_version: int | None = None,
+        error_code: str | None = None,
+        workflow_run_id: uuid.UUID | None = None,
+        operation_id: uuid.UUID | None = None,
+    ) -> None:
+        """One finished pass. finished_at is the database clock at the insert
+        (clock_timestamp), not now(): a completed pass is recorded inside its
+        findings' transaction, and now() is that transaction's start, which
+        would misorder two passes whose transactions overlap."""
+        self._session.add(
+            RedteamPass(
+                tender_id=tender_id,
+                outcome=outcome,
+                graph_checks=graph_checks,
+                graph_state_version=graph_state_version,
+                error_code=error_code,
+                workflow_run_id=workflow_run_id,
+                operation_id=operation_id,
+                finished_at=func.clock_timestamp(),
+            )
+        )
+        await self._session.flush()
+
+    async def latest_pass(self, tender_id: uuid.UUID) -> RedteamPass | None:
+        """The newest finished pass, whatever its outcome."""
+        result = await self._session.execute(
+            select(RedteamPass)
+            .where(RedteamPass.tender_id == tender_id)
+            .order_by(RedteamPass.finished_at.desc(), RedteamPass.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def has_complete_pass_at(self, tender_id: uuid.UUID, state_version: int) -> bool:
+        """Whether a completed pass ran its graph checks at this state
+        version: readiness's whole red-team question (plan items 94, 96).
+
+        Matching the version is enough: migration 032's checks give a row a
+        graph_state_version exactly when it is a completed pass whose graph
+        checks ran (ck_redteam_pass_shape, ck_redteam_pass_graph_version), so
+        testing outcome and graph_checks too could never change the answer."""
+        result = await self._session.execute(
+            select(
+                exists().where(
+                    RedteamPass.tender_id == tender_id,
+                    RedteamPass.graph_state_version == state_version,
+                )
+            )
+        )
+        return bool(result.scalar_one())

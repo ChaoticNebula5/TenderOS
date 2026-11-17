@@ -25,10 +25,11 @@ async def readiness_generation_node(state: TenderState) -> dict:
     Postgres/Neo4j-freshness reads, same posture project_graph_node's own
     docstring establishes for graph projection.
 
-    degraded_stages is passed straight through from state, not re-derived -
-    it's LangGraph checkpoint state, not a persisted column (see
-    readiness_service.py's own comment on why blocker 8 takes it as a
-    parameter rather than querying for it).
+    Plan items 94 and 96: readiness no longer takes the run's
+    degraded_stages. It reads the red-team passes run_red_team records, so
+    this node, the Readiness page and the final gate's approval read the
+    same facts. The run's degraded_stages still reaches the final gate's
+    payload, for display.
 
     CodeRabbit review: wrapped in try/except, matching proposal_drafting_
     node/project_graph_node/red_team_node's own pattern - previously an
@@ -48,7 +49,7 @@ async def readiness_generation_node(state: TenderState) -> dict:
     await sync_run_status(workflow_run_id, "generating_readiness")
 
     try:
-        result = await evaluate_readiness(tender_id, degraded_stages=state.get("degraded_stages"))
+        result = await evaluate_readiness(tender_id)
     except Exception as exc:
         logger.exception("readiness evaluation failed for tender %s", tender_id)
         return {"degraded_stages": [f"readiness_generation:{type(exc).__name__}"]}

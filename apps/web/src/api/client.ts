@@ -1426,6 +1426,8 @@ export interface ReadinessCounts {
   open_clarifications: number;
   // Plan item 86: null on a report stored before this count existed.
   selected_employees_removed?: number | null;
+  // Plan item 99: null on a report stored before this count existed.
+  documents_not_parsed?: number | null;
 }
 
 export interface ReadinessReportResponse {
