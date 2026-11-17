@@ -24,7 +24,7 @@ from datetime import date
 import pytest
 import pytest_asyncio
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, TransientError
-from readiness_facts import add_parsed_document, project_and_review
+from readiness_facts import add_parsed_document, mark_chunks_read, project_and_review
 from sqlalchemy import select
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.readiness import ReadinessReport
@@ -86,7 +86,10 @@ async def _chunk(tender_id: uuid.UUID) -> uuid.UUID:
             content_hash=uuid.uuid4().hex,
         )
         await uow.commit()
-        return chunk.id
+    # Requirements cite this chunk, so an extraction has read it (plan item
+    # 104): an unread chunk would block as document_not_extracted.
+    await mark_chunks_read(tender_id)
+    return chunk.id
 
 
 async def _requirement(
@@ -257,6 +260,7 @@ _EXPECTED_COUNTS_KEYS = {
     "open_clarifications",
     "selected_employees_removed",
     "documents_not_parsed",
+    "documents_not_extracted",
 }
 
 

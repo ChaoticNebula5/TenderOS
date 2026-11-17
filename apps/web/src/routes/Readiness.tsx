@@ -30,6 +30,7 @@ const COUNT_LABELS: Readonly<Record<string, string>> = {
   resource_gaps: "Roles without a selected candidate",
   selected_employees_removed: "Selected employees removed from roster",
   documents_not_parsed: "Documents not parsed",
+  documents_not_extracted: "Documents not read by extraction",
   proposal_claims_needing_review: "Proposal claims needing review",
   open_clarifications: "Open clarifications",
 };
@@ -54,6 +55,7 @@ const BLOCKER_CATEGORY_LABELS: Readonly<Record<string, string>> = {
   stale_graph_projection: "Stale graph projection",
   red_team_review_incomplete: "Red-team review incomplete",
   document_not_parsed: "Document not parsed",
+  document_not_extracted: "Document not read by extraction",
 };
 
 function blockerCategoryLabel(category: string): string {

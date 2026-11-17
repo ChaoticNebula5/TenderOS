@@ -12,7 +12,8 @@ Plan items 94, 96 and 99: a clean bid also has a parsed document and a
 complete red-team pass recorded at its current version
 (tests/readiness_facts.py), and the approval's recompute reads the same
 recorded passes as the page's generate, never the gate payload's frozen
-degraded stages.
+degraded stages. Since plan item 104 that document's text has also been
+read by a completed extraction.
 """
 
 import uuid
@@ -20,7 +21,12 @@ import uuid
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from readiness_facts import add_parsed_document, project_and_review, record_complete_pass
+from readiness_facts import (
+    add_parsed_document,
+    mark_chunks_read,
+    project_and_review,
+    record_complete_pass,
+)
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service, readiness_service
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
@@ -327,6 +333,55 @@ async def test_a_pass_finishing_between_the_page_and_the_approval_is_readiness_c
     shown = _generate(client, headers, tender_id)
     assert shown["ready"] is False
     await record_complete_pass(tender_id)
+
+    changed = _decide(client, headers, gate_id, waive=True)
+    approved = _decide(client, headers, gate_id, waive=True)
+
+    assert changed.json()["error"]["code"] == "READINESS_CHANGED"
+    assert approved.status_code == 200, approved.text
+    gate = await _gate(gate_id)
+    assert gate is not None and gate.decision_payload["waived"] is False
+
+
+async def test_an_extraction_finishing_between_the_page_and_the_approval_is_readiness_changed(
+    client: TestClient, register_actor
+):
+    """Plan item 104 with W2: an extraction completing after the page's report
+    marks the chunks it read and moves no version (chunks are not projected),
+    but changes readiness, so the approval's recompute lands on a different
+    report and is refused once; approving again goes through, and nothing is
+    waived since the bid is now ready. mark_chunks_read writes what the
+    extraction node writes when its task completes."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    async with UnitOfWork() as uow:
+        amendment = await uow.documents.create(
+            side="client",
+            doc_type="amendment",
+            filename="amendment_2.pdf",
+            storage_key=f"test/{uuid.uuid4()}",
+            sha256=uuid.uuid4().hex,
+            mime_type="application/pdf",
+            file_size_bytes=10,
+            tender_id=tender_id,
+        )
+        await uow.documents.update_parse_status(amendment.id, "parsed")
+        await uow.documents.create_chunk(
+            document_id=amendment.id,
+            chunk_index=0,
+            chunk_text="Clause 5 is withdrawn.",
+            normalized_text="clause 5 is withdrawn.",
+            content_hash=uuid.uuid4().hex,
+        )
+        await uow.commit()
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    shown = _generate(client, headers, tender_id)
+    assert [b["category"] for b in shown["blockers"]] == ["document_not_extracted"]
+    version = await _version(tender_id)
+    await mark_chunks_read(tender_id)
+    assert await _version(tender_id) == version, "precondition: the marks move no version"
 
     changed = _decide(client, headers, gate_id, waive=True)
     approved = _decide(client, headers, gate_id, waive=True)

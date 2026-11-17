@@ -201,6 +201,46 @@ class DocumentRepository:
         )
         return list(result.scalars().all())
 
+    async def mark_chunks_extracted(self, chunk_ids: list[uuid.UUID], task_id: uuid.UUID) -> None:
+        """Plan item 104: records that this requirement extraction task read
+        these chunks. The caller passes exactly the chunks it listed, never
+        "every chunk of the bid": a chunk a parse committed during the
+        extraction was not read, and must stay unmarked. A chunk the
+        reconcile deleted since is simply not updated."""
+        if not chunk_ids:
+            return
+        await self._session.execute(
+            update(DocumentChunk)
+            .where(DocumentChunk.id.in_(chunk_ids))
+            .values(extracted_by_task_id=task_id)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def extraction_coverage_for_tender(
+        self, tender_id: uuid.UUID
+    ) -> dict[uuid.UUID, tuple[int, int]]:
+        """Plan item 104: for each of the tender's documents, (parsed chunks,
+        parsed chunks no completed extraction has read). Every tender
+        document has an entry, (0, 0) when it has no parsed chunks. Synthetic
+        chunks are not counted: they are not the file's text, and extraction
+        never reads them. One query for the whole bid."""
+        unread = sa.func.count(DocumentChunk.id).filter(
+            DocumentChunk.extracted_by_task_id.is_(None)
+        )
+        result = await self._session.execute(
+            select(Document.id, sa.func.count(DocumentChunk.id), unread)
+            .outerjoin(
+                DocumentChunk,
+                sa.and_(
+                    DocumentChunk.document_id == Document.id,
+                    DocumentChunk.origin == CHUNK_ORIGIN_PARSED,
+                ),
+            )
+            .where(Document.tender_id == tender_id)
+            .group_by(Document.id)
+        )
+        return {row[0]: (int(row[1]), int(row[2])) for row in result.all()}
+
     async def search_chunks_lexical_for_org(
         self, organization_id: uuid.UUID, query_text: str, limit: int
     ) -> list[tuple[DocumentChunk, float]]:

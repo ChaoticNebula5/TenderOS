@@ -45,6 +45,20 @@ RED_TEAM_REVIEW_INCOMPLETE = "red_team_review_incomplete"
 # Plan item 99: a tender document that is not parsed has had no requirements
 # extracted, and a new run is refused until it is (DOCUMENTS_NOT_READY).
 DOCUMENT_NOT_PARSED = "document_not_parsed"
+# Plan item 104: a parsed tender document whose text no completed
+# requirement extraction has read (added after the run's extraction, or
+# changed by a re-parse), or that has no readable text at all.
+DOCUMENT_NOT_EXTRACTED = "document_not_extracted"
+
+# Every blocker-10 message ends on how to get a new run. A run still open
+# (one waiting at the final gate, say) refuses a new one (WORKFLOW_RUN_ACTIVE)
+# and the Upload page then shows that run's tasks and Cancel instead of
+# Start processing, so the message says how to close it first.
+_NEW_RUN_STEPS = (
+    "Start a new run on the Upload page to extract its requirements. If a run is still open, "
+    "first cancel it there or request changes at its gate."
+)
+_AMENDMENT_STEP = " Then review the requirements it changes."
 
 _COMPLIANT_STATUSES = ("fully_compliant", "partially_compliant")
 _UNRESOLVED_COMPLIANCE_STATUSES = ("not_reviewed", "clarification_required", "evidence_unavailable")
@@ -454,6 +468,46 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
                 )
             )
         counts["documents_not_parsed"] = len(not_parsed)
+
+        # ------------------------------------------------------------
+        # 10. Documents no extraction has read (plan item 104). Each parsed
+        # chunk records the extraction task that read it, set when that
+        # task completed (migration 033); readiness never guesses from
+        # times. Only parsed documents: one not parsed has blocker 9 alone.
+        # Only the file's own (parsed) chunks: a synthetic chunk is never
+        # extracted. A parsed document with no parsed chunks blocks too
+        # (user decision, Q6): a scan whose OCR found nothing looks exactly
+        # like an empty file. doc_type picks the wording only, never whether
+        # a document blocks (Q4): a renamed amendment must not slip through.
+        # ------------------------------------------------------------
+        coverage = await uow.documents.extraction_coverage_for_tender(tender_id)
+        not_extracted = 0
+        for doc in documents:
+            if doc.parse_status != "parsed":
+                continue
+            total, unread = coverage.get(doc.id, (0, 0))
+            if total == 0:
+                message = (
+                    f"Document '{doc.filename}' has no readable text, so no requirements could "
+                    "be extracted from it. Check the file; a scan may not have been read."
+                )
+            elif unread == 0:
+                continue
+            elif unread == total:
+                message = (
+                    f"Document '{doc.filename}' has not been read by requirement extraction. "
+                    + _NEW_RUN_STEPS
+                )
+            else:
+                message = (
+                    f"Document '{doc.filename}' changed after the last requirement extraction "
+                    f"({unread} of {total} parts not read). " + _NEW_RUN_STEPS
+                )
+            if total > 0 and doc.doc_type == "amendment":
+                message += _AMENDMENT_STEP
+            not_extracted += 1
+            blockers.append(_blocker(DOCUMENT_NOT_EXTRACTED, "document", doc.id, message))
+        counts["documents_not_extracted"] = not_extracted
 
     # ------------------------------------------------------------
     # 7. Stale graph projection (reuses graph_service.check_freshness
