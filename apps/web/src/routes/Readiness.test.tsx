@@ -320,6 +320,36 @@ describe("Readiness (restyle batch 5)", () => {
     ).toBeInTheDocument();
   });
 
+  it("labels item 104's blocker and count", async () => {
+    const message =
+      "Document 'amendment_2.docx' has not been read by requirement extraction. Start a new " +
+      "run on the Upload page to extract its requirements. If a run is still open, first " +
+      "cancel it there or request changes at its gate. Then review the requirements it changes.";
+    getReadiness.mockResolvedValue(
+      report({
+        ready: false,
+        counts: {
+          requirements_total: 2,
+          documents_not_extracted: 1,
+        } as unknown as ReadinessReportResponse["counts"],
+        blockers: [
+          {
+            category: "document_not_extracted",
+            target_type: "document",
+            target_id: "d2",
+            message,
+          },
+        ],
+      }),
+    );
+    listWorkflowRuns.mockResolvedValue([]);
+    renderScreen();
+
+    expect(await screen.findByText("Document not read by extraction")).toBeInTheDocument();
+    expect(screen.getByText("Documents not read by extraction")).toBeInTheDocument();
+    expect(screen.getByText(message, { exact: false })).toBeInTheDocument();
+  });
+
   it("reports the run status, keeps the gate below the report, heading and panel adjacent (full-flow.spec.ts:56)", async () => {
     getReadiness.mockResolvedValue(report());
     listWorkflowRuns.mockResolvedValue([run("waiting_for_human")]);

@@ -60,6 +60,7 @@ async def requirement_extraction_node(state: TenderState) -> dict:
         await uow.workflow.mark_task_running(task.id)
         chunks = await uow.documents.list_chunks_for_tender(tender_id)
         await uow.commit()
+    read_chunk_ids = [chunk.id for chunk in chunks]
 
     try:
         client = _build_llm_client()
@@ -114,6 +115,13 @@ async def requirement_extraction_node(state: TenderState) -> dict:
                     "clarification_count": len(extraction.clarifications),
                 },
             )
+            # Plan item 104: the chunks this extraction read, marked in the
+            # same transaction as its completion, so a failure anywhere above
+            # leaves them unread (fail closed). Exactly the ones listed at
+            # the start: a document that finished parsing since was not read.
+            # No version bump: chunks are not projected, and the requirements
+            # persisted above already bumped it if any were new.
+            await uow.documents.mark_chunks_extracted(read_chunk_ids, task.id)
             await uow.commit()
 
     except Exception as exc:

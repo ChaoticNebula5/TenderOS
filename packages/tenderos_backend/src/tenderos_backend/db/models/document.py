@@ -140,6 +140,13 @@ class DocumentChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        # Plan item 104 (migration 033): readiness asks which parsed chunks
+        # no extraction has read. Only those rows are in this index.
+        Index(
+            "idx_document_chunks_unextracted",
+            "document_id",
+            postgresql_where=text("extracted_by_task_id IS NULL AND origin = 'parsed'"),
+        ),
     )
 
     document_id: Mapped[uuid.UUID] = mapped_column(
@@ -164,3 +171,14 @@ class DocumentChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bbox_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
+    # Plan item 104 (migration 033): the requirement extraction task that
+    # read this chunk, set when that task completes. NULL means no completed
+    # extraction has read it: a document added after the last extraction, or
+    # text a re-parse changed (the reconcile inserts a new row for new text
+    # and keeps the row, and this mark, for unchanged text). Readiness blocks
+    # on parsed chunks left NULL. SET NULL is never reached on its own:
+    # nothing deletes workflow_tasks except the cascade from a deleted run,
+    # which only a deleted tender causes, and that deletes these chunks too.
+    extracted_by_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflow_tasks.id", ondelete="SET NULL"), nullable=True
+    )

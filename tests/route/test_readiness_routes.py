@@ -219,3 +219,58 @@ async def test_readiness_routes_return_a_document_not_parsed_blocker(
             }
         ]
         assert body["counts"]["documents_not_parsed"] == 1
+
+
+async def test_readiness_routes_return_a_document_not_extracted_blocker(
+    client: TestClient, register_actor
+):
+    """Plan item 104, through both routes: a parsed amendment whose text no
+    extraction has read reaches the response as a document_not_extracted
+    blocker, and the response schema accepts its category and the new count
+    (a category missing from the schema's Literal answers 500, as PR 7
+    found)."""
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders",
+        json={"name": "Readiness Extraction Bid"},
+        headers=headers,
+    ).json()
+    async with UnitOfWork() as uow:
+        document = await uow.documents.create(
+            side="client",
+            doc_type="amendment",
+            filename="amendment_2.pdf",
+            storage_key=f"test/{uuid.uuid4()}",
+            sha256=uuid.uuid4().hex,
+            mime_type="application/pdf",
+            file_size_bytes=10,
+            tender_id=uuid.UUID(tender["id"]),
+        )
+        await uow.documents.update_parse_status(document.id, "parsed")
+        await uow.documents.create_chunk(
+            document_id=document.id,
+            chunk_index=0,
+            chunk_text="Clause 5 is withdrawn.",
+            normalized_text="clause 5 is withdrawn.",
+            content_hash=uuid.uuid4().hex,
+        )
+        await uow.commit()
+
+    generated = client.post(f"/tenders/{tender['id']}/readiness/generate", headers=headers)
+    shown = client.get(f"/tenders/{tender['id']}/readiness", headers=headers)
+
+    for response in (generated, shown):
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [b for b in body["blockers"] if b["category"] == "document_not_extracted"] == [
+            {
+                "category": "document_not_extracted",
+                "target_type": "document",
+                "target_id": str(document.id),
+                "message": "Document 'amendment_2.pdf' has not been read by requirement "
+                "extraction. Start a new run on the Upload page to extract its requirements. "
+                "If a run is still open, first cancel it there or request changes at its gate. "
+                "Then review the requirements it changes.",
+            }
+        ]
+        assert body["counts"]["documents_not_extracted"] == 1

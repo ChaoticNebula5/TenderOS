@@ -4,11 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-# The 10 blocker categories readiness_service.py actually produces
+# The 11 blocker categories readiness_service.py actually produces
 # (the constants atop readiness_service.py - the Build Guide's 7 required
 # categories plus this project's own red_team_review_incomplete, since plan
-# item 86 selected_employee_removed, and since plan item 99
-# document_not_parsed). Restated
+# item 86 selected_employee_removed, since plan item 99
+# document_not_parsed, and since plan item 104 document_not_extracted). Restated
 # here as literal strings rather than imported, matching this schema
 # module's existing convention (schemas/gates.py's TargetUpdate.decision
 # does the same for "approve") - a new category added to that file without
@@ -25,6 +25,7 @@ _BlockerCategory = Literal[
     "red_team_review_incomplete",
     "selected_employee_removed",
     "document_not_parsed",
+    "document_not_extracted",
 ]
 
 
@@ -36,7 +37,7 @@ class ReadinessBlocker(BaseModel):
 
 
 class ReadinessCounts(BaseModel):
-    # Exactly the 12 keys evaluate_readiness always sets, in one
+    # Exactly the keys evaluate_readiness always sets, in one
     # unconditional pass (readiness_service.py:184-319) - pinned against a
     # real persisted report in test_readiness_service.py, not read off this
     # docstring's own claim.
@@ -57,6 +58,10 @@ class ReadinessCounts(BaseModel):
     # Plan item 99: tender documents not parsed. None on a report stored
     # before this count existed.
     documents_not_parsed: int | None = None
+    # Plan item 104: parsed tender documents no completed extraction has read
+    # in full, or with no readable text. None on a report stored before this
+    # count existed.
+    documents_not_extracted: int | None = None
 
 
 class ReadinessReportResponse(BaseModel):
