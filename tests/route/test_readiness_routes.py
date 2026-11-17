@@ -176,3 +176,46 @@ async def test_generate_readiness_returns_a_removed_selected_employee_blocker(
         }
     ]
     assert body["counts"]["selected_employees_removed"] == 1
+
+
+async def test_readiness_routes_return_a_document_not_parsed_blocker(
+    client: TestClient, register_actor
+):
+    """Plan item 99, through both routes: a tender document whose parse
+    failed reaches the response as a document_not_parsed blocker, and the
+    response schema accepts its category and the new count (a category
+    missing from the schema's Literal answered 500 on the fake stack in
+    PR 7)."""
+    headers, _, org_id = register_actor()
+    tender = client.post(
+        f"/organizations/{org_id}/tenders", json={"name": "Readiness Document Bid"}, headers=headers
+    ).json()
+    async with UnitOfWork() as uow:
+        document = await uow.documents.create(
+            side="client",
+            doc_type="pricing_workbook",
+            filename="pricing.xlsx",
+            storage_key=f"test/{uuid.uuid4()}",
+            sha256=uuid.uuid4().hex,
+            mime_type="application/vnd.ms-excel",
+            file_size_bytes=10,
+            tender_id=uuid.UUID(tender["id"]),
+        )
+        await uow.documents.update_parse_status(document.id, "failed")
+        await uow.commit()
+
+    generated = client.post(f"/tenders/{tender['id']}/readiness/generate", headers=headers)
+    shown = client.get(f"/tenders/{tender['id']}/readiness", headers=headers)
+
+    for response in (generated, shown):
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert [b for b in body["blockers"] if b["category"] == "document_not_parsed"] == [
+            {
+                "category": "document_not_parsed",
+                "target_type": "document",
+                "target_id": str(document.id),
+                "message": "Document 'pricing.xlsx' failed to parse. Retry it on the Upload page.",
+            }
+        ]
+        assert body["counts"]["documents_not_parsed"] == 1

@@ -46,10 +46,10 @@ async def generate_readiness(
     # graph timing" precedent as B10/B11's own manual trigger routes - a
     # human resolving a blocker via the normal G7/G8/G9/G11 actions can see
     # the updated readiness picture immediately, without waiting for the
-    # workflow to reach readiness_generation_node again on its own. No
-    # degraded_stages to pass here (this route has no TenderState, unlike
-    # readiness_generation_node's own call) - a standalone regeneration
-    # correctly can't know about an in-flight run's own failures.
+    # workflow to reach readiness_generation_node again on its own. Plan
+    # items 94 and 96: it reads the same facts as the run's node and the
+    # final gate's approval (the recorded red-team passes), so a run's
+    # failed pass shows here too, and a later successful pass clears it.
     try:
         result = await readiness_service.evaluate_readiness(tender_id)
     except readiness_service.TenderNotFoundError as exc:

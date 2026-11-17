@@ -13,7 +13,7 @@ import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
 import "./Readiness.css";
 
-// The twelve readiness counts (_evaluate_readiness_once in readiness_service.py) in words.
+// The readiness counts (_evaluate_readiness_once in readiness_service.py) in words.
 // chosen, not in DESIGN: hand-written so each says what is counted - e.g.
 // critical_major_redteam_findings counts open critical AND major findings
 // (_OPEN_REDTEAM_SEVERITIES in readiness_service.py). A key not listed here falls back
@@ -29,6 +29,7 @@ const COUNT_LABELS: Readonly<Record<string, string>> = {
   commercial_findings_open: "Open commercial findings",
   resource_gaps: "Roles without a selected candidate",
   selected_employees_removed: "Selected employees removed from roster",
+  documents_not_parsed: "Documents not parsed",
   proposal_claims_needing_review: "Proposal claims needing review",
   open_clarifications: "Open clarifications",
 };
@@ -37,7 +38,7 @@ function countLabel(key: string): string {
   return Object.hasOwn(COUNT_LABELS, key) ? COUNT_LABELS[key] : humanize(key);
 }
 
-// The nine blocker categories (the constants atop readiness_service.py) in words.
+// The blocker categories (the constants atop readiness_service.py) in words.
 // chosen, not in DESIGN (polish pass): hand-written like COUNT_LABELS, so
 // "critical_redteam_finding" reads "Critical red-team finding" - as the nav
 // says "Red team" - not humanize()'s "Critical redteam finding". A category
@@ -52,6 +53,7 @@ const BLOCKER_CATEGORY_LABELS: Readonly<Record<string, string>> = {
   selected_employee_removed: "Selected employee removed from roster",
   stale_graph_projection: "Stale graph projection",
   red_team_review_incomplete: "Red-team review incomplete",
+  document_not_parsed: "Document not parsed",
 };
 
 function blockerCategoryLabel(category: string): string {

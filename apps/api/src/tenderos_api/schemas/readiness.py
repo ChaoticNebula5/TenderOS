@@ -4,13 +4,14 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-# The 9 blocker categories readiness_service.py actually produces
-# (readiness_service.py:31-38 - the Build Guide's 7 required categories
-# plus this project's own red_team_review_incomplete and, since plan item
-# 86, selected_employee_removed). Restated
+# The 10 blocker categories readiness_service.py actually produces
+# (the constants atop readiness_service.py - the Build Guide's 7 required
+# categories plus this project's own red_team_review_incomplete, since plan
+# item 86 selected_employee_removed, and since plan item 99
+# document_not_parsed). Restated
 # here as literal strings rather than imported, matching this schema
 # module's existing convention (schemas/gates.py's TargetUpdate.decision
-# does the same for "approve") - a 10th category added to that file without
+# does the same for "approve") - a new category added to that file without
 # a matching update here fails closed (422/500 on the response, not a
 # silently-accepted new value), which is the right direction to fail.
 _BlockerCategory = Literal[
@@ -23,6 +24,7 @@ _BlockerCategory = Literal[
     "stale_graph_projection",
     "red_team_review_incomplete",
     "selected_employee_removed",
+    "document_not_parsed",
 ]
 
 
@@ -52,6 +54,9 @@ class ReadinessCounts(BaseModel):
     # Plan item 86: selected employees removed from the roster. None on a
     # report stored before this count existed, which never counted them.
     selected_employees_removed: int | None = None
+    # Plan item 99: tender documents not parsed. None on a report stored
+    # before this count existed.
+    documents_not_parsed: int | None = None
 
 
 class ReadinessReportResponse(BaseModel):

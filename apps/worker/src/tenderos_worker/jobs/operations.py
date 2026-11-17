@@ -46,8 +46,13 @@ def _build_llm_client() -> LLMClient:
 
 async def _run_redteam(operation: AsyncOperation) -> None:
     await _project_if_stale(operation.tender_id)
+    # operation_id: the pass is recorded as this operation's (plan items 94
+    # and 96), so readiness can tell which pass it is reading.
     await redteam_service.run_red_team(
-        _build_llm_client(), settings.reasoning_model, operation.tender_id
+        _build_llm_client(),
+        settings.reasoning_model,
+        operation.tender_id,
+        operation_id=operation.id,
     )
 
 

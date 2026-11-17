@@ -143,6 +143,7 @@ async def run_red_team(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> list[str]:
     """Red Team's full 5-step check list (B11 build item), run in the order
     E8 requires: the deterministic checks and the graph queries first, the
@@ -159,8 +160,96 @@ async def run_red_team(
     Team cannot silently edit approved content" (the schema half is
     RedteamCritique having no content-mutation field at all, see
     agents/schemas/redteam.py).
+
+    Plan items 94 and 96: every finished pass is recorded (redteam_passes),
+    for both callers (the run's red_team node passes workflow_run_id, the
+    manual operation operation_id), and readiness reads it. A pass that
+    completes is recorded in the same transaction as its findings' upsert
+    and retirement, so readiness never sees a pass's findings without its
+    row, or its row without its findings. A pass that raises is recorded as
+    failed, in its own transaction, before the exception goes on to the
+    caller as before. That includes RQ's JobTimeoutException (an Exception
+    subclass) when its signal lands while the pass's own code is running:
+    the attempt did fail. Only a lost worker or a cancellation records
+    nothing, and has written nothing. A timeout whose signal lands while the
+    event loop is waiting surfaces outside the pass, and asyncio.run then
+    cancels it, so it is a cancellation too.
     """
+    try:
+        graph_skipped, retired = await _run_and_record_pass(
+            client, model, tender_id, workflow_run_id, task_id, operation_id
+        )
+    except Exception as exc:
+        await _record_failed_pass(tender_id, exc, workflow_run_id, operation_id)
+        raise
+
+    # After the commit: the pass is recorded, so nothing below can record it
+    # as failed.
+    if graph_skipped:
+        async with UnitOfWork() as uow:
+            open_graph = [
+                f
+                for f in await uow.redteam.list_for_tender(tender_id)
+                if not f.resolved
+                and f.finding_category in graph_service.GRAPH_CONTRADICTION_CATEGORIES
+            ]
+        logger.warning(
+            "red team: graph checks skipped for tender %s (the graph is stale); "
+            "%d open graph finding(s) left as they were, %d other finding(s) retired",
+            tender_id,
+            len(open_graph),
+            retired,
+        )
+
     async with UnitOfWork() as uow:
+        open_findings = await uow.redteam.list_open_for_tender(tender_id, _OPEN_SEVERITIES)
+    return [str(f.id) for f in open_findings if f.severity in _AUTO_REVISION_SEVERITIES]
+
+
+async def _record_failed_pass(
+    tender_id: uuid.UUID,
+    exc: Exception,
+    workflow_run_id: uuid.UUID | None,
+    operation_id: uuid.UUID | None,
+) -> None:
+    # Best effort: a failure to record the failure must not replace the
+    # pass's own exception. The code is the exception's type name, the same
+    # safe form degraded_stages uses, never its message.
+    try:
+        async with UnitOfWork() as uow:
+            await uow.redteam.record_pass(
+                tender_id,
+                outcome="failed",
+                error_code=type(exc).__name__,
+                workflow_run_id=workflow_run_id,
+                operation_id=operation_id,
+            )
+            await uow.commit()
+    except Exception:
+        logger.exception("red team: could not record the failed pass for tender %s", tender_id)
+
+
+async def _run_and_record_pass(
+    client: LLMClient,
+    model: str,
+    tender_id: uuid.UUID,
+    workflow_run_id: uuid.UUID | None,
+    task_id: uuid.UUID | None,
+    operation_id: uuid.UUID | None,
+) -> tuple[bool, int]:
+    """The pass up to and including its commit. Returns whether the graph
+    checks were skipped and how many findings it retired."""
+    async with UnitOfWork() as uow:
+        # Read first, before any check (plan item 96). Each check's query
+        # sees the data committed when it runs, and the version only rises,
+        # so anything that moves during the pass leaves this version older
+        # than what the checks read, never newer. If the graph checks run,
+        # check_freshness has confirmed the latest completed projection
+        # equals the bid's version at that moment, which is at least this
+        # one. An edit or a projection landing mid-pass therefore records
+        # the older version, and readiness asks for another pass.
+        tender = await uow.tenders.get(tender_id)
+        version_at_start = tender.state_version if tender is not None else None
         drafts: list[RedteamFindingDraft] = []
         drafts.extend(await redteam_checks.check_missing_mandatory_requirements(uow, tender_id))
         drafts.extend(await redteam_checks.check_unsupported_claims(uow, tender_id))
@@ -235,26 +324,16 @@ async def run_red_team(
         retired = await uow.redteam.auto_retire_undetected_findings(
             tender_id, still_detected_fingerprints, keep_categories=kept_categories
         )
-        await uow.commit()
-    if graph_skipped:
-        async with UnitOfWork() as uow:
-            open_graph = [
-                f
-                for f in await uow.redteam.list_for_tender(tender_id)
-                if not f.resolved
-                and f.finding_category in graph_service.GRAPH_CONTRADICTION_CATEGORIES
-            ]
-        logger.warning(
-            "red team: graph checks skipped for tender %s (the graph is stale); "
-            "%d open graph finding(s) left as they were, %d other finding(s) retired",
+        await uow.redteam.record_pass(
             tender_id,
-            len(open_graph),
-            len(retired),
+            outcome="completed",
+            graph_checks="skipped" if graph_skipped else "ran",
+            graph_state_version=None if graph_skipped else version_at_start,
+            workflow_run_id=workflow_run_id,
+            operation_id=operation_id,
         )
-
-    async with UnitOfWork() as uow:
-        open_findings = await uow.redteam.list_open_for_tender(tender_id, _OPEN_SEVERITIES)
-    return [str(f.id) for f in open_findings if f.severity in _AUTO_REVISION_SEVERITIES]
+        await uow.commit()
+    return graph_skipped, len(retired)
 
 
 # ----------------------------------------------------------------------

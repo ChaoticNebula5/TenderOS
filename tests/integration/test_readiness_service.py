@@ -8,6 +8,13 @@ blocker 7 projects the graph after seeding, so staleness never
 contaminates an otherwise-clean assertion.
 
 Same self-built-fixture-helper convention as test_redteam_service.py.
+
+Plan items 94, 96 and 99 (PR 14): a clean bid also has a parsed document
+and a complete red-team pass recorded at its current version, so
+_org_and_tender adds a parsed document, _chunk's document is parsed, and
+_project records that pass after projecting (tests/readiness_facts.py).
+Blocker 8 now reads recorded passes, not degraded stages; its tests, and
+blocker 9's, are in test_readiness_saved_facts.py.
 """
 
 import asyncio
@@ -17,6 +24,7 @@ from datetime import date
 import pytest
 import pytest_asyncio
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, TransientError
+from readiness_facts import add_parsed_document, project_and_review
 from sqlalchemy import select
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.readiness import ReadinessReport
@@ -53,7 +61,8 @@ async def _org_and_tender(name: str) -> tuple[uuid.UUID, uuid.UUID]:
         session.add(tender)
         await session.flush()
         await session.commit()
-        return org.id, tender.id
+    await add_parsed_document(tender.id)
+    return org.id, tender.id
 
 
 async def _chunk(tender_id: uuid.UUID) -> uuid.UUID:
@@ -68,6 +77,7 @@ async def _chunk(tender_id: uuid.UUID) -> uuid.UUID:
             file_size_bytes=10,
             tender_id=tender_id,
         )
+        await uow.documents.update_parse_status(document.id, "parsed")
         chunk = await uow.documents.create_chunk(
             document_id=document.id,
             chunk_index=0,
@@ -207,7 +217,8 @@ async def _redteam_finding(tender_id: uuid.UUID, severity: str = "critical") -> 
 
 
 async def _project(tender_id: uuid.UUID) -> None:
-    await graph_service.project_tender(tender_id)
+    # Projected and reviewed at this version (plan items 94 and 96).
+    await project_and_review(tender_id)
 
 
 # ----------------------------------------------------------------------
@@ -245,6 +256,7 @@ _EXPECTED_COUNTS_KEYS = {
     "proposal_claims_needing_review",
     "open_clarifications",
     "selected_employees_removed",
+    "documents_not_parsed",
 }
 
 
@@ -678,31 +690,6 @@ async def test_stale_graph_projection_clears_once_projected():
 
 
 # ----------------------------------------------------------------------
-# Blocker 8: red-team review degraded (this block's own addition, Q5).
-# ----------------------------------------------------------------------
-
-
-async def test_red_team_degraded_stage_blocks():
-    _org_id, tender_id = await _org_and_tender("RedTeamDegraded")
-    await _project(tender_id)
-
-    result = await readiness_service.evaluate_readiness(
-        tender_id, degraded_stages=["red_team:RuntimeError"]
-    )
-    categories = {b["category"] for b in result.blockers}
-    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in categories
-
-
-async def test_no_degraded_stages_does_not_block():
-    _org_id, tender_id = await _org_and_tender("NoDegradation")
-    await _project(tender_id)
-
-    result = await readiness_service.evaluate_readiness(tender_id, degraded_stages=None)
-    categories = {b["category"] for b in result.blockers}
-    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE not in categories
-
-
-# ----------------------------------------------------------------------
 # Idempotent-by-version persistence.
 # ----------------------------------------------------------------------
 
@@ -970,26 +957,38 @@ async def test_two_generates_with_nothing_changed_store_one_content_hash():
     assert not report.content_hash.startswith("legacy-")
 
 
-async def test_a_manual_report_does_not_hide_the_runs_degraded_red_team():
-    """Before item 93, a manual generate (degraded_stages=None) stored first
-    made the readiness node's later call at the same version return that
-    report, without "red-team review incomplete". Now the node's report has
-    different content, is stored, and its id is the one final_gate_node
-    reads."""
-    _org_id, tender_id = await _org_and_tender("DegradedAfterManual")
-    await _project(tender_id)
+async def test_a_manual_report_does_not_hide_a_red_team_failure_recorded_later():
+    """Before item 93, a manual generate stored first made the readiness
+    node's later call at the same version return that report, without the
+    red-team failure. Since items 94 and 96 the failure is a recorded pass,
+    not a parameter: a pass that fails after a manual report changes the
+    content at the same version, so the next generate stores a new report,
+    and its id is the one final_gate_node reads."""
+    _org_id, tender_id = await _org_and_tender("FailureAfterManual")
+    await graph_service.project_tender(tender_id)
 
-    manual = await readiness_service.evaluate_readiness(tender_id, degraded_stages=None)
-    node = await readiness_service.evaluate_readiness(
-        tender_id, degraded_stages=["red_team:LLMTimeoutError"]
-    )
+    manual = await readiness_service.evaluate_readiness(tender_id)
+    async with UnitOfWork() as uow:
+        await uow.redteam.record_pass(tender_id, outcome="failed", error_code="LLMTimeoutError")
+        await uow.commit()
+    node = await readiness_service.evaluate_readiness(tender_id)
 
-    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE not in _categories(manual)
-    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in _categories(node)
+    def _incomplete(result: readiness_service.ReadinessResult) -> list[str]:
+        return [
+            b["message"]
+            for b in result.blockers
+            if b["category"] == readiness_service.RED_TEAM_REVIEW_INCOMPLETE
+        ]
+
+    assert _incomplete(manual) == [
+        "No red-team pass has been recorded for this bid. Run the red team."
+    ]
+    assert _incomplete(node) == ["The most recent red-team pass failed. Run the red team again."]
+    assert node.tender_state_version == manual.tender_state_version
     assert node.report_id != manual.report_id
     stored = await readiness_service.get_report(node.report_id)
     assert stored is not None
-    assert readiness_service.RED_TEAM_REVIEW_INCOMPLETE in _categories(stored)
+    assert _incomplete(stored) == _incomplete(node)
 
 
 # ----------------------------------------------------------------------
