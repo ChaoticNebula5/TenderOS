@@ -11,7 +11,8 @@ graph.
 
 This table records each finished pass: who ran it (the run, or the manual
 operation), whether it completed, whether its graph checks ran, the state
-version read just before them, and a safe error code for a failed pass.
+version read at the start of the pass (before any check), and a safe error
+code for a failed pass.
 redteam_service.run_red_team writes a completed row in the same transaction
 as the pass's findings, and a failed row on its own. Readiness reads it.
 

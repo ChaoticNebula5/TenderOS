@@ -104,10 +104,12 @@ class RedteamPass(UUIDPrimaryKeyMixin, Base):
     )
     outcome: Mapped[str] = mapped_column(nullable=False)
     graph_checks: Mapped[str | None] = mapped_column(nullable=True)
-    # The bid's state version read just before the graph checks: when they
-    # ran, check_freshness had confirmed the latest completed projection
-    # equals the version at that moment, which is at least this one (the
-    # version only rises). So it never claims a newer graph than was read.
+    # The bid's state version read at the start of the pass, before any
+    # check. The version only rises, so anything that moves during the pass
+    # leaves this older than what the checks read, never newer. When the
+    # graph checks ran, check_freshness had confirmed the latest completed
+    # projection equals the version at that moment, which is at least this
+    # one. So it never claims newer data or a newer graph than was read.
     graph_state_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # A safe code (the exception's type name), never the message.
     error_code: Mapped[str | None] = mapped_column(nullable=True)
