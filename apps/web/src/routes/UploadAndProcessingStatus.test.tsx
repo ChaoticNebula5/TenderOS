@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as apiClient from "../api/client";
@@ -519,6 +519,32 @@ function renderWithActiveRun() {
   renderAt("tender-1");
 }
 
+// The page has loaded: the run list, the documents list and the task stream
+// have all answered. "Cancel run" is on screen before the last of these, so a
+// test that clicks it on sight acts on a page that is still loading.
+async function pageSettled() {
+  await screen.findByText("Waiting for tasks to start...");
+  await screen.findByText("No documents uploaded yet");
+}
+
+// Resolves in a MutationObserver callback straight after the commit that
+// shows "Cancel run", before React has run that commit's effects: the moment
+// a click on a page still loading can land (CI, after PR 12).
+function cancelButtonCommitted(): Promise<void> {
+  return new Promise((resolve) => {
+    const shown = () =>
+      [...document.querySelectorAll("button")].some((b) => b.textContent === "Cancel run");
+    if (shown()) return resolve();
+    const observer = new MutationObserver(() => {
+      if (shown()) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+}
+
 describe("cancelling the active run", () => {
   it("asks inside the page, never through window.confirm, and cancels once", async () => {
     const confirmSpy = vi.spyOn(window, "confirm");
@@ -530,7 +556,8 @@ describe("cancelling the active run", () => {
       return { ...activeRun(), status: "cancelled" };
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    await pageSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
     const region = screen.getByRole("group", { name: "Cancel this run?" });
     expect(region).toHaveTextContent("Work already done is kept.");
     // Focus lands on the safe choice.
@@ -552,7 +579,8 @@ describe("cancelling the active run", () => {
   it("Keep running and Escape close the question without cancelling", async () => {
     renderWithActiveRun();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    await pageSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
     fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
     expect(screen.queryByRole("group", { name: "Cancel this run?" })).not.toBeInTheDocument();
 
@@ -567,7 +595,8 @@ describe("cancelling the active run", () => {
     cancelWorkflowRun.mockRejectedValue(new ApiError(403, { detail: "Forbidden" }));
     renderWithActiveRun();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    await pageSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
 
     expect(await screen.findByText("Your role can't cancel runs.")).toBeInTheDocument();
@@ -579,10 +608,81 @@ describe("cancelling the active run", () => {
     cancelWorkflowRun.mockRejectedValue(new ApiError(503, {}));
     renderWithActiveRun();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    await pageSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
 
     expect(await screen.findByText("Failed to cancel the run.")).toBeInTheDocument();
+  });
+
+  it("drops a cancel answer that arrives after the page has moved to another tender", async () => {
+    // The answer describes the run it was asked about. If the page now follows
+    // another tender's run, applying it would unfollow that run although it
+    // is still active.
+    const runOnTender2: WorkflowRunResponse = {
+      ...activeRun(),
+      id: "run-2",
+      tender_id: "tender-2",
+    };
+    listWorkflowRuns.mockImplementation(async (tenderId: string) =>
+      tenderId === "tender-1" ? [activeRun()] : [runOnTender2],
+    );
+    listDocuments.mockResolvedValue([]);
+    listWorkflowTasks.mockResolvedValue([]);
+    getWorkflowRun.mockImplementation(async (runId: string) =>
+      runId === "run-1" ? activeRun() : runOnTender2,
+    );
+    mintWorkflowEventsTicket.mockResolvedValue({ ticket: "t", expires_in_seconds: 30 });
+    let answer: (run: WorkflowRunResponse) => void = () => {};
+    cancelWorkflowRun.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    let goTo: (path: string) => void = () => {};
+    function NavigateProbe() {
+      const navigate = useNavigate();
+      goTo = (path) => void navigate(path);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={["/tenders/tender-1"]}>
+        <NavigateProbe />
+        <Routes>
+          <Route path="/tenders/:tenderId" element={<UploadAndProcessingStatus />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await pageSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, cancel the run" }));
+    expect(cancelWorkflowRun).toHaveBeenCalledWith("run-1");
+
+    act(() => goTo("/tenders/tender-2"));
+    await waitFor(() => expect(getWorkflowRun).toHaveBeenCalledWith("run-2"));
+    expect(await screen.findByRole("button", { name: "Cancel run" })).toBeInTheDocument();
+    const runListReads = listWorkflowRuns.mock.calls.length;
+
+    await act(async () => answer({ ...activeRun(), status: "cancelled" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("button", { name: "Cancel run" })).toBeInTheDocument();
+    expect(screen.queryByText("Last run")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start processing" })).not.toBeInTheDocument();
+    expect(listWorkflowRuns).toHaveBeenCalledTimes(runListReads);
+  });
+
+  it("keeps the question open when Cancel run is clicked the moment it appears", async () => {
+    // The CI failure after PR 12: the click landed after the commit that
+    // showed "Cancel run" but before that commit's effects ran, and the
+    // page's reset effect (closing the question whenever the followed run
+    // changed, including when it first appeared) then closed it again.
+    renderWithActiveRun();
+
+    await cancelButtonCommitted();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    await act(async () => {});
+
+    expect(screen.getByRole("group", { name: "Cancel this run?" })).toBeInTheDocument();
+    await pageSettled();
+    expect(screen.getByRole("group", { name: "Cancel this run?" })).toBeInTheDocument();
   });
 });
 

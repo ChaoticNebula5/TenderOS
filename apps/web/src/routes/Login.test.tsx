@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -57,11 +57,16 @@ function submitButton(): HTMLElement {
   return submit;
 }
 
+// Plan item 52: the fields are filled with one change event each, not typed
+// a key at a time. Typing them (28 keystrokes, each a timer tick and a
+// re-render) took most of each test's time, and under the full suite's load
+// that alone ran past the 5 s test timeout (reproduced under CPU load). What
+// these tests check is what the page says for a 503, not typing. The submit
+// stays a real user click.
 async function submitLogin() {
-  const user = userEvent.setup();
-  await user.type(screen.getByLabelText("Email"), "person@example.com");
-  await user.type(screen.getByLabelText("Password"), "a password");
-  await user.click(submitButton());
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: "person@example.com" } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a password" } });
+  await userEvent.setup().click(submitButton());
 }
 
 describe("login while the API refuses sign-in (503 LOGIN_UNAVAILABLE)", () => {

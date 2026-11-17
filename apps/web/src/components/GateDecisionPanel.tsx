@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { RefObject } from "react";
 import type { GateResponse } from "../api/client";
 import { ApiError, decideGate } from "../api/client";
 import { formatErrorDetail } from "../api/formatErrorDetail";
@@ -102,7 +103,31 @@ const DECISIONS: readonly (readonly [Decision, string, ButtonVariant])[] = [
 // own domain needs. A screen collects whatever target_updates it wants
 // and passes them in via decideTargetUpdates; this component only ever
 // asks "what's the decision on the gate overall."
-export function GateDecisionPanel({ gate, onDecided, description }: GateDecisionPanelProps) {
+//
+// Keyed by the gate's id (plan item 102): the notes, the waive box and an
+// error belong to the gate they were typed for. A screen can replace the gate
+// it shows with a newer one while this panel stays mounted (useLatestRunGate
+// expects it), and a waive ticked for one gate's blockers must never carry
+// over to another gate's. A fresher read of the same gate keeps them. The key
+// adds no element, so the panel's <section> stays the h2's next sibling.
+//
+// A decision's answer can arrive after the screen has moved on to a newer
+// gate. It describes the gate that was decided, so it is dropped unless that
+// gate is still the one shown; otherwise onDecided would put the old, decided
+// gate back on screen over the newer one. This wrapper outlives the keyed
+// panel, so it holds the id of the gate shown now.
+export function GateDecisionPanel(props: GateDecisionPanelProps) {
+  const shownGateId = useRef(props.gate.gate_id);
+  shownGateId.current = props.gate.gate_id;
+  return <GateDecisionPanelForGate key={props.gate.gate_id} {...props} shownGateId={shownGateId} />;
+}
+
+function GateDecisionPanelForGate({
+  gate,
+  onDecided,
+  description,
+  shownGateId,
+}: GateDecisionPanelProps & { shownGateId: RefObject<string> }) {
   const [notes, setNotes] = useState("");
   const [waive, setWaive] = useState(false);
   // The decision in flight, or null. All three buttons are disabled while
@@ -137,6 +162,7 @@ export function GateDecisionPanel({ gate, onDecided, description }: GateDecision
           idempotencyKey,
         ),
       );
+      if (updated.gate_id !== shownGateId.current) return;
       onDecided(updated);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {

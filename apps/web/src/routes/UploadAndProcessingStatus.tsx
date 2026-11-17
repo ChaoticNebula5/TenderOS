@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ApiError,
-  cancelWorkflowRun,
   createWorkflowRun,
   getWorkflowRun,
   listDocuments,
@@ -12,8 +11,14 @@ import {
   reprocessDocument,
   uploadDocument,
 } from "../api/client";
-import type { DocumentResponse, GateResponse, WorkflowTaskResponse } from "../api/client";
+import type {
+  DocumentResponse,
+  GateResponse,
+  WorkflowRunResponse,
+  WorkflowTaskResponse,
+} from "../api/client";
 import { formatErrorDetail, readEnvelopeCode, readEnvelopeDetail } from "../api/formatErrorDetail";
+import { CancelRunControl } from "../components/CancelRunControl";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { PollStoppedNotice } from "../components/PollStoppedNotice";
 import { Button } from "../components/ui/Button";
@@ -103,6 +108,9 @@ export function UploadAndProcessingStatus() {
   const [startingRun, setStartingRun] = useState(false);
 
   const [workflowRunId, setWorkflowRunId] = useState<string | null>(null);
+  // The run followed now, for answers that arrive late (handleRunCancelled).
+  const followedRunIdRef = useRef(workflowRunId);
+  followedRunIdRef.current = workflowRunId;
   // Set only when the newest run is terminal (completed/failed/cancelled)
   // and there's no active run to poll instead - the "here's what happened
   // last time" note, shown next to the "Start processing" button rather
@@ -115,18 +123,12 @@ export function UploadAndProcessingStatus() {
   // name its gate and show the reviewer's notes (findChangesRequestedGate).
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const [changesRequestedAt, setChangesRequestedAt] = useState<ChangesRequestedAt | null>(null);
-  // Plan item 72: the in-page confirmation for cancelling the active run.
-  const [confirmingCancel, setConfirmingCancel] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [cancelError, setCancelError] = useState<string | null>(null);
-  const cancelRegionRef = useRef<HTMLDivElement>(null);
   // Plan item 73: the active run's cost-budget gate, while it waits there.
   const [costGate, setCostGate] = useState<GateResponse | null>(null);
   // The active run's status as the run list reported it on load: the cost
   // gate's lookup uses it until the run stream answers, so a stream that
   // fails (observed: a 429 on its first read) does not hide the gate.
   const [listedRunStatus, setListedRunStatus] = useState<string | null>(null);
-  const cancelButtonRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // workflowRunId/lastRunStatus otherwise carry over from whichever
@@ -358,13 +360,6 @@ export function UploadAndProcessingStatus() {
     setCostGate(null);
   }, [workflowRunId]);
 
-  // Plan item 72: any open confirmation was about the run being followed;
-  // when that changes (it ended, or another tender), the confirmation goes.
-  useEffect(() => {
-    setConfirmingCancel(false);
-    setCancelError(null);
-  }, [workflowRunId]);
-
   // Plan item 71: only a run that ended with changes requested needs its
   // gates; every other outcome says what it needs from the run itself.
   useEffect(() => {
@@ -384,52 +379,26 @@ export function UploadAndProcessingStatus() {
     };
   }, [lastRunStatus, lastRunId]);
 
-  // Focus follows the confirmation: into it on open, on the safe choice
-  // ("Keep running"); back to "Cancel run" when it is closed without a
-  // cancel. An effect after the commit, not a requestAnimationFrame: the
-  // button exists by then, however busy the page is (a frame callback lost
-  // that race once, under the full test suite's load, PR 3).
-  const returnFocusToCancel = useRef(false);
-  useEffect(() => {
-    if (confirmingCancel) {
-      cancelRegionRef.current?.querySelector<HTMLButtonElement>(".processing__keep")?.focus();
-    } else if (returnFocusToCancel.current) {
-      returnFocusToCancel.current = false;
-      cancelButtonRef.current?.querySelector("button")?.focus();
-    }
-  }, [confirmingCancel]);
-
-  function closeCancelConfirmation() {
-    returnFocusToCancel.current = true;
-    setConfirmingCancel(false);
-    setCancelError(null);
-  }
-
-  async function handleCancelRun() {
-    if (workflowRunId === null) return;
-    setCancelError(null);
-    setCancelling(true);
-    try {
-      const run = await cancelWorkflowRun(workflowRunId);
-      // The answer is the run's status now: "cancelled", or the terminal
-      // status it reached first (a cancel on an ended run is a no-op).
-      if (!isActiveRunStatus(run.status)) {
-        setLastRunStatus(run.status);
-        setLastRunErrorCode(run.error_code ?? null);
-        setLastRunId(run.id);
-        setListedRunStatus(null);
-        setWorkflowRunId(null);
-      }
-      setConfirmingCancel(false);
-    } catch (err) {
-      setCancelError(
-        err instanceof ApiError && err.status === 403
-          ? "Your role can't cancel runs."
-          : "Failed to cancel the run.",
-      );
-    } finally {
-      setCancelling(false);
-    }
+  // Plan item 72: the cancel question (CancelRunControl, keyed by the run id)
+  // reports the cancel's answer here. "cancelled", or the terminal status the
+  // run reached first, ends following it; an answer that is still active
+  // leaves the run followed.
+  //
+  // The answer can arrive after the page has moved on: to another tender, or
+  // to another run. It describes the run it was asked about, so it is
+  // dropped unless that run is still the one followed here; otherwise it
+  // would unfollow a run that is still active. On a tender change the first
+  // render still holds the old run id, but the tender reset effect is then
+  // pending, and React runs it before applying this answer, so its writes to
+  // the same five fields land last.
+  function handleRunCancelled(run: WorkflowRunResponse) {
+    if (run.id !== followedRunIdRef.current) return;
+    if (isActiveRunStatus(run.status)) return;
+    setLastRunStatus(run.status);
+    setLastRunErrorCode(run.error_code ?? null);
+    setLastRunId(run.id);
+    setListedRunStatus(null);
+    setWorkflowRunId(null);
   }
 
   // The dot-separated link row that sat under the heading is gone: the
@@ -582,60 +551,10 @@ export function UploadAndProcessingStatus() {
               ))}
               {tasks !== null && tasks.length === 0 && <li>Waiting for tasks to start...</li>}
             </ul>
-            {/* Plan item 72: cancel the active run, confirmed here rather than
-                in a browser dialog. Shown to every role, like the gate
-                buttons: the web app has no role data, and the API answers
-                403 for a role that may not cancel. */}
-            <div className="processing__cancel">
-              {confirmingCancel ? (
-                <div
-                  ref={cancelRegionRef}
-                  role="group"
-                  aria-labelledby="processing-cancel-title"
-                  className="processing__cancel-confirm"
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape" && !cancelling) closeCancelConfirmation();
-                  }}
-                >
-                  <p id="processing-cancel-title" className="processing__cancel-title">
-                    Cancel this run?
-                  </p>
-                  <p>
-                    Work already done is kept. A cancelled run can&apos;t be resumed; start
-                    processing again to run it from the beginning.
-                  </p>
-                  {cancelError && (
-                    <Notice variant="failed" alert>
-                      {cancelError}
-                    </Notice>
-                  )}
-                  <div className="action-row">
-                    <Button
-                      variant="danger"
-                      onClick={handleCancelRun}
-                      busy={cancelling}
-                      busyLabel="Cancelling..."
-                    >
-                      Yes, cancel the run
-                    </Button>
-                    <Button
-                      variant="quiet"
-                      className="processing__keep"
-                      onClick={closeCancelConfirmation}
-                      disabled={cancelling}
-                    >
-                      Keep running
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div ref={cancelButtonRef}>
-                  <Button variant="secondary" onClick={() => setConfirmingCancel(true)}>
-                    Cancel run
-                  </Button>
-                </div>
-              )}
-            </div>
+            {/* Plan item 72: cancel the active run, confirmed in the page. Keyed
+                by the run id inside CancelRunControl, so each run gets its own
+                question, closed at first. */}
+            <CancelRunControl runId={workflowRunId} onCancelled={handleRunCancelled} />
           </>
         )}
       </section>
