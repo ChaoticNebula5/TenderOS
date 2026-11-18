@@ -62,6 +62,12 @@ def _both_apps(report: dict) -> dict[str, dict]:
     return {"apps/web": report, "apps/landing": report}
 
 
+def _check(reports: dict[str, dict], today: date, production: dict[str, dict] | None = None):
+    """check() with each folder's production-only report clean unless given."""
+    production = production or {folder: _report() for folder in reports}
+    return check_npm_audit.check(reports, production, today)
+
+
 def test_the_exception_is_the_one_reviewed():
     (exception,) = check_npm_audit.EXCEPTIONS
     assert (exception.advisory, exception.package, exception.expires) == (
@@ -73,16 +79,17 @@ def test_the_exception_is_the_one_reviewed():
 
 
 def test_the_picomatch_advisory_and_its_path_pass_before_the_expiry():
-    problems, notes = check_npm_audit.check(_both_apps(_report(_picomatch())), BEFORE_EXPIRY)
+    problems, notes = _check(_both_apps(_report(_picomatch())), BEFORE_EXPIRY)
 
     assert problems == []
-    assert len(notes) == 2 and all("excepted until 2026-12-18" in note for note in notes)
+    assert len(notes) == 2
+    assert all("excepted until 2026-12-18 [via picomatch, vite]" in note for note in notes)
 
 
 def test_another_high_advisory_on_a_package_on_the_same_path_still_fails():
     report = _report(_picomatch(), _advisory("vite", "GHSA-aaaa-bbbb-cccc", "high", 1))
 
-    problems, _ = check_npm_audit.check({"apps/web": report}, BEFORE_EXPIRY)
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
 
     assert len(problems) == 1 and "GHSA-aaaa-bbbb-cccc" in problems[0]
 
@@ -90,7 +97,7 @@ def test_another_high_advisory_on_a_package_on_the_same_path_still_fails():
 def test_another_advisory_on_picomatch_itself_still_fails():
     report = _report(_picomatch(), _advisory("picomatch", "GHSA-dddd-eeee-ffff", "high", 2))
 
-    problems, _ = check_npm_audit.check({"apps/web": report}, BEFORE_EXPIRY)
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
 
     assert len(problems) == 1 and "GHSA-dddd-eeee-ffff" in problems[0]
 
@@ -98,16 +105,59 @@ def test_another_advisory_on_picomatch_itself_still_fails():
 def test_the_excepted_id_on_another_package_still_fails():
     report = _report(_picomatch(), _advisory("micromatch", PICOMATCH, "high", 3))
 
-    problems, _ = check_npm_audit.check({"apps/web": report}, BEFORE_EXPIRY)
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
 
     assert len(problems) == 1 and problems[0].startswith("apps/web: micromatch high")
+
+
+def test_two_advisories_sharing_a_source_id_are_both_checked():
+    """npm's numeric source id is not trusted to tell advisories apart: a
+    second advisory on picomatch with the excepted one's id number, listed
+    after it, still fails instead of being merged into it."""
+    report = _report(_picomatch(source=7), _advisory("picomatch", "GHSA-aaaa-bbbb-cccc", "high", 7))
+
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
+
+    assert len(problems) == 1 and "GHSA-aaaa-bbbb-cccc" in problems[0]
+
+
+def test_a_production_dependency_reaching_the_excepted_advisory_fails():
+    """The exception covers dev and build tooling only: where the advisory is
+    also reported with dev dependencies left out, it excuses nothing."""
+    reports = _both_apps(_report(_picomatch()))
+    production = {"apps/web": _report(_picomatch()), "apps/landing": _report()}
+
+    problems, notes = _check(reports, BEFORE_EXPIRY, production)
+
+    assert len(problems) == 1
+    assert problems[0].startswith("apps/web: picomatch high")
+    assert "a production dependency reaches it" in problems[0]
+    assert len(notes) == 1 and notes[0].startswith("apps/landing: picomatch")
+
+
+def test_a_high_package_with_no_high_advisory_on_its_paths_fails():
+    """npm marks vite high, but nothing high is on its paths: the report says
+    something the check cannot account for, so it fails rather than passing."""
+    report = _report(_picomatch(), _advisory("minimatch", "GHSA-g3hv-75wg-m249", "moderate", 4))
+    report["vulnerabilities"]["typescript-estree"] = {
+        "name": "typescript-estree",
+        "severity": "high",
+        "via": ["minimatch"],
+    }
+
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
+
+    assert problems == [
+        "apps/web: typescript-estree is reported high, but no high or critical advisory "
+        "is on its paths; read `npm audit` there"
+    ]
 
 
 @pytest.mark.parametrize(("severity", "fails"), [("moderate", False), ("critical", True)])
 def test_the_threshold_stays_at_high_and_critical(severity, fails):
     report = _report(_picomatch(), _advisory("minimatch", "GHSA-g3hv-75wg-m249", severity, 4))
 
-    problems, _ = check_npm_audit.check({"apps/web": report}, BEFORE_EXPIRY)
+    problems, _ = _check({"apps/web": report}, BEFORE_EXPIRY)
 
     assert bool(problems) is fails
 
@@ -115,8 +165,8 @@ def test_the_threshold_stays_at_high_and_critical(severity, fails):
 def test_the_exception_holds_on_its_last_day_and_fails_the_day_after():
     report = _both_apps(_report(_picomatch()))
 
-    assert check_npm_audit.check(report, EXPIRY)[0] == []
-    problems, notes = check_npm_audit.check(report, date(2026, 12, 19))
+    assert _check(report, EXPIRY)[0] == []
+    problems, notes = _check(report, date(2026, 12, 19))
 
     assert notes == []
     expired = [p for p in problems if "expired on 2026-12-18" in p]
@@ -128,7 +178,7 @@ def test_the_exception_holds_on_its_last_day_and_fails_the_day_after():
 
 
 def test_an_exception_no_longer_reported_anywhere_fails():
-    problems, _ = check_npm_audit.check(_both_apps(_report()), BEFORE_EXPIRY)
+    problems, _ = _check(_both_apps(_report()), BEFORE_EXPIRY)
 
     assert problems == [
         f"{PICOMATCH} is no longer reported; remove the exception (scripts/check_npm_audit.py)"
@@ -142,19 +192,32 @@ def test_an_exception_still_reported_in_one_app_is_not_stale(reported_in):
         for folder in ("apps/web", "apps/landing")
     }
 
-    assert check_npm_audit.check(reports, BEFORE_EXPIRY)[0] == []
+    assert _check(reports, BEFORE_EXPIRY)[0] == []
 
 
 @pytest.mark.parametrize(
-    "output", ["", "npm error code ENOLOCK", '{"error": {"code": "ENOAUDIT"}}', "[]"]
+    "output",
+    [
+        "",
+        "npm error code ENOLOCK",
+        '{"error": {"code": "ENOAUDIT"}}',
+        "[]",
+        # an entry with no via list
+        '{"vulnerabilities": {"vite": {"name": "vite", "severity": "high"}}}',
+        # a path through a package with no entry
+        '{"vulnerabilities": {"vite": {"name": "vite", "severity": "high", "via": ["fdir"]}}}',
+        # an advisory with no severity
+        '{"vulnerabilities": {"picomatch": {"name": "picomatch", "severity": "high",'
+        ' "via": [{"name": "picomatch", "url": "u"}]}}}',
+    ],
 )
-def test_output_with_no_report_is_a_check_that_could_not_run(output):
+def test_output_this_check_cannot_read_is_a_check_that_could_not_run(output):
     with pytest.raises(check_npm_audit.AuditCouldNotRun):
         check_npm_audit.parse_report(output)
 
 
 def test_main_exits_2_when_the_audit_cannot_run(monkeypatch, capsys):
-    def no_report(folder):
+    def no_report(folder, production_only=False):
         raise check_npm_audit.AuditCouldNotRun("no report")
 
     monkeypatch.setattr(check_npm_audit, "run_audit", no_report)
@@ -163,13 +226,21 @@ def test_main_exits_2_when_the_audit_cannot_run(monkeypatch, capsys):
     assert "could not run" in capsys.readouterr().out
 
 
-def test_main_exits_1_on_a_problem_and_0_without(monkeypatch):
-    reports = {"apps/web": _report(_picomatch())}
-    monkeypatch.setattr(check_npm_audit, "run_audit", lambda folder: reports["apps/web"])
+def test_main_audits_without_dev_dependencies_too_and_exits_1_or_0(monkeypatch):
+    full = {"report": _report(_picomatch())}
+    production = {"report": _report()}
+    calls: list[bool] = []
+
+    def audit(folder, production_only=False):
+        calls.append(production_only)
+        return (production if production_only else full)["report"]
+
+    monkeypatch.setattr(check_npm_audit, "run_audit", audit)
     monkeypatch.setattr(check_npm_audit, "datetime", _FixedNow(BEFORE_EXPIRY))
     assert check_npm_audit.main(["apps/web"]) == 0
+    assert calls == [False, True]
 
-    reports["apps/web"] = _report(_picomatch(), _advisory("vite", "GHSA-aaaa-bbbb-cccc", "high", 1))
+    production["report"] = _report(_picomatch())
     assert check_npm_audit.main(["apps/web"]) == 1
 
 
@@ -187,3 +258,28 @@ class _FixedNow:
                 return today
 
         return _Moment()
+
+
+@pytest.mark.parametrize(
+    ("production_only", "command"),
+    [(False, ["npm", "audit", "--json"]), (True, ["npm", "audit", "--json", "--omit=dev"])],
+)
+def test_run_audit_leaves_dev_dependencies_out_only_when_asked(
+    monkeypatch, production_only, command
+):
+    ran: list[list[str]] = []
+
+    class _Done:
+        stdout = '{"vulnerabilities": {}}'
+
+    def fake_run(args, **kwargs):
+        ran.append(args)
+        return _Done()
+
+    monkeypatch.setattr(check_npm_audit.shutil, "which", lambda name: name)
+    monkeypatch.setattr(check_npm_audit.subprocess, "run", fake_run)
+
+    assert check_npm_audit.run_audit(Path("."), production_only=production_only) == {
+        "vulnerabilities": {}
+    }
+    assert ran == [command]
