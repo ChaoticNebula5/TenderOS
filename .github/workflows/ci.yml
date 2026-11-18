@@ -516,10 +516,12 @@ jobs:
         run: uv run python scripts/check_torch_osv.py
       - run: npm ci
         working-directory: apps/web
-      - run: npm audit --audit-level=high
-        working-directory: apps/web
       # Phase 4 item 10: apps/landing has its own lockfile.
       - run: npm ci
         working-directory: apps/landing
-      - run: npm audit --audit-level=high
-        working-directory: apps/landing
+      # Plan item 110: npm audit in both apps at high and critical, as
+      # `npm audit --audit-level=high` was, with dated exceptions; npm audit
+      # cannot skip one advisory. The exceptions, their reasons and expiry
+      # dates are in the script.
+      - name: npm audit (both apps)
+        run: uv run python scripts/check_npm_audit.py apps/web apps/landing
