@@ -12,6 +12,13 @@ B16: the valid_until half of "an active fact" (KNOWN_LIMITATIONS.md's
 shape B, instance 4 - the function fetched valid_until fresh every call
 and simply never read it). Fixed here, not just described - see the two
 new tests below.
+
+Plan items 89 and 91 (addition 1): evidence WITH a backing fact is judged by
+the fact alone, now, through core/evidence_validity.py; the Evidence node's
+stored verified/validity_status copy is read only for evidence with no fact
+(a document excerpt). So the stored-copy tests below use excerpt rows, and
+the last tests pin that a fact-backed row ignores its stored copy and reads
+an Employee's profile review.
 """
 
 from datetime import date
@@ -77,16 +84,16 @@ def test_inactive_knowledge_item_disqualifies_evidence():
     assert result.recommended_action == "compliance_re_evaluation_required"
 
 
-def test_unverified_evidence_never_counts_regardless_of_fact():
-    row = _row(verified=False, knowledge_item_status="active", selected=True)
+def test_unverified_excerpt_evidence_never_counts():
+    row = _row(verified=False, knowledge_item_status=None, selected=None)
 
     result = evaluate_evidence_coverage([row])
 
     assert result.valid_path_count == 0
 
 
-def test_invalid_validity_status_never_counts():
-    row = _row(validity_status="invalid")
+def test_invalid_excerpt_evidence_never_counts():
+    row = _row(validity_status="invalid", knowledge_item_status=None, selected=None)
 
     result = evaluate_evidence_coverage([row])
 
@@ -95,7 +102,7 @@ def test_invalid_validity_status_never_counts():
 
 def test_one_valid_alternate_path_is_enough_when_another_fails():
     good = _row(evidence_id="ev-good", knowledge_item_status="active", selected=True)
-    bad = _row(evidence_id="ev-bad", verified=False)
+    bad = _row(evidence_id="ev-bad", verified=False, knowledge_item_status=None, selected=None)
 
     result = evaluate_evidence_coverage([good, bad])
 
@@ -126,3 +133,43 @@ def test_active_fact_with_future_valid_until_still_counts_as_valid():
 
     assert result.valid_path_count == 1
     assert result.recommended_action == "review_optional"
+
+
+def test_a_fact_backed_row_ignores_its_stored_copy():
+    """The stored copy says unverified and expired; the fact counts now."""
+    row = _row(verified=False, validity_status="expired", knowledge_item_status="active")
+
+    result = evaluate_evidence_coverage([row], today=date(2026, 11, 18))
+
+    assert result.valid_path_count == 1
+
+
+def test_an_unverified_status_fact_does_not_count():
+    row = _row(knowledge_item_status="unverified")
+
+    assert evaluate_evidence_coverage([row], today=date(2026, 11, 18)).valid_path_count == 0
+
+
+def test_an_employee_fact_counts_only_with_a_verified_profile():
+    verified = _row(fact_is_employee=True, profile_review_status="verified")
+    pending = _row(fact_is_employee=True, profile_review_status="needs_review")
+
+    assert evaluate_evidence_coverage([verified], today=date(2026, 11, 18)).valid_path_count == 1
+    assert evaluate_evidence_coverage([pending], today=date(2026, 11, 18)).valid_path_count == 0
+
+
+def test_a_neo4j_date_is_compared_as_a_date():
+    """The driver returns neo4j.time.Date; it is converted, not compared raw."""
+
+    class _Neo4jDate:
+        def __init__(self, value: date) -> None:
+            self._value = value
+
+        def to_native(self) -> date:
+            return self._value
+
+    lapsed = _row(valid_until=_Neo4jDate(date(2026, 11, 17)))
+    last_day = _row(valid_until=_Neo4jDate(date(2026, 11, 18)))
+
+    assert evaluate_evidence_coverage([lapsed], today=date(2026, 11, 18)).valid_path_count == 0
+    assert evaluate_evidence_coverage([last_day], today=date(2026, 11, 18)).valid_path_count == 1

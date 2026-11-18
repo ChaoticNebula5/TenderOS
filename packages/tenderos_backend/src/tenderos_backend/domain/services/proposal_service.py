@@ -5,6 +5,7 @@ from typing import Protocol
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.proposal.draft_section import GroundedFactRef, draft_section
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
+from tenderos_backend.core.evidence_validity import today_utc
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.proposal import ProposalClaim, ProposalSection
@@ -146,27 +147,27 @@ async def _prepare_evidence_facts(
     `seen_evidence_ids` is mutated in place so callers share one dedup set
     across multiple calls (e.g. per compliance entry, per role match).
 
-    Plan item 86: a link's stored validity_status is set when the link is
-    made and nothing rewrites it when its source knowledge item is archived
-    later (an employee removed from the roster, a certification or a past
-    project withdrawn). So the source's status is read here, live, for every
-    link that has one, and an archived source makes the link invalid.
-    Document excerpts have no knowledge item and are unaffected. Async and
-    given the uow for that read, so no caller can skip it.
+    Plan items 89 and 91: a link's stored verified/validity_status are set
+    when an evaluation cites it, and nothing rewrites them when its item is
+    archived, its date passes or its profile review changes. So a link with
+    a knowledge item is offered only if that item counts now
+    (core/evidence_validity.py), read for every link at once; the stored
+    values are not read for it. Document excerpts have no knowledge item and
+    keep their stored values. Async and given the uow for that read, so no
+    caller can skip it.
     """
-    archived_sources = await uow.knowledge.archived_item_ids(
-        link.knowledge_item_id for link in links if link.knowledge_item_id is not None
+    live = await uow.knowledge.item_validity(
+        (link.knowledge_item_id for link in links if link.knowledge_item_id is not None),
+        today_utc(),
     )
     prepared: list[PreparedFact] = []
     for link in links:
         # Re-filtered here, not trusted from the caller's own decision-time
-        # signals. The stored values change only when a compliance
-        # re-evaluation cites the link again (plan item 88); an archived
-        # source is caught by the live check below, and an expiry date
-        # passing is not caught here at all (a plan item).
-        if not (link.verified and link.validity_status == "valid"):
-            continue
-        if link.knowledge_item_id in archived_sources:
+        # signals.
+        if link.knowledge_item_id is not None:
+            if not live[link.knowledge_item_id].counts:
+                continue
+        elif not (link.verified and link.validity_status == "valid"):
             continue
         if link.id in seen_evidence_ids:
             continue
@@ -805,15 +806,17 @@ async def _resolve_evidence_trace_entry(
     knowledge_item = None
     if link.knowledge_item_id is not None:
         knowledge_item = await uow.knowledge.get_knowledge_item(link.knowledge_item_id)
-    # Plan item 88: the stored validity_status is as of the last evaluation
-    # that cited the link, and archiving its source rewrites nothing. The
-    # source's archived state is read now through archived_item_ids, the one
-    # check readiness, the evidence filter and the compliance trace use, so
-    # this view never says Valid for a link readiness rejects.
-    archived = link.knowledge_item_id is not None and bool(
-        await uow.knowledge.archived_item_ids([link.knowledge_item_id])
-    )
-    validity_status = "invalid" if archived else link.validity_status
+    # Plan items 89 and 91: a link with a knowledge item shows that item
+    # judged now (core/evidence_validity.py), the judgment readiness, the
+    # evidence filter and the compliance trace make, so this view never says
+    # Valid for a link readiness rejects. A document excerpt shows its stored
+    # values.
+    verified, validity_status = link.verified, link.validity_status
+    if link.knowledge_item_id is not None:
+        live = (await uow.knowledge.item_validity([link.knowledge_item_id], today_utc()))[
+            link.knowledge_item_id
+        ]
+        verified, validity_status = live.verified, live.validity_status
 
     document_id = None
     document_filename = None
@@ -829,7 +832,7 @@ async def _resolve_evidence_trace_entry(
         evidence_link_id=link.id,
         source_kind=link.source_kind,
         excerpt=link.excerpt,
-        verified=link.verified,
+        verified=verified,
         validity_status=validity_status,
         knowledge_item_id=link.knowledge_item_id,
         knowledge_item_title=knowledge_item.title if knowledge_item else None,

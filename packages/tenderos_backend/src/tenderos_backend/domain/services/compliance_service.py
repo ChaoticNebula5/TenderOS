@@ -10,6 +10,7 @@ from tenderos_backend.agents.knowledge.retrieval import (
 )
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
+from tenderos_backend.core.evidence_validity import today_utc
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.compliance import ComplianceEntry
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -54,32 +55,14 @@ class _CandidateSignals:
 async def _compute_candidate_signals(
     uow: UnitOfWork, result: KnowledgeSearchResult, today: date
 ) -> _CandidateSignals:
-    knowledge_item = await uow.knowledge.get_knowledge_item(result.knowledge_item_id)
-    if knowledge_item is None:
-        return _CandidateSignals(validity_status="unknown", verified=False)
-
-    if knowledge_item.valid_until is not None and knowledge_item.valid_until < today:
-        validity_status = "expired"
-    elif knowledge_item.status == "archived":
-        validity_status = "invalid"
-    else:
-        validity_status = "valid"
-
-    if result.item_type == "employee":
-        employee = await uow.knowledge.get_employee(result.knowledge_item_id)
-        verified = employee is not None and employee.profile_review_status == "verified"
-    else:
-        # Non-employee knowledge_items (certifications, past_projects,
-        # capabilities, company_documents) have no separate per-item review
-        # step in B6 - they're trusted at ingestion time against the org's
-        # own uploaded documents. knowledge_items.status carries an
-        # 'unverified' value in its own CHECK constraint that B6 never
-        # populates (no writer sets it), so this reduces to "not
-        # archived/expired" for every item type except employee, which has
-        # a real review workflow behind profile_review_status.
-        verified = knowledge_item.status == "active"
-
-    return _CandidateSignals(validity_status=validity_status, verified=verified)
+    # Plan items 89 and 91: the one definition of "valid now"
+    # (core/evidence_validity.py). Before it, an `expired` status with no
+    # passed date read as valid here (only `verified` went false), and an
+    # archived employee with a verified profile read as verified.
+    validity = (await uow.knowledge.item_validity([result.knowledge_item_id], today))[
+        result.knowledge_item_id
+    ]
+    return _CandidateSignals(validity_status=validity.validity_status, verified=validity.verified)
 
 
 @dataclass(frozen=True)
@@ -99,7 +82,7 @@ class PreparedEvidence:
 async def prepare_evidence_candidates(
     results: list[KnowledgeSearchResult], today: date | None = None
 ) -> list[PreparedEvidence]:
-    today = today or date.today()
+    today = today or today_utc()
     prepared: list[PreparedEvidence] = []
     async with UnitOfWork() as uow:
         for i, result in enumerate(results, start=1):
@@ -671,12 +654,15 @@ async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrac
             raise RequirementNotFoundError()
 
         links = await uow.compliance.list_evidence_for_compliance_entry(entry.id)
-        # Plan item 88: the stored validity_status is as of the last
-        # evaluation that cited the link; an archive since then rewrites
-        # nothing. Read the source's archived state now, as readiness does,
-        # so this view never says Valid for a link readiness rejects.
-        archived_sources = await uow.knowledge.archived_item_ids(
-            link.knowledge_item_id for link in links if link.knowledge_item_id is not None
+        # Plan items 89 and 91: a link's stored verified/validity_status are
+        # as of the last evaluation that cited it. A link with a knowledge
+        # item shows that item judged now (core/evidence_validity.py), the
+        # judgment readiness and the proposal's filter make, so this view
+        # never says Valid for a link they reject. A document excerpt has no
+        # item and shows its stored values.
+        live = await uow.knowledge.item_validity(
+            (link.knowledge_item_id for link in links if link.knowledge_item_id is not None),
+            today_utc(),
         )
         evidence_entries: list[EvidenceTraceEntry] = []
         for link in links:
@@ -703,10 +689,14 @@ async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrac
                     evidence_link_id=link.id,
                     source_kind=link.source_kind,
                     excerpt=link.excerpt,
-                    verified=link.verified,
+                    verified=(
+                        live[link.knowledge_item_id].verified
+                        if link.knowledge_item_id is not None
+                        else link.verified
+                    ),
                     validity_status=(
-                        "invalid"
-                        if link.knowledge_item_id in archived_sources
+                        live[link.knowledge_item_id].validity_status
+                        if link.knowledge_item_id is not None
                         else link.validity_status
                     ),
                     knowledge_item_id=link.knowledge_item_id,

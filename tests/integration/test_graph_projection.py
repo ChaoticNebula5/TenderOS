@@ -410,12 +410,14 @@ async def test_removed_employee_still_named_in_claim_found():
     assert "removed_employee_committed" in categories
 
 
-async def test_a_grounded_claim_on_an_archived_source_is_unsupported_and_only_archived_counts():
-    """Plan item 88, fix 5: the Evidence node copies the link's stored
-    validity_status, which an archive never rewrites, so the query also
-    reads the backing fact's status. Archived, not "not active" (user
-    decision): an item edited to expired still counts here, as it does in
-    readiness and the proposal's filter. A document excerpt has no fact."""
+async def test_a_grounded_claim_is_judged_by_its_source_fact_now():
+    """Plan item 88 read the backing fact's status for archived only. Plans
+    items 89 and 91 (user decisions Q3 and addition 1): evidence with a
+    backing fact counts only if the fact does now, by the one definition,
+    and the Evidence node's stored copy is not read for it. So an item
+    edited to expired is flagged too, and a link stored invalid whose
+    certificate is active now is not. A document excerpt has no fact and
+    keeps its stored copy."""
     org_id, tender_id = await _org_and_tender("ArchivedClaimSource")
     holder = await _employee(org_id, "Cert Holder")
     claims: dict[str, uuid.UUID] = {}
@@ -443,7 +445,7 @@ async def test_a_grounded_claim_on_an_archived_source_is_unsupported_and_only_ar
         for c in await graph_service.find_contradictions(tender_id)
         if c["category"] == "unsupported_grounded_claim"
     }
-    assert flagged == {str(claims["archived"]), str(claims["stored_invalid"])}
+    assert flagged == {str(claims["archived"]), str(claims["expired"])}
 
 
 # ----------------------------------------------------------------------
@@ -456,6 +458,11 @@ async def test_alternate_evidence_remains_compliance_not_broken():
     chunk_id = await _chunk(tender_id, "req")
     requirement_id = await _requirement(tender_id, chunk_id)
     employee_id = await _employee(org_id, "Employee A")
+    # Plan items 89 and 91 (Q2): an employee's evidence counts only while its
+    # profile is verified, read live.
+    async with UnitOfWork() as uow:
+        await uow.knowledge.update_employee(employee_id, profile_review_status="verified")
+        await uow.commit()
     await _select(tender_id, employee_id)
     good_evidence_id = await _evidence_link(
         tender_id, employee_id, verified=True, validity_status="valid"

@@ -12,6 +12,12 @@ from tenderos_backend.agents.talent.score_candidates import (
     score_candidate,
 )
 from tenderos_backend.core.enums import Role
+from tenderos_backend.core.evidence_validity import (
+    EXPIRED,
+    REASON_MISSING,
+    ItemValidity,
+    today_utc,
+)
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.knowledge import Employee
 from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
@@ -75,21 +81,15 @@ def _fingerprint(*parts: str) -> str:
 async def _evidence_validity_status(
     uow: UnitOfWork, knowledge_item_id: uuid.UUID, today: date
 ) -> str:
-    """Same freshly-computed validity_status compliance_service.py's own
-    _compute_candidate_signals derives for compliance evidence - a
-    knowledge_item's status/valid_until, not a value evaluate_role_match's
-    own create_evidence_link call left unset (defaulting to the column's
-    "unknown", which _facts_from_team's validity_status=="valid" filter can
-    never match - see KNOWN_LIMITATIONS.md's B0-B11 catch-up review).
+    """The label a new talent evidence link is stored with: the item judged
+    now through the one definition (core/evidence_validity.py, plan items 89
+    and 91), the same label compliance evidence gets, not a value
+    create_evidence_link would leave unset (the column's "unknown"). Readers
+    judge the item again when they run; this is the record of match time.
     """
-    knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
-    if knowledge_item is None:
-        return "unknown"
-    if knowledge_item.valid_until is not None and knowledge_item.valid_until < today:
-        return "expired"
-    if knowledge_item.status == "archived":
-        return "invalid"
-    return "valid"
+    return (await uow.knowledge.item_validity([knowledge_item_id], today))[
+        knowledge_item_id
+    ].validity_status
 
 
 # ----------------------------------------------------------------------
@@ -210,38 +210,47 @@ class CandidateTalentSignals:
     availability_unknown: bool
 
 
+async def _held_certificates(
+    uow: UnitOfWork, employee_knowledge_item_id: uuid.UUID, today: date
+) -> list[ItemValidity]:
+    """The certificates this employee holds, each judged now (plan items 89
+    and 91), in one read."""
+    certifications = await uow.knowledge.list_certifications_for_employee(
+        employee_knowledge_item_id
+    )
+    live = await uow.knowledge.item_validity((c.knowledge_item_id for c in certifications), today)
+    return [v for v in live.values() if v.reason != REASON_MISSING]
+
+
+def _certificate_findings(required_certs: list[str], held: list[ItemValidity]) -> list[CertFinding]:
+    """One finding per required certificate. Same normalized-substring title
+    match B6's employee dedup already uses and KNOWN_LIMITATIONS.md documents
+    as a known scope boundary (not fuzzy similarity). Of the certificates
+    that match, one that counts now makes it valid (a renewed certificate
+    next to its lapsed one is held); otherwise an expired one makes it
+    expired, and anything else (withdrawn, unverified, none held) is
+    unverified. Before plan items 89 and 91 only the first match's date was
+    read, so a withdrawn or unverified certificate counted as held."""
+    findings: list[CertFinding] = []
+    for required in required_certs:
+        matches = [h for h in held if h.title and required.lower() in h.title.lower()]
+        if any(h.counts for h in matches):
+            status = "valid"
+        elif any(h.validity_status == EXPIRED for h in matches):
+            status = "expired"
+        else:
+            status = "unverified"
+        findings.append(
+            CertFinding(required_cert=required, matched=bool(matches), validity_status=status)
+        )
+    return findings
+
+
 async def _compute_candidate_talent_signals(
     uow: UnitOfWork, employee: Employee, required_certs: list[str], today: date
 ) -> CandidateTalentSignals:
-    certifications = await uow.knowledge.list_certifications_for_employee(
-        employee.knowledge_item_id
-    )
-    cert_items = []
-    for cert in certifications:
-        item = await uow.knowledge.get_knowledge_item(cert.knowledge_item_id)
-        if item is not None:
-            cert_items.append(item)
-
-    cert_findings: list[CertFinding] = []
-    for required in required_certs:
-        # Same normalized-substring match B6's employee dedup already uses
-        # and KNOWN_LIMITATIONS.md already documents as a known scope
-        # boundary (not fuzzy similarity) - reused here rather than
-        # inventing a second matching heuristic for the same class of
-        # problem.
-        match = next((item for item in cert_items if required.lower() in item.title.lower()), None)
-        if match is None:
-            cert_findings.append(
-                CertFinding(required_cert=required, matched=False, validity_status="unverified")
-            )
-        elif match.valid_until is not None and match.valid_until < today:
-            cert_findings.append(
-                CertFinding(required_cert=required, matched=True, validity_status="expired")
-            )
-        else:
-            cert_findings.append(
-                CertFinding(required_cert=required, matched=True, validity_status="valid")
-            )
+    held = await _held_certificates(uow, employee.knowledge_item_id, today)
+    cert_findings = _certificate_findings(required_certs, held)
 
     return CandidateTalentSignals(
         cert_findings=cert_findings,
@@ -484,7 +493,7 @@ async def evaluate_role_match(
     mechanical signals, call the LLM, enforce gap visibility, persist.
     Mirrors evaluate_compliance_for_requirement's shape exactly.
     """
-    today = today or date.today()
+    today = today or today_utc()
     async with UnitOfWork() as uow:
         role = await uow.talent.get_role_requirement(role_requirement_id)
         if role is None:
@@ -704,6 +713,41 @@ async def list_role_requirements_for_tender(tender_id: uuid.UUID) -> list[RoleRe
 async def list_role_matches_for_role(role_requirement_id: uuid.UUID) -> list[RoleMatch]:
     async with UnitOfWork() as uow:
         return await uow.talent.list_role_matches_for_role(role_requirement_id)
+
+
+async def live_certificate_gaps_in_uow(
+    uow: UnitOfWork, matches: list[RoleMatch], today: date
+) -> dict[uuid.UUID, list[dict]]:
+    """Per match, the certificate gaps found after scoring (plan items 89
+    and 91, user decision Q5): a required certificate the employee no longer
+    holds validly now (it lapsed, was withdrawn or marked unverified since
+    the match was scored), each marked `found_after_scoring`. A requirement
+    the stored gaps already name is not repeated. The stored gaps are the
+    scoring's record and are not rewritten; readers show both (the red
+    team's role_qualification_gap, the role-match API)."""
+    out: dict[uuid.UUID, list[dict]] = {}
+    for match in matches:
+        role = await uow.talent.get_role_requirement(match.role_requirement_id)
+        if role is None or not role.required_certs:
+            out[match.id] = []
+            continue
+        held = await _held_certificates(uow, match.employee_knowledge_item_id, today)
+        named = {
+            str(gap.get("criterion", "")).strip().casefold()
+            for gap in (match.gaps or [])
+            if isinstance(gap, dict)
+        }
+        out[match.id] = [
+            {"criterion": f.required_cert, "status": f.validity_status, "found_after_scoring": True}
+            for f in _certificate_findings(list(role.required_certs), held)
+            if f.validity_status != "valid" and f.required_cert.strip().casefold() not in named
+        ]
+    return out
+
+
+async def live_certificate_gaps(matches: list[RoleMatch]) -> dict[uuid.UUID, list[dict]]:
+    async with UnitOfWork() as uow:
+        return await live_certificate_gaps_in_uow(uow, matches, today_utc())
 
 
 async def archived_employee_ids(employee_knowledge_item_ids: list[uuid.UUID]) -> set[uuid.UUID]:

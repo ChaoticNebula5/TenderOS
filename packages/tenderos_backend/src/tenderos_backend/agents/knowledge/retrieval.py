@@ -4,6 +4,7 @@ from datetime import date
 
 from tenderos_backend.agents.knowledge.rerank import rerank
 from tenderos_backend.core.config import settings
+from tenderos_backend.core.evidence_validity import evidence_validity, today_utc
 from tenderos_backend.db.models.document import DocumentChunk
 from tenderos_backend.db.models.knowledge import KnowledgeItem
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -77,7 +78,7 @@ async def search_company_knowledge(
 
     retrieval_top_k = retrieval_top_k or settings.retrieval_top_k
     rerank_top_n = rerank_top_n or settings.rerank_top_n
-    today = today or date.today()
+    today = today or today_utc()
 
     query_embedding = (await embed_texts([query_text]))[0]
 
@@ -119,21 +120,21 @@ async def search_company_knowledge(
             # not just the first one found.
             knowledge_items = await uow.knowledge.get_knowledge_items_by_chunk_id(chunk_id)
             for knowledge_item in knowledge_items:
+                # valid_only: the item's status is `active` and its
+                # valid_until is not before today, from the one definition
+                # (core/evidence_validity.py, plan items 89 and 91). Not
+                # `counts`: an employee whose profile is not yet verified is
+                # still offered to the model, and the sufficiency check then
+                # rejects it as unverified (B16 added the status half of this
+                # rule; the date half is B6's).
                 if (
                     valid_only
-                    and knowledge_item.valid_until is not None
-                    and knowledge_item.valid_until < today
+                    and not evidence_validity(
+                        status=knowledge_item.status,
+                        valid_until=knowledge_item.valid_until,
+                        today=today,
+                    ).active_in_date
                 ):
-                    continue
-                # B16: valid_only's other half - an archived/expired-status
-                # item with no valid_until set at all (or one still in the
-                # future) used to stay eligible regardless, since only the
-                # date check above gated it. "active" is the only status
-                # compliance_service._compute_candidate_signals itself
-                # treats as currently good for non-employee items; mirrored
-                # here rather than re-deriving a second definition of
-                # "valid" for the same field.
-                if valid_only and knowledge_item.status != "active":
                     continue
                 if selected_item_ids is not None and knowledge_item.id not in selected_item_ids:
                     continue

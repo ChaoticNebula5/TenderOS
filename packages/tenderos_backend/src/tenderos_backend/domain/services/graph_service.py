@@ -10,6 +10,7 @@ from typing import Any
 from neo4j.exceptions import TransientError
 
 from tenderos_backend.core.config import settings
+from tenderos_backend.core.evidence_validity import evidence_validity, today_utc
 from tenderos_backend.db.models.graph_projection import GraphProjectionRun
 from tenderos_backend.db.repositories.graph_projection import ProjectionLockTimeoutError
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -386,6 +387,16 @@ class EvidenceCoverageResult:
     recommended_action: str = "compliance_re_evaluation_required"
 
 
+def _native_date(value: Any) -> date | None:
+    """A fact's valid_until as a datetime.date: Neo4j's driver returns its
+    own neo4j.time.Date, which this converts (to_native); a test row may
+    already hold a datetime.date."""
+    if value is None:
+        return None
+    to_native = getattr(value, "to_native", None)
+    return to_native() if callable(to_native) else value
+
+
 def evaluate_evidence_coverage(
     rows: list[dict[str, Any]], today: date | None = None
 ) -> EvidenceCoverageResult:
@@ -400,12 +411,15 @@ def evaluate_evidence_coverage(
 
     Steps:
     1. For each row, decide whether it counts as a currently-valid support
-       path: the evidence link itself must be verified=true AND
-       validity_status='valid'. If the row DOES have a backing fact
-       (knowledge_item_status is not None), that fact's status must also be
-       'active', its USED_IN.selected must not be False (None counts as
-       passing - a fact with no selection row at all was never deselected),
-       AND its valid_until (if set at all) must not be in the past.
+       path. A row with no backing fact (knowledge_item_status is None, a
+       document excerpt) counts when the evidence's stored copy is
+       verified=true AND validity_status='valid'. A row WITH a backing fact
+       counts when the fact counts now by the one definition (plan items 89
+       and 91, core/evidence_validity.py: status 'active', valid_until not
+       before today, an Employee's profile verified; the evidence's stored
+       copy is not read for it) AND its USED_IN.selected is not False (None
+       counts as passing - a fact with no selection row at all was never
+       deselected).
     2. Split evidence_id values into valid_evidence_ids vs
        invalid_evidence_ids based on step 1's per-row verdict.
     3. valid_path_count = len(valid_evidence_ids).
@@ -436,23 +450,29 @@ def evaluate_evidence_coverage(
     find_expired_certification_contradictions already compares two Neo4j
     Date properties server-side; nothing here needs an explicit conversion.
     """
-    today = today or date.today()
+    today = today or today_utc()
 
     valid_evidence_ids: list[str] = []
     invalid_evidence_ids: list[str] = []
     for row in rows:
         evidence_id = str(row["evidence_id"])
-        evidence_is_valid = row["verified"] is True and row["validity_status"] == "valid"
-
-        valid_until = row.get("valid_until")
-        fact_not_expired = valid_until is None or valid_until >= today
-        fact_is_valid = row["knowledge_item_status"] is None or (
-            row["knowledge_item_status"] == "active"
-            and row["selected"] is not False
-            and fact_not_expired
-        )
-
-        path_is_valid = evidence_is_valid and fact_is_valid
+        if row["knowledge_item_status"] is None:
+            # No fact behind it (a document excerpt): the Evidence node's
+            # stored copy of the link is all there is.
+            path_is_valid = row["verified"] is True and row["validity_status"] == "valid"
+        else:
+            # Plan items 89 and 91 (addition 1): the fact judged now by the
+            # one definition (core/evidence_validity.py), its date against
+            # today; the Evidence node's stored copy is not read for it. A
+            # deselected fact (USED_IN.selected false) still does not count.
+            fact_counts = evidence_validity(
+                status=row["knowledge_item_status"],
+                valid_until=_native_date(row.get("valid_until")),
+                today=today,
+                is_employee=bool(row.get("fact_is_employee")),
+                profile_review_status=row.get("profile_review_status"),
+            ).counts
+            path_is_valid = fact_counts and row["selected"] is not False
 
         if path_is_valid:
             valid_evidence_ids.append(evidence_id)

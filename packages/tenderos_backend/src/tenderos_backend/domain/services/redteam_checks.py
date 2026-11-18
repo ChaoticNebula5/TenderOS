@@ -2,8 +2,10 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from tenderos_backend.core.evidence_validity import today_utc
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service
+from tenderos_backend.domain.services.talent_service import live_certificate_gaps_in_uow
 
 
 @dataclass(frozen=True)
@@ -95,14 +97,23 @@ async def check_unsupported_claims(
 async def check_role_qualification_gaps(
     uow: UnitOfWork, tender_id: uuid.UUID
 ) -> list[RedteamFindingDraft]:
+    """The selected candidate's gaps: the stored ones from scoring, plus the
+    certificate gaps found after it (plan items 89 and 91, user decision
+    Q5): a required certificate that lapsed, was withdrawn or was marked
+    unverified since the match was scored."""
     role_requirements = await uow.talent.list_role_requirements_for_tender(tender_id)
     drafts: list[RedteamFindingDraft] = []
+    today = today_utc()
     for role_requirement in role_requirements:
         matches = await uow.talent.list_role_matches_for_role(role_requirement.id)
         selected = next((m for m in matches if m.human_selected), None)
-        if selected is None or not selected.gaps:
+        if selected is None:
             continue
-        gap_criteria = sorted(gap["criterion"] for gap in selected.gaps)
+        live = (await live_certificate_gaps_in_uow(uow, [selected], today))[selected.id]
+        gaps = [*(selected.gaps or []), *live]
+        if not gaps:
+            continue
+        gap_criteria = sorted(gap["criterion"] for gap in gaps)
         drafts.append(
             RedteamFindingDraft(
                 target_type="role_match",
@@ -111,7 +122,7 @@ async def check_role_qualification_gaps(
                 severity="major",
                 finding_text=(
                     f"The human-selected candidate for role {role_requirement.role_name} "
-                    f"has {len(selected.gaps)} unmet requirement(s)."
+                    f"has {len(gaps)} unmet requirement(s)."
                 ),
                 violated_condition=f"role_match_id={selected.id}; gap_criteria={gap_criteria}",
             )
