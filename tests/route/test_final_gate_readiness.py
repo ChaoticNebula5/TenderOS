@@ -2,7 +2,8 @@
 recomputes readiness and refuses READINESS_CHANGED when the result is not
 the report that was current before the request, or when the bid's state
 version moves before the decision is recorded. A final gate decision with
-target_updates is refused 422 before anything is applied.
+target_updates is refused 422 before anything is applied (since PR 16, as on
+every gate).
 
 No route test covered the waiver check before this file. Gates are
 hand-built rows (no graph run), as in test_gate_live_counts.py; the graph is
@@ -480,7 +481,7 @@ async def test_final_gate_target_updates_are_refused_before_anything_applies(
     )
 
     assert response.status_code == 422, response.text
-    assert response.json()["error"]["code"] == "FINAL_GATE_TARGET_UPDATES"
+    assert response.json()["error"]["code"] == "GATE_TARGET_UPDATES"
     assert await _version(tender_id) == version
     async with UnitOfWork() as uow:
         entry = await uow.compliance.get_compliance_entry(entry_id)

@@ -71,38 +71,12 @@ const DECISIONS: readonly (readonly [Decision, string, ButtonVariant])[] = [
   ["reject", "Reject", "danger"],
 ];
 
-// The "shared" part of the shared gate-control component (B13 §7 step 5,
-// TODO(human) 1) is deliberately narrow: deciding the gate as a whole
-// (approve/reject/request_changes, notes, final_readiness's waive flag)
-// and showing its typed summary. It does NOT render per-target checkboxes
-// - reading gate_target_service.py directly (not the schema, which says
-// nothing about this) turned up a real asymmetry that makes one generic
-// "pick your targets" UI the wrong shape to share:
-//
-//   - compliance_review's targets are compliance_entry ids, and
-//     gate_target_service._KNOWN_TARGET_TYPES accepts compliance_entry
-//     target_updates directly - the gate's own targets list IS what a
-//     caller can batch-approve.
-//   - resource_selection's targets are role_requirement ids (one per
-//     role), but _KNOWN_TARGET_TYPES only accepts role_match target_
-//     updates (one per CANDIDATE) - a different id space entirely, only
-//     reachable via a separate GET /roles/{role_id}/matches call per
-//     role. The gate's targets list can't be turned into target_updates
-//     by itself.
-//   - requirement_review's targets (requirement ids) and finding_
-//     resolution's (redteam_finding ids) aren't in _KNOWN_TARGET_TYPES at
-//     all - per-item approval for both happens through their own existing
-//     routes (POST /requirements/{id}/verify, POST /redteam-findings/
-//     {id}/resolve), never through this gate's target_updates.
-//
-// Three different shapes for "what does per-target approval mean here,"
-// one of which doesn't exist. A single shared component trying to render
-// all three would need gate_type-specific branches anyway - so those
-// branches live in each SCREEN instead (screen 9's compliance table,
-// screen 11's team workspace), each already building the per-row UI its
-// own domain needs. A screen collects whatever target_updates it wants
-// and passes them in via decideTargetUpdates; this component only ever
-// asks "what's the decision on the gate overall."
+// The panel decides the gate as a whole: approve, reject or request changes,
+// the notes, and the final gate's waive box. Per-item decisions are made on
+// each screen's rows, through each item's own route (verify a requirement,
+// approve a compliance entry, select a candidate, resolve a finding). A gate
+// decision carries no per-item changes: the API refuses target_updates on
+// every gate (PR 16), and this panel never sent any.
 //
 // Keyed by the gate's id (plan item 102): the notes, the waive box and an
 // error belong to the gate they were typed for. A screen can replace the gate

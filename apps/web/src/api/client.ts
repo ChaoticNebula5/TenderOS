@@ -779,15 +779,8 @@ export type GateResponse =
 // this, so a gate type with no screen fails `tsc -b` (plan item 73).
 export type GateType = GateResponse["gate_type"];
 
-export interface TargetUpdate {
-  target_type: string;
-  target_id: string;
-  decision: "approve";
-}
-
 export interface GateDecisionRequest {
   decision: "approve" | "reject" | "request_changes";
-  target_updates?: TargetUpdate[];
   notes?: string | null;
   waive?: boolean;
 }
@@ -1102,8 +1095,8 @@ export function approveCompliance(complianceId: string): Promise<ComplianceRespo
 // ----------------------------------------------------------------------
 // G8. Talent - mirrors apps/api/src/tenderos_api/schemas/talent.py.
 // Screen 11 (Team workspace), reuses GateDecisionPanel for the
-// resource_selection gate. select-candidate is called directly, never
-// through the gate's own target_updates - see KNOWN_LIMITATIONS.md.
+// resource_selection gate. A candidate is selected through select-candidate;
+// a gate decision carries no per-item changes.
 // ----------------------------------------------------------------------
 
 export interface RoleRequirementResponse {

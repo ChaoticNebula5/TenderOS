@@ -502,13 +502,11 @@ async def evaluate_compliance_for_requirement(
 async def approve_compliance_entry_in_uow(
     uow: UnitOfWork, compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> ComplianceEntry:
-    """The transaction-open, no-commit core of approve_compliance_entry -
-    for a caller (gate_target_service.apply_target_updates) that needs to
-    compose this write with others in ONE shared transaction, so a later
-    failure in the same batch rolls this one back too rather than leaving
-    it committed. approve_compliance_entry itself (below) is unchanged for
-    every other existing caller (G7's own route) - opens its own UnitOfWork,
-    calls this, commits once.
+    """The transaction-open, no-commit core of approve_compliance_entry,
+    which (below) opens its own UnitOfWork, calls this and commits once. It
+    was split out for the gate decision's target_updates, which composed
+    several such writes in one transaction; PR 16 removed those (a decision
+    decides the gate only), so G7's own route is the one caller.
     """
     entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
     if entry is None:

@@ -288,7 +288,11 @@ async def cancel_workflow_run(
                 await uow.rollback()
                 return await get_workflow_run(run_id)
             # In the same transaction (plan item 44): a gate left pending on
-            # a cancelled run could still be decided.
+            # a cancelled run could still be decided. After the run's status:
+            # a gate being opened share-locks the run row first
+            # (GateRepository.create), so it is either refused or seen here.
+            # A decision holding a gate's lock waits on nothing this holds
+            # (lock order: gate_service.record_decision's docstring).
             await uow.gates.close_pending_for_run(run_id)
             await uow.audit.create(
                 organization_id=organization_id,
