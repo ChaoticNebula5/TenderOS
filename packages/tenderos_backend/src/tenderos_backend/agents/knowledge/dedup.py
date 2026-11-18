@@ -33,6 +33,14 @@ def normalize_employee_name(name: str) -> str:
     return " ".join(stripped.casefold().split())
 
 
+def normalize_employee_email(email: str | None) -> str | None:
+    """An email as the duplicate check compares it: surrounding spaces
+    stripped, casefolded; None for no email. Plan item 80: the resume merge
+    (knowledge_service.resume_merge_changes) compares the same way, so an
+    email that differs only in case or spaces is the same email there too."""
+    return email.strip().casefold() if email else None
+
+
 class DuplicateVerdict(StrEnum):
     NEW = "new"  # no real match - create a fresh knowledge_items/employees row
     DUPLICATE = "duplicate"  # confidently the same person - update the existing row
@@ -68,7 +76,7 @@ def resolve_employee_duplicate(
 
     candidate_normalized_name = normalize_employee_name(candidate_name)
     candidate_matches: list[tuple[Employee, tuple[str, ...]]] = []
-    normalized_candidate_email = candidate_email.strip().casefold() if candidate_email else None
+    normalized_candidate_email = normalize_employee_email(candidate_email)
 
     for candidate in candidates:
         signals: list[str] = []
@@ -88,7 +96,7 @@ def resolve_employee_duplicate(
         if (
             normalized_candidate_email is not None
             and candidate.email is not None
-            and candidate.email.strip().casefold() == normalized_candidate_email
+            and normalize_employee_email(candidate.email) == normalized_candidate_email
         ):
             signals.append("email")
         if signals:

@@ -1,13 +1,17 @@
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.dedup import (
     DuplicateVerdict,
+    normalize_employee_email,
     normalize_employee_name,
     resolve_employee_duplicate,
 )
@@ -36,13 +40,17 @@ from tenderos_backend.db.storage import storage
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
     AGGREGATE_KNOWLEDGE_SELECTION,
     EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
     EVENT_KNOWLEDGE_SELECTION_CHANGED,
+    EVENT_RESUME_MERGE_APPROVED,
     knowledge_document_uploaded_idempotency_key,
     knowledge_document_uploaded_payload,
     knowledge_selection_changed_idempotency_key,
     knowledge_selection_changed_payload,
+    resume_merge_approved_idempotency_key,
+    resume_merge_approved_payload,
 )
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 from tenderos_backend.domain.services.document_service import create_synthetic_chunk
@@ -155,6 +163,45 @@ class ImportItemNotFoundError(Exception):
     pass
 
 
+class ImportItemNotInReviewError(Exception):
+    """Plan item 80: only a needs_review item is approved or rejected (a
+    failed item can also be rejected). Approving an approved item, or
+    rejecting a rejected one, is a replay and answers with the item instead."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+class ImportItemNoTargetError(Exception):
+    """Plan item 80: a resume item in review names no single employee (strong
+    signals matched different people, or the name matched several), or the
+    one it named no longer exists. Reject is the only decision for now."""
+
+
+class ImportItemSourceMissingError(Exception):
+    """Plan item 80: a resume item with no source document: written before
+    migration 034, or its document is gone. Nothing to merge from."""
+
+
+class ImportItemFingerprintRequiredError(Exception):
+    """Plan item 80, Q1: approving a resume merge names the employee values
+    the reviewer saw (ImportItemTarget.fingerprint). An approval without it
+    is refused before anything is read or written."""
+
+
+class ImportItemPayloadInvalidError(Exception):
+    """Plan item 80: a resume item whose extracted payload is not a valid
+    profile. The panel cannot show what a merge would write, so the item is
+    refused (409) rather than failing (500); reject it or upload again."""
+
+
+class ImportItemTargetChangedError(Exception):
+    """Plan item 80, Q1: the employee changed after the reviewer loaded the
+    item (another merge, an edit, a verify), so they did not see what the
+    merge would change. Nothing is written; the screen reloads the item."""
+
+
 class TenderNotFoundError(Exception):
     pass
 
@@ -187,7 +234,10 @@ def _fingerprint(*parts: str) -> str:
 
 
 async def _claim_or_resume_import_item(
-    batch_id: uuid.UUID, source_ref: str, extracted_payload: dict
+    batch_id: uuid.UUID,
+    source_ref: str,
+    extracted_payload: dict,
+    source_document_id: uuid.UUID | None = None,
 ) -> tuple[KnowledgeImportItem, bool]:
     """B16: the insert-or-detect step for this file's own 3 select-then-
     insert sites (import_employee_master_row, import_certification_row,
@@ -228,7 +278,10 @@ async def _claim_or_resume_import_item(
             return existing, existing.status == "pending"
         try:
             import_item = await uow.knowledge.create_import_item(
-                batch_id=batch_id, source_ref=source_ref, extracted_payload=extracted_payload
+                batch_id=batch_id,
+                source_ref=source_ref,
+                extracted_payload=extracted_payload,
+                source_document_id=source_document_id,
             )
             await uow.commit()
             return import_item, True
@@ -432,8 +485,9 @@ async def import_employee_master_row(
             target_id = resolution.matched_employee.knowledge_item_id
             # The employee-master spreadsheet is the org's own HR-record
             # path, treated as more current than whatever was already on
-            # file - unlike a resume's free-text self-report (import_resume
-            # below), which corroborates rather than overwrites.
+            # file. A resume's free-text self-report (import_resume below)
+            # overwrites only through _merge_resume_into_employee, and a
+            # verified profile only after a person approves it (plan item 80).
             # Read before the write: matched_employee is the identity-mapped
             # row update_employee changes.
             before_title = resolution.matched_employee.current_title
@@ -485,6 +539,181 @@ async def import_employee_master_row(
         return updated
 
 
+# Plan item 80 (user decisions 2026-11-18). The four profile fields a resume
+# can change, in the order the review panel shows them. The name is never
+# written by a resume: the match was made on it, and a strong-signal match
+# whose name differs keeps the employee's.
+RESUME_MERGE_FIELDS = ("email", "current_title", "professional_location", "years_experience")
+
+_RESUME_FIELD_LABELS = {
+    "email": "email",
+    "current_title": "title",
+    "professional_location": "location",
+    "years_experience": "years of experience",
+}
+
+PROFILE_VERIFIED = "verified"
+
+# The automatic branch's audit actor (Q3): a merge no person decided.
+_RESUME_IMPORT_ACTOR = "resume_import"
+
+
+def _field_value(source: object, field: str) -> object:
+    # years_experience is a Numeric column (a Decimal) on the employee and a
+    # float on the profile; compared, stored in audit rows and fingerprinted
+    # as a float. A blank string reads as no value, as the automatic branch's
+    # `or` always treated it.
+    value = getattr(source, field)
+    if field == "years_experience":
+        return float(value) if value is not None else None  # type: ignore[arg-type]
+    return value if value != "" else None
+
+
+@dataclass(frozen=True)
+class ResumeMergeField:
+    """One of RESUME_MERGE_FIELDS as the merge sees it: the value on file,
+    the resume's (None where the resume leaves it blank), and whether the
+    merge writes it. The review panel renders these as they are (plan item
+    80): it has no copy of the rule."""
+
+    field: str
+    on_file: object
+    from_resume: object
+    changes: bool
+
+
+def _same_value(field: str, old: object, new: object) -> bool:
+    # An email is compared as the duplicate check compares it (dedup.py's
+    # normalize_employee_email): one differing only in case or spaces is the
+    # same email, so it neither changes the stored value nor sends a verified
+    # profile to review.
+    if field == "email":
+        return normalize_employee_email(old) == normalize_employee_email(new)  # type: ignore[arg-type]
+    return old == new
+
+
+def resume_merge_fields(
+    employee: Employee, profile: ExtractedEmployeeProfile
+) -> list[ResumeMergeField]:
+    """Every field of RESUME_MERGE_FIELDS, in that order. The rule (Q2, the
+    automatic branch's since B6): the resume's value wherever it has one; a
+    field it leaves blank keeps what is on file."""
+    fields: list[ResumeMergeField] = []
+    for field in RESUME_MERGE_FIELDS:
+        new = _field_value(profile, field)
+        old = _field_value(employee, field)
+        fields.append(
+            ResumeMergeField(
+                field=field,
+                on_file=old,
+                from_resume=new,
+                changes=new is not None and not _same_value(field, old, new),
+            )
+        )
+    return fields
+
+
+def resume_merge_changes(
+    employee: Employee, profile: ExtractedEmployeeProfile
+) -> dict[str, tuple[object, object]]:
+    """{field: (on file, from resume)} for every field the merge writes: the
+    changing entries of resume_merge_fields, so the merge, the automatic
+    branch's review rule and the panel read one list."""
+    return {
+        entry.field: (entry.on_file, entry.from_resume)
+        for entry in resume_merge_fields(employee, profile)
+        if entry.changes
+    }
+
+
+def resume_merge_overwrites(employee: Employee, profile: ExtractedEmployeeProfile) -> list[str]:
+    """The changed fields that already hold a value (Q3): filling a blank is
+    not an overwrite."""
+    return [
+        field
+        for field, (old, _new) in resume_merge_changes(employee, profile).items()
+        if old is not None
+    ]
+
+
+def resume_target_fingerprint(employee: Employee) -> str:
+    """Q1: what the review panel shows of the matched employee, as one hash:
+    the four fields, the resume document and the review status. The screen
+    sends it back on Approve, and approval compares it with the employee's
+    values read under the row lock, so "the reviewer saw every change" holds
+    for the values actually merged."""
+    shown: dict[str, object] = {
+        field: _field_value(employee, field) for field in RESUME_MERGE_FIELDS
+    }
+    shown["resume_document_id"] = (
+        str(employee.resume_document_id) if employee.resume_document_id is not None else None
+    )
+    shown["profile_review_status"] = employee.profile_review_status
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
+def _merge_audit_values(employee: Employee) -> dict[str, object]:
+    values: dict[str, object] = {
+        field: _field_value(employee, field) for field in RESUME_MERGE_FIELDS
+    }
+    values["resume_document_id"] = (
+        str(employee.resume_document_id) if employee.resume_document_id is not None else None
+    )
+    return values
+
+
+async def _merge_resume_into_employee(
+    uow: UnitOfWork,
+    organization_id: uuid.UUID,
+    employee: Employee,
+    profile: ExtractedEmployeeProfile,
+    resume_document_id: uuid.UUID,
+    resume_chunk_ids: list[uuid.UUID],
+    *,
+    actor_type: str,
+    actor_id: str,
+    import_item_id: uuid.UUID,
+) -> dict[str, tuple[object, object]]:
+    """The one resume merge (plan item 80), for import_resume's automatic
+    branch and for approval, so the two cannot drift. `employee` is read
+    under its row lock by the caller. Writes the changed fields, the resume
+    document and the parsed profile; adds the resume's chunks (additive: an
+    old resume's chunks stay citable, see KNOWN_LIMITATIONS.md); bumps the
+    bids projecting the employee only if the title changed, the one field
+    here on the graph node (plan item 95); writes an employee_resume_merge
+    audit row. The review status, eligibility and name are not touched.
+    Returns the changes."""
+    changes = resume_merge_changes(employee, profile)
+    before = _merge_audit_values(employee)
+    await uow.knowledge.update_employee(
+        employee.knowledge_item_id,
+        **{field: new for field, (_old, new) in changes.items()},
+        resume_document_id=resume_document_id,
+        parsed_profile=profile.model_dump(),
+    )
+    chunks_added = await uow.knowledge.associate_knowledge_item_chunks(
+        employee.knowledge_item_id, resume_chunk_ids
+    )
+    if "current_title" in changes:
+        await _bump_bids_projecting(uow, employee.knowledge_item_id)
+    await uow.audit.create(
+        organization_id=organization_id,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        action="employee_resume_merge",
+        target_type="employee",
+        target_id=employee.knowledge_item_id,
+        before=before,
+        after=_merge_audit_values(employee),
+        metadata={
+            "import_item_id": str(import_item_id),
+            "fields_changed": sorted(changes),
+            "chunks_added": chunks_added,
+        },
+    )
+    return changes
+
+
 async def import_resume(
     organization_id: uuid.UUID,
     batch_id: uuid.UUID,
@@ -526,7 +755,7 @@ async def import_resume(
     effect, not something the original finding named.
     """
     import_item, needs_resolution = await _claim_or_resume_import_item(
-        batch_id, source_ref, profile.model_dump()
+        batch_id, source_ref, profile.model_dump(), source_document_id=resume_document_id
     )
     if not needs_resolution:
         return import_item
@@ -558,38 +787,41 @@ async def import_resume(
         if resolution.verdict == DuplicateVerdict.DUPLICATE:
             assert resolution.matched_employee is not None
             target_id = resolution.matched_employee.knowledge_item_id
-            # Read before the write (the same identity-mapped row): of these
-            # fields only current_title is on the graph node (plan item 95).
-            before_title = resolution.matched_employee.current_title
-            await uow.knowledge.update_employee(
-                target_id,
-                email=profile.email or resolution.matched_employee.email,
-                current_title=profile.current_title or before_title,
-                professional_location=(
-                    profile.professional_location
-                    or resolution.matched_employee.professional_location
-                ),
-                years_experience=(
-                    profile.years_experience
-                    if profile.years_experience is not None
-                    else resolution.matched_employee.years_experience
-                ),
-                resume_document_id=resume_document_id,
-                parsed_profile=profile.model_dump(),
+            # Plan item 80: read under the row lock, so the comparison below
+            # and the merge see the values an approval or a verify running
+            # now would leave (lock order: the employee, then this item's
+            # row, never the other way; see approve_import_item).
+            employee = await uow.knowledge.get_employee_for_update(target_id)
+            assert employee is not None
+            overwrites = resume_merge_overwrites(employee, profile)
+            if employee.profile_review_status == PROFILE_VERIFIED and overwrites:
+                # Q3: a verified profile changes only after a person has
+                # seen the change. Filling a blank, or adding chunks, is not
+                # one, so those still merge on their own.
+                updated = await uow.knowledge.update_import_item(
+                    import_item.id,
+                    status="needs_review",
+                    target_knowledge_item_id=target_id,
+                    error_message=(
+                        f"{resolution.reason}, but this resume would change the verified "
+                        "profile's "
+                        + ", ".join(_RESUME_FIELD_LABELS[field] for field in overwrites)
+                        + "; approve to apply it"
+                    ),
+                )
+                await uow.commit()
+                return updated
+            await _merge_resume_into_employee(
+                uow,
+                organization_id,
+                employee,
+                profile,
+                resume_document_id,
+                resume_chunk_ids,
+                actor_type="system",
+                actor_id=_RESUME_IMPORT_ACTOR,
+                import_item_id=import_item.id,
             )
-            # Additive, not a replace: a re-uploaded résumé's chunks are
-            # added to whatever this employee is already associated with,
-            # matching this function's own "corroborates rather than
-            # overwrites" treatment of résumé data everywhere else. Real
-            # consequence: if a corrected résumé DROPS a claim (e.g. an
-            # expired certification no longer listed), the old chunk stays
-            # associated and stays citable - the association only ever
-            # grows, never shrinks. Defensible (the old document is a real
-            # document that really said that), not obvious - see
-            # KNOWN_LIMITATIONS.md.
-            await uow.knowledge.associate_knowledge_item_chunks(target_id, resume_chunk_ids)
-            if (profile.current_title or before_title) != before_title:
-                await _bump_bids_projecting(uow, target_id)
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
@@ -1408,20 +1640,47 @@ async def get_import_item(item_id: uuid.UUID) -> KnowledgeImportItem | None:
 
 
 async def approve_import_item(
-    item_id: uuid.UUID, organization_id: uuid.UUID, actor_user_id: uuid.UUID
+    item_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    target_fingerprint: str | None = None,
 ) -> KnowledgeImportItem:
-    """G6's POST /knowledge/import-items/{id}/approve - for an item sitting
-    at needs_review (a dedup match the deterministic policy couldn't
-    resolve on its own), this confirms the existing target_knowledge_item_id
-    resolution is correct (e.g. "yes, this resume really is the same Dana
-    Whitfield already on file"). It does not create a new knowledge_item -
-    approving a needs_review row means agreeing with the match it already
-    proposed, not retrying the import as a fresh one.
+    """G6's POST /knowledge/import-items/{id}/approve, for an item sitting at
+    needs_review (a dedup match the deterministic policy could not settle).
+
+    Plan item 80 (user decisions 2026-11-18, option C): approving a resume
+    item merges the resume into the employee it matched, through the same
+    _merge_resume_into_employee as import_resume's automatic branch. The
+    reviewer saw the change: the request carries the fingerprint of the
+    employee values the screen showed (resume_target_fingerprint), compared
+    under the employee's row lock; a different one is refused, nothing
+    written. The profile's review status is kept (Q1). A WORKED_ON
+    extraction for the merged resume is queued (outbox, Q6). Other import
+    types keep their status-only approval (plan note).
+
+    Status rule: only needs_review is approved; approving an approved item
+    is a replay and returns it with no write and no audit row; anything else
+    is refused. Lock order: this item's row, then the employee's (then the
+    bids a title change bumps). import_resume's automatic branch locks the
+    employee and then only its own new item, which is still pending in that
+    transaction; approval refuses a pending item before asking for the
+    employee lock, so the two never wait on each other in a circle. verify
+    and the profile edit take the employee row alone (then bumped bids).
     """
     async with UnitOfWork() as uow:
-        item = await uow.knowledge.get_import_item(item_id)
+        item = await uow.knowledge.get_import_item_for_update(item_id)
         if item is None:
             raise ImportItemNotFoundError()
+        if item.status == "approved":
+            return item
+        if item.status != "needs_review":
+            raise ImportItemNotInReviewError(item.status)
+        batch = await uow.knowledge.get_import_batch(item.batch_id)
+        merge_changes: dict[str, tuple[object, object]] | None = None
+        if batch is not None and batch.import_type == "bulk_resumes":
+            merge_changes = await _approve_resume_merge(
+                uow, item, organization_id, actor_user_id, target_fingerprint
+            )
         before = {"status": item.status}
         updated = await uow.knowledge.update_import_item(item_id, status="approved")
         await uow.audit.create(
@@ -1433,9 +1692,68 @@ async def approve_import_item(
             target_id=item_id,
             before=before,
             after={"status": updated.status},
+            metadata=(
+                {
+                    "employee": str(updated.target_knowledge_item_id),
+                    "fields_changed": sorted(merge_changes),
+                }
+                if merge_changes is not None
+                else None
+            ),
         )
+        if merge_changes is not None:
+            await uow.outbox.create(
+                aggregate_type=AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
+                aggregate_id=item_id,
+                event_type=EVENT_RESUME_MERGE_APPROVED,
+                payload=resume_merge_approved_payload(item_id),
+                idempotency_key=resume_merge_approved_idempotency_key(item_id),
+            )
         await uow.commit()
         return updated
+
+
+async def _approve_resume_merge(
+    uow: UnitOfWork,
+    item: KnowledgeImportItem,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    target_fingerprint: str | None,
+) -> dict[str, tuple[object, object]]:
+    if item.target_knowledge_item_id is None:
+        raise ImportItemNoTargetError()
+    if item.source_document_id is None:
+        raise ImportItemSourceMissingError()
+    if target_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    employee = await uow.knowledge.get_employee_for_update(item.target_knowledge_item_id)
+    if employee is None:
+        raise ImportItemNoTargetError()
+    knowledge_item = await uow.knowledge.get_knowledge_item(employee.knowledge_item_id)
+    if knowledge_item is not None and knowledge_item.status == KNOWLEDGE_ITEM_ARCHIVED:
+        raise EmployeeArchivedError()
+    if resume_target_fingerprint(employee) != target_fingerprint:
+        raise ImportItemTargetChangedError()
+    profile = _item_profile(item)
+    if profile is None:
+        raise ImportItemPayloadInvalidError()
+    chunks = await uow.documents.list_chunks_for_document(item.source_document_id)
+    return await _merge_resume_into_employee(
+        uow,
+        organization_id,
+        employee,
+        profile,
+        item.source_document_id,
+        [chunk.id for chunk in chunks],
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        import_item_id=item.id,
+    )
+
+
+# Plan item 80: the statuses a reviewer can reject from (a failed item can be
+# rejected too, to clear it from the queue).
+_REJECTABLE_IMPORT_ITEM_STATUSES = frozenset({"needs_review", "failed"})
 
 
 async def reject_import_item(
@@ -1447,11 +1765,19 @@ async def reject_import_item(
     Does not delete anything already created; if a needs_review row's
     target_knowledge_item_id pointed at an existing employee, that employee
     is untouched - only this import row's own status changes.
+
+    Plan item 80: the item is read under its row lock; rejecting a rejected
+    item is a replay (returned, nothing written), and an approved one, or
+    one still importing, is refused.
     """
     async with UnitOfWork() as uow:
-        item = await uow.knowledge.get_import_item(item_id)
+        item = await uow.knowledge.get_import_item_for_update(item_id)
         if item is None:
             raise ImportItemNotFoundError()
+        if item.status == "rejected":
+            return item
+        if item.status not in _REJECTABLE_IMPORT_ITEM_STATUSES:
+            raise ImportItemNotInReviewError(item.status)
         before = {"status": item.status, "error_message": item.error_message}
         updated = await uow.knowledge.update_import_item(
             item_id, status="rejected", error_message=reason
@@ -1469,6 +1795,86 @@ async def reject_import_item(
         )
         await uow.commit()
         return updated
+
+
+@dataclass(frozen=True)
+class ImportItemTarget:
+    """The employee a resume item names, as the review panel shows it (plan
+    item 80): the four fields, the resume document, the review status, the
+    fingerprint Approve sends back, and whether an approved item went into an
+    employee that already existed (merged) rather than one made from it."""
+
+    knowledge_item_id: uuid.UUID
+    name: str
+    email: str | None
+    current_title: str | None
+    professional_location: str | None
+    years_experience: float | None
+    resume_document_id: uuid.UUID | None
+    profile_review_status: str
+    fingerprint: str
+    merged_into_existing: bool
+    # resume_merge_fields for this item's resume; None when its extracted
+    # payload is not a valid profile (the panel then says so and offers
+    # Reject only, and approval refuses it).
+    changes: list[ResumeMergeField] | None
+
+
+def _item_profile(item: KnowledgeImportItem) -> ExtractedEmployeeProfile | None:
+    try:
+        return ExtractedEmployeeProfile.model_validate(item.extracted_payload)
+    except ValidationError:
+        return None
+
+
+async def list_import_items_with_targets(
+    batch_id: uuid.UUID,
+) -> list[tuple[KnowledgeImportItem, ImportItemTarget | None]]:
+    """list_import_items, each resume item with the employee it names (plan
+    item 80). Other import types, and items naming no employee, get None."""
+    async with UnitOfWork() as uow:
+        items = await uow.knowledge.list_import_items_for_batch(batch_id)
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        if batch is None or batch.import_type != "bulk_resumes":
+            return [(item, None) for item in items]
+        out: list[tuple[KnowledgeImportItem, ImportItemTarget | None]] = []
+        for item in items:
+            target: ImportItemTarget | None = None
+            if item.target_knowledge_item_id is not None:
+                employee = await uow.knowledge.get_employee(item.target_knowledge_item_id)
+                knowledge_item = await uow.knowledge.get_knowledge_item(
+                    item.target_knowledge_item_id
+                )
+                if employee is not None and knowledge_item is not None:
+                    profile = _item_profile(item)
+                    target = ImportItemTarget(
+                        knowledge_item_id=employee.knowledge_item_id,
+                        name=employee.name,
+                        email=employee.email,
+                        current_title=employee.current_title,
+                        professional_location=employee.professional_location,
+                        years_experience=(
+                            float(employee.years_experience)
+                            if employee.years_experience is not None
+                            else None
+                        ),
+                        resume_document_id=employee.resume_document_id,
+                        profile_review_status=employee.profile_review_status,
+                        fingerprint=resume_target_fingerprint(employee),
+                        # An employee made from this item's resume (the NEW
+                        # branch) has it as its source; a merge went into one
+                        # made from another document.
+                        merged_into_existing=(
+                            item.status == "approved"
+                            and item.source_document_id is not None
+                            and knowledge_item.source_document_id != item.source_document_id
+                        ),
+                        changes=(
+                            resume_merge_fields(employee, profile) if profile is not None else None
+                        ),
+                    )
+            out.append((item, target))
+        return out
 
 
 async def list_knowledge_selections(

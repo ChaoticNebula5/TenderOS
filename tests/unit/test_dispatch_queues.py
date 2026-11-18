@@ -17,6 +17,7 @@ from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
     AGGREGATE_ASYNC_OPERATION,
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
     AGGREGATE_KNOWLEDGE_SELECTION,
     AGGREGATE_REQUIREMENT,
     AGGREGATE_WORKFLOW_RUN,
@@ -26,6 +27,7 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_KNOWLEDGE_SELECTION_CHANGED,
     EVENT_OPERATION_REQUESTED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
+    EVENT_RESUME_MERGE_APPROVED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 from tenderos_worker import outbox_dispatcher
@@ -43,6 +45,7 @@ _PAYLOAD = {
     "state_version": 3,
     "operation_id": str(uuid.uuid4()),
     "kind": "proposal_generation",
+    "import_item_id": str(uuid.uuid4()),
 }
 
 _EXPECTED_QUEUES = {
@@ -53,6 +56,9 @@ _EXPECTED_QUEUES = {
     (AGGREGATE_REQUIREMENT, EVENT_REQUIREMENT_VERIFICATION_REQUESTED): "workflow",
     (AGGREGATE_KNOWLEDGE_SELECTION, EVENT_KNOWLEDGE_SELECTION_CHANGED): "workflow",
     (AGGREGATE_ASYNC_OPERATION, EVENT_OPERATION_REQUESTED): "operations",
+    # Plan item 80: an approved resume merge's WORKED_ON extraction (a model
+    # call), on the workflow queue as the knowledge import.
+    (AGGREGATE_KNOWLEDGE_IMPORT_ITEM, EVENT_RESUME_MERGE_APPROVED): "workflow",
 }
 
 

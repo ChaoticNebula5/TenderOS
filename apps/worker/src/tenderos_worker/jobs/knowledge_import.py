@@ -26,6 +26,7 @@ from tenderos_backend.agents.knowledge.relationships import (
 )
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
+from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.knowledge import PastProject
 from tenderos_backend.db.storage import storage
@@ -236,12 +237,88 @@ async def _process_capability_statement(
     )
 
 
+def resume_source_ref(document_id: uuid.UUID, filename: str) -> str:
+    """A resume item's source_ref (plan item 80, Q7). The document id makes
+    it unique in its batch: (batch_id, source_ref) is unique, and with the
+    file name alone a second, different "CV.pdf" in the same upload claimed
+    the first one's finished item and was dropped with no error (observed).
+    The review screen shows the file name (talentImportValues.ts,
+    sourceRefLabel)."""
+    return f"{document_id}/{filename}"
+
+
 async def _process_resume(
     doc_id: uuid.UUID, batch_id: uuid.UUID, org_id: uuid.UUID, filename: str
 ) -> None:
     client = _build_llm_client()
     async with UnitOfWork() as uow:
         resume_chunks = await uow.documents.list_chunks_for_document(doc_id)
+
+    profile = await extract_employee_profile(
+        client, settings.extractor_model, resume_chunks, org_id
+    )
+    item = await import_resume(
+        org_id,
+        batch_id,
+        resume_source_ref(doc_id, filename),
+        doc_id,
+        profile,
+        [c.id for c in resume_chunks],
+    )
+    # Plan item 80 (Q6): WORKED_ON only for an employee the import settled. A
+    # review item names the employee it proposes, and before this its
+    # relationships were written onto them before anyone approved the match;
+    # approval now queues the extraction (process_resume_merge_approved).
+    if item.status != "approved" or item.target_knowledge_item_id is None:
+        logger.info("resume import for %s is %s, skipping WORKED_ON", filename, item.status)
+        return
+
+    await _import_worked_on(client, org_id, item.target_knowledge_item_id, resume_chunks, profile)
+    logger.info("resume import complete for %s", filename)
+
+
+async def process_resume_merge_approved(import_item_id: str) -> None:
+    """Enqueued on ResumeMergeApproved (outbox_dispatcher.py, plan item 80):
+    the WORKED_ON extraction for a resume a reviewer approved into an
+    employee, from the item's resume document and its extracted project
+    mentions. Does nothing for an item that is no longer approved or names no
+    employee or document. A redelivery repeats the model call only: each
+    relationship is keyed on its fingerprint (import_worked_on_relationship)."""
+    item_uuid = uuid.UUID(import_item_id)
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.get_import_item(item_uuid)
+        if (
+            item is None
+            or item.status != "approved"
+            or item.target_knowledge_item_id is None
+            or item.source_document_id is None
+        ):
+            logger.info("resume merge %s has nothing to extract", import_item_id)
+            return
+        batch = await uow.knowledge.get_import_batch(item.batch_id)
+        if batch is None:
+            logger.info("resume merge %s has no batch", import_item_id)
+            return
+        resume_chunks = await uow.documents.list_chunks_for_document(item.source_document_id)
+    profile = ExtractedEmployeeProfile.model_validate(item.extracted_payload)
+    await _import_worked_on(
+        _build_llm_client(),
+        batch.organization_id,
+        item.target_knowledge_item_id,
+        resume_chunks,
+        profile,
+    )
+    logger.info("resume merge %s: WORKED_ON extraction complete", import_item_id)
+
+
+async def _import_worked_on(
+    client: LLMClient,
+    org_id: uuid.UUID,
+    employee_knowledge_item_id: uuid.UUID,
+    resume_chunks: list,
+    profile: ExtractedEmployeeProfile,
+) -> None:
+    async with UnitOfWork() as uow:
         project_items = await uow.knowledge.list_knowledge_items_for_org(
             org_id, item_type="past_project"
         )
@@ -261,22 +338,11 @@ async def _process_resume(
                 )
             )
 
-    profile = await extract_employee_profile(
-        client, settings.extractor_model, resume_chunks, org_id
-    )
-    item = await import_resume(
-        org_id, batch_id, filename, doc_id, profile, [c.id for c in resume_chunks]
-    )
-    if item.target_knowledge_item_id is None:
-        logger.info("resume import for %s produced no employee match, skipping WORKED_ON", filename)
-        return
-
     worked_on = await extract_worked_on(
         client, settings.extractor_model, resume_chunks, candidate_projects, org_id
     )
     for candidate in worked_on:
         resolution = resolve_worked_on_verification(candidate, profile.project_mentions)
         await import_worked_on_relationship(
-            org_id, item.target_knowledge_item_id, candidate, resolution
+            org_id, employee_knowledge_item_id, candidate, resolution
         )
-    logger.info("resume import complete for %s", filename)

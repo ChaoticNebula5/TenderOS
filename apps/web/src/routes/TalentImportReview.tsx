@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   ApiError,
   approveImportItem,
@@ -9,7 +10,12 @@ import {
   uploadEmployeeMaster,
   uploadResumes,
 } from "../api/client";
-import type { ImportBatchResponse, ImportItemDetailResponse } from "../api/client";
+import type {
+  ImportBatchResponse,
+  ImportItemDetailResponse,
+  ImportItemTarget,
+} from "../api/client";
+import { formatErrorDetail, readEnvelopeCode } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
 import { BreakAfterUnderscores } from "../components/BreakAfterUnderscores";
 import { PollStoppedNotice } from "../components/PollStoppedNotice";
@@ -22,7 +28,13 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { formatDate } from "../format/date";
 import { useBoundedPoll } from "../hooks/useBoundedPoll";
 import { describeImportBatch, describeStatus } from "../status/statusMap";
-import { importTypeLabel, payloadFields, sourceRefLabel } from "./talentImportValues";
+import {
+  NOT_SET,
+  formatYears,
+  importTypeLabel,
+  payloadFields,
+  sourceRefLabel,
+} from "./talentImportValues";
 import "./TalentImportReview.css";
 
 // Screen 3 (Part J). Three upload routes feed one shared batch/review
@@ -205,14 +217,32 @@ export function TalentImportReview() {
     void refreshBatches(true);
   }
 
-  async function handleApprove(itemId: string) {
+  // Plan item 80: a resume merge sends the fingerprint of the employee
+  // values this row shows. If the employee changed since (409
+  // IMPORT_ITEM_TARGET_CHANGED), nothing was merged: the items are read
+  // again, so the row shows the current values before a second Approve.
+  async function handleApprove(item: ImportItemDetailResponse) {
+    const itemId = item.id;
     setError(null);
     setActing({ itemId, action: "approve" });
     try {
-      await approveImportItem(itemId);
+      await approveImportItem(itemId, item.target_employee?.fingerprint ?? null);
       await refreshSelectedItems();
     } catch (err) {
-      setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
+      const code = err instanceof ApiError ? readEnvelopeCode(err.body) : null;
+      if (code === "IMPORT_ITEM_TARGET_CHANGED") {
+        setError(
+          "The employee changed after this item was loaded. The row now shows the current " +
+            "values; review them, then approve again.",
+        );
+        await refreshSelectedItems().catch(() => {
+          // The error above stays; Review items reads them again.
+        });
+      } else if (code !== null) {
+        setError(`Approve failed: ${formatErrorDetail(err)}`);
+      } else {
+        setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
+      }
     } finally {
       setActing(null);
     }
@@ -232,6 +262,10 @@ export function TalentImportReview() {
   }
 
   const selectedBatch = batches?.find((b) => b.id === selectedBatchId) ?? null;
+  // Plan item 80: a resume item in review merges into the employee it
+  // names, so one naming none can only be rejected (Approve hidden), as
+  // can one whose changes cannot be shown (target_employee.changes null).
+  const resumeBatch = selectedBatch?.import_type === "bulk_resumes";
 
   // Plan item 78: the open batch's items are read again too while that
   // batch is unfinished, including once more on the read that finds it
@@ -377,19 +411,23 @@ export function TalentImportReview() {
                         <StatusBadge {...describeStatus("importItem", item.status)} />
                       </td>
                       <td className="talent-import__detail">
-                        <ItemDetail item={item} />
+                        <ItemDetail item={item} resumeBatch={resumeBatch} />
                       </td>
                       <td className="cell-actions">
                         {item.status === "needs_review" && (
                           <div className="action-row">
-                            <Button
-                              variant="quiet"
-                              onClick={() => handleApprove(item.id)}
-                              disabled={busy}
-                              busy={busy && acting?.action === "approve"}
-                            >
-                              Approve
-                            </Button>
+                            {(!resumeBatch ||
+                              (item.target_employee !== null &&
+                                item.target_employee.changes !== null)) && (
+                              <Button
+                                variant="quiet"
+                                onClick={() => handleApprove(item)}
+                                disabled={busy}
+                                busy={busy && acting?.action === "approve"}
+                              >
+                                Approve
+                              </Button>
+                            )}
                             <Button
                               variant="danger"
                               onClick={() => handleReject(item.id)}
@@ -438,11 +476,23 @@ function itemCountLine(items: ImportItemDetailResponse[]): string {
 // error) AND the parsed fields - both, decided at plan review; before the
 // restyle the reason replaced the fields entirely. Replaces the
 // JSON.stringify dump with labelled fields (talentImportValues.ts).
-function ItemDetail({ item }: { item: ImportItemDetailResponse }) {
+function ItemDetail({
+  item,
+  resumeBatch,
+}: {
+  item: ImportItemDetailResponse;
+  resumeBatch: boolean;
+}) {
   const fields = payloadFields(item.extracted_payload);
   return (
     <>
       {item.error_message && <p className="talent-import__reason">{item.error_message}</p>}
+      {item.target_employee !== null && <ResumeMatch item={item} target={item.target_employee} />}
+      {resumeBatch && item.target_employee === null && item.status === "needs_review" && (
+        <p className="talent-import__match">
+          No single employee matches this resume, so it can only be rejected.
+        </p>
+      )}
       {fields.length > 0 && (
         <dl className="talent-import__fields-list">
           {fields.map((field) => (
@@ -456,5 +506,84 @@ function ItemDetail({ item }: { item: ImportItemDetailResponse }) {
         </dl>
       )}
     </>
+  );
+}
+
+// Plan item 80 (option C): what approving this resume would change, shown
+// before Approve, field by field. The list is the backend's own
+// (knowledge_service.resume_merge_fields, the one the merge writes from), in
+// its order, with on file, from resume and whether it changes: this screen
+// renders it and decides nothing. A description list, not a table:
+// full-flow.spec.ts counts the Items section's `tbody tr` as one per item.
+const FIELD_LABELS: Record<string, string> = {
+  email: "Email",
+  current_title: "Title",
+  professional_location: "Location",
+  years_experience: "Experience",
+};
+
+function showValue(field: string, value: string | number | null): string {
+  if (value === null) return NOT_SET;
+  return field === "years_experience" ? formatYears(Number(value)) : String(value);
+}
+
+function ResumeMatch({
+  item,
+  target,
+}: {
+  item: ImportItemDetailResponse;
+  target: ImportItemTarget;
+}) {
+  const employee = <Link to={`/talent/employees/${target.knowledge_item_id}`}>{target.name}</Link>;
+  if (item.status !== "needs_review") {
+    return (
+      <p className="talent-import__match">
+        {target.merged_into_existing ? "Merged into " : "Employee: "}
+        {employee}
+      </p>
+    );
+  }
+  const profile =
+    target.profile_review_status === "verified" ? "verified profile" : "profile not verified yet";
+  if (target.changes === null) {
+    // The item's extracted payload is not a valid profile: what a merge would
+    // write cannot be shown, so Approve is hidden (the API refuses it too, 409
+    // IMPORT_ITEM_PAYLOAD_INVALID).
+    return (
+      <div className="talent-import__match">
+        <p>
+          Matches {employee} ({profile}).
+        </p>
+        <p>
+          This resume&apos;s extracted fields could not be read, so what approving would change
+          cannot be shown. Reject it, or upload the resume again.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="talent-import__match">
+      <p>
+        Matches {employee} ({profile}). Approving merges this resume into their profile:
+      </p>
+      <dl className="talent-import__merge-list" aria-label="Changes on approval">
+        {target.changes.map((entry) => (
+          <div key={entry.field} className={entry.changes ? "is-changed" : undefined}>
+            <dt>{FIELD_LABELS[entry.field] ?? entry.field}</dt>
+            <dd>
+              {/* One text per value line, so "Surveyor" in the parsed
+                  fields above stays the only element with that text. */}
+              {entry.changes
+                ? `${showValue(entry.field, entry.on_file)} → ${showValue(entry.field, entry.from_resume)} (changes)`
+                : `${showValue(entry.field, entry.on_file)} (kept)`}
+            </dd>
+          </div>
+        ))}
+        <div>
+          <dt>Resume</dt>
+          <dd>this file becomes their resume; its text is added to their record</dd>
+        </div>
+      </dl>
+    </div>
   );
 }

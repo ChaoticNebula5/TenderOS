@@ -122,6 +122,72 @@ class ArchivedEmployeeSelectionAPIError(APIError):
         )
 
 
+class ImportItemDecisionError(APIError):
+    # Plan item 80 (user decisions 2026-11-18): routes/knowledge.py's
+    # translations of knowledge_service's approve and reject refusals. 409
+    # where the item's or the employee's state refuses a well-formed
+    # request; 422 for an approval that leaves out the fingerprint.
+    @classmethod
+    def not_in_review(cls, item_status: str) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_NOT_IN_REVIEW",
+            f"This import item is {item_status}; only an item in review can be decided.",
+        )
+
+    @classmethod
+    def no_target(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_NO_TARGET",
+            "This resume matches no single employee, so there is nothing to merge it into; "
+            "reject it instead.",
+        )
+
+    @classmethod
+    def source_missing(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_SOURCE_MISSING",
+            "This import item has no resume document to merge from; upload the resume again.",
+        )
+
+    @classmethod
+    def fingerprint_required(cls) -> "ImportItemDecisionError":
+        return cls(
+            422,
+            "IMPORT_ITEM_FINGERPRINT_REQUIRED",
+            "Approving a resume merge needs the target_fingerprint of the employee values shown.",
+        )
+
+    @classmethod
+    def payload_invalid(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_PAYLOAD_INVALID",
+            "This resume's extracted fields could not be read, so what approving would change "
+            "cannot be shown; reject it, or upload the resume again.",
+        )
+
+    @classmethod
+    def target_changed(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_TARGET_CHANGED",
+            "The employee changed after this item was loaded. Review the updated values, "
+            "then approve again.",
+        )
+
+    @classmethod
+    def target_archived(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "EMPLOYEE_ARCHIVED",
+            "The matched employee is archived (removed from the roster); restore it before "
+            "approving.",
+        )
+
+
 class UserNotFoundError(APIError):
     def __init__(self) -> None:
         super().__init__(404, "USER_NOT_FOUND", "No user is registered with that email.")

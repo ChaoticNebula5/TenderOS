@@ -29,6 +29,7 @@ from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
     AGGREGATE_ASYNC_OPERATION,
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
     AGGREGATE_KNOWLEDGE_SELECTION,
     AGGREGATE_REQUIREMENT,
     AGGREGATE_WORKFLOW_RUN,
@@ -38,13 +39,17 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_KNOWLEDGE_SELECTION_CHANGED,
     EVENT_OPERATION_REQUESTED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
+    EVENT_RESUME_MERGE_APPROVED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 from tenderos_backend.domain.services import operation_service, run_reaper
 from tenderos_backend.domain.services.workflow_service import resume_job_id, start_job_id
 
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
-from tenderos_worker.jobs.knowledge_import import process_knowledge_document_import
+from tenderos_worker.jobs.knowledge_import import (
+    process_knowledge_document_import,
+    process_resume_merge_approved,
+)
 from tenderos_worker.jobs.operations import run_operation_job
 from tenderos_worker.jobs.placeholder import process_outbox_event
 from tenderos_worker.jobs.reanalysis import reanalyze_knowledge_selection_change
@@ -277,6 +282,20 @@ def _knowledge_document_uploaded_dispatch(
     )
 
 
+def _resume_merge_approved_dispatch(
+    event: OutboxEvent,
+) -> tuple[str, Callable[..., Any], tuple, str]:
+    # Plan item 80 (Q6): an approved resume merge's WORKED_ON extraction.
+    # "workflow", as the knowledge import: it makes a model call.
+    import_item_id = event.payload["import_item_id"]
+    return (
+        "workflow",
+        process_resume_merge_approved,
+        (import_item_id,),
+        f"resume_merge_{import_item_id}_{event.id}",
+    )
+
+
 def _knowledge_selection_changed_dispatch(
     event: OutboxEvent,
 ) -> tuple[str, Callable[..., Any], tuple, str]:
@@ -489,6 +508,10 @@ _ROUTES: dict[
         AGGREGATE_DOCUMENT,
         EVENT_KNOWLEDGE_DOCUMENT_UPLOADED,
     ): _knowledge_document_uploaded_dispatch,
+    (
+        AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
+        EVENT_RESUME_MERGE_APPROVED,
+    ): _resume_merge_approved_dispatch,
     (
         AGGREGATE_REQUIREMENT,
         EVENT_REQUIREMENT_VERIFICATION_REQUESTED,

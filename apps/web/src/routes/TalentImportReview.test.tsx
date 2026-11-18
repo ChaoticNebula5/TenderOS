@@ -64,6 +64,7 @@ function item(overrides: Partial<ImportItemDetailResponse> = {}): ImportItemDeta
     created_at: "2026-10-10T08:00:00Z",
     updated_at: "2026-10-10T08:00:00Z",
     extracted_payload: { name: "Avery Quill", email: "avery@example.test", confidence: 0.92 },
+    target_employee: null,
     ...overrides,
   };
 }
@@ -80,6 +81,35 @@ const NEEDS_REVIEW = item({
     certification_mentions: [],
     project_mentions: [],
     confidence: 0.61,
+  },
+  // Plan item 80: a resume item in review offers Approve only when it names
+  // an employee, so the reachable Approve case carries one.
+  target_knowledge_item_id: "e1",
+  target_employee: {
+    knowledge_item_id: "e1",
+    // The strong-signal case whose name differs: the employee keeps theirs.
+    name: "Rowan A. Quill",
+    email: null,
+    current_title: "Junior Surveyor",
+    professional_location: "Pune",
+    years_experience: null,
+    resume_document_id: "d1",
+    profile_review_status: "verified",
+    fingerprint: "fp-1",
+    merged_into_existing: false,
+    // Plan item 80: the API's own change list (resume_merge_fields), which
+    // the panel renders as is.
+    changes: [
+      { field: "email", on_file: null, from_resume: null, changes: false },
+      {
+        field: "current_title",
+        on_file: "Junior Surveyor",
+        from_resume: "Surveyor",
+        changes: true,
+      },
+      { field: "professional_location", on_file: "Pune", from_resume: null, changes: false },
+      { field: "years_experience", on_file: null, from_resume: 1, changes: true },
+    ],
   },
 });
 
@@ -232,7 +262,7 @@ describe("TalentImportReview (restyle batch 6)", () => {
     await waitFor(() =>
       expect(within(itemsSection()).queryByRole("button", { name: "Approve" })).toBeNull(),
     );
-    expect(approveImportItem).toHaveBeenCalledWith("i2");
+    expect(approveImportItem).toHaveBeenCalledWith("i2", "fp-1");
   });
 
   it("shows a needs-review item's reason AND its parsed fields, in words", async () => {
@@ -451,5 +481,214 @@ describe("plan item 78: batches update without a reload", () => {
       await act(async () => answerSlowRead([item(), NEEDS_REVIEW]));
       expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     });
+  });
+});
+
+// Plan item 80 (PR 18): a resume item in review names the employee it would
+// merge into and what approving changes; one naming no one offers Reject
+// only; a stale fingerprint (409 IMPORT_ITEM_TARGET_CHANGED) reloads the row.
+describe("plan item 80: approving a resume merges it", () => {
+  const NO_TARGET = item({
+    id: "i4",
+    source_ref: "0ae13cd8-1525-4c67-af84-83532c24d8f0/CV.docx",
+    status: "needs_review",
+    error_message: "conflicting strong signals matched different employees: email",
+    extracted_payload: { name: "Sasha Quill", confidence: 0.7 },
+  });
+
+  it("shows whom the resume matches and each field it changes or keeps", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await openItems(user);
+
+    const row = within(itemsSection()).getAllByRole("row")[2];
+    expect(within(row).getByRole("link", { name: "Rowan A. Quill" })).toHaveAttribute(
+      "href",
+      "/talent/employees/e1",
+    );
+    expect(row).toHaveTextContent("verified profile");
+    const changes = within(row).getByLabelText("Changes on approval");
+    expect(changes).toHaveTextContent("Junior Surveyor → Surveyor (changes)");
+    expect(changes).toHaveTextContent("Pune (kept)");
+    expect(changes).toHaveTextContent("Not set → 1 year (changes)");
+    expect(changes).toHaveTextContent("Not set (kept)");
+  });
+
+  it("offers only Reject for a resume naming no single employee", async () => {
+    listImportItems.mockResolvedValue([item(), NO_TARGET]);
+    const user = userEvent.setup();
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findByText("Sasha Quill");
+
+    const row = within(itemsSection()).getAllByRole("row")[2];
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Reject"]);
+    expect(row).toHaveTextContent("No single employee matches this resume");
+    // The file name, not the document id it is stored with.
+    expect(row.querySelector("td")!.textContent).toBe("CV.docx");
+  });
+
+  it("keeps Approve for another import type's item that names no one", async () => {
+    listImportBatches.mockResolvedValue([batch({ import_type: "employee_master_xlsx" })]);
+    listImportItems.mockResolvedValue([{ ...NO_TARGET, source_ref: "row_2" }]);
+    const user = userEvent.setup();
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findByText("Sasha Quill");
+    expect(within(itemsSection()).getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
+
+  it("reads the items again after a 409 target changed, and says why", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await openItems(user);
+    const reads = listImportItems.mock.calls.length;
+    approveImportItem.mockRejectedValue(
+      new apiClient.ApiError(409, {
+        error: { code: "IMPORT_ITEM_TARGET_CHANGED", message: "The employee changed." },
+      }),
+    );
+    listImportItems.mockResolvedValue([
+      item(),
+      {
+        ...NEEDS_REVIEW,
+        target_employee: {
+          ...NEEDS_REVIEW.target_employee!,
+          current_title: "Senior Surveyor",
+          fingerprint: "fp-2",
+          changes: NEEDS_REVIEW.target_employee!.changes!.map((entry) =>
+            entry.field === "current_title" ? { ...entry, on_file: "Senior Surveyor" } : entry,
+          ),
+        },
+      },
+      FAILED,
+    ]);
+
+    const row = within(itemsSection()).getAllByRole("row")[2];
+    await user.click(within(row).getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The employee changed after this item was loaded",
+    );
+    await waitFor(() => expect(listImportItems.mock.calls.length).toBeGreaterThan(reads));
+    await screen.findByText("Senior Surveyor → Surveyor (changes)");
+    // The next Approve sends the fingerprint of what is shown now.
+    approveImportItem.mockResolvedValue(NEEDS_REVIEW);
+    const reloaded = within(itemsSection()).getAllByRole("row")[2];
+    await user.click(within(reloaded).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveImportItem).toHaveBeenLastCalledWith("i2", "fp-2"));
+  });
+
+  it("shows another coded refusal's message", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await openItems(user);
+    approveImportItem.mockRejectedValue(
+      new apiClient.ApiError(409, {
+        error: {
+          code: "EMPLOYEE_ARCHIVED",
+          message: "The matched employee is archived (removed from the roster).",
+        },
+      }),
+    );
+    const row = within(itemsSection()).getAllByRole("row")[2];
+    await user.click(within(row).getByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Approve failed: The matched employee is archived (removed from the roster).",
+    );
+  });
+
+  it("renders the API's change list as it is, computing nothing", async () => {
+    // The payload's title differs from what is on file, but the API says the
+    // title does not change (and an email differing only in case is kept):
+    // the panel shows what the API says, because the merge writes that.
+    listImportItems.mockResolvedValue([
+      {
+        ...NEEDS_REVIEW,
+        target_employee: {
+          ...NEEDS_REVIEW.target_employee!,
+          changes: [
+            {
+              field: "email",
+              on_file: "rowan@example.test",
+              from_resume: "Rowan@Example.test",
+              changes: false,
+            },
+            {
+              field: "current_title",
+              on_file: "Junior Surveyor",
+              from_resume: "Surveyor",
+              changes: false,
+            },
+            { field: "professional_location", on_file: "Pune", from_resume: "Goa", changes: true },
+            { field: "years_experience", on_file: 2, from_resume: 3, changes: true },
+          ],
+        },
+      },
+    ]);
+    const user = userEvent.setup();
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    const changes = await screen.findByLabelText("Changes on approval");
+    expect(changes).toHaveTextContent("rowan@example.test (kept)");
+    expect(changes).toHaveTextContent("Junior Surveyor (kept)");
+    expect(changes).toHaveTextContent("Pune → Goa (changes)");
+    expect(changes).toHaveTextContent("2 years → 3 years (changes)");
+    // In the API's order.
+    expect(
+      within(changes)
+        .getAllByRole("term")
+        .map((t) => t.textContent),
+    ).toEqual(["Email", "Title", "Location", "Experience", "Resume"]);
+  });
+
+  it("offers only Reject when the resume's fields could not be read", async () => {
+    listImportItems.mockResolvedValue([
+      { ...NEEDS_REVIEW, target_employee: { ...NEEDS_REVIEW.target_employee!, changes: null } },
+    ]);
+    const user = userEvent.setup();
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findByText("Rowan Quill");
+    const row = within(itemsSection()).getAllByRole("row")[1];
+    expect(row).toHaveTextContent("This resume's extracted fields could not be read");
+    expect(within(row).queryByLabelText("Changes on approval")).toBeNull();
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Reject"]);
+  });
+
+  it("names the employee an approved resume went into", async () => {
+    listImportItems.mockResolvedValue([
+      {
+        ...NEEDS_REVIEW,
+        status: "approved",
+        target_employee: { ...NEEDS_REVIEW.target_employee!, merged_into_existing: true },
+      },
+      item({
+        id: "i5",
+        target_knowledge_item_id: "e2",
+        target_employee: {
+          ...NEEDS_REVIEW.target_employee!,
+          knowledge_item_id: "e2",
+          name: "Avery Q.",
+          merged_into_existing: false,
+        },
+      }),
+    ]);
+    const user = userEvent.setup();
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findByText("Rowan Quill");
+    const [merged, created] = within(itemsSection()).getAllByRole("row").slice(1);
+    expect(merged).toHaveTextContent("Merged into Rowan A. Quill");
+    expect(created).toHaveTextContent("Employee: Avery Q.");
+    expect(within(merged).queryByLabelText("Changes on approval")).toBeNull();
   });
 });
