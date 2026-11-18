@@ -147,6 +147,29 @@ def knowledge_document_uploaded_idempotency_key(
     return f"knowledge_document_uploaded:{document_id}{suffix}"
 
 
+# Phase 4 plan item 80 (user decision 2026-11-18, Q6): approving a resume
+# review item merges the resume into its employee in the request, and this
+# event runs the part that needs the model afterwards: WORKED_ON extraction
+# from the resume's chunks onto that employee (an import no longer extracts
+# WORKED_ON for an item still in review, so nothing reaches an employee no one
+# has confirmed). One approval writes the event once; a replayed approval
+# writes nothing.
+EVENT_RESUME_MERGE_APPROVED = "ResumeMergeApproved"
+
+AGGREGATE_KNOWLEDGE_IMPORT_ITEM = "knowledge_import_item"
+
+
+def resume_merge_approved_payload(import_item_id: uuid.UUID) -> dict:
+    return {"import_item_id": str(import_item_id)}
+
+
+def resume_merge_approved_idempotency_key(import_item_id: uuid.UUID) -> str:
+    # An item is approved once (approval refuses every status but
+    # needs_review, and a replay writes nothing), so the item id alone is
+    # unique.
+    return f"resume_merge_approved:{import_item_id}"
+
+
 # B14. set_knowledge_selection's own docstring has named this flow
 # aspirationally since B6 ("outbox ImpactReanalysisRequested"), but Part J's
 # own B14 build list names the event KnowledgeSelectionChanged - that literal

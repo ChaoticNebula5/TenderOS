@@ -54,6 +54,43 @@
   margin: 0 0 var(--space-2);
 }
 
+/* Plan item 80: the employee a resume item names, and what approving
+   would change (TalentImportReview.tsx, ResumeMatch). */
+.talent-import__match {
+  margin: 0 0 var(--space-2);
+}
+
+.talent-import__match p {
+  margin: 0 0 var(--space-1);
+}
+
+.talent-import__merge-list {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.talent-import__merge-list > div {
+  display: contents;
+}
+
+.talent-import__merge-list dt {
+  color: var(--ink-2);
+  font-size: var(--text-label);
+}
+
+.talent-import__merge-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* A field the merge would change: its value line in full ink weight. */
+.talent-import__merge-list .is-changed dd {
+  font-weight: 600;
+}
+
 /* The parsed fields: label and value in two columns, labels in ink-2. A
    fixed label column (wide enough for "Certifications mentioned" at label
    size), so the values line up from one item row to the next; a longer,

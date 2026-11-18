@@ -46,6 +46,7 @@ from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_APPROVAL_GATE,
     AGGREGATE_ASYNC_OPERATION,
     AGGREGATE_DOCUMENT,
+    AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
     AGGREGATE_KNOWLEDGE_SELECTION,
     AGGREGATE_REQUIREMENT,
     AGGREGATE_WORKFLOW_RUN,
@@ -55,6 +56,7 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_KNOWLEDGE_SELECTION_CHANGED,
     EVENT_OPERATION_REQUESTED,
     EVENT_REQUIREMENT_VERIFICATION_REQUESTED,
+    EVENT_RESUME_MERGE_APPROVED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
 from tenderos_backend.domain.services.requirement_service import (
@@ -234,6 +236,21 @@ async def _check_knowledge_import(
     return True, f"import batch {batch_id} has not completed"
 
 
+async def _check_resume_merge(
+    uow: UnitOfWork, event: OutboxEvent, ctx: RedriveContext
+) -> tuple[bool, str]:
+    # Plan item 80: the job extracts WORKED_ON for an approved item; its
+    # writes are keyed on each relationship's fingerprint, so a re-drive
+    # repeats the model call and duplicates nothing.
+    item_id = _payload_uuid(event, "import_item_id")
+    item = await uow.knowledge.get_import_item(item_id)
+    if item is None:
+        return False, f"import item {item_id} no longer exists"
+    if item.status != "approved" or item.target_knowledge_item_id is None:
+        return False, f"import item {item_id} is {item.status} with no employee to extract for"
+    return True, f"import item {item_id} is approved; WORKED_ON extraction runs again"
+
+
 async def _check_verification(
     uow: UnitOfWork, event: OutboxEvent, ctx: RedriveContext
 ) -> tuple[bool, str]:
@@ -262,6 +279,7 @@ _CHECKS: dict[tuple[str, str], _Check] = {
     (AGGREGATE_DOCUMENT, EVENT_DOCUMENT_UPLOADED): _check_document,
     (AGGREGATE_DOCUMENT, EVENT_KNOWLEDGE_DOCUMENT_UPLOADED): _check_knowledge_import,
     (AGGREGATE_REQUIREMENT, EVENT_REQUIREMENT_VERIFICATION_REQUESTED): _check_verification,
+    (AGGREGATE_KNOWLEDGE_IMPORT_ITEM, EVENT_RESUME_MERGE_APPROVED): _check_resume_merge,
 }
 
 

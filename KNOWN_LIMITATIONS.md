@@ -2118,6 +2118,15 @@ Each entry:
   certification still being cited finds an explanation instead of a
   surprise. See the inline comment at the call site in
   `knowledge_service.py::import_resume`.
+- **Updated in PR 18 (plan item 80):** the merge is now one function,
+  `knowledge_service._merge_resume_into_employee`, called by this branch
+  and by approving a resume review item. Chunks stay additive, as above.
+  The "corroborates rather than overwrites" wording was wrong for the
+  profile fields: a resume's value replaces what is on file wherever the
+  resume has one. Since PR 18 a verified profile is not overwritten without
+  a person: when this branch would change a field that holds a value on a
+  verified profile, it makes a review item instead, and the reviewer sees
+  each change before approving.
 
 ---
 

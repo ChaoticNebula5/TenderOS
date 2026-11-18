@@ -45,6 +45,12 @@ describe("sourceRefLabel", () => {
     expect(sourceRefLabel("resume_avery_quill.docx")).toBe("resume_avery_quill.docx");
     expect(sourceRefLabel("row_two.docx")).toBe("row_two.docx");
   });
+
+  it("shows a resume's file name without the document id in front (plan item 80)", () => {
+    expect(sourceRefLabel("0ae13cd8-1525-4c67-af84-83532c24d8f0/CV.docx")).toBe("CV.docx");
+    // Only a leading document id: a name that merely contains a slash keeps it.
+    expect(sourceRefLabel("cv/2026.docx")).toBe("cv/2026.docx");
+  });
 });
 
 describe("formatYears", () => {

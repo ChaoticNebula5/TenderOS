@@ -38,14 +38,19 @@ export function importTypeLabel(importType: string): string {
 //   :178) - shown counted from 1, as an ordinal, not a sheet position;
 // - "_batch_parse_failure": the sentinel for a file that could not be read
 //   at all (domain/services/knowledge_service.py:868);
-// - otherwise a résumé's file name (knowledge_import.py:245), shown as is.
+// - a résumé: "<document id>/<file name>" since plan item 80 (the id keeps
+//   two files with one name in one upload apart, knowledge_import.py's
+//   resume_source_ref), shown as the file name; earlier items hold the
+//   file name alone, shown as is.
+const RESUME_SOURCE_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//;
+
 export function sourceRefLabel(sourceRef: string): string {
   if (sourceRef === "_batch_parse_failure") return "Whole file";
   const row = /^row_(\d+)$/.exec(sourceRef);
   if (row) return `Row ${Number(row[1])}`;
   const ordinal = /^(project|capability)_(\d+)$/.exec(sourceRef);
   if (ordinal) return `${humanize(ordinal[1])} ${Number(ordinal[2]) + 1}`;
-  return sourceRef;
+  return sourceRef.replace(RESUME_SOURCE_PREFIX, "");
 }
 
 // Years of experience (a Numeric column, a float in JSON): "1 year",

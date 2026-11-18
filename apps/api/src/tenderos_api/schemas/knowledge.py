@@ -75,8 +75,47 @@ class ImportItemResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ImportItemFieldChangeResponse(BaseModel):
+    """Plan item 80: one profile field as the merge sees it
+    (knowledge_service.ResumeMergeField), in the merge's own field order."""
+
+    field: str
+    on_file: str | float | None
+    from_resume: str | float | None
+    changes: bool
+
+    model_config = {"from_attributes": True}
+
+
+class ImportItemTargetResponse(BaseModel):
+    """Plan item 80: the employee a resume item names, as the review panel
+    shows it (knowledge_service.ImportItemTarget). `fingerprint` is what
+    Approve sends back; approval refuses it once the employee's values
+    differ (409 IMPORT_ITEM_TARGET_CHANGED)."""
+
+    knowledge_item_id: UUID
+    name: str
+    email: str | None
+    current_title: str | None
+    professional_location: str | None
+    years_experience: float | None
+    resume_document_id: UUID | None
+    profile_review_status: str
+    fingerprint: str
+    merged_into_existing: bool
+    # What approving writes, field by field; null when the item's extracted
+    # payload is not a valid profile (approval then answers 409
+    # IMPORT_ITEM_PAYLOAD_INVALID).
+    changes: list[ImportItemFieldChangeResponse] | None
+
+    model_config = {"from_attributes": True}
+
+
 class ImportItemDetailResponse(ImportItemResponse):
     extracted_payload: dict
+    # Plan item 80: set for a resume item that names an employee; null
+    # for every other item.
+    target_employee: ImportItemTargetResponse | None = None
 
 
 class KnowledgeSelectionResponse(BaseModel):
@@ -123,6 +162,13 @@ class VerifyEmployeeRequest(BaseModel):
 
 class RejectImportItemRequest(BaseModel):
     reason: str | None = None
+
+
+class ApproveImportItemRequest(BaseModel):
+    # Plan item 80, Q1: the target_employee.fingerprint the reviewer was
+    # shown. Required to approve a resume merge (422 without it); other
+    # import types ignore it. The body itself is optional.
+    target_fingerprint: str | None = None
 
 
 class SetKnowledgeSelectionRequest(BaseModel):

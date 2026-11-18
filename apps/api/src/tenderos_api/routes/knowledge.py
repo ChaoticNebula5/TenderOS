@@ -7,13 +7,16 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import document_service, knowledge_service, tender_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.errors import ImportItemDecisionError
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.routes.documents import _read_and_validate_upload
 from tenderos_api.schemas.knowledge import (
+    ApproveImportItemRequest,
     EmployeeResponse,
     ImportBatchResponse,
     ImportItemDetailResponse,
     ImportItemResponse,
+    ImportItemTargetResponse,
     KnowledgeItemResponse,
     KnowledgeSelectionResponse,
     PatchEmployeeProfileRequest,
@@ -256,8 +259,16 @@ async def get_import_batch(
 async def list_import_items(
     batch_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
 ) -> list[ImportItemDetailResponse]:
-    items = await knowledge_service.list_import_items(batch_id)
-    return [ImportItemDetailResponse.model_validate(i, from_attributes=True) for i in items]
+    rows = await knowledge_service.list_import_items_with_targets(batch_id)
+    responses = []
+    for item, target in rows:
+        response = ImportItemDetailResponse.model_validate(item, from_attributes=True)
+        if target is not None:
+            response.target_employee = ImportItemTargetResponse.model_validate(
+                target, from_attributes=True
+            )
+        responses.append(response)
+    return responses
 
 
 async def _import_item_organization_id(item_id: UUID) -> tuple[KnowledgeImportItem, UUID]:
@@ -275,10 +286,34 @@ async def _import_item_organization_id(item_id: UUID) -> tuple[KnowledgeImportIt
 
 @router.post("/knowledge/import-items/{item_id}/approve", response_model=ImportItemResponse)
 async def approve_import_item(
-    item_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
+    item_id: UUID,
+    body: ApproveImportItemRequest | None = None,
+    current_user: User = Depends(require_permission(_MANAGE)),
 ) -> ImportItemResponse:
+    """Plan item 80: a resume item merges into its employee
+    (knowledge_service.approve_import_item); the refusals are coded."""
     _item, org_id = await _import_item_organization_id(item_id)
-    updated = await knowledge_service.approve_import_item(item_id, org_id, current_user.id)
+    try:
+        updated = await knowledge_service.approve_import_item(
+            item_id,
+            org_id,
+            current_user.id,
+            target_fingerprint=body.target_fingerprint if body is not None else None,
+        )
+    except knowledge_service.ImportItemNotInReviewError as exc:
+        raise ImportItemDecisionError.not_in_review(exc.status) from exc
+    except knowledge_service.ImportItemNoTargetError as exc:
+        raise ImportItemDecisionError.no_target() from exc
+    except knowledge_service.ImportItemSourceMissingError as exc:
+        raise ImportItemDecisionError.source_missing() from exc
+    except knowledge_service.ImportItemFingerprintRequiredError as exc:
+        raise ImportItemDecisionError.fingerprint_required() from exc
+    except knowledge_service.ImportItemTargetChangedError as exc:
+        raise ImportItemDecisionError.target_changed() from exc
+    except knowledge_service.ImportItemPayloadInvalidError as exc:
+        raise ImportItemDecisionError.payload_invalid() from exc
+    except knowledge_service.EmployeeArchivedError as exc:
+        raise ImportItemDecisionError.target_archived() from exc
     return ImportItemResponse.model_validate(updated, from_attributes=True)
 
 
@@ -289,9 +324,12 @@ async def reject_import_item(
     current_user: User = Depends(require_permission(_MANAGE)),
 ) -> ImportItemResponse:
     _item, org_id = await _import_item_organization_id(item_id)
-    updated = await knowledge_service.reject_import_item(
-        item_id, org_id, current_user.id, body.reason
-    )
+    try:
+        updated = await knowledge_service.reject_import_item(
+            item_id, org_id, current_user.id, body.reason
+        )
+    except knowledge_service.ImportItemNotInReviewError as exc:
+        raise ImportItemDecisionError.not_in_review(exc.status) from exc
     return ImportItemResponse.model_validate(updated, from_attributes=True)
 
 

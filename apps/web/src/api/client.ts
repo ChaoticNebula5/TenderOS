@@ -919,8 +919,39 @@ export interface ImportItemResponse {
   updated_at: string;
 }
 
+// Plan item 80: the employee a resume item names, as the review panel
+// shows it. `fingerprint` goes back on Approve; the API refuses it (409
+// IMPORT_ITEM_TARGET_CHANGED) once the employee's values differ.
+// One profile field as the merge sees it, in the merge's own order
+// (knowledge_service.resume_merge_fields): the screen renders these and
+// computes nothing.
+export interface ImportItemFieldChange {
+  field: string;
+  on_file: string | number | null;
+  from_resume: string | number | null;
+  changes: boolean;
+}
+
+export interface ImportItemTarget {
+  knowledge_item_id: string;
+  name: string;
+  email: string | null;
+  current_title: string | null;
+  professional_location: string | null;
+  years_experience: number | null;
+  resume_document_id: string | null;
+  profile_review_status: string;
+  fingerprint: string;
+  merged_into_existing: boolean;
+  // What approving writes; null when the item's extracted payload is not a
+  // valid profile (Reject only; the API answers 409 IMPORT_ITEM_PAYLOAD_INVALID).
+  changes: ImportItemFieldChange[] | null;
+}
+
 export interface ImportItemDetailResponse extends ImportItemResponse {
   extracted_payload: Record<string, unknown>;
+  // Set for a resume item that names an employee; null otherwise.
+  target_employee: ImportItemTarget | null;
 }
 
 export interface PatchKnowledgeItemRequest {
@@ -979,9 +1010,16 @@ export function listImportItems(batchId: string): Promise<ImportItemDetailRespon
   return apiFetch<ImportItemDetailResponse[]>(`/knowledge/import-batches/${batchId}/items`);
 }
 
-export function approveImportItem(itemId: string): Promise<ImportItemResponse> {
+// Plan item 80: a resume merge sends the fingerprint of the employee values
+// the reviewer was shown (target_employee.fingerprint); other items send
+// none.
+export function approveImportItem(
+  itemId: string,
+  targetFingerprint: string | null = null,
+): Promise<ImportItemResponse> {
   return apiFetch<ImportItemResponse>(`/knowledge/import-items/${itemId}/approve`, {
     method: "POST",
+    body: { target_fingerprint: targetFingerprint },
   });
 }
 

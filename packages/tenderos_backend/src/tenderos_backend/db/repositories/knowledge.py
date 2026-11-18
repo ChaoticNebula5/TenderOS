@@ -121,12 +121,17 @@ class KnowledgeRepository:
         return batch
 
     async def create_import_item(
-        self, batch_id: uuid.UUID, source_ref: str, extracted_payload: dict | None = None
+        self,
+        batch_id: uuid.UUID,
+        source_ref: str,
+        extracted_payload: dict | None = None,
+        source_document_id: uuid.UUID | None = None,
     ) -> KnowledgeImportItem:
         item = KnowledgeImportItem(
             batch_id=batch_id,
             source_ref=source_ref,
             extracted_payload=extracted_payload or {},
+            source_document_id=source_document_id,
         )
         self._session.add(item)
         await self._session.flush()
@@ -134,6 +139,20 @@ class KnowledgeRepository:
 
     async def get_import_item(self, item_id: uuid.UUID) -> KnowledgeImportItem | None:
         return await self._session.get(KnowledgeImportItem, item_id)
+
+    async def get_import_item_for_update(self, item_id: uuid.UUID) -> KnowledgeImportItem | None:
+        """The import item, its row locked until this transaction ends (plan
+        item 80). Approving or rejecting reads its item this way, so a second
+        decision on the same item waits and then sees the first one's status.
+        populate_existing: a row already in the session is refreshed from the
+        locked read, as GateRepository.get_for_update."""
+        result = await self._session.execute(
+            select(KnowledgeImportItem)
+            .where(KnowledgeImportItem.id == item_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
 
     async def get_import_item_by_source_ref(
         self, batch_id: uuid.UUID, source_ref: str
@@ -342,7 +361,7 @@ class KnowledgeRepository:
 
     async def associate_knowledge_item_chunks(
         self, knowledge_item_id: uuid.UUID, chunk_ids: list[uuid.UUID]
-    ) -> None:
+    ) -> int:
         # Separate from create_employee rather than another constructor
         # parameter - create_employee already takes 12, and this needs
         # calling from two places in import_resume (new-employee creation
@@ -354,8 +373,11 @@ class KnowledgeRepository:
         # from a prior upload, must not crash on re-associating a pair that
         # already exists. Same "retried job hits a real duplicate, must not
         # crash" shape as get_import_item_by_source_ref above.
+        # Returns how many pairs were new (plan item 80: a resume merge's
+        # audit row counts the chunks it added); a pair already held is not
+        # counted.
         if not chunk_ids:
-            return
+            return 0
         stmt = (
             pg_insert(KnowledgeItemChunk)
             .values(
@@ -365,9 +387,11 @@ class KnowledgeRepository:
                 ]
             )
             .on_conflict_do_nothing()
+            .returning(KnowledgeItemChunk.chunk_id)
         )
-        await self._session.execute(stmt)
+        inserted = (await self._session.execute(stmt)).scalars().all()
         await self._session.flush()
+        return len(inserted)
 
     async def list_knowledge_items_for_org(
         self, organization_id: uuid.UUID, item_type: str | None = None
@@ -438,6 +462,21 @@ class KnowledgeRepository:
 
     async def get_employee(self, knowledge_item_id: uuid.UUID) -> Employee | None:
         return await self._session.get(Employee, knowledge_item_id)
+
+    async def get_employee_for_update(self, knowledge_item_id: uuid.UUID) -> Employee | None:
+        """The employee, its row locked until this transaction ends (plan item
+        80). A resume merge, by approval or by import_resume's automatic
+        branch, reads the employee this way before comparing and writing, so
+        two merges, or a merge and a verify or profile edit, do not compare
+        against values the other is about to change. populate_existing: the
+        duplicate candidates query has usually loaded this row already."""
+        result = await self._session.execute(
+            select(Employee)
+            .where(Employee.knowledge_item_id == knowledge_item_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
 
     async def get_employee_by_code(
         self, organization_id: uuid.UUID, employee_code: str

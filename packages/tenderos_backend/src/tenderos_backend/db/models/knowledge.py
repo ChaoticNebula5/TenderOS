@@ -81,6 +81,13 @@ class KnowledgeImportItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ForeignKey("knowledge_items.id", ondelete="SET NULL", name="fk_import_item_target"),
         nullable=True,
     )
+    # Migration 034 (plan item 80): the resume a resume item came from, which
+    # approval merges from. Null on every other import type's rows.
+    source_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL", name="fk_import_item_source_document"),
+        nullable=True,
+    )
     error_code: Mapped[str | None] = mapped_column(nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
