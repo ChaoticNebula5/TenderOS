@@ -122,6 +122,19 @@ class ArchivedEmployeeSelectionAPIError(APIError):
         )
 
 
+class ComplianceEntryChangedAPIError(APIError):
+    # Plan item 59 (Q4): an approval named a status the entry no longer has,
+    # so the screen was loaded before the entry changed. Nothing was written;
+    # details.current_status lets the screen say what it is now.
+    def __init__(self, current_status: str) -> None:
+        super().__init__(
+            409,
+            "COMPLIANCE_ENTRY_CHANGED",
+            "This entry's status changed since the page loaded; review it and approve again.",
+            details={"current_status": current_status},
+        )
+
+
 class ImportItemDecisionError(APIError):
     # Plan item 80 (user decisions 2026-11-18): routes/knowledge.py's
     # translations of knowledge_service's approve and reject refusals. 409

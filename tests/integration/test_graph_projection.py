@@ -581,7 +581,9 @@ async def test_stale_projection_raises_graph_stale_after_real_mutation():
     # approve_compliance_entry - the exact call site that bumps
     # tenders.state_version in the same transaction (B7/B8's own fix) - not
     # a manual UPDATE on tenders.state_version in this test fixture.
-    await compliance_service.approve_compliance_entry(entry_id, actor_user_id=uuid.uuid4())
+    await compliance_service.approve_compliance_entry(
+        entry_id, actor_user_id=uuid.uuid4(), shown_status="fully_compliant"
+    )
 
     with pytest.raises(graph_service.GraphStaleError):
         await graph_service.preview_impact(tender_id, employee_id)

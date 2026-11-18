@@ -5,7 +5,9 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import compliance_service
 
 from tenderos_api.dependencies import require_permission
+from tenderos_api.errors import ComplianceEntryChangedAPIError
 from tenderos_api.schemas.compliance import (
+    ApproveComplianceRequest,
     ComplianceResponse,
     ComplianceTraceResponse,
     PatchComplianceRequest,
@@ -67,14 +69,19 @@ async def patch_compliance(
 @router.post("/compliance/{compliance_id}/approve", response_model=ComplianceResponse)
 async def approve_compliance(
     compliance_id: UUID,
+    body: ApproveComplianceRequest,
     current_user: User = Depends(require_permission("approve_compliance")),
 ) -> ComplianceResponse:
     try:
-        updated = await compliance_service.approve_compliance_entry(compliance_id, current_user.id)
+        updated = await compliance_service.approve_compliance_entry(
+            compliance_id, current_user.id, shown_status=body.status
+        )
     except compliance_service.ComplianceEntryNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Compliance entry not found"
         ) from exc
+    except compliance_service.ComplianceEntryChangedError as exc:
+        raise ComplianceEntryChangedAPIError(exc.current_status) from exc
     return ComplianceResponse.model_validate(updated, from_attributes=True)
 
 

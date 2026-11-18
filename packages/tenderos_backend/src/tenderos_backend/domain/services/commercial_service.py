@@ -359,9 +359,18 @@ async def resolve_pricing_finding_in_uow(
     finding = await uow.commercial.get_pricing_finding(pricing_finding_id)
     if finding is None:
         raise PricingFindingNotFoundError()
-    tender = await uow.tenders.get(finding.tender_id)
+    # Plan item 59: the tender first, before the finding's row and any
+    # document's synthetic-chunk lock (_ground_pricing_finding). A
+    # cross-sheet finding grounds two documents; two such findings over the
+    # same sheets in opposite orders, each holding one document and wanting
+    # the other, or the tender its bump takes, could deadlock. Holding the
+    # tender first, resolves on one bid take their turn here instead.
+    tender = await uow.tenders.get_for_update(finding.tender_id)
     if tender is None:
         raise DocumentNotFoundError()
+    # Read again under the tender's lock: a resolve of the same finding that
+    # committed while this one waited is seen (its evidence link too).
+    await uow.session.refresh(finding)
 
     before = {"resolved": finding.resolved}
     updated = await uow.commercial.update_pricing_finding(pricing_finding_id, resolved=True)

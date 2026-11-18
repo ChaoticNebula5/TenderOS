@@ -1,9 +1,14 @@
+import logging
 import uuid
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.redteam import RedteamFinding, RedteamPass
+
+logger = logging.getLogger(__name__)
+
+_AUTO_RETIRED_NOTE = "Auto-retired: no longer detected by the most recent red-team pass."
 
 
 class RedteamRepository:
@@ -97,10 +102,13 @@ class RedteamRepository:
     ) -> RedteamFinding:
         """A system-retired finding (resolution_source='system') whose
         underlying defect has come back - _persist_draft's own upsert calls
-        this instead of returning the still-resolved row untouched. Never
-        called against a human-resolved finding (that check is the
-        caller's responsibility, same as this repository's other methods
-        trusting their caller's WHERE-clause-equivalent precondition).
+        this instead of returning the still-resolved row untouched.
+
+        Plan item 59: one conditional UPDATE, matching only while the finding
+        is still resolved by the system. The caller's check is an unlocked
+        read, so a person may resolve the finding between that read and this
+        write; the person's resolution then stays, and the finding is
+        returned as they left it. Before, this write reopened it.
 
         severity/finding_text/evidence_refs are refreshed from the CURRENT
         detection, not left at whatever the original (now-stale) row had -
@@ -115,16 +123,34 @@ class RedteamRepository:
         of the fingerprint itself, so they can't have changed between the
         original detection and this reappearance - nothing to refresh there.
         """
-        finding = await self._session.get(RedteamFinding, finding_id)
+        result = await self._session.execute(
+            update(RedteamFinding)
+            .where(
+                RedteamFinding.id == finding_id,
+                RedteamFinding.resolved.is_(True),
+                RedteamFinding.resolution_source == "system",
+            )
+            .values(
+                resolved=False,
+                resolution_note=None,
+                resolution_source=None,
+                severity=severity,
+                finding_text=finding_text,
+                evidence_refs=evidence_refs or [],
+            )
+            .returning(RedteamFinding.id)
+            .execution_options(synchronize_session=False)
+        )
+        reopened = result.scalar_one_or_none() is not None
+        finding = await self._session.get(RedteamFinding, finding_id, populate_existing=True)
         if finding is None:
             raise ValueError(f"RedteamFinding {finding_id} not found")
-        finding.resolved = False
-        finding.resolution_note = None
-        finding.resolution_source = None
-        finding.severity = severity
-        finding.finding_text = finding_text
-        finding.evidence_refs = evidence_refs or []
-        await self._session.flush()
+        if not reopened:
+            logger.info(
+                "red team: finding %s detected again but not reopened: resolved by %s meanwhile",
+                finding_id,
+                finding.resolution_source,
+            )
         return finding
 
     async def auto_retire_undetected_findings(
@@ -143,6 +169,13 @@ class RedteamRepository:
         the row itself is never deleted, so it stays in list_for_tender's
         full history/audit trail. Never touches a finding a human already
         resolved (the WHERE clause below only selects resolved=False rows).
+
+        Plan item 59: the select finds the candidates, and the write is one
+        conditional UPDATE that re-checks resolved = false on each row as it
+        is now. A person resolving a candidate between the two keeps their
+        resolution (their note and source); before, this pass overwrote it
+        with its own, and its next detection reopened the finding. Returns
+        only the findings this call retired.
         """
         # SQLAlchemy's notin_() on an empty Python collection compiles
         # inconsistently across dialects (Postgres itself rejects a bare
@@ -163,16 +196,36 @@ class RedteamRepository:
         if keep_categories:
             conditions.append(RedteamFinding.finding_category.notin_(keep_categories))
         result = await self._session.execute(select(RedteamFinding).where(*conditions))
-        stale = list(result.scalars().all())
-        for finding in stale:
-            finding.resolved = True
-            finding.resolution_note = (
-                "Auto-retired: no longer detected by the most recent red-team pass."
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return []
+        written = await self._session.execute(
+            update(RedteamFinding)
+            .where(
+                RedteamFinding.id.in_([finding.id for finding in candidates]),
+                RedteamFinding.resolved.is_(False),
             )
-            finding.resolution_source = "system"
-        if stale:
-            await self._session.flush()
-        return stale
+            .values(
+                resolved=True,
+                resolution_note=_AUTO_RETIRED_NOTE,
+                resolution_source="system",
+            )
+            .returning(RedteamFinding.id)
+            .execution_options(synchronize_session=False)
+        )
+        retired_ids = set(written.scalars().all())
+        retired = []
+        for finding in candidates:
+            await self._session.refresh(finding)
+            if finding.id in retired_ids:
+                retired.append(finding)
+            else:
+                logger.info(
+                    "red team: finding %s not retired: resolved by %s meanwhile",
+                    finding.id,
+                    finding.resolution_source,
+                )
+        return retired
 
     # ------------------------------------------------------------------
     # Red-team passes (plan items 94 and 96, migration 032)

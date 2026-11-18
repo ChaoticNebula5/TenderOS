@@ -115,6 +115,38 @@ class ComplianceRepository:
     async def get_compliance_entry(self, compliance_entry_id: uuid.UUID) -> ComplianceEntry | None:
         return await self._session.get(ComplianceEntry, compliance_entry_id)
 
+    async def get_compliance_entry_for_update(
+        self, compliance_entry_id: uuid.UUID
+    ) -> ComplianceEntry | None:
+        """The entry, its row locked until this transaction ends (plan item
+        59). Approve and override read their entry this way, and a
+        re-evaluation reads it the same way by requirement
+        (get_compliance_entry_by_requirement_for_update), so each judges the
+        entry as the others left it. populate_existing: a row already in the
+        session is refreshed from the locked read. Lock order: the entry,
+        then the tender (the bump)."""
+        result = await self._session.execute(
+            select(ComplianceEntry)
+            .where(ComplianceEntry.id == compliance_entry_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_compliance_entry_by_requirement_for_update(
+        self, requirement_id: uuid.UUID
+    ) -> ComplianceEntry | None:
+        """get_compliance_entry_by_requirement with the entry's row locked,
+        as get_compliance_entry_for_update. None, with nothing locked, when
+        the requirement has no entry yet."""
+        result = await self._session.execute(
+            select(ComplianceEntry)
+            .where(ComplianceEntry.requirement_id == requirement_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_compliance_entry_by_requirement(
         self, requirement_id: uuid.UUID
     ) -> ComplianceEntry | None:

@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,11 @@ from tenderos_backend.db.models.document import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The first key of the two-key advisory lock create_synthetic_chunk takes per
+# document (plan item 59). Distinct from refresh_tokens.py's 3401 and
+# graph_projection.py's 3402 (tests/unit/test_advisory_lock_classes.py).
+_SYNTHETIC_CHUNK_LOCK_CLASS = 3403
 
 
 class DocumentRepository:
@@ -162,6 +167,38 @@ class DocumentRepository:
             .order_by(DocumentChunk.chunk_index)
         )
         return list(result.scalars().all())
+
+    async def lock_document_for_synthetic_chunks(self, document_id: uuid.UUID) -> None:
+        """Take this document's transaction-scoped advisory lock for adding
+        synthetic chunks; it is released when the transaction ends (plan item
+        59). Taken before next_synthetic_chunk_index and the same-text lookup,
+        so a second transaction adding a synthetic chunk to this document
+        waits for the first to commit, then reads the index and the chunks the
+        first one wrote. An advisory lock rather than a lock on the document
+        row: every chunk insert takes a KEY SHARE lock on its document for the
+        foreign key, which FOR UPDATE would block, and ingestion updates the
+        row. hashtext() can map two documents to one key; they then wait on
+        each other briefly."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_class, hashtext(:document_id))"),
+            {"lock_class": _SYNTHETIC_CHUNK_LOCK_CLASS, "document_id": str(document_id)},
+        )
+
+    async def get_synthetic_chunk_by_hash(
+        self, document_id: uuid.UUID, content_hash: str
+    ) -> DocumentChunk | None:
+        """This document's synthetic chunk with this content hash, if any
+        (uq_document_chunk_hash allows one per document and origin). Synthetic
+        only: a parsed chunk with the same text is the parser's, and a
+        re-parse may delete it."""
+        result = await self._session.execute(
+            select(DocumentChunk).where(
+                DocumentChunk.document_id == document_id,
+                DocumentChunk.origin == CHUNK_ORIGIN_SYNTHETIC,
+                DocumentChunk.content_hash == content_hash,
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def next_synthetic_chunk_index(self, document_id: uuid.UUID) -> int:
         """The index for a new synthetic chunk on this document: one past

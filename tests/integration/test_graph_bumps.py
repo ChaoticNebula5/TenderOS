@@ -407,8 +407,12 @@ async def test_approving_twice_bumps_once():
     bid = await _bid()
     entry = await _entry(bid["tender"])
     start = await _version(bid["tender"])
-    await compliance_service.approve_compliance_entry(entry, bid["actor"])
-    await compliance_service.approve_compliance_entry(entry, bid["actor"])
+    await compliance_service.approve_compliance_entry(
+        entry, bid["actor"], shown_status="partially_compliant"
+    )
+    await compliance_service.approve_compliance_entry(
+        entry, bid["actor"], shown_status="partially_compliant"
+    )
     assert await _version(bid["tender"]) == start + 1
 
 

@@ -253,7 +253,7 @@ async def test_approve_compliance_entry_writes_audit_event():
     )
     actor_id = uuid.uuid4()
 
-    updated = await approve_compliance_entry(entry.id, actor_id)
+    updated = await approve_compliance_entry(entry.id, actor_id, shown_status=entry.status)
 
     assert updated.human_approved is True
     async with UnitOfWork() as uow:
@@ -286,7 +286,7 @@ async def test_persist_compliance_decision_clears_stale_approval_on_material_sta
     sufficiency = SufficiencyResult(status="fully_compliant", downgraded=False, reason="ok")
     entry = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
     actor_id = uuid.uuid4()
-    approved = await approve_compliance_entry(entry.id, actor_id)
+    approved = await approve_compliance_entry(entry.id, actor_id, shown_status=entry.status)
     assert approved.human_approved is True
 
     revised_proposal = ComplianceProposal(
@@ -333,7 +333,7 @@ async def test_persist_compliance_decision_preserves_approval_on_identical_statu
     )
     sufficiency = SufficiencyResult(status="fully_compliant", downgraded=False, reason="ok")
     entry = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
-    await approve_compliance_entry(entry.id, uuid.uuid4())
+    await approve_compliance_entry(entry.id, uuid.uuid4(), shown_status=entry.status)
 
     reevaluated = await persist_compliance_decision(requirement_id, proposal, sufficiency, [])
 
@@ -371,7 +371,7 @@ async def test_approve_compliance_entry_bumps_tender_state_version():
     async with UnitOfWork() as uow:
         before_version = (await uow.tenders.get(tender_id)).state_version
 
-    await approve_compliance_entry(entry.id, uuid.uuid4())
+    await approve_compliance_entry(entry.id, uuid.uuid4(), shown_status=entry.status)
 
     async with UnitOfWork() as uow:
         after_version = (await uow.tenders.get(tender_id)).state_version
@@ -587,7 +587,7 @@ async def test_a_refresh_alone_bumps_the_version_and_an_unchanged_retry_does_not
 
     entry, _ = await _evaluate(requirement_id, tender_id, results, "partially_compliant")
     assert entry.status == "partially_compliant"
-    await approve_compliance_entry(entry.id, uuid.uuid4())
+    await approve_compliance_entry(entry.id, uuid.uuid4(), shown_status=entry.status)
     settled = await _tender_version(tender_id)
     await _evaluate(requirement_id, tender_id, results, "partially_compliant")
     assert await _tender_version(tender_id) == settled, "nothing changed: no refresh, no bump"

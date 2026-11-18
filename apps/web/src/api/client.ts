@@ -1126,8 +1126,21 @@ export function patchCompliance(
   return apiFetch<ComplianceResponse>(`/compliance/${complianceId}`, { method: "PATCH", body });
 }
 
-export function approveCompliance(complianceId: string): Promise<ComplianceResponse> {
-  return apiFetch<ComplianceResponse>(`/compliance/${complianceId}/approve`, { method: "POST" });
+export function getCompliance(complianceId: string): Promise<ComplianceResponse> {
+  return apiFetch<ComplianceResponse>(`/compliance/${complianceId}`);
+}
+
+// Plan item 59 (Q4): the request names the status the screen showed, which is
+// what the person approves. If the entry's status changed since, the API
+// writes nothing and answers 409 COMPLIANCE_ENTRY_CHANGED.
+export function approveCompliance(
+  complianceId: string,
+  shownStatus: string,
+): Promise<ComplianceResponse> {
+  return apiFetch<ComplianceResponse>(`/compliance/${complianceId}/approve`, {
+    method: "POST",
+    body: { status: shownStatus },
+  });
 }
 
 // ----------------------------------------------------------------------

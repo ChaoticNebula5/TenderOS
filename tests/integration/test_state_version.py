@@ -56,6 +56,9 @@ async def test_concurrent_bumps_all_land_fixed_with_for_update():
     (confirmed by running it, not assumed) - kept at 10 here too, so this
     remains a real stress test of the fix under the same conditions that
     exposed the bug, not a weaker one that would pass for the wrong reason.
+
+    Plan item 59: the lock is now FOR NO KEY UPDATE (the lock the UPDATE
+    itself takes), which makes a second bump wait in the same way.
     """
     registered = await auth_service.register(
         email="statever-race@example.com", password="hunter2", organization_name="StateVer Race Org"
@@ -80,8 +83,8 @@ async def test_concurrent_bumps_all_land_fixed_with_for_update():
     assert updated is not None
     assert updated.state_version == concurrent_bumps, (
         f"expected all {concurrent_bumps} concurrent, real, committed bumps to land "
-        f"(SELECT ... FOR UPDATE should serialize them, not lose any) - got "
+        f"(SELECT ... FOR NO KEY UPDATE should serialize them, not lose any) - got "
         f"state_version={updated.state_version}, meaning at least one was lost. "
         f"The fix in db/repositories/tenders.py may have regressed - re-check "
-        f"with_for_update=True is still there before assuming this is a flake."
+        f"with_for_update is still there before assuming this is a flake."
     )
