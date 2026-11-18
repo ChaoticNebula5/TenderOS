@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from tenderos_backend.core.evidence_validity import (
+    REASON_EXPIRED,
+    REASON_UNVERIFIED,
+    REASON_WITHDRAWN,
+    ItemValidity,
+    today_utc,
+)
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.graph_service import (
@@ -122,6 +129,51 @@ def _blocker(category: str, target_type: str, target_id: uuid.UUID | None, messa
         "target_id": str(target_id) if target_id else None,
         "message": message,
     }
+
+
+def _evidence_counts(link: Any, live: dict[uuid.UUID, ItemValidity]) -> bool:
+    """Whether one evidence link counts now (plan items 89 and 91): a link
+    with a knowledge item counts when that item does, judged now; a document
+    excerpt (no item) by its stored values."""
+    if link.knowledge_item_id is not None:
+        return live[link.knowledge_item_id].counts
+    return bool(link.verified and link.validity_status == "valid")
+
+
+_REASON_WORDING = {
+    REASON_EXPIRED: "expired",
+    REASON_UNVERIFIED: "is unverified",
+    REASON_WITHDRAWN: "was withdrawn",
+}
+
+
+def _no_valid_evidence_message(entry: Any, links: list, live: dict[uuid.UUID, ItemValidity]) -> str:
+    """Blocker 2's message. When every link of the entry has a knowledge item
+    and all fail for the same reason, it says which and why (each item once,
+    sorted by title, so the text, and the report's content hash, depend only
+    on the facts); otherwise the generic message."""
+    generic = (
+        f"Compliance entry {entry.id} is marked {entry.status} "
+        "with no verified, currently-valid evidence."
+    )
+    if not links or any(link.knowledge_item_id is None for link in links):
+        return generic
+    judged = [live[link.knowledge_item_id] for link in links]
+    reasons = {v.reason for v in judged}
+    if len(reasons) != 1:
+        return generic
+    (reason,) = reasons
+    if reason not in _REASON_WORDING:
+        return generic
+    parts = []
+    items = sorted({(v.title or "untitled", v.expired_on) for v in judged}, key=str)
+    for title, expired_on in items:
+        if reason == REASON_EXPIRED:
+            when = f" on {expired_on.isoformat()}" if expired_on is not None else ""
+            parts.append(f"'{title}' expired{when}")
+        else:
+            parts.append(f"'{title}' {_REASON_WORDING[reason]}")
+    return generic[:-1] + ": its evidence " + " and ".join(parts) + "."
 
 
 async def evaluate_readiness(tender_id: uuid.UUID) -> ReadinessResult:
@@ -251,17 +303,23 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
         evidence_by_entry = await uow.compliance.list_evidence_for_compliance_entries(
             [e.id for e in compliance_entries]
         )
-        # Plan item 88: a link's stored validity_status is as of the last
-        # evaluation that cited it, and archiving its source rewrites
-        # nothing. So the source's archived state is read here, now, for
-        # every link at once (one query), the same check the proposal's
-        # evidence filter makes. A document excerpt has no source item and
-        # is unaffected. Every generate computes this afresh (plan item 93).
-        archived_sources = await uow.knowledge.archived_item_ids(
-            link.knowledge_item_id
-            for links in evidence_by_entry.values()
-            for link in links
-            if link.knowledge_item_id is not None
+        # Plan items 89 and 91: a link's stored verified/validity_status are
+        # as of the last evaluation that cited it, and nothing rewrites them
+        # when its item is archived, its date passes or its profile review
+        # changes. So a link with a knowledge item counts only if the item
+        # does now (core/evidence_validity.py), read for every link at once
+        # (one query), the same judgment the proposal's evidence filter and
+        # both traces make. A document excerpt has no item and keeps its
+        # stored values. Every generate computes this afresh (plan item 93),
+        # so a date passing needs no bump to reach it.
+        live = await uow.knowledge.item_validity(
+            (
+                link.knowledge_item_id
+                for links in evidence_by_entry.values()
+                for link in links
+                if link.knowledge_item_id is not None
+            ),
+            today_utc(),
         )
         awaiting_approval = 0
         without_valid_evidence = 0
@@ -271,12 +329,7 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
             if entry.status not in _COMPLIANT_STATUSES:
                 continue
             evidence = evidence_by_entry.get(entry.id, [])
-            has_valid = any(
-                e.verified
-                and e.validity_status == "valid"
-                and e.knowledge_item_id not in archived_sources
-                for e in evidence
-            )
+            has_valid = any(_evidence_counts(e, live) for e in evidence)
             if not has_valid:
                 without_valid_evidence += 1
                 blockers.append(
@@ -284,8 +337,7 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
                         COMPLIANT_DECISION_WITHOUT_VALID_EVIDENCE,
                         "compliance_entry",
                         entry.id,
-                        f"Compliance entry {entry.id} is marked {entry.status} "
-                        "with no verified, currently-valid evidence.",
+                        _no_valid_evidence_message(entry, evidence, live),
                     )
                 )
         counts["compliance_decisions_awaiting_approval"] = awaiting_approval

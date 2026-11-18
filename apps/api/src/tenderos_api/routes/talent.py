@@ -35,12 +35,22 @@ async def list_matches(
     archived = await talent_service.archived_employee_ids(
         [m.employee_knowledge_item_id for m in matches]
     )
-    return [_match_response(m, m.employee_knowledge_item_id in archived) for m in matches]
+    live_gaps = await talent_service.live_certificate_gaps(matches)
+    return [
+        _match_response(m, m.employee_knowledge_item_id in archived, live_gaps[m.id])
+        for m in matches
+    ]
 
 
-def _match_response(match: RoleMatch, employee_archived: bool) -> RoleMatchResponse:
+def _match_response(
+    match: RoleMatch, employee_archived: bool, live_gaps: list[dict]
+) -> RoleMatchResponse:
+    """Plan items 89 and 91 (Q5): `gaps` is the scoring's stored gaps
+    followed by the certificate gaps found after scoring, read now, each
+    marked found_after_scoring."""
     response = RoleMatchResponse.model_validate(match, from_attributes=True)
     response.employee_archived = employee_archived
+    response.gaps = [*response.gaps, *live_gaps]
     return response
 
 
@@ -104,6 +114,9 @@ async def select_candidate(
     # archived flag the list does: deselecting an archived employee keeps
     # the badge, and the Select stays off.
     archived = await talent_service.archived_employee_ids([updated.employee_knowledge_item_id])
-    response = _match_response(updated, updated.employee_knowledge_item_id in archived)
+    live_gaps = await talent_service.live_certificate_gaps([updated])
+    response = _match_response(
+        updated, updated.employee_knowledge_item_id in archived, live_gaps[updated.id]
+    )
     await idempotency.finalize(200, response.model_dump(mode="json"))
     return response

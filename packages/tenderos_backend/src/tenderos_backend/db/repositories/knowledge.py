@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.core.evidence_validity import ItemValidity, evidence_validity
 from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.knowledge import (
     Capability,
@@ -44,12 +45,12 @@ PROJECTED_KNOWLEDGE_ITEM_TYPES = frozenset(
 # all use it, and since plan item 86 so do selection, the resource gate's
 # counts, the red team, readiness and the proposal's facts (through
 # archived_item_ids below). employees.profile_review_status also allows
-# 'archived' in its CHECK, but nothing writes that value. Since plan item 88
-# the same status is read for every item type wherever evidence is judged:
-# readiness step 2, the proposal's evidence filter, both trace views and the
-# graph's grounded-claim check. Since plan item 95 any status change (archiving
-# included) bumps every bid whose graph includes the item
-# (list_tender_ids_projecting below).
+# 'archived' in its CHECK, but nothing writes that value. Since plan items 89
+# and 91 the evidence readers judge an item through item_validity instead
+# (core/evidence_validity.py), which reads this status with the item's date
+# and verification; archived_item_ids stays for the roster readers. Since
+# plan item 95 any status change (archiving included) bumps every bid whose
+# graph includes the item (list_tender_ids_projecting below).
 KNOWLEDGE_ITEM_ARCHIVED = "archived"
 
 
@@ -177,19 +178,19 @@ class KnowledgeRepository:
         return await self._session.get(KnowledgeItem, knowledge_item_id)
 
     async def archived_item_ids(self, knowledge_item_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
-        """The ids among these whose knowledge item is archived now.
+        """The ids among these whose knowledge item is archived now: for an
+        employee, removed from the roster.
 
-        Plan item 86: archiving changes only knowledge_items.status. Nothing
-        rewrites a role match, an evidence link's stored validity_status or
-        the graph when it happens, so every reader that must not trust an
-        archived employee, certification or project asks here, at the time
+        Plan item 86: archiving changes only knowledge_items.status, so a
+        reader that must not trust a removed employee asks here, at the time
         it runs. One query for the whole set; an empty set queries nothing.
 
-        Plan item 88: readiness step 2 and both trace views ask here too. The
-        compliance sufficiency check instead judges the fresh signals of the
-        evaluation it is part of, which also see expiry by date and an
-        unverified status: two definitions of "valid now", accepted for one
-        PR, with one shared definition a plan item.
+        Since plan items 89 and 91 only the roster readers ask here
+        (selection, readiness's removed-employee blocker, the red team's
+        archived-employee check, the resource gate's count, the team the
+        drafter is offered, the team page's badge). Evidence readers use
+        item_validity below, which also sees an expired date and
+        verification (tests/unit/test_evidence_readers.py keeps it so).
         """
         ids = set(knowledge_item_ids)
         if not ids:
@@ -200,6 +201,43 @@ class KnowledgeRepository:
             )
         )
         return set(result.scalars().all())
+
+    async def item_validity(
+        self, knowledge_item_ids: Iterable[uuid.UUID], today: date
+    ) -> dict[uuid.UUID, ItemValidity]:
+        """Each of these knowledge items judged now (plan items 89 and 91):
+        its status, its valid_until against `today` and, for an employee,
+        its profile review, through core/evidence_validity.py. One query for
+        the whole set; an id with no row comes back as missing (unknown).
+        An empty set queries nothing."""
+        ids = set(knowledge_item_ids)
+        if not ids:
+            return {}
+        result = await self._session.execute(
+            select(
+                KnowledgeItem.id,
+                KnowledgeItem.status,
+                KnowledgeItem.valid_until,
+                KnowledgeItem.item_type,
+                KnowledgeItem.title,
+                Employee.profile_review_status,
+            )
+            .outerjoin(Employee, Employee.knowledge_item_id == KnowledgeItem.id)
+            .where(KnowledgeItem.id.in_(ids))
+        )
+        found = {
+            row.id: evidence_validity(
+                status=row.status,
+                valid_until=row.valid_until,
+                today=today,
+                is_employee=row.item_type == "employee",
+                profile_review_status=row.profile_review_status,
+                title=row.title,
+            )
+            for row in result
+        }
+        missing = evidence_validity(status=None, valid_until=None, today=today)
+        return {kid: found.get(kid, missing) for kid in ids}
 
     async def list_tender_ids_projecting(self, knowledge_item_id: uuid.UUID) -> list[uuid.UUID]:
         """Every bid whose graph includes this knowledge item's node, each once,

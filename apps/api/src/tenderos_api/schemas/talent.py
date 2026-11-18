@@ -20,6 +20,9 @@ class RoleMatchResponse(BaseModel):
     employee_knowledge_item_id: UUID
     score: float | None
     strengths: list = Field(default_factory=list)
+    # The scoring's stored gaps, then (plan items 89 and 91) any certificate
+    # gap found after scoring, read at request time and marked
+    # "found_after_scoring": true.
     gaps: list = Field(default_factory=list)
     human_selected: bool
     # Plan item 86: the employee's knowledge item is archived (removed from

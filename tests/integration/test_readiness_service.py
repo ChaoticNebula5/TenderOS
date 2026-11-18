@@ -25,7 +25,8 @@ import pytest
 import pytest_asyncio
 from neo4j.exceptions import Neo4jError, ServiceUnavailable, TransientError
 from readiness_facts import add_parsed_document, mark_chunks_read, project_and_review
-from sqlalchemy import select
+from sqlalchemy import select, update
+from tenderos_backend.db.models.knowledge import Employee
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.readiness import ReadinessReport
 from tenderos_backend.db.models.tender import Tender
@@ -126,9 +127,17 @@ async def _compliance_entry(
 
 
 async def _employee(org_id: uuid.UUID, name: str) -> uuid.UUID:
+    """An employee whose profile is verified: plan items 89 and 91 (Q2) read
+    an employee's profile review live, and these tests mean an employee whose
+    evidence counts."""
     async with UnitOfWork() as uow:
         knowledge_item, _employee = await uow.knowledge.create_employee(
             organization_id=org_id, name=name, content_fingerprint=uuid.uuid4().hex, title=name
+        )
+        await uow.session.execute(
+            update(Employee)
+            .where(Employee.knowledge_item_id == knowledge_item.id)
+            .values(profile_review_status="verified")
         )
         await uow.commit()
         return knowledge_item.id

@@ -912,7 +912,9 @@ async def _item_evidence(
 async def test_facts_from_team_leaves_out_an_archived_selected_employee_and_their_evidence():
     """Option C: both candidates were selected before one was archived. The
     archived one, and the evidence attached to their match, are not offered;
-    the other keeps label employee_1."""
+    the other keeps label employee_1. Both profiles are verified: since plan
+    items 89 and 91 (Q2) an employee's evidence counts only while its profile
+    is verified, read live."""
     org_id, tender_id = await _make_org_and_tender("Team Facts Archived Test")
     ids = {}
     async with UnitOfWork() as uow:
@@ -927,6 +929,7 @@ async def test_facts_from_team_leaves_out_an_archived_selected_employee_and_thei
                 title=name,
                 current_title=f"{name} Engineer",
             )
+            await uow.knowledge.update_employee(item.id, profile_review_status="verified")
             match = await uow.talent.create_role_match(
                 role_requirement_id=role.id, employee_knowledge_item_id=item.id
             )

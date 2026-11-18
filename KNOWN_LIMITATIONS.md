@@ -2318,6 +2318,13 @@ Each entry:
      excluding the flagged evidence row before checking for other valid
      support paths, so the stale column's own bad answer can't feed back
      into the same decision it was just shown to be wrong about.
+     **Closed for every evidence reader in PR 17 (plan items 89 and 91):**
+     a link with a knowledge item is judged by that item now (its status,
+     its `valid_until` against today, an employee's profile review), through
+     one definition (`core/evidence_validity.py`) and its Cypher twin; the
+     link's stored `verified`/`validity_status` are read only for a document
+     excerpt. Readiness, the proposal's filter, both traces, sufficiency,
+     coverage grading and the grounded-claim check all use it.
   2. **`tenders.state_version`, shape A (B7-B10, corrected pre-B12)** —
      the freshness *check* (`graph_service.check_freshness`) was proven
      correct against every *human* mutation (approve, override, select,

@@ -8,10 +8,16 @@ interpretation note).
 """
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from neo4j import AsyncResult, AsyncSession
 
+from tenderos_backend.core.evidence_validity import (
+    FACT_COUNTS_CYPHER,
+    STORED_EVIDENCE_COUNTS_CYPHER,
+    today_utc,
+)
 from tenderos_backend.graph_projection.driver import NODE_KEYS
 
 _TENDER_SCOPED_LABELS = (
@@ -193,29 +199,33 @@ async def find_removed_employee_still_committed_contradictions(
 
 
 async def find_unsupported_grounded_claim_contradictions(
-    session: AsyncSession, tender_id: str
+    session: AsyncSession, tender_id: str, today: date | None = None
 ) -> list[dict[str, Any]]:
     # D6: a claim persisted as grounding_status='grounded' with no valid,
     # verified CITED_IN evidence path remaining.
     #
-    # Plan item 88: the Evidence node copies the link's stored validity_status,
-    # which archiving its source never rewrites. So evidence also stops
-    # counting when the fact that PROVIDES it is archived (the fact node's
-    # status is the knowledge item's, as of this projection). Archived, not
-    # "not active" (user decision): the same meaning as readiness and the
-    # proposal's filter. Evidence with no backing fact (a document excerpt)
-    # is unaffected. Archiving bumps the bid, so this reads stale until a
-    # re-projection, and the red team skips it until then.
+    # Plan items 89 and 91 (user decisions Q3 and addition 1): evidence with
+    # a backing fact counts only if the fact does now (FACT_COUNTS_CYPHER,
+    # the Cypher twin of core/evidence_validity.py: status, valid_until
+    # against $today, an Employee's profile review); the Evidence node's
+    # stored copy of the link's verified/validity_status is not read for it.
+    # Evidence with no fact (a document excerpt) keeps the stored copy. A date
+    # passing needs no re-projection: valid_until is on the fact node and is
+    # compared with today here. A status or profile change bumps the bid, so
+    # this reads stale until a re-projection, and the red team skips it until
+    # then.
     result = await session.run(
         "MATCH (claim:ProposalClaim {tender_id: $tenderId, grounding_status: 'grounded'}) "
-        "OPTIONAL MATCH (claim)<-[:CITED_IN]-(evidence:Evidence "
-        "{verified: true, validity_status: 'valid'}) "
-        "WHERE NOT EXISTS { MATCH (fact)-[:PROVIDES]->(evidence) "
-        "WHERE fact.status = 'archived' } "
-        "WITH claim, count(evidence) AS valid_evidence_count "
+        "OPTIONAL MATCH (claim)<-[:CITED_IN]-(evidence:Evidence) "
+        "OPTIONAL MATCH (fact)-[:PROVIDES]->(evidence) "
+        "WITH claim, evidence, fact "
+        "WITH claim, count(CASE WHEN evidence IS NOT NULL AND (CASE WHEN fact IS NULL "
+        f"THEN {STORED_EVIDENCE_COUNTS_CYPHER} ELSE {FACT_COUNTS_CYPHER} END) "
+        "THEN 1 END) AS valid_evidence_count "
         "WHERE valid_evidence_count = 0 "
         "RETURN claim",
         tenderId=tender_id,
+        today=today or today_utc(),
     )
     return [record.data() async for record in result]
 
@@ -230,7 +240,9 @@ async def evidence_coverage_rows(
     knowledge item's own status/valid_until and current USED_IN.selected.
     Document-excerpt evidence with no knowledge_item_id has no fact node, so
     those 3 fields come back null - still a valid (if permanently unowned)
-    evidence row for the decision function to see.
+    evidence row for the decision function to see. Plan items 89 and 91:
+    also whether the fact is an Employee and its profile review status, so
+    the fact can be judged by the one definition.
     """
     result = await session.run(
         "MATCH (evidence:Evidence)-[:SUPPORTS]->(compliance:Compliance {id: $complianceId}) "
@@ -239,6 +251,8 @@ async def evidence_coverage_rows(
         "RETURN evidence.id AS evidence_id, evidence.verified AS verified, "
         "evidence.validity_status AS validity_status, "
         "fact.status AS knowledge_item_status, fact.valid_until AS valid_until, "
+        "coalesce(fact:Employee, false) AS fact_is_employee, "
+        "fact.profile_review_status AS profile_review_status, "
         "u.selected AS selected",
         complianceId=compliance_entry_id,
     )

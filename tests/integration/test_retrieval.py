@@ -93,6 +93,32 @@ async def test_valid_only_excludes_an_archived_status_item_with_no_valid_until()
     )
 
 
+@pytest.mark.parametrize("status", ["unverified", "expired"])
+async def test_valid_only_excludes_every_status_but_active(status):
+    """Plan items 89 and 91: valid_only is the one definition's "active and
+    in date" (core/evidence_validity.py). An unverified or expired status
+    with no date set is excluded like an archived one: only an employee's
+    unverified profile (status active) is still offered to the model."""
+    org_id = await _make_org()
+    text = "The company maintains PMP certification for project management."
+    chunk_id = await _make_company_chunk(org_id, text)
+
+    async with UnitOfWork() as uow:
+        knowledge_item, _cert = await uow.knowledge.create_certification(
+            organization_id=org_id,
+            title="PMP",
+            content_fingerprint=str(uuid.uuid4()),
+        )
+        await uow.knowledge.associate_knowledge_item_chunks(knowledge_item.id, [chunk_id])
+        await uow.knowledge.update_knowledge_item(knowledge_item.id, status=status)
+        await uow.commit()
+
+    unfiltered = await search_company_knowledge(org_id, text, valid_only=False)
+    assert any(r.knowledge_item_id == knowledge_item.id for r in unfiltered)
+    filtered = await search_company_knowledge(org_id, text, valid_only=True)
+    assert not any(r.knowledge_item_id == knowledge_item.id for r in filtered)
+
+
 async def test_valid_only_still_includes_an_active_status_item():
     # Regression guard: valid_only must not become "exclude everything."
     org_id = await _make_org()
