@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Awaitable, Callable
 
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -52,6 +53,7 @@ async def record_decision(
     waived: bool = False,
     waived_blockers: list | None = None,
     require_tender_state_version: int | None = None,
+    before_commit: Callable[[UnitOfWork, ApprovalGate], Awaitable[None]] | None = None,
 ) -> tuple[ApprovalGate, bool]:
     """Record a gate decision. Returns (gate, is_new_decision).
 
@@ -83,14 +85,38 @@ async def record_decision(
     require_tender_state_version (plan item 93): the decision is recorded
     only if the gate's tender is still at that version, in the same
     conditional UPDATE; otherwise TenderStateMovedError, nothing written.
+
+    PR 16 (plan item 21's limits 1 and 2 for this route): one transaction.
+    The gate is read with its row locked, so a second decision or a cancel
+    on it waits until this one commits or rolls back. before_commit runs
+    last inside the transaction, with the decided (or replayed) gate: the
+    route completes its idempotency record there, so the decision and its
+    replayable answer commit together, and a crash on either side of the
+    commit leaves both or neither. A conflict raises before it runs, so
+    nothing is stored and the route releases the key.
+
+    Lock order with a cancel (PR 16 review): a cancel updates its run's row,
+    then closes the run's pending gates (cancel_workflow_run). This
+    transaction locks the gate first and touches the run's row only through
+    its audit row's foreign key check, which takes FOR KEY SHARE, a mode a
+    plain run update does not block. So the two orders differ but cannot
+    deadlock: the cancel waits for this decision, or this decision waits for
+    the cancel. Taking a stronger lock on the run row here (FOR SHARE or
+    FOR UPDATE, after the gate's) would deadlock with a cancel; so would the
+    cancel locking its run row FOR UPDATE. test_gate_decision_race.py runs
+    both orders through the routes.
     """
     async with UnitOfWork() as uow:
-        gate = await uow.gates.get(gate_id)
+        gate = await uow.gates.get_for_update(gate_id)
         if gate is None:
             raise ValueError(f"ApprovalGate {gate_id} not found")
 
         if gate.status != "pending":
-            return _replay_or_conflict(gate, decision)
+            replayed, is_new = _replay_or_conflict(gate, decision)
+            if before_commit is not None:
+                await before_commit(uow, replayed)
+            await uow.commit()
+            return replayed, is_new
 
         decision_payload: dict = {"decision": decision, "notes": notes, "waived": waived}
         if waived:
@@ -114,7 +140,14 @@ async def record_decision(
                 # Plan item 93: still pending, so the update's other
                 # condition failed: the bid's state version moved.
                 raise TenderStateMovedError()
-            return _replay_or_conflict(gate, decision)
+            # Unreachable while the row lock above is held (PR 16): nothing
+            # else can decide or close this gate meanwhile. Kept as the
+            # answer the conditional update has always given.
+            replayed, is_new = _replay_or_conflict(gate, decision)
+            if before_commit is not None:
+                await before_commit(uow, replayed)
+            await uow.commit()
+            return replayed, is_new
         await uow.outbox.create(
             aggregate_type=AGGREGATE_APPROVAL_GATE,
             aggregate_id=gate_id,
@@ -136,5 +169,7 @@ async def record_decision(
             target_id=gate_id,
             after=audit_after,
         )
+        if before_commit is not None:
+            await before_commit(uow, updated)
         await uow.commit()
         return updated, True

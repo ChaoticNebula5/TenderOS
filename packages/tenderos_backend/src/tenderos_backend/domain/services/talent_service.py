@@ -682,16 +682,6 @@ async def _set_human_selected_in_uow(
     return updated
 
 
-async def select_candidate_in_uow(
-    uow: UnitOfWork, role_match_id: uuid.UUID, actor_user_id: uuid.UUID
-) -> RoleMatch:
-    """The transaction-open, no-commit core of select_candidate - see
-    compliance_service.approve_compliance_entry_in_uow's own docstring for
-    why this exists (gate_target_service.apply_target_updates composes
-    several such writes in one shared transaction)."""
-    return await _set_human_selected_in_uow(uow, role_match_id, actor_user_id, selected=True)
-
-
 async def _set_human_selected(
     role_match_id: uuid.UUID, actor_user_id: uuid.UUID, selected: bool
 ) -> RoleMatch:

@@ -33,8 +33,8 @@ const COMPLIANCE_STATUSES = [
 // Screen 9 (Part J). Same gate-lookup shape as RequirementRegister
 // (screen 8): most recent workflow run -> its compliance_review gate.
 // Per-entry approve/override goes through this module's own dedicated
-// routes, never through the gate's target_updates - see
-// GateDecisionPanel's own design note.
+// routes; a gate decision carries no per-item changes (GateDecisionPanel's
+// note).
 export function ComplianceMatrix() {
   const { tenderId } = useParams<{ tenderId: string }>();
   const [entries, setEntries] = useState<ComplianceResponse[]>([]);

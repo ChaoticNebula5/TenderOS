@@ -1,27 +1,10 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from tenderos_api.schemas.readiness import ReadinessBlocker, ReadinessCounts
-
-
-class TargetUpdate(BaseModel):
-    # B12: real per-target application, closing the gap this field carried
-    # since B3 (see KNOWN_LIMITATIONS.md's now-resolved target_updates
-    # entry). target_type intentionally NOT constrained to gate_target_
-    # service._KNOWN_TARGET_TYPES here - apply_target_update's own
-    # permissive-on-unknown-type posture (forward-compatibility) would be
-    # defeated if Pydantic rejected an unrecognized type before it ever
-    # reached that function. decision is narrower (Literal["approve"])
-    # because that's the only value this block's contract defines at all,
-    # not a forward-compatibility case - not a security boundary either
-    # way, since gate_target_service re-validates both regardless of what
-    # Pydantic already let through.
-    target_type: str
-    target_id: UUID
-    decision: Literal["approve"]
 
 
 class GateDecisionRequest(BaseModel):
@@ -31,10 +14,13 @@ class GateDecisionRequest(BaseModel):
     # STATUS and KeyError'd past any handler). FastAPI now rejects an
     # invalid decision at the request-validation layer, before this ever
     # reaches the service. Matches orchestration/gates.py's own
-    # ALLOWED_DECISIONS tuple - restated literally rather than imported,
-    # same convention TargetUpdate.decision below already uses.
+    # ALLOWED_DECISIONS tuple - restated literally rather than imported.
     decision: Literal["approve", "reject", "request_changes"]
-    target_updates: list[TargetUpdate] = []
+    # PR 16: a decision decides the gate only, and routes/gates.py refuses any
+    # entry here with 422 GATE_TARGET_UPDATES, on every gate. Kept, untyped,
+    # so the spec's example payload (an empty list) is still accepted and any
+    # entry reaches that one answer rather than a field-shape complaint.
+    target_updates: list[dict[str, Any]] = []
     notes: str | None = None
     # B12: only meaningful for gate_type="final_readiness" with
     # decision="approve" - see routes/gates.py's decide_gate. The Build
@@ -151,8 +137,7 @@ class _GateResponseBase(BaseModel):
 # Six subclasses, discriminated on gate_type, rather than one flat model
 # with summary: dict - the whole point of pinning these shapes was to stop
 # handing the gate-control component (and anyone reading the OpenAPI
-# schema) an untyped dict it has to reverse-engineer from
-# gate_target_service.py. gate_type is a Literal of exactly one string
+# schema) an untyped dict it has to reverse-engineer. gate_type is a Literal of exactly one string
 # per class, which is what Field(discriminator=...) below switches on.
 class RequirementReviewGateResponse(_GateResponseBase):
     gate_type: Literal["requirement_review"]

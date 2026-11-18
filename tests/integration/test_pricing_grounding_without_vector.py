@@ -10,9 +10,9 @@ keeps only chunks a knowledge item cites. So the grounding now skips the
 embedding (KNOWN_LIMITATIONS.md, plan item 82).
 
 Covered here, against real Postgres:
-- both routes that ground a finding, the resolve route's service call and a
-  gate decision through gate_target_service, store the chunk with no vector
-  and still create the evidence link;
+- the resolve route's service call, the one path that grounds a finding
+  (a gate decision's target_updates, the other until PR 16, are refused),
+  stores the chunk with no vector and still creates the evidence link;
 - grounding through the service in a fresh interpreter leaves torch,
   transformers and sentence_transformers out of sys.modules (this pytest
   process has them loaded by other tests already);
@@ -31,11 +31,7 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import (
-    commercial_service,
-    document_service,
-    gate_target_service,
-)
+from tenderos_backend.domain.services import commercial_service, document_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -128,25 +124,6 @@ async def test_resolving_a_pricing_finding_stores_its_chunk_without_a_vector():
     assert len(chunks) == 1, "the evidence link and its chunk must still be created"
     assert chunks[0] is not None
     assert chunks[0].chunk_text == _NOTE
-    assert chunks[0].embedding is None
-
-
-async def test_a_gate_decision_resolving_a_pricing_finding_stores_its_chunk_without_a_vector():
-    tender_id = await _tender()
-    finding_id = await _finding_with_a_pricing_document(tender_id)
-
-    await gate_target_service.apply_target_updates(
-        tender_id,
-        [{"target_type": "pricing_finding", "target_id": str(finding_id), "decision": "approve"}],
-        await _user(),
-    )
-
-    async with UnitOfWork() as uow:
-        finding = await uow.commercial.get_pricing_finding(finding_id)
-    assert finding is not None and finding.resolved is True
-    chunks = await _grounding_chunks(tender_id)
-    assert len(chunks) == 1
-    assert chunks[0] is not None
     assert chunks[0].embedding is None
 
 

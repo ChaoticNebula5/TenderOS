@@ -353,9 +353,9 @@ async def _ground_pricing_finding(uow: UnitOfWork, finding: PricingFinding) -> N
 async def resolve_pricing_finding_in_uow(
     uow: UnitOfWork, pricing_finding_id: uuid.UUID, actor_user_id: uuid.UUID
 ) -> PricingFinding:
-    """The transaction-open, no-commit core of resolve_pricing_finding -
-    see compliance_service.approve_compliance_entry_in_uow's own docstring
-    for why this exists."""
+    """The transaction-open, no-commit core of resolve_pricing_finding,
+    which opens its own UnitOfWork, calls this and commits once - see
+    compliance_service.approve_compliance_entry_in_uow's own docstring."""
     finding = await uow.commercial.get_pricing_finding(pricing_finding_id)
     if finding is None:
         raise PricingFindingNotFoundError()

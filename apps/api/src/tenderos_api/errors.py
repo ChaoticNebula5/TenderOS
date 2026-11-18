@@ -89,36 +89,28 @@ class ReadinessChangedError(APIError):
         )
 
 
-class FinalGateTargetUpdatesError(APIError):
-    # Plan item 93 (user decision while building): the final readiness
-    # gate's targets list is always empty, and its decision is recorded only
-    # if the bid's state has not moved since readiness was recomputed. Target
-    # updates are applied in their own transaction before the decision and
-    # move that state, so they are refused before anything is applied.
+class GateTargetUpdatesError(APIError):
+    # Plan item 21's note with item 67's gate-target note (PR 16, user
+    # decision 2026-11-17): a gate decision decides the gate only. Each item
+    # is approved, selected or resolved on its own route. A decision that
+    # still carries target_updates is refused before anything is read or
+    # written, on every gate. The field stays on the request so an empty
+    # list (the spec's example payload) is still accepted. Until PR 16 these
+    # updates were applied in their own committed transaction before the
+    # decision, so a refused decision left them applied, and they were
+    # checked only against the gate's tender, so one gate's decision could
+    # change another gate's targets (both observed). No screen sent them.
     def __init__(self) -> None:
         super().__init__(
             422,
-            "FINAL_GATE_TARGET_UPDATES",
-            "The final readiness gate takes no target_updates; resolve those items on "
-            "their own screens, then decide.",
-        )
-
-
-class TargetOwnershipDeniedError(APIError):
-    # B12: routes/gates.py's own translation of gate_target_service.
-    # TargetOwnershipError - same 403 shape as OrgAccessDeniedError, since
-    # both are "the caller is authenticated, but the specific resource
-    # they're trying to touch isn't theirs to touch."
-    def __init__(self) -> None:
-        super().__init__(
-            403,
-            "TARGET_OWNERSHIP_DENIED",
-            "One or more target_updates entries do not belong to this gate's tender.",
+            "GATE_TARGET_UPDATES",
+            "Gate decisions take no target_updates; approve, select or resolve each item "
+            "on its own screen, then decide the gate.",
         )
 
 
 class ArchivedEmployeeSelectionAPIError(APIError):
-    # Plan item 86, option A: routes/talent.py's and routes/gates.py's
+    # Plan item 86, option A: routes/talent.py's
     # translation of talent_service.ArchivedEmployeeSelectionError. 409, as
     # verify answers for the same employee: the request is well formed, the
     # employee's state refuses it, and restoring the employee clears it.

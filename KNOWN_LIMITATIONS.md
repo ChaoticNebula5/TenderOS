@@ -1778,6 +1778,8 @@ Each entry:
   work, not a modification to something partially built. B12 doesn't need
   to audit or unwind any existing (possibly-load-bearing) per-target
   application logic before building the real one - there isn't any yet.
+- **Removed in PR 16:** the write path below was deleted and the field
+  is refused when non-empty; see the B13 `target_updates` entry.
 - **Resolved in B12.** `target_updates` now has a real write path:
   `domain/services/gate_target_service.py`'s `apply_target_update`/
   `apply_target_updates`, called from `routes/gates.py`'s `decide_gate`
@@ -5657,6 +5659,15 @@ edits, not code bugs.
   if a future direct API consumer (not this UI) ever needs
   `target_updates` to work uniformly across all three gate types it
   currently half-covers.
+- **Superseded by PR 16 (plan item 21's note with item 67's gate-target
+  note, user decision 2026-11-17):** `target_updates` is no longer applied.
+  The decision route refuses any non-empty list with 422
+  `GATE_TARGET_UPDATES`, on every gate, and `gate_target_service.py` is
+  deleted. The specs give every per-item decision its own route and never
+  define what the field holds; no screen and not the frozen E2E spec sent
+  it; and the applied path had two observed bugs: a refused decision left
+  its updates applied (they committed first), and one gate's decision
+  could change another gate's targets (only the tender was checked).
 - **Status:** accepted asymmetry. Not fixed - the underlying
   `targets`/`target_updates` contract inconsistency for `resource_
   selection` still exists exactly as described above, for any caller
@@ -5730,6 +5741,15 @@ edits, not code bugs.
   already works for `compliance_entry`/`role_match`/`pricing_finding` and
   needs no further backend change - only then would adopting it in this
   UI (or building a second one) be worth reopening.
+- **Superseded by PR 16 (plan item 21's note with item 67's gate-target
+  note, user decision 2026-11-17):** `target_updates` is no longer applied.
+  The decision route refuses any non-empty list with 422
+  `GATE_TARGET_UPDATES`, on every gate, and `gate_target_service.py` is
+  deleted. The specs give every per-item decision its own route and never
+  define what the field holds; no screen and not the frozen E2E spec sent
+  it; and the applied path had two observed bugs: a refused decision left
+  its updates applied (they committed first), and one gate's decision
+  could change another gate's targets (only the tender was checked).
 - **Status:** accepted, backend-only surface. Not a bug, not scheduled
   for frontend adoption.
 - **Test:** `tests/integration/test_gate_target_service.py` (B12) is the
@@ -5780,6 +5800,15 @@ edits, not code bugs.
   cited above, not a decision anyone wrote down at B12 time** - the B12
   entry itself never states this as its reasoning, and no other document
   in this repo does either.
+- **Superseded by PR 16 (plan item 21's note with item 67's gate-target
+  note, user decision 2026-11-17):** `target_updates` is no longer applied.
+  The decision route refuses any non-empty list with 422
+  `GATE_TARGET_UPDATES`, on every gate, and `gate_target_service.py` is
+  deleted. The specs give every per-item decision its own route and never
+  define what the field holds; no screen and not the frozen E2E spec sent
+  it; and the applied path had two observed bugs: a refused decision left
+  its updates applied (they committed first), and one gate's decision
+  could change another gate's targets (only the tender was checked).
 - **Status:** open. Recorded as a plausible reading of the evidence, not
   a confirmed design decision - if `requirement_review`/`finding_
   resolution` were ever meant to gain `target_updates` coverage too, this

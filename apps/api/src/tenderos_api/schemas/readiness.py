@@ -10,8 +10,8 @@ from pydantic import BaseModel
 # item 86 selected_employee_removed, since plan item 99
 # document_not_parsed, and since plan item 104 document_not_extracted). Restated
 # here as literal strings rather than imported, matching this schema
-# module's existing convention (schemas/gates.py's TargetUpdate.decision
-# does the same for "approve") - a new category added to that file without
+# module's existing convention (schemas/gates.py's GateDecisionRequest.
+# decision does the same for its three values) - a new category added to that file without
 # a matching update here fails closed (422/500 on the response, not a
 # silently-accepted new value), which is the right direction to fail.
 _BlockerCategory = Literal[

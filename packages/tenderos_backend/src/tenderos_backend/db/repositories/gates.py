@@ -58,6 +58,20 @@ class GateRepository:
     async def get(self, gate_id: uuid.UUID) -> ApprovalGate | None:
         return await self._session.get(ApprovalGate, gate_id)
 
+    async def get_for_update(self, gate_id: uuid.UUID) -> ApprovalGate | None:
+        """The gate, with its row locked until this transaction ends (PR 16).
+        A decision reads its gate this way, so a second decision or a cancel
+        on the same gate waits for it, and the status read here is the one
+        the decision is recorded against. populate_existing: a row already
+        in the session is refreshed from the locked read, not reused."""
+        result = await self._session.execute(
+            select(ApprovalGate)
+            .where(ApprovalGate.id == gate_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_key(self, workflow_run_id: uuid.UUID, gate_key: str) -> ApprovalGate | None:
         result = await self._session.execute(
             select(ApprovalGate).where(

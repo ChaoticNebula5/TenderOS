@@ -467,7 +467,7 @@ async def _resume_document_with_chunks(
     résumé produces after B4 chunking (summary/experience/certifications/
     education as separate chunks) - no embedding passed, matching every
     other create_chunk call site in this test suite (test_compliance_routes,
-    test_graph_routes, test_gate_target_service, test_graph_projection).
+    test_graph_routes, test_graph_projection).
     content must be unique per call - document_service.create_document
     dedupes by content hash within an org (its own docstring: "two uploads
     of the same bytes land on the same key"), so two placeholder-content

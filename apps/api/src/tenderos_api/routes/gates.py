@@ -5,23 +5,20 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from tenderos_backend.db.models.user import User
 from tenderos_backend.db.models.workflow import ApprovalGate
+from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import (
     gate_service,
     gate_summary_service,
-    gate_target_service,
     readiness_service,
-    talent_service,
     tender_service,
 )
 
 from tenderos_api.dependencies import require_gate_decision_permission, require_permission
 from tenderos_api.errors import (
-    ArchivedEmployeeSelectionAPIError,
-    FinalGateTargetUpdatesError,
     GateAlreadyDecidedError,
+    GateTargetUpdatesError,
     ReadinessChangedError,
     ReadinessNotWaivedError,
-    TargetOwnershipDeniedError,
 )
 from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.schemas.gates import (
@@ -129,6 +126,18 @@ async def decide_gate(
     gate = await gate_service.get_gate(gate_id)
     if gate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gate not found")
+    # PR 16 (plan item 21's note with item 67's gate-target note, user
+    # decision 2026-11-17): a decision decides the gate only, on every gate,
+    # decided or not. Each item is approved, selected or resolved on its own
+    # route (the specs give each its own, and every screen uses them). Before
+    # this, target_updates were applied in their own committed transaction
+    # ahead of the decision and checked only against the gate's tender, so a
+    # refused decision left them applied and one gate's decision could change
+    # another gate's targets (both observed on the fake stack). No screen and
+    # not the frozen E2E spec ever sent them. Refused before anything is read
+    # or written; an empty list, the spec's example payload, is accepted.
+    if body.target_updates:
+        raise GateTargetUpdatesError()
     tender = await tender_service.get_tender(gate.tender_id)
     if tender is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
@@ -166,11 +175,6 @@ async def decide_gate(
     # agree, and a later successful red-team pass is seen here too. The
     # decision is then recorded only if the bid's version is still the
     # recomputed report's (a conditional write).
-    if gate.gate_type == "final_readiness" and body.target_updates:
-        # Its targets list is always empty, and target updates are applied
-        # in their own transaction and move the version the conditional
-        # write checks (user decision while building item 93).
-        raise FinalGateTargetUpdatesError()
     waived = False
     waived_blockers: list[dict] | None = None
     required_version: int | None = None
@@ -186,27 +190,14 @@ async def decide_gate(
             waived = True
             waived_blockers = fresh.blockers
 
-    # Q1: applied unconditionally, before the gate's own decision is
-    # recorded, regardless of what that decision turns out to be - a
-    # reviewer approving individual targets while still requesting changes
-    # on the gate overall is legitimate (see gate_target_service.py's own
-    # module comment). gate.tender_id, not anything from the request body,
-    # is the trusted anchor apply_target_updates checks every target
-    # against.
-    try:
-        await gate_target_service.apply_target_updates(
-            gate.tender_id,
-            [u.model_dump() for u in body.target_updates],
-            current_user.id,
-        )
-    except gate_target_service.TargetOwnershipError as exc:
-        raise TargetOwnershipDeniedError() from exc
-    except talent_service.ArchivedEmployeeSelectionError as exc:
-        # Plan item 86 (user decision): one archived employee in the
-        # selections refuses the whole decision. apply_target_updates applies
-        # every update in one transaction, and the decision below is not
-        # recorded, so nothing is half-applied.
-        raise ArchivedEmployeeSelectionAPIError() from exc
+    # Plan item 21, limits 1 and 2, for this route (PR 16): the idempotency
+    # record completes in the decision's own transaction, so the decision and
+    # its replayable answer commit together. A retry after a crash on either
+    # side of that commit replays or decides again, never both; a refused
+    # decision stores nothing and the dependency releases the key.
+    async def store_response(uow: UnitOfWork, decided: ApprovalGate) -> None:
+        stored = _gate_to_response(decided)
+        await idempotency.finalize_in(uow, 200, stored.model_dump(mode="json"))
 
     try:
         updated, _is_new = await gate_service.record_decision(
@@ -218,12 +209,11 @@ async def decide_gate(
             waived=waived,
             waived_blockers=waived_blockers,
             require_tender_state_version=required_version,
+            before_commit=store_response,
         )
     except gate_service.GateAlreadyDecidedError as exc:
         raise GateAlreadyDecidedError() from exc
     except gate_service.TenderStateMovedError as exc:
         raise ReadinessChangedError() from exc
 
-    response = _gate_to_response(updated)
-    await idempotency.finalize(200, response.model_dump(mode="json"))
-    return response
+    return _gate_to_response(updated)
