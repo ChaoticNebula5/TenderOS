@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,8 @@ from tenderos_backend.domain.events.outbox_events import (
 # terminal status, its tasks that never finished are "skipped", so no task
 # reads Queued or Running under a run that has ended.
 _UNFINISHED_TASK_STATUSES = ("pending", "running")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -715,35 +718,83 @@ class WorkflowRepository:
         )
         return True
 
-    async def mark_task_completed(self, task_id: uuid.UUID, output_refs: dict) -> None:
-        task = await self._session.get(WorkflowTask, task_id)
-        if task is None:
-            raise ValueError(f"WorkflowTask {task_id} not found")
-        task.status = "completed"
-        task.output_refs = output_refs
-        task.completed_at = datetime.now(UTC)
-        await self._session.flush()
+    async def mark_task_completed(self, task_id: uuid.UUID, output_refs: dict) -> bool:
+        """A task node's work finished: the task reads Completed, with its
+        output, and WorkflowTaskCompleted is written. Returns whether it was.
+
+        Plan item 59, fix 5 (user decision Q3 a): one conditional UPDATE,
+        written only while the task is pending or running. A cancel (or any
+        end of the run) marks the run's unfinished tasks "skipped"
+        (_skip_unfinished_tasks), and cancellation is checked at the gates,
+        not inside an analysis node, so a node can finish after its run was
+        cancelled. Its task then stays skipped, with no task event and one
+        INFO line; whatever else the caller's transaction wrote is kept (the
+        extraction node's chunk marks, say). Postgres re-checks the status
+        on the row a cancel just committed, so this holds when the two race.
+        Before, the task was read and written whatever its status.
+        """
+        result = await self._session.execute(
+            sa_update(WorkflowTask)
+            .where(WorkflowTask.id == task_id, WorkflowTask.status.in_(_UNFINISHED_TASK_STATUSES))
+            .values(status="completed", output_refs=output_refs, completed_at=datetime.now(UTC))
+            .returning(WorkflowTask.workflow_run_id, WorkflowTask.task_type)
+        )
+        row = result.one_or_none()
+        if row is None:
+            await self._log_task_end_refused(task_id, "completed")
+            return False
         await self._outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_TASK,
             aggregate_id=task_id,
             event_type=EVENT_WORKFLOW_TASK_COMPLETED,
-            payload=workflow_task_completed_payload(task.workflow_run_id, task_id, task.task_type),
+            payload=workflow_task_completed_payload(row.workflow_run_id, task_id, row.task_type),
             idempotency_key=workflow_task_completed_idempotency_key(task_id),
         )
+        return True
 
-    async def mark_task_failed(self, task_id: uuid.UUID, error_code: str) -> None:
-        task = await self._session.get(WorkflowTask, task_id)
-        if task is None:
-            raise ValueError(f"WorkflowTask {task_id} not found")
-        task.status = "failed"
-        task.error_code = error_code
-        task.attempt_count += 1
-        task.completed_at = datetime.now(UTC)
-        await self._session.flush()
+    async def mark_task_failed(self, task_id: uuid.UUID, error_code: str) -> bool:
+        """A task node's work raised: the task reads Failed, with the error,
+        one more attempt is counted, and WorkflowTaskFailed is written.
+        Returns whether it was. Conditional on pending or running, as
+        mark_task_completed: after a cancel the task stays skipped and its
+        attempts are not counted. The node re-raises either way."""
+        result = await self._session.execute(
+            sa_update(WorkflowTask)
+            .where(WorkflowTask.id == task_id, WorkflowTask.status.in_(_UNFINISHED_TASK_STATUSES))
+            .values(
+                status="failed",
+                error_code=error_code,
+                attempt_count=WorkflowTask.attempt_count + 1,
+                completed_at=datetime.now(UTC),
+            )
+            .returning(WorkflowTask.workflow_run_id, WorkflowTask.task_type)
+        )
+        row = result.one_or_none()
+        if row is None:
+            await self._log_task_end_refused(task_id, "failed")
+            return False
         await self._outbox.create(
             aggregate_type=AGGREGATE_WORKFLOW_TASK,
             aggregate_id=task_id,
             event_type=EVENT_WORKFLOW_TASK_FAILED,
-            payload=workflow_task_failed_payload(task.workflow_run_id, task_id, task.task_type),
+            payload=workflow_task_failed_payload(row.workflow_run_id, task_id, row.task_type),
             idempotency_key=workflow_task_failed_idempotency_key(task_id),
+        )
+        return True
+
+    async def _log_task_end_refused(self, task_id: uuid.UUID, wanted: str) -> None:
+        """The one INFO line for a task end refused by its status, or the
+        ValueError a missing task has always raised."""
+        status = (
+            await self._session.execute(
+                select(WorkflowTask.status).where(WorkflowTask.id == task_id)
+            )
+        ).scalar_one_or_none()
+        if status is None:
+            raise ValueError(f"WorkflowTask {task_id} not found")
+        logger.info(
+            "task %s not marked %s: it is %s (its run ended while the node worked)",
+            task_id,
+            wanted,
+            status,
         )

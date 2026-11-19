@@ -212,7 +212,13 @@ async def decide_gate(
             before_commit=store_response,
         )
     except gate_service.GateAlreadyDecidedError as exc:
-        raise GateAlreadyDecidedError() from exc
+        # Q7: who decided and when, for the panel to say so.
+        raise GateAlreadyDecidedError(
+            decided_by=str(exc.decided_by) if exc.decided_by is not None else None,
+            decided_by_name=exc.decided_by_name,
+            decided_at=exc.decided_at.isoformat() if exc.decided_at is not None else None,
+            decision=exc.decision,
+        ) from exc
     except gate_service.TenderStateMovedError as exc:
         raise ReadinessChangedError() from exc
 

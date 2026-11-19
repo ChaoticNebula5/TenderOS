@@ -29,7 +29,11 @@ ROSTER_READERS = Counter(
         ("domain/services/redteam_checks.py", "check_archived_employee_selected"): 2,
         ("domain/services/gate_summary_service.py", "resource_selection_summary"): 1,
         ("domain/services/proposal_service.py", "_facts_from_team"): 1,
-        ("domain/services/talent_service.py", "_set_human_selected_in_uow"): 1,
+        # _set_human_selected_in_uow was here until plan item 59 (PR 20): the
+        # select's archived check now reads the item FOR SHARE and compares
+        # its status, as verify_employee_profile always has, so the check
+        # holds until the select commits. It still asks "removed from the
+        # roster", not "valid evidence".
         ("domain/services/talent_service.py", "archived_employee_ids"): 1,
     }
 )

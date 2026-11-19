@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
@@ -8,6 +9,8 @@ from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.requirement_service import RequirementNotFoundError
 
 _AGENT_NAME = "requirement_verification"
+
+logger = logging.getLogger(__name__)
 
 
 def _input_refs(requirement_id: uuid.UUID | None, event_id: uuid.UUID | None) -> dict | None:
@@ -151,16 +154,26 @@ async def verify_and_persist(
 
     verified = output.supported_by_source and output.mandatory_language_supported
     async with UnitOfWork() as uow:
-        requirement = await uow.requirements.get(requirement_id)
-        if requirement is None:
+        # Plan item 59, fix 6: written only on the text judged above. A
+        # person's edit that committed during the model call refuses it: no
+        # write, no bump, one INFO line (the trace above still records the
+        # call). Lock order: the requirement row (the UPDATE), then the
+        # tender (the bump).
+        written = await uow.requirements.set_verdict_for_text(
+            requirement_id, verified, requirement_text
+        )
+        if written.outcome == "not_found":
             raise RequirementNotFoundError()
-        was_verified = requirement.verified
-        await uow.requirements.set_verified(requirement_id, verified)
+        if written.outcome == "text_changed":
+            logger.info(
+                "verification of requirement %s not written: its text changed while it was judged",
+                requirement_id,
+            )
         # verified is on the graph's Requirement node (plan item 95). In a
         # run this happens in the extraction node, before project_graph; from
         # the Verify button it can happen any time after.
-        if verified != was_verified:
-            await uow.tenders.bump_state_version(requirement.tender_id)
+        if written.outcome == "changed" and written.tender_id is not None:
+            await uow.tenders.bump_state_version(written.tender_id)
         await uow.commit()
 
     return output

@@ -21,6 +21,7 @@ from tenderos_backend.core.evidence_validity import (
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.knowledge import Employee
 from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
+from tenderos_backend.db.repositories.knowledge import KNOWLEDGE_ITEM_ARCHIVED
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.policies.rbac import ACTION_ROLES
 
@@ -654,7 +655,11 @@ async def deselect_candidate(role_match_id: uuid.UUID, actor_user_id: uuid.UUID)
 async def _set_human_selected_in_uow(
     uow: UnitOfWork, role_match_id: uuid.UUID, actor_user_id: uuid.UUID, selected: bool
 ) -> RoleMatch:
-    match = await uow.talent.get_role_match(role_match_id)
+    # Plan item 59, fix 7: the match locked before "before" (human_selected),
+    # so a select and a deselect at once each compare with the other's
+    # commit. Lock order: the match, then the employee's knowledge item
+    # (below), then the tender (the bump).
+    match = await uow.talent.get_role_match_for_update(role_match_id)
     if match is None:
         raise RoleMatchNotFoundError()
     role = await uow.talent.get_role_requirement(match.role_requirement_id)
@@ -664,11 +669,19 @@ async def _set_human_selected_in_uow(
     if tender is None:
         raise TenderNotFoundError()
     # Plan item 86, option A: read now, not from the match, which records
-    # nothing about the employee's roster status. Both callers reach here:
-    # the team page's select route and the resource gate's target updates,
-    # whose shared transaction this raise rolls back whole.
-    if selected and await uow.knowledge.archived_item_ids([match.employee_knowledge_item_id]):
-        raise ArchivedEmployeeSelectionError()
+    # nothing about the employee's roster status. Its one live caller is the
+    # team page's select route: the resource gate's target updates, the
+    # other, are refused at the route since PR 16. Plan item 59, fix 8: read
+    # FOR SHARE and held to commit, so an archive not yet committed is
+    # waited for and one arriving now waits for this select. This
+    # transaction writes role_matches, never the item, so the share is never
+    # upgraded.
+    if selected:
+        employee_item = await uow.knowledge.get_knowledge_item_for_share(
+            match.employee_knowledge_item_id
+        )
+        if employee_item is not None and employee_item.status == KNOWLEDGE_ITEM_ARCHIVED:
+            raise ArchivedEmployeeSelectionError()
 
     before = {"human_selected": match.human_selected}
     updated = await uow.talent.update_role_match(role_match_id, human_selected=selected)

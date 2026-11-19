@@ -21,10 +21,11 @@ import { GateDecisionPanel } from "./GateDecisionPanel";
 // generic error branch) against a mocked class that isn't the real one.
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof apiClient>();
-  return { ...actual, decideGate: vi.fn() };
+  return { ...actual, decideGate: vi.fn(), getGate: vi.fn() };
 });
 
 const decideGate = vi.mocked(apiClient.decideGate);
+const getGate = vi.mocked(apiClient.getGate);
 
 afterEach(() => {
   cleanup();
@@ -495,6 +496,106 @@ describe("decision buttons", () => {
     const keysUsed = decideGate.mock.calls.map((call) => call[2]);
     expect(new Set(keysUsed).size).toBe(1);
     vi.useRealTimers();
+  });
+});
+
+describe("Q7: a gate someone else decided first (GATE_ALREADY_DECIDED)", () => {
+  function alreadyDecided(details: Record<string, string | null>): apiClient.ApiError {
+    return new apiClient.ApiError(409, {
+      error: {
+        code: "GATE_ALREADY_DECIDED",
+        message: "This gate has already been decided.",
+        details,
+      },
+    });
+  }
+
+  // A screen as the real ones are: it holds the gate and shows onDecided's.
+  function Screen({ initial }: { initial: GateResponse }) {
+    const [gate, setGate] = useState<GateResponse>(initial);
+    return (
+      <>
+        <p>Shown status: {gate.status}</p>
+        <GateDecisionPanel gate={gate} onDecided={setGate} />
+      </>
+    );
+  }
+
+  it("says who decided and when, and reloads the gate to show their decision", async () => {
+    const pending = complianceReviewGate();
+    decideGate.mockRejectedValue(
+      alreadyDecided({
+        decided_by: "33333333-3333-3333-3333-333333333333",
+        decided_by_name: "Sam Approver",
+        decided_at: "2026-01-02T00:00:00Z",
+        decision: "approve",
+      }),
+    );
+    getGate.mockResolvedValue({
+      ...pending,
+      status: "approved",
+      decided_by: "33333333-3333-3333-3333-333333333333",
+      decided_at: "2026-01-02T00:00:00Z",
+      decision_payload: { decision: "approve", notes: null, waived: false },
+    } as GateResponse);
+    const { container } = render(<Screen initial={pending} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    const message = `This gate was already decided by Sam Approver on ${formatDate("2026-01-02T00:00:00Z")}.`;
+    expect(await screen.findByText("Shown status: approved")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(getGate).toHaveBeenCalledWith(pending.gate_id);
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(container.querySelector("strong")).toBeNull();
+  });
+
+  it("says a gate a cancel closed was closed, with no name", async () => {
+    const pending = complianceReviewGate();
+    decideGate.mockRejectedValue(
+      alreadyDecided({
+        decided_by: null,
+        decided_by_name: null,
+        decided_at: "2026-01-02T00:00:00Z",
+        decision: null,
+      }),
+    );
+    getGate.mockResolvedValue({
+      ...pending,
+      status: "rejected",
+      decided_at: "2026-01-02T00:00:00Z",
+      decision_payload: { decision: null, closed_by: "run_cancelled" },
+    } as GateResponse);
+    render(<Screen initial={pending} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Shown status: rejected")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `This gate was already closed on ${formatDate("2026-01-02T00:00:00Z")}.`,
+    );
+  });
+
+  it("keeps the message on the pending panel when the reload fails", async () => {
+    const pending = complianceReviewGate();
+    decideGate.mockRejectedValue(
+      alreadyDecided({
+        decided_by: "33333333-3333-3333-3333-333333333333",
+        decided_by_name: "sam@example.com",
+        decided_at: "2026-01-02T00:00:00Z",
+        decision: "approve",
+      }),
+    );
+    getGate.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(<Screen initial={pending} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This gate was already decided by sam@example.com",
+    );
+    expect(screen.getByText("Shown status: pending")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
 });
 

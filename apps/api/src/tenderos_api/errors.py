@@ -15,7 +15,7 @@ class APIError(Exception):
         message: str,
         *,
         headers: dict[str, str] | None = None,
-        details: dict[str, str] | None = None,
+        details: dict[str, str | None] | None = None,
     ) -> None:
         self.status_code = status_code
         self.code = code
@@ -25,7 +25,8 @@ class APIError(Exception):
         self.headers = headers
         # Machine-readable facts a client acts on (the active run's id on
         # WORKFLOW_RUN_ACTIVE), sent as error.details only when set, so every
-        # other error's body is unchanged.
+        # other error's body is unchanged. A value may be None where the fact
+        # is "nobody" (GATE_ALREADY_DECIDED on a gate a cancel closed).
         self.details = details
 
 
@@ -237,11 +238,29 @@ class CsrfCheckFailedError(APIError):
 
 
 class GateAlreadyDecidedError(APIError):
-    def __init__(self) -> None:
+    # Q7 (PR 20): also the answer to another approver's same decision, so
+    # the message no longer says "different". details say who decided
+    # (decided_by, and decided_by_name: their display name, else their
+    # email), when (decided_at, ISO 8601) and what (decision); the first
+    # two and the last are None for a gate a cancel closed. The gate panel
+    # builds its sentence from them.
+    def __init__(
+        self,
+        decided_by: str | None = None,
+        decided_by_name: str | None = None,
+        decided_at: str | None = None,
+        decision: str | None = None,
+    ) -> None:
         super().__init__(
             409,
             "GATE_ALREADY_DECIDED",
-            "This gate already has a different recorded decision.",
+            "This gate has already been decided.",
+            details={
+                "decided_by": decided_by,
+                "decided_by_name": decided_by_name,
+                "decided_at": decided_at,
+                "decision": decision,
+            },
         )
 
 

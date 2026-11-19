@@ -592,9 +592,6 @@ async def persist_section_and_claims(
             requirement_ids, evidence_ids, employee_ids = await materialize_claim_links(
                 prepared, claim_draft
             )
-            grounding = enforce_claim_grounding(
-                claim_draft, requirement_ids, evidence_ids, compliance_status_by_requirement
-            )
 
             fingerprint = _fingerprint(
                 str(section.id), claim_draft.claim_text, claim_draft.claim_type
@@ -604,6 +601,11 @@ async def persist_section_and_claims(
             )
             claim: ProposalClaim
             if existing_claim is None:
+                # A new claim is grounded on this draft's own facts: the
+                # evidence the run gathered for the section when it began.
+                grounding = enforce_claim_grounding(
+                    claim_draft, requirement_ids, evidence_ids, compliance_status_by_requirement
+                )
                 claim = await uow.proposal.create_proposal_claim(
                     section_id=section.id,
                     claim_text=claim_draft.claim_text,
@@ -615,12 +617,16 @@ async def persist_section_and_claims(
                 )
                 graph_changed = True
             else:
-                claim = existing_claim
-                if claim.grounding_status != grounding.status:
-                    claim = await uow.proposal.update_proposal_claim(
-                        claim.id, grounding_status=grounding.status
-                    )
-                    graph_changed = True
+                # Plan item 59, D7: the claim is read again locked, so a
+                # regrounding committing meanwhile is waited for, not lost.
+                # An existing claim is reached only through the in-place
+                # rewrite above, which holds the section's lock, so claims are
+                # taken in the draft's order after the section and before the
+                # bump below; a regrounding holds one claim per transaction.
+                locked = await uow.proposal.get_proposal_claim_for_update(existing_claim.id)
+                if locked is None:
+                    raise ProposalClaimNotFoundError()
+                claim = locked
 
             for requirement_id in requirement_ids:
                 if await uow.proposal.link_claim_requirement(claim.id, requirement_id):
@@ -630,6 +636,21 @@ async def persist_section_and_claims(
                     graph_changed = True
             for employee_id in employee_ids:
                 if await uow.proposal.link_claim_employee(claim.id, employee_id):
+                    graph_changed = True
+
+            if existing_claim is not None:
+                # D7: an existing claim is regrounded here, under its lock and
+                # after this draft's citations became its links, from the
+                # evidence and compliance as they are now: reground_claim's
+                # computation. This draft's facts were gathered when its run
+                # began, so its own answer could be older than a regrounding
+                # that committed meanwhile; this way the last writer also
+                # grounded last.
+                grounding, _ = await _ground_persisted_claim(uow, claim, tender.id)
+                if claim.grounding_status != grounding.status:
+                    claim = await uow.proposal.update_proposal_claim(
+                        claim.id, grounding_status=grounding.status
+                    )
                     graph_changed = True
 
         if graph_changed:
@@ -723,7 +744,10 @@ async def update_section_content(
     itself a new LLM draft to re-run enforce_claim_grounding against.
     """
     async with UnitOfWork() as uow:
-        section = await uow.proposal.get_proposal_section(section_id)
+        # Plan item 59, D5: locked before "before" is taken. Lock order: the
+        # section, then its bid's tender (the bump), as a re-draft's
+        # persist_section_and_claims takes them.
+        section = await uow.proposal.get_proposal_section_for_update(section_id)
         if section is None:
             raise ProposalSectionNotFoundError()
         tender = await uow.tenders.get(section.tender_id)
@@ -924,6 +948,40 @@ class RegroundingResult:
     evidence_link_ids_considered: list[uuid.UUID]
 
 
+async def _ground_persisted_claim(
+    uow: UnitOfWork, claim: ProposalClaim, tender_id: uuid.UUID
+) -> tuple[GroundingResult, list[uuid.UUID]]:
+    """A persisted claim grounded now: against every link it has, its
+    evidence filtered by what counts today (_prepare_evidence_facts) and its
+    requirements by their compliance status now. Returns the grounding and
+    the evidence links it counted. The one computation both writers of
+    grounding_status use for an existing claim: reground_claim, and a
+    re-draft that finds the claim again (plan item 59, D7), so whichever of
+    the two writes last under the claim's lock also grounded last."""
+    requirement_links = await uow.proposal.list_requirements_for_claim(claim.id)
+    resolved_requirement_ids = [r.requirement_id for r in requirement_links]
+
+    linked_evidence = await uow.proposal.list_evidence_for_claim(claim.id)
+    candidate_links: list[EvidenceLink] = []
+    for link_row in linked_evidence:
+        link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
+        if link is not None:
+            candidate_links.append(link)
+    still_valid = await _prepare_evidence_facts(
+        uow, candidate_links, seen_evidence_ids=set(), start_index=1
+    )
+    resolved_evidence_link_ids = [
+        fact.evidence_link_id for fact in still_valid if fact.evidence_link_id is not None
+    ]
+
+    compliance_status = await _compliance_status_by_requirement(uow, tender_id)
+
+    grounding = enforce_claim_grounding(
+        claim, resolved_requirement_ids, resolved_evidence_link_ids, compliance_status
+    )
+    return grounding, resolved_evidence_link_ids
+
+
 async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingResult:
     """Re-runs enforce_claim_grounding for an already-persisted claim against
     CURRENT evidence/compliance state, instead of the draft-time snapshot
@@ -960,34 +1018,22 @@ async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingRes
     evidence_link_ids_considered below to record what this call actually saw -
     the free instrument this project's own citation-correctness
     investigation has been missing since B9/B12.
+
+    Plan item 59, D6: the claim is read locked, before its grounding_status
+    is compared, so a second regrounding of it (another reanalysis job)
+    waits for the first, reads its status and grounds against the evidence
+    as it is after it. Lock order: the claim, then its bid's tender (the
+    bump), as persist_section_and_claims takes them.
     """
-    claim = await uow.proposal.get_proposal_claim(claim_id)
+    claim = await uow.proposal.get_proposal_claim_for_update(claim_id)
     if claim is None:
         raise ProposalClaimNotFoundError()
     section = await uow.proposal.get_proposal_section(claim.section_id)
     if section is None:
         raise ProposalSectionNotFoundError()
 
-    requirement_links = await uow.proposal.list_requirements_for_claim(claim_id)
-    resolved_requirement_ids = [r.requirement_id for r in requirement_links]
-
-    linked_evidence = await uow.proposal.list_evidence_for_claim(claim_id)
-    candidate_links: list[EvidenceLink] = []
-    for link_row in linked_evidence:
-        link = await uow.compliance.get_evidence_link(link_row.evidence_link_id)
-        if link is not None:
-            candidate_links.append(link)
-    still_valid = await _prepare_evidence_facts(
-        uow, candidate_links, seen_evidence_ids=set(), start_index=1
-    )
-    resolved_evidence_link_ids = [
-        fact.evidence_link_id for fact in still_valid if fact.evidence_link_id is not None
-    ]
-
-    compliance_status = await _compliance_status_by_requirement(uow, section.tender_id)
-
-    grounding = enforce_claim_grounding(
-        claim, resolved_requirement_ids, resolved_evidence_link_ids, compliance_status
+    grounding, resolved_evidence_link_ids = await _ground_persisted_claim(
+        uow, claim, section.tender_id
     )
 
     if claim.grounding_status != grounding.status:

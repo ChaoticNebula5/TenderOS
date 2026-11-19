@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { GateResponse } from "../api/client";
-import { ApiError, decideGate } from "../api/client";
-import { formatErrorDetail } from "../api/formatErrorDetail";
+import { ApiError, decideGate, getGate } from "../api/client";
+import { formatErrorDetail, readEnvelopeDetail } from "../api/formatErrorDetail";
 import { retryTransient } from "../api/retryTransient";
 import { formatDate } from "../format/date";
 import { formatUsd } from "../format/usd";
@@ -60,6 +60,18 @@ function errorCode(err: ApiError): string | null {
   if (typeof error !== "object" || error === null || !("code" in error)) return null;
   const code = (error as { code: unknown }).code;
   return typeof code === "string" ? code : null;
+}
+
+// Q7 (PR 20): GATE_ALREADY_DECIDED says who decided first and when
+// (routes/gates.py), so the panel can say it instead of the envelope's
+// generic message. A gate a cancel closed has no decider.
+function alreadyDecidedMessage(err: ApiError): string {
+  const name = readEnvelopeDetail(err.body, "decided_by_name");
+  const decidedAt = readEnvelopeDetail(err.body, "decided_at");
+  const when = decidedAt !== null ? ` on ${formatDate(decidedAt)}` : "";
+  return name !== null
+    ? `This gate was already decided by ${name}${when}.`
+    : `This gate was already closed${when}.`;
 }
 
 // Restyle batch 3 (DESIGN.md Components, "Gate panel"): one action
@@ -139,14 +151,27 @@ function GateDecisionPanelForGate({
       if (updated.gate_id !== shownGateId.current) return;
       onDecided(updated);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && errorCode(err) === "GATE_ALREADY_DECIDED") {
+        // Q7: someone else decided (or a cancel closed) this gate first.
+        // Say who and when, then reload it so the panel shows the decision
+        // that stands, with this message kept above it. A reload that fails
+        // leaves the message on the pending panel.
+        setError(alreadyDecidedMessage(err));
+        try {
+          const fresh = await getGate(gate.gate_id);
+          if (fresh.gate_id === shownGateId.current) onDecided(fresh);
+        } catch {
+          // The message already says what happened.
+        }
+      } else if (err instanceof ApiError && err.status === 409) {
         // Phase 4 blocker 2: a 409 from this route is not always about
         // readiness. Only READINESS_NOT_WAIVED is (errors.py's
         // ReadinessNotWaivedError, raised by routes/gates.py's decide_gate
         // for a final_readiness approval with unresolved or stale blockers
         // and no waiver). The others - IDEMPOTENCY_IN_PROGRESS,
-        // IDEMPOTENCY_CONFLICT, GATE_ALREADY_DECIDED - carry their own
-        // message in the API's error envelope, shown as is.
+        // IDEMPOTENCY_CONFLICT - carry their own message in the API's error
+        // envelope, shown as is (GATE_ALREADY_DECIDED has its own branch
+        // above since Q7).
         setError(
           errorCode(err) === "READINESS_NOT_WAIVED"
             ? "This gate's readiness is stale or unresolved blockers block approval."
@@ -210,11 +235,18 @@ function GateDecisionPanelForGate({
     // <strong> (full-flow.spec.ts (step 13, readiness) is a strict-mode check on the
     // readiness page's only <strong>, and this panel renders there too),
     // no raw ISO string, and no "who": decided_by is a user id, and a name
-    // would need a fetch a restyle does not add.
+    // would need a fetch a restyle does not add. The one place a name shows
+    // is the GATE_ALREADY_DECIDED message (Q7), whose answer carries it;
+    // it stays above the reloaded, decided panel.
     const notes = decisionNotes(gate);
     return (
       <section className="gate-panel">
         {header}
+        {error && (
+          <Notice variant="warning" alert>
+            {error}
+          </Notice>
+        )}
         {gate.decided_at && (
           <p className="gate-panel__decided">
             {isClosedByCancel(gate) ? "Closed" : "Decided"} {formatDate(gate.decided_at)}

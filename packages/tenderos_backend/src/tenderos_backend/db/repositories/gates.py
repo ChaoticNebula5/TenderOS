@@ -1,5 +1,4 @@
 import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -153,7 +152,12 @@ class GateRepository:
                 status=status,
                 decided_by=decided_by,
                 decision_payload=decision_payload,
-                decided_at=datetime.now(UTC),
+                # Plan item 59, fix 9: the database's clock, as
+                # close_pending_for_run's closing above uses, so a gate's
+                # decided time and a cancel's closing time come from one
+                # clock. Only shown on screen; nothing compares it with an
+                # app-clock time.
+                decided_at=func.now(),
             )
             .returning(ApprovalGate.id)
             .execution_options(synchronize_session=False)

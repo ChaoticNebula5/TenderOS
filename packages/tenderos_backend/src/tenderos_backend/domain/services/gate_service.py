@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -13,7 +14,24 @@ from tenderos_backend.orchestration.gates import status_for_decision
 
 
 class GateAlreadyDecidedError(Exception):
-    pass
+    """The gate is no longer pending and this decision is not a replay of
+    the recorded one (Q7, PR 20): who decided it (their id, and their
+    display name or else email), when, and what. A gate a cancel closed has
+    no decider and no decision, so those are None; decided_at is when the
+    cancel closed it."""
+
+    def __init__(
+        self,
+        decided_by: uuid.UUID | None,
+        decided_by_name: str | None,
+        decided_at: datetime | None,
+        decision: str | None,
+    ) -> None:
+        super().__init__(decision)
+        self.decided_by = decided_by
+        self.decided_by_name = decided_by_name
+        self.decided_at = decided_at
+        self.decision = decision
 
 
 class TenderStateMovedError(Exception):
@@ -23,15 +41,34 @@ class TenderStateMovedError(Exception):
     recorded. Nothing was written; the route answers READINESS_CHANGED."""
 
 
-def _replay_or_conflict(gate: ApprovalGate, decision: str) -> tuple[ApprovalGate, bool]:
-    """The answer for a decision on a gate that is no longer pending: the
-    same decision as the one recorded is a replay (is_new_decision=False, no
-    new outbox row); any other is GateAlreadyDecidedError, which the route
-    answers with 409. A gate closed by a cancel records decision None, so
-    every decision on it conflicts."""
-    if (gate.decision_payload or {}).get("decision") == decision:
+async def _replay_or_conflict(
+    uow: UnitOfWork, gate: ApprovalGate, decision: str, decided_by: uuid.UUID
+) -> tuple[ApprovalGate, bool]:
+    """The answer for a decision on a gate that is no longer pending. The
+    same decision by the same approver is a replay (is_new_decision=False,
+    no new outbox row): a retry of their own request. Anything else is
+    GateAlreadyDecidedError, which the route answers with 409, carrying who
+    decided and when; nothing is written either way.
+
+    Q7 (PR 20): before, the same decision by another approver replayed with
+    a 200, so they were told their approval went through while the gate
+    records the first approver and their notes. A gate closed by a cancel
+    records decision None and no decider, so every decision on it
+    conflicts."""
+    recorded = (gate.decision_payload or {}).get("decision")
+    if recorded == decision and gate.decided_by == decided_by:
         return gate, False
-    raise GateAlreadyDecidedError()
+    name: str | None = None
+    if gate.decided_by is not None:
+        user = await uow.users.get(gate.decided_by)
+        if user is not None:
+            name = user.display_name or user.email
+    raise GateAlreadyDecidedError(
+        decided_by=gate.decided_by,
+        decided_by_name=name,
+        decided_at=gate.decided_at,
+        decision=recorded,
+    )
 
 
 async def get_gate(gate_id: uuid.UUID) -> ApprovalGate | None:
@@ -61,7 +98,9 @@ async def record_decision(
     decision, replay it (is_new_decision=False) rather than erroring or writing
     twice - repeating the same POST (e.g. a retried request using a fresh
     Idempotency-Key by mistake) must not double-enqueue a resume job. A *different*
-    decision against an already-decided gate is a real conflict, not a replay.
+    decision against an already-decided gate is a real conflict, not a replay, and
+    so, since Q7 (PR 20), is the same decision by another approver: a replay is
+    only for the approver who decided (_replay_or_conflict).
     Two decisions racing on one pending gate get the same answers (plan item 57):
     the gate update is conditional on status = 'pending', so the one that loses
     is answered like a decision arriving after the other, and the outbox's unique
@@ -112,7 +151,7 @@ async def record_decision(
             raise ValueError(f"ApprovalGate {gate_id} not found")
 
         if gate.status != "pending":
-            replayed, is_new = _replay_or_conflict(gate, decision)
+            replayed, is_new = await _replay_or_conflict(uow, gate, decision, decided_by)
             if before_commit is not None:
                 await before_commit(uow, replayed)
             await uow.commit()
@@ -143,7 +182,7 @@ async def record_decision(
             # Unreachable while the row lock above is held (PR 16): nothing
             # else can decide or close this gate meanwhile. Kept as the
             # answer the conditional update has always given.
-            replayed, is_new = _replay_or_conflict(gate, decision)
+            replayed, is_new = await _replay_or_conflict(uow, gate, decision, decided_by)
             if before_commit is not None:
                 await before_commit(uow, replayed)
             await uow.commit()

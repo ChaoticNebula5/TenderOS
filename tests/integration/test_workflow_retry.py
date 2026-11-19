@@ -49,7 +49,12 @@ async def _make_run_with_failed_task(
             run.id, "commercial_analysis", "commercial_analysis", "commercial_agent", 0, {}
         )
         for _ in range(attempt_count):
-            await uow.workflow.mark_task_failed(task.id, "RateLimitedError")
+            # Each attempt as a node makes it: the task starts, then fails.
+            # Since plan item 59's fix 5 a task fails only from pending or
+            # running, so a failed task's next attempt starts first, as a
+            # retried node's start_task does.
+            assert await uow.workflow.mark_task_running(task.id)
+            assert await uow.workflow.mark_task_failed(task.id, "RateLimitedError")
         task.max_attempts = max_attempts
         run.retry_count = retry_count
         # Plan item 19: what a failing start job sees, the run claimed and

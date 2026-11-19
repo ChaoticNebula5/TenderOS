@@ -19,7 +19,9 @@ idempotency_key, an IntegrityError the route answered with a 500 (observed: 4 of
 recorded a decision on a cancelled run. Now the update is conditional on
 status = 'pending', so the decision is answered like one arriving after the
 first writer: a conflict (409) when the recorded decision differs (a cancel
-records none), a replay (no new row) when it is the same. Since PR 16 the
+records none), a replay (no new row) when it is the same. Since PR 20 (Q7) a
+replay is only for the same approver: another approver's same decision is a
+conflict too, told who decided and when. Since PR 16 the
 locked read decides it before the update is reached; the conditional update
 stays as the backstop.
 """
@@ -35,6 +37,7 @@ from _helpers import register_org_and_tender
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 from tenderos_api.main import app
+from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.repositories.gates import CLOSED_BY_CANCEL_PAYLOAD, GateRepository
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -85,16 +88,28 @@ async def _pending_gate(tender_id: uuid.UUID) -> uuid.UUID:
 
 
 @contextlib.asynccontextmanager
-async def _decision_held_open(gate_id: uuid.UUID, decision: str):
-    """Another approver's decision, written as gate_service.record_decision
-    writes it, in a transaction that commits only when the block ends."""
-    async with UnitOfWork() as uow:
-        user = await uow.users.create(email=f"{uuid.uuid4().hex}@example.test", password_hash="x")
-        await uow.commit()
+async def _decision_held_open(
+    gate_id: uuid.UUID,
+    decision: str,
+    decided_by: uuid.UUID | None = None,
+    display_name: str | None = None,
+):
+    """A decision written as gate_service.record_decision writes it, in a
+    transaction that commits only when the block ends: by `decided_by`, or
+    by another approver (a new user, with `display_name`) when None."""
+    if decided_by is None:
+        async with UnitOfWork() as uow:
+            user = await uow.users.create(
+                email=f"{uuid.uuid4().hex}@example.test",
+                password_hash="x",
+                display_name=display_name,
+            )
+            await uow.commit()
+            decided_by = user.id
     async with UnitOfWork() as uow:
         gate = await uow.gates.record_decision(
             gate_id=gate_id,
-            decided_by=user.id,
+            decided_by=decided_by,
             status=status_for_decision(decision),
             decision_payload={"decision": decision, "notes": None, "waived": False},
         )
@@ -110,8 +125,9 @@ async def _decision_held_open(gate_id: uuid.UUID, decision: str):
         await uow.commit()
 
 
-def _decided(decision: str) -> FirstWriter:
-    return lambda gate_id: _decision_held_open(gate_id, decision)
+def _decided(decision: str, display_name: str | None = None) -> FirstWriter:
+    """Another approver's decision."""
+    return lambda gate_id: _decision_held_open(gate_id, decision, display_name=display_name)
 
 
 @contextlib.asynccontextmanager
@@ -214,12 +230,63 @@ async def test_a_different_decision_that_loses_the_race_is_a_conflict():
     assert await _what_remains(gate_id) == ("approved", "approve", 1)
 
 
-async def test_the_same_decision_that_loses_the_race_is_a_replay():
-    gate_id, loser = await _service_race(_decided("approve"), "approve")
+async def _decider(gate_id: uuid.UUID) -> uuid.UUID | None:
+    async with UnitOfWork() as uow:
+        gate = await uow.gates.get(gate_id)
+        assert gate is not None
+        return gate.decided_by
+
+
+async def test_the_same_decision_by_another_approver_that_loses_the_race_is_a_conflict():
+    """Q7 (PR 20): a replay is only for the approver who decided. Another
+    approver sending the same decision is told who decided and when, and
+    nothing of theirs is written. Before, they got a 200 replay of a
+    decision recorded under someone else's name and notes."""
+    gate_id, loser = await _service_race(_decided("approve", "Another Approver"), "approve")
+
+    with pytest.raises(gate_service.GateAlreadyDecidedError) as raised:
+        await loser
+    conflict = raised.value
+    assert (conflict.decided_by_name, conflict.decision) == ("Another Approver", "approve")
+    assert conflict.decided_by == await _decider(gate_id)
+    assert conflict.decided_at is not None
+    assert await _what_remains(gate_id) == ("approved", "approve", 1)
+
+
+async def test_the_same_decision_by_the_same_approver_that_loses_the_race_is_a_replay():
+    email = f"race-{uuid.uuid4().hex[:8]}@example.com"
+    registered, tender = await register_org_and_tender(email, f"{email} org", f"{email} tender")
+    gate_id = await _pending_gate(tender.id)
+    loser = await _first_writer_wins(
+        _decision_held_open(gate_id, "approve", decided_by=registered.user.id),
+        lambda: gate_service.record_decision(
+            gate_id, registered.organization.id, registered.user.id, "approve", None
+        ),
+    )
 
     gate, is_new = await loser
     assert (gate.id, gate.status, is_new) == (gate_id, "approved", False)
     assert await _what_remains(gate_id) == ("approved", "approve", 1)
+
+
+async def test_a_decision_is_timed_by_the_database_clock():
+    """Fix 9 (PR 20): decided_at is the deciding transaction's now(), the
+    clock close_pending_for_run already uses for a cancel's closing, not the
+    app server's. One session: the property is which clock one transaction
+    writes with."""
+    gate_id, _decide = await _service_gate()
+    async with UnitOfWork() as uow:
+        user = await uow.users.create(email=f"{uuid.uuid4().hex}@example.test", password_hash="x")
+        started = (await uow.session.execute(text("SELECT now()"))).scalar_one()
+        gate = await uow.gates.record_decision(
+            gate_id=gate_id,
+            decided_by=user.id,
+            status=status_for_decision("approve"),
+            decision_payload={"decision": "approve", "notes": None, "waived": False},
+        )
+        await uow.commit()
+    assert gate is not None
+    assert gate.decided_at == started
 
 
 async def test_an_approve_after_a_cancel_closed_the_gate_is_a_conflict():
@@ -314,8 +381,57 @@ async def test_the_api_answers_409_to_a_different_decision_that_loses_the_race()
     assert await _what_remains(gate_id) == ("approved", "approve", 1)
 
 
-async def test_the_api_replays_the_same_decision_that_loses_the_race():
+async def _decision_audit_rows(gate_id: uuid.UUID) -> int:
+    async with UnitOfWork() as uow:
+        return (
+            await uow.session.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.target_id == gate_id, AuditEvent.action == "record_gate_decision")
+            )
+        ).scalar_one()
+
+
+async def test_the_api_answers_409_to_the_same_decision_by_another_approver():
+    """Q7: who decided and when are in the error's details. The approver has
+    no display name, so their email stands in."""
     gate_id, response = await _api_race(_decided("approve"), "approve")
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "GATE_ALREADY_DECIDED"
+    decider = await _decider(gate_id)
+    async with UnitOfWork() as uow:
+        user = await uow.users.get(decider) if decider else None
+        gate = await uow.gates.get(gate_id)
+    assert user is not None and gate is not None and gate.decided_at is not None
+    assert error["details"] == {
+        "decided_by": str(decider),
+        "decided_by_name": user.email,
+        "decided_at": gate.decided_at.isoformat(),
+        "decision": "approve",
+    }
+    assert await _what_remains(gate_id) == ("approved", "approve", 1)
+    assert await _decision_audit_rows(gate_id) == 0, "the held-open decision writes none"
+
+
+async def test_the_api_replays_the_same_decision_by_the_same_approver():
+    async with _api_gate() as (client, auth, gate_id, _run_id):
+        async with UnitOfWork() as uow:
+            gate = await uow.gates.get(gate_id)
+            assert gate is not None
+            tender = await uow.tenders.get(gate.tender_id)
+            assert tender is not None and tender.created_by is not None
+            owner = tender.created_by
+        loser = await _first_writer_wins(
+            _decision_held_open(gate_id, "approve", decided_by=owner),
+            lambda: client.post(
+                f"/gates/{gate_id}/decision",
+                json={"decision": "approve"},
+                headers={**auth, "Idempotency-Key": "race-second"},
+            ),
+        )
+        response = await loser
 
     assert response.status_code == 200
     assert (response.json()["gate_id"], response.json()["status"]) == (str(gate_id), "approved")
@@ -327,6 +443,15 @@ async def test_the_api_answers_409_to_a_decision_racing_a_cancel():
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "GATE_ALREADY_DECIDED"
+    # Q7: a cancel decided nothing, so no one and no decision; the time is
+    # when the cancel closed the gate.
+    details = response.json()["error"]["details"]
+    assert (details["decided_by"], details["decided_by_name"], details["decision"]) == (
+        None,
+        None,
+        None,
+    )
+    assert details["decided_at"] is not None
     assert await _what_remains(gate_id) == ("rejected", None, 0)
     assert await _closed_by_the_cancel(gate_id)
 

@@ -123,6 +123,18 @@ class TalentRepository:
     async def get_role_match(self, role_match_id: uuid.UUID) -> RoleMatch | None:
         return await self._session.get(RoleMatch, role_match_id)
 
+    async def get_role_match_for_update(self, role_match_id: uuid.UUID) -> RoleMatch | None:
+        """The match, its row locked until this transaction ends: a select or
+        deselect reads human_selected this way before deciding whether its
+        change bumps the bid (plan item 59, fix 7), so a second one waits and
+        then reads the first's. FOR NO KEY UPDATE, the lock its UPDATE takes:
+        role_match_evidence references role_matches, and the talent node's
+        evidence inserts go through it. Lock order: the match, then the
+        employee's knowledge item (the archived check), then the tender."""
+        return await self._session.get(
+            RoleMatch, role_match_id, with_for_update={"key_share": True}, populate_existing=True
+        )
+
     async def get_role_match_by_candidate(
         self, role_requirement_id: uuid.UUID, employee_knowledge_item_id: uuid.UUID
     ) -> RoleMatch | None:

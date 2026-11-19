@@ -295,7 +295,10 @@ async def patch_requirement(
     G5's 'all human edits write audit events' rule.
     """
     async with UnitOfWork() as uow:
-        requirement = await uow.requirements.get(requirement_id)
+        # Plan item 59, D4: locked before "before" is taken, so an edit
+        # committing meanwhile is waited for and read, not lost. Lock order:
+        # the requirement, then its bid's tender (the bump).
+        requirement = await uow.requirements.get_for_update(requirement_id)
         if requirement is None:
             raise RequirementNotFoundError()
 

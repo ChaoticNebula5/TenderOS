@@ -488,14 +488,19 @@ async def import_employee_master_row(
             # file. A resume's free-text self-report (import_resume below)
             # overwrites only through _merge_resume_into_employee, and a
             # verified profile only after a person approves it (plan item 80).
-            # Read before the write: matched_employee is the identity-mapped
-            # row update_employee changes.
-            before_title = resolution.matched_employee.current_title
+            # Plan item 59, fix 7: "before" comes from the employee's row
+            # locked (the duplicate check read it unlocked), then from its
+            # knowledge item locked. Lock order: the employee, then the item,
+            # then the bids' tenders, as verify and the resume merge.
+            employee = await uow.knowledge.get_employee_for_update(target_id)
+            if employee is None:
+                raise EmployeeNotFoundError()
+            before_title = employee.current_title
             new_title = row.role or before_title
             await uow.knowledge.update_employee(target_id, current_title=new_title)
             projected_changed = new_title != before_title
             if item_status:
-                existing = await uow.knowledge.get_knowledge_item(target_id)
+                existing = await uow.knowledge.get_knowledge_item_for_update(target_id)
                 before_status = existing.status if existing is not None else ""
                 await uow.knowledge.update_knowledge_item(target_id, status=item_status)
                 projected_changed = projected_changed or item_status != before_status
@@ -526,8 +531,11 @@ async def import_employee_master_row(
             # a row that already exists (a retried or concurrent import), so
             # this write can flip an existing item: it goes through the same
             # bump (plan items 88 and 95). A brand-new row reaches no bid,
-            # and the bump then touches nothing.
-            existing = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+            # and the bump then touches nothing. Plan item 59, D2: the item
+            # is read locked, so an edit of the item that converged-onto row
+            # has open is waited for and compared with. Lock order: the item,
+            # then the bids' tenders.
+            existing = await uow.knowledge.get_knowledge_item_for_update(knowledge_item_id)
             before_status = existing.status if existing is not None else ""
             await uow.knowledge.update_knowledge_item(knowledge_item_id, status=item_status)
             if item_status != before_status:
@@ -1316,7 +1324,12 @@ async def patch_knowledge_item(
     before/after audit-event shape as requirement_service.patch_requirement.
     """
     async with UnitOfWork() as uow:
-        item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+        # Plan item 59, fix 7: locked before "before" is taken, so a second
+        # edit of the item waits for this one and compares with what it
+        # committed. Unlocked, the second read the old value, set it back,
+        # wrote nothing (no net change) and did not bump, and its edit was
+        # lost. Lock order: the item, then the bids' tenders (sorted).
+        item = await uow.knowledge.get_knowledge_item_for_update(knowledge_item_id)
         if item is None:
             raise KnowledgeItemNotFoundError()
 
@@ -1399,7 +1412,9 @@ async def patch_employee_profile(
     bid-eligible with no human approving it).
     """
     async with UnitOfWork() as uow:
-        employee = await uow.knowledge.get_employee(knowledge_item_id)
+        # Plan item 59, fix 7: locked before "before", as patch_knowledge_item.
+        # Lock order: the employee, then the bids' tenders (sorted).
+        employee = await uow.knowledge.get_employee_for_update(knowledge_item_id)
         if employee is None:
             raise EmployeeNotFoundError()
 
@@ -1497,13 +1512,21 @@ async def verify_employee_profile(
     that does not go through this reviewer-invoked action.
     """
     async with UnitOfWork() as uow:
-        employee = await uow.knowledge.get_employee(knowledge_item_id)
+        # Plan item 59, D1: locked before "before" (the review status and
+        # eligibility), as the profile edit. Unlocked, a second verify read
+        # the first's old eligibility, and its UPDATE carried only the new
+        # verification time: its own eligibility decision was lost.
+        employee = await uow.knowledge.get_employee_for_update(knowledge_item_id)
         if employee is None:
             raise EmployeeNotFoundError()
         # Removed from the roster: the same column the candidate pool reads
         # (KnowledgeRepository's KNOWLEDGE_ITEM_ARCHIVED). Restoring the
-        # knowledge item's status is the way back.
-        knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+        # knowledge item's status is the way back. Plan item 59, fix 8: read
+        # FOR SHARE and held to commit, so an archive not yet committed is
+        # waited for and one arriving now waits for this verify. This
+        # transaction never writes the item, so the share is never upgraded.
+        # Lock order: the employee, then its item, then the bids' tenders.
+        knowledge_item = await uow.knowledge.get_knowledge_item_for_share(knowledge_item_id)
         if knowledge_item is not None and knowledge_item.status == KNOWLEDGE_ITEM_ARCHIVED:
             raise EmployeeArchivedError()
 
