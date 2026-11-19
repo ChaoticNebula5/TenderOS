@@ -24,6 +24,16 @@ class ComplianceEntryNotFoundError(Exception):
     pass
 
 
+class ComplianceEntryChangedError(Exception):
+    """An approval named a status the entry no longer has (plan item 59, Q4):
+    the screen was loaded before the entry changed. Nothing is written; the
+    route answers 409 COMPLIANCE_ENTRY_CHANGED with the current status."""
+
+    def __init__(self, current_status: str) -> None:
+        super().__init__(f"the entry's status is now {current_status!r}")
+        self.current_status = current_status
+
+
 def _fingerprint(*parts: str) -> str:
     return sha256_hex("|".join(parts).encode("utf-8"))
 
@@ -300,7 +310,14 @@ async def persist_compliance_decision(
             raise RequirementNotFoundError()
         tender_id = requirement.tender_id
 
-        existing = await uow.compliance.get_compliance_entry_by_requirement(requirement_id)
+        # Plan item 59: locked, so an approval or override committing while
+        # this re-evaluation ran is seen here, and the clear rule below judges
+        # the approval as it is now. Unlocked, an approval landing between
+        # this read and the update survived on a status nobody approved. Lock
+        # order: the entry, then the tender (the bump below).
+        existing = await uow.compliance.get_compliance_entry_by_requirement_for_update(
+            requirement_id
+        )
         # Computed before either branch writes anything, so it reflects
         # "did this call actually change something" rather than "did a
         # write statement run" - a brand-new entry is always a real change;
@@ -483,17 +500,29 @@ async def evaluate_compliance_for_requirement(
 
 
 async def approve_compliance_entry_in_uow(
-    uow: UnitOfWork, compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID
+    uow: UnitOfWork,
+    compliance_entry_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    *,
+    shown_status: str,
 ) -> ComplianceEntry:
     """The transaction-open, no-commit core of approve_compliance_entry,
     which (below) opens its own UnitOfWork, calls this and commits once. It
     was split out for the gate decision's target_updates, which composed
     several such writes in one transaction; PR 16 removed those (a decision
     decides the gate only), so G7's own route is the one caller.
+
+    Plan item 59 (Q4): `shown_status` is the status the person's screen
+    showed. It is compared under the entry's row lock, so an approval never
+    lands on a status other than the one approved; a different status raises
+    ComplianceEntryChangedError before anything is written. Lock order: the
+    entry, then the tender (the bump).
     """
-    entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
+    entry = await uow.compliance.get_compliance_entry_for_update(compliance_entry_id)
     if entry is None:
         raise ComplianceEntryNotFoundError()
+    if entry.status != shown_status:
+        raise ComplianceEntryChangedError(entry.status)
     requirement = await uow.requirements.get(entry.requirement_id)
     if requirement is None:
         raise RequirementNotFoundError()
@@ -527,10 +556,12 @@ async def approve_compliance_entry_in_uow(
 
 
 async def approve_compliance_entry(
-    compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID
+    compliance_entry_id: uuid.UUID, actor_user_id: uuid.UUID, *, shown_status: str
 ) -> ComplianceEntry:
     async with UnitOfWork() as uow:
-        updated = await approve_compliance_entry_in_uow(uow, compliance_entry_id, actor_user_id)
+        updated = await approve_compliance_entry_in_uow(
+            uow, compliance_entry_id, actor_user_id, shown_status=shown_status
+        )
         await uow.commit()
         return updated
 
@@ -547,9 +578,14 @@ async def override_compliance_entry(
     entry a human has just edited is, by definition, one they've now taken
     responsibility for, whether or not they separately call the approve
     route too.
+
+    Plan item 59: the entry is read under its row lock, so the audit's
+    "before" and the bump decision see the entry as it is now. No shown
+    status: the person picks the status themselves. Lock order: the entry,
+    then the tender.
     """
     async with UnitOfWork() as uow:
-        entry = await uow.compliance.get_compliance_entry(compliance_entry_id)
+        entry = await uow.compliance.get_compliance_entry_for_update(compliance_entry_id)
         if entry is None:
             raise ComplianceEntryNotFoundError()
         requirement = await uow.requirements.get(entry.requirement_id)

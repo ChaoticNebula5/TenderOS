@@ -564,15 +564,21 @@ async def persist_section_and_claims(
         # link. Rewriting a draft section's content is not projected.
         graph_changed = False
         existing_section = await uow.proposal.get_latest_proposal_section(tender_id, section_name)
-        if existing_section is None:
+        rewritten = None
+        if existing_section is not None and existing_section.status == "draft":
+            # Plan item 59: rewritten only while still a draft, judged by the
+            # UPDATE itself. A person's edit that moved it to review after the
+            # read above makes this None, and the re-draft becomes a new
+            # version below, as for a section already in review: the edit
+            # stays, the earlier version.
+            rewritten = await uow.proposal.rewrite_draft_section(existing_section.id, draft.content)
+        if rewritten is not None:
+            section = rewritten
+        elif existing_section is None:
             section = await uow.proposal.create_proposal_section(
                 tender_id=tender_id, section_name=section_name, content=draft.content, version=1
             )
             graph_changed = True
-        elif existing_section.status == "draft":
-            section = await uow.proposal.update_proposal_section(
-                existing_section.id, content=draft.content
-            )
         else:
             section = await uow.proposal.create_proposal_section(
                 tender_id=tender_id,

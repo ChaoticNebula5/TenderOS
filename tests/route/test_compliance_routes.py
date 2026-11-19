@@ -155,10 +155,52 @@ async def test_approve_compliance_sets_human_approved(client: TestClient, regist
         tender_id, document_id, status="fully_compliant"
     )
 
-    response = client.post(f"/compliance/{entry_id}/approve", headers=headers)
+    response = client.post(
+        f"/compliance/{entry_id}/approve", json={"status": "fully_compliant"}, headers=headers
+    )
 
     assert response.status_code == 200, response.text
     assert response.json()["human_approved"] is True
+
+
+async def test_approve_compliance_refuses_a_status_the_screen_no_longer_shows(
+    client: TestClient, register_actor
+):
+    # Plan item 59, PR 19 (Q4): the request names the status the screen
+    # showed; the entry has moved on since, so nothing is approved.
+    headers, _, org_id = register_actor()
+    tender_id, document_id = await _make_tender_with_document(client, headers, org_id)
+    _req_id, entry_id = await _requirement_and_compliance_entry(
+        tender_id, document_id, status="non_compliant"
+    )
+
+    response = client.post(
+        f"/compliance/{entry_id}/approve", json={"status": "fully_compliant"}, headers=headers
+    )
+
+    assert response.status_code == 409, response.text
+    error = response.json()["error"]
+    assert error["code"] == "COMPLIANCE_ENTRY_CHANGED"
+    assert error["details"] == {"current_status": "non_compliant"}
+    entry = client.get(f"/compliance/{entry_id}", headers=headers).json()
+    assert entry["human_approved"] is False
+
+
+async def test_approve_compliance_requires_the_shown_status(client: TestClient, register_actor):
+    headers, _, org_id = register_actor()
+    tender_id, document_id = await _make_tender_with_document(client, headers, org_id)
+    _req_id, entry_id = await _requirement_and_compliance_entry(
+        tender_id, document_id, status="fully_compliant"
+    )
+
+    response = client.post(f"/compliance/{entry_id}/approve", headers=headers)
+    assert response.status_code == 422, response.text
+    # A body without the status is refused the same way.
+    response = client.post(f"/compliance/{entry_id}/approve", json={}, headers=headers)
+    assert response.status_code == 422, response.text
+
+    entry = client.get(f"/compliance/{entry_id}", headers=headers).json()
+    assert entry["human_approved"] is False
 
 
 async def test_trace_compliance_walks_requirement_to_entry(client: TestClient, register_actor):

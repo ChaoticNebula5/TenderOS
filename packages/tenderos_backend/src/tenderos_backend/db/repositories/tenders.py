@@ -38,6 +38,22 @@ class TenderRepository:
     async def get(self, tender_id: uuid.UUID) -> Tender | None:
         return await self._session.get(Tender, tender_id)
 
+    async def get_for_update(self, tender_id: uuid.UUID) -> Tender | None:
+        """The tender, its row locked until this transaction ends: for a
+        caller that must hold the tender before another lock (plan item 59,
+        the pricing path: the tender, then the document's synthetic-chunk
+        lock).
+
+        FOR NO KEY UPDATE, the same lock increment_state_version takes, so a
+        later bump in the same transaction re-takes what it already holds
+        rather than upgrading it. Two holders still queue. Every insert of a
+        row that references the tender takes a KEY SHARE lock on it for its
+        foreign key: FOR UPDATE would make each of those (an upload, the
+        commercial node's new finding, an audit row) wait for the holder to
+        commit, and an upgrade at the bump would deadlock with a transaction
+        that had inserted one and was waiting to bump."""
+        return await self._session.get(Tender, tender_id, with_for_update={"key_share": True})
+
     async def list_for_organization(self, organization_id: uuid.UUID) -> list[Tender]:
         result = await self._session.execute(
             select(Tender).where(Tender.organization_id == organization_id)
@@ -121,8 +137,32 @@ class TenderRepository:
         SELECT ... FOR UPDATE for the same row block until this transaction
         commits, instead of racing it. The lock is held until commit, so
         callers bump after their other writes.
+
+        Plan item 59: FOR NO KEY UPDATE, not FOR UPDATE. It is the lock the
+        UPDATE itself takes, and it still makes a second bump wait. FOR
+        UPDATE also conflicts with the KEY SHARE lock every insert of a row
+        that references the tender takes for its foreign key, so two
+        transactions that each inserted such a row and then bumped (two
+        approvals on one bid, each with its audit row) each waited on the
+        other's KEY SHARE: a deadlock. Nothing deletes a tender or changes
+        its id, the only writes FOR NO KEY UPDATE would let a key share
+        through.
+
+        populate_existing (plan item 59): a caller that read the tender
+        before bumping (approve, override) already has it in the session,
+        and without it the locked read left that copy as it was. A bump that
+        committed in between was then counted over: `+= 1` on the stale
+        value wrote the version the other transaction had already written.
+        The same instance is refreshed in place, so set_knowledge_selection
+        still sees the increment on the tender it holds. A change to that
+        instance not yet written is kept: the locked read is a query, and the
+        session's autoflush (on; db/session.py leaves it at its default)
+        writes pending changes before the query runs, so the row read back
+        already has them.
         """
-        tender = await self._session.get(Tender, tender_id, with_for_update=True)
+        tender = await self._session.get(
+            Tender, tender_id, with_for_update={"key_share": True}, populate_existing=True
+        )
         if tender is None:
             raise ValueError(f"Tender {tender_id} not found")
         tender.state_version += 1

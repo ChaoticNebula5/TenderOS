@@ -30,6 +30,14 @@ class PatchComplianceRequest(BaseModel):
     reasoning_summary: str | None = None
 
 
+class ApproveComplianceRequest(BaseModel):
+    """G7's POST /compliance/{compliance_id}/approve (plan item 59, Q4): the
+    status the screen showed, which is what the person approves. Required;
+    a different current status answers 409 COMPLIANCE_ENTRY_CHANGED."""
+
+    status: ComplianceStatus
+
+
 class EvidenceTraceResponse(BaseModel):
     evidence_link_id: UUID
     source_kind: str

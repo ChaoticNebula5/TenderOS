@@ -40,9 +40,20 @@ async def create_synthetic_chunk(
     and retrieval reads both origins). Its index comes from
     next_synthetic_chunk_index (one past the highest synthetic index), not
     a count of the document's chunks, which reused an index once synthetic
-    chunks followed the parsed ones. Two callers adding to one document at
-    the same moment can still pick the same index; the unique key then
-    fails the second (a plan note with item 59).
+    chunks followed the parsed ones.
+
+    Plan item 59: the document's advisory lock is taken first, so two callers
+    adding to one document at the same moment take consecutive indexes (the
+    second waits for the first to commit) instead of the second failing on
+    uq_document_chunk_index. Under the same lock, a synthetic chunk with the
+    same text already on the document is returned as it is instead of a new
+    one, which uq_document_chunk_hash would refuse: two certificate holders
+    with the same certificate on one sheet render the same text. One chunk
+    can back several records. The reused chunk keeps whatever vector it has;
+    the two callers never share a document (pricing chunks are on tender
+    documents, certification chunks on organization documents).
+    Lock order: a caller that also locks its tender (the pricing path) locks
+    the tender first.
 
     Moved here from knowledge_service.py (B16 Group 3) once a third
     caller (commercial_service.py's pricing-finding grounding, B16
@@ -57,6 +68,11 @@ async def create_synthetic_chunk(
     should pass it; see commercial_service._materialize_one_pricing_evidence_link.
     """
     normalized = normalize_text(text)
+    content_hash = sha256_hex(normalized.encode("utf-8"))
+    await uow.documents.lock_document_for_synthetic_chunks(source_document_id)
+    existing = await uow.documents.get_synthetic_chunk_by_hash(source_document_id, content_hash)
+    if existing is not None:
+        return existing
     chunk_index = await uow.documents.next_synthetic_chunk_index(source_document_id)
     embedding = (await embed_texts([normalized]))[0] if embed else None
     return await uow.documents.create_chunk(
@@ -64,7 +80,7 @@ async def create_synthetic_chunk(
         chunk_index=chunk_index,
         chunk_text=text,
         normalized_text=normalized,
-        content_hash=sha256_hex(normalized.encode("utf-8")),
+        content_hash=content_hash,
         embedding=embedding,
         origin=CHUNK_ORIGIN_SYNTHETIC,
     )

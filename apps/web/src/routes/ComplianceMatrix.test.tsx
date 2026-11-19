@@ -10,6 +10,7 @@ import type {
   WorkflowRunResponse,
 } from "../api/client";
 import { TenderLayout } from "../shell/TenderLayout";
+import { describeStatus } from "../status/statusMap";
 import { ComplianceMatrix } from "./ComplianceMatrix";
 
 // Restyle batch 4. Renders the real screen inside the real TenderLayout
@@ -25,6 +26,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listWorkflowRuns: vi.fn(),
     listGates: vi.fn(),
     approveCompliance: vi.fn(),
+    getCompliance: vi.fn(),
     patchCompliance: vi.fn(),
     decideGate: vi.fn(),
   };
@@ -34,6 +36,7 @@ const listCompliance = vi.mocked(apiClient.listCompliance);
 const listWorkflowRuns = vi.mocked(apiClient.listWorkflowRuns);
 const listGates = vi.mocked(apiClient.listGates);
 const approveCompliance = vi.mocked(apiClient.approveCompliance);
+const getCompliance = vi.mocked(apiClient.getCompliance);
 const patchCompliance = vi.mocked(apiClient.patchCompliance);
 const decideGate = vi.mocked(apiClient.decideGate);
 
@@ -159,6 +162,63 @@ describe("ComplianceMatrix (restyle batch 4)", () => {
       expect(within(firstRow(container)).getByText("Approved")).toBeInTheDocument(),
     );
     expect(within(firstRow(container)).queryByRole("button")).toBeNull();
+    // Plan item 59 (Q4): the approval names the status the row showed.
+    expect(approveCompliance).toHaveBeenCalledWith("c1", "fully_compliant");
+  });
+
+  it("reads the entry again and says why when it changed after the page loaded (409 COMPLIANCE_ENTRY_CHANGED)", async () => {
+    const user = userEvent.setup();
+    listCompliance.mockResolvedValue([entry({ status: "non_compliant" })]);
+    listWorkflowRuns.mockResolvedValue([]);
+    approveCompliance.mockRejectedValue(
+      new apiClient.ApiError(409, {
+        error: {
+          code: "COMPLIANCE_ENTRY_CHANGED",
+          message: "This entry's status changed since the page loaded.",
+          details: { current_status: "partially_compliant" },
+        },
+      }),
+    );
+    getCompliance.mockResolvedValue(entry({ status: "partially_compliant" }));
+    const { container } = renderScreen();
+
+    await screen.findByText("Not approved");
+    await user.click(within(firstRow(container)).getByRole("button", { name: "Approve" }));
+
+    const label = describeStatus("compliance", "partially_compliant").label;
+    expect(
+      await screen.findByText(
+        `This entry changed to ${label} after the page loaded, so it was not approved. ` +
+          "Review it, then approve again.",
+      ),
+    ).toBeInTheDocument();
+    // The status the row showed, not the one it changed to.
+    expect(approveCompliance).toHaveBeenCalledWith("c1", "non_compliant");
+    expect(getCompliance).toHaveBeenCalledWith("c1");
+    // The row shows the current status, still unapproved, with Approve offered again.
+    expect(
+      within(firstRow(container)).getByRole("combobox", { name: "Change status" }),
+    ).toHaveValue("partially_compliant");
+    expect(within(firstRow(container)).getByText("Not approved")).toBeInTheDocument();
+    expect(
+      within(firstRow(container)).getByRole("button", { name: "Approve" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the plain failure message for any other approve error", async () => {
+    const user = userEvent.setup();
+    listCompliance.mockResolvedValue([entry({ status: "fully_compliant" })]);
+    listWorkflowRuns.mockResolvedValue([]);
+    approveCompliance.mockRejectedValue(
+      new apiClient.ApiError(500, { error: { code: "INTERNAL_ERROR" } }),
+    );
+    const { container } = renderScreen();
+
+    await screen.findByText("Not approved");
+    await user.click(within(firstRow(container)).getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Approve failed (500)")).toBeInTheDocument();
+    expect(getCompliance).not.toHaveBeenCalled();
   });
 
   it("is the page's first table, its first cell is the raw requirement id, and tbody holds only data rows (full-flow.spec.ts:696, :701, :712)", async () => {

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +69,24 @@ class ProposalRepository:
             select(ProposalSection).where(ProposalSection.tender_id == tender_id)
         )
         return list(result.scalars().all())
+
+    async def rewrite_draft_section(
+        self, section_id: uuid.UUID, content: str
+    ) -> ProposalSection | None:
+        """A re-draft's in-place rewrite of a section that is still a draft
+        (plan item 59): one conditional UPDATE, so a person's edit that moved
+        the section to review meanwhile is never overwritten. Returns the
+        section, or None, writing nothing, when it is no longer a draft."""
+        result = await self._session.execute(
+            update(ProposalSection)
+            .where(ProposalSection.id == section_id, ProposalSection.status == "draft")
+            .values(content=content)
+            .returning(ProposalSection.id)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+        return await self._session.get(ProposalSection, section_id, populate_existing=True)
 
     async def update_proposal_section(
         self, section_id: uuid.UUID, **fields: object

@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { ApiError, approveCompliance, listCompliance, patchCompliance } from "../api/client";
+import {
+  ApiError,
+  approveCompliance,
+  getCompliance,
+  listCompliance,
+  patchCompliance,
+} from "../api/client";
 import type { ComplianceResponse } from "../api/client";
+import { readEnvelopeCode } from "../api/formatErrorDetail";
 import { GateDecisionPanel } from "../components/GateDecisionPanel";
 import { refreshPendingGate } from "../gates/refreshGate";
 import { Button } from "../components/ui/Button";
@@ -78,15 +85,37 @@ export function ComplianceMatrix() {
     };
   }, [tenderId, rowsVersion]);
 
-  async function handleApprove(complianceId: string) {
+  // Plan item 59 (Q4): the approval names the status this row shows. If the
+  // entry changed since the page loaded (409 COMPLIANCE_ENTRY_CHANGED),
+  // nothing was approved: the entry is read again, so the row shows its
+  // current status before a second Approve.
+  async function handleApprove(entry: ComplianceResponse) {
+    const complianceId = entry.id;
     setError(null);
     try {
-      const updated = await approveCompliance(complianceId);
+      const updated = await approveCompliance(complianceId, entry.status);
       setEntries((prev) => prev.map((e) => (e.id === complianceId ? updated : e)));
       // Plan item 73: the gate's live counts follow this change.
       void refreshPendingGate(gate, setGate);
     } catch (err) {
-      setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
+      const code = err instanceof ApiError ? readEnvelopeCode(err.body) : null;
+      if (code !== "COMPLIANCE_ENTRY_CHANGED") {
+        setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
+        return;
+      }
+      try {
+        const current = await getCompliance(complianceId);
+        setEntries((prev) => prev.map((e) => (e.id === complianceId ? current : e)));
+        setError(
+          `This entry changed to ${describeStatus("compliance", current.status).label} after ` +
+            "the page loaded, so it was not approved. Review it, then approve again.",
+        );
+      } catch {
+        setError(
+          "This entry changed after the page loaded, so it was not approved. Reload the " +
+            "page to see it.",
+        );
+      }
     }
   }
 
@@ -193,7 +222,7 @@ export function ComplianceMatrix() {
                 </td>
                 <td>
                   {!entry.human_approved && (
-                    <Button variant="quiet" onClick={() => handleApprove(entry.id)}>
+                    <Button variant="quiet" onClick={() => handleApprove(entry)}>
                       Approve
                     </Button>
                   )}

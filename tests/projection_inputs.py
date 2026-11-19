@@ -166,6 +166,10 @@ NOT_PROJECTED_WRITES: dict[str, str] = {
     "KnowledgeRepository.create_company_document": (
         "a company_document item has no graph node (D1)"
     ),
+    "ProposalRepository.rewrite_draft_section": (
+        "writes only a draft section's content, which the projector does not copy; the "
+        "section's node carries its version and status (plan item 59)"
+    ),
 }
 
 # The calls that move a bid's state version.
