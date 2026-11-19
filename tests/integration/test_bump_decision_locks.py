@@ -3,8 +3,9 @@ locked before it takes "before".
 
 Each of these compares a "before" with its "after" to decide whether to
 bump the bid's state version: an item, a profile or a bid edit, a select, a
-verify, the employee-master import's two branches, and (D4 to D6) a
-requirement edit, a proposal section edit and a claim's regrounding.
+verify, the employee-master import's two branches, and (D4 to D7) a
+requirement edit, a proposal section edit, a claim's regrounding and a
+re-draft's update of an existing claim.
 "Before" came from an unlocked read. Two edits of one projected field at once: A changes X to Y
 and holds its transaction; B reads X, sets X and, since SQLAlchemy writes
 nothing for an attribute set to the value it read, writes nothing at all. A
@@ -22,7 +23,11 @@ edit of it (the last test).
 Lock order on every path: the edited row (the employee before its knowledge
 item where a path takes both), then the bid's tenders in sorted order. The
 requirement, the section and the claim each belong to one bid, so each path
-takes that row, then its one tender.
+takes that row, then its one tender. A re-draft takes its section, then its
+existing claims in the draft's order, then the tender: it reaches existing
+claims only through the in-place rewrite, which holds the section's lock,
+so two re-drafts of one section never hold its claims at once, and a
+regrounding holds one claim per transaction.
 
 Steps: A stops inside its transaction (pause_once, after its write), B is
 started and must wait on a lock, A is released (_lock_waits.first_then_second).
@@ -37,6 +42,7 @@ from _helpers import register_org_and_tender
 from _lock_waits import finished_without_waiting, first_then_second, pause_once, waiting
 from sqlalchemy import select
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
+from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.knowledge import Employee, KnowledgeItem
 from tenderos_backend.db.models.proposal import ProposalClaim, ProposalSection
@@ -546,6 +552,61 @@ async def test_two_regroundings_each_take_their_before_under_the_lock(monkeypatc
         release,
         lambda: reground(False),
         "the second regrounding never waited for the first",
+    )
+    _no_errors(one, two)
+    _locked_read(seen, "proposal_claims")
+    assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "needs_review"
+    assert await _version(bid.tender) == start + 2
+
+
+async def test_a_redraft_takes_an_existing_claims_before_under_the_lock(monkeypatch):
+    """D7, persist_section_and_claims: a re-draft of a draft section finds
+    its claim again by fingerprint and compares its grounding. A regrounding
+    makes the claim unsupported and holds its transaction (A); the re-draft
+    grounds it as needing review (B). The grounding function is patched to
+    give the first draft's, A's and B's answers in turn. On main B read
+    needs_review unlocked, wrote nothing and never waited, so A's
+    unsupported stayed under B's re-draft."""
+    bid = await _bid()
+    answers = iter(["needs_review", "unsupported", "needs_review"])
+
+    def grounding(*args, **kwargs) -> proposal_service.GroundingResult:
+        return proposal_service.GroundingResult(status=next(answers), reason="test")
+
+    monkeypatch.setattr(proposal_service, "enforce_claim_grounding", grounding)
+    claim_draft = ProposalClaimDraft(claim_text="Our lead has ten years.", claim_type="experience")
+
+    def section(content: str) -> ProposalSectionDraft:
+        return ProposalSectionDraft(content=content, claims=[claim_draft])
+
+    await proposal_service.persist_section_and_claims(bid.tender, "Team", section("One."), [], {})
+    async with UnitOfWork() as uow:
+        claim = (
+            await uow.session.execute(
+                select(ProposalClaim.id)
+                .join(ProposalSection, ProposalSection.id == ProposalClaim.section_id)
+                .where(ProposalSection.tender_id == bid.tender)
+            )
+        ).scalar_one()
+    start = await _version(bid.tender)
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def regrounding() -> None:
+        async with UnitOfWork() as uow:
+            await proposal_service.reground_claim(uow, claim)
+            reached.set()
+            await release.wait()
+            await uow.commit()
+
+    first = asyncio.create_task(regrounding())
+    one, two, seen = await first_then_second(
+        first,
+        reached,
+        release,
+        lambda: proposal_service.persist_section_and_claims(
+            bid.tender, "Team", section("Two."), [], {}
+        ),
+        "the re-draft never waited for the regrounding",
     )
     _no_errors(one, two)
     _locked_read(seen, "proposal_claims")

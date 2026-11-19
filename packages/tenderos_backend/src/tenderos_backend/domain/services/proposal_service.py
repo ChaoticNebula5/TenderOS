@@ -615,7 +615,17 @@ async def persist_section_and_claims(
                 )
                 graph_changed = True
             else:
-                claim = existing_claim
+                # Plan item 59, D7: the claim is read again locked before its
+                # grounding_status is compared, so a regrounding committing
+                # meanwhile is waited for and read, not lost. An existing
+                # claim is reached only through the in-place rewrite above,
+                # which holds the section's lock, so claims are taken in the
+                # draft's order after the section and before the bump below;
+                # a regrounding holds one claim per transaction.
+                locked = await uow.proposal.get_proposal_claim_for_update(existing_claim.id)
+                if locked is None:
+                    raise ProposalClaimNotFoundError()
+                claim = locked
                 if claim.grounding_status != grounding.status:
                     claim = await uow.proposal.update_proposal_claim(
                         claim.id, grounding_status=grounding.status
