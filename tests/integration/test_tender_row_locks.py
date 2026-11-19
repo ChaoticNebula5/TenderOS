@@ -27,7 +27,7 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import commercial_service, compliance_service
+from tenderos_backend.domain.services import commercial_service, compliance_service, tender_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -366,3 +366,46 @@ async def test_a_bump_counts_a_version_committed_after_its_tender_was_read(monke
         await asyncio.wait_for(approve, timeout=10)
         await approver.commit()
     assert await _state_version(bid.tender_id) == before + 2
+
+
+async def _tender(tender_id: uuid.UUID) -> Tender:
+    async with get_session() as session:
+        return (await session.execute(select(Tender).where(Tender.id == tender_id))).scalar_one()
+
+
+async def test_a_bid_edit_stores_both_the_field_and_the_new_version():
+    """update_tender changes the bid and bumps it in one transaction. The
+    bump's read refreshes the tender from the row (populate_existing), so an
+    edit not yet written when it ran would be overwritten: both the edit and
+    the new version must be stored."""
+    bid = await _bid()
+    before = await _state_version(bid.tender_id)
+    await tender_service.update_tender(
+        bid.tender_id, name="Renamed", submission_date=date(2027, 3, 1), status="submitted"
+    )
+    stored = await _tender(bid.tender_id)
+    assert (stored.name, stored.submission_date, stored.status) == (
+        "Renamed",
+        date(2027, 3, 1),
+        "submitted",
+    )
+    assert stored.state_version == before + 1
+
+
+async def test_a_tender_change_not_yet_written_when_the_bump_reads_is_kept():
+    """No caller today changes a tender and then bumps with the change still
+    unwritten (update_tender bumps first, and update() flushes its own
+    change). This holds the next one to it: the session's autoflush writes
+    the change before the bump's locked read, so the refresh reads it back."""
+    bid = await _bid()
+    before = await _state_version(bid.tender_id)
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(bid.tender_id)
+        assert tender is not None
+        tender.name = "Changed before the bump"
+        await uow.tenders.bump_state_version(bid.tender_id)
+        assert tender.name == "Changed before the bump", "the bump's refresh overwrote it"
+        await uow.commit()
+    stored = await _tender(bid.tender_id)
+    assert stored.name == "Changed before the bump"
+    assert stored.state_version == before + 1

@@ -154,7 +154,11 @@ class TenderRepository:
         committed in between was then counted over: `+= 1` on the stale
         value wrote the version the other transaction had already written.
         The same instance is refreshed in place, so set_knowledge_selection
-        still sees the increment on the tender it holds.
+        still sees the increment on the tender it holds. A change to that
+        instance not yet written is kept: the locked read is a query, and the
+        session's autoflush (on; db/session.py leaves it at its default)
+        writes pending changes before the query runs, so the row read back
+        already has them.
         """
         tender = await self._session.get(
             Tender, tender_id, with_for_update={"key_share": True}, populate_existing=True
