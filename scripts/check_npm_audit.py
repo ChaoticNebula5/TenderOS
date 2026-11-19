@@ -2,9 +2,9 @@
 finding, apart from the dated exceptions below.
 
 npm audit cannot skip one advisory: `--audit-level=high` fails on every high
-finding, and one advisory is reported once for each package on its path (one
-picomatch advisory shows as picomatch, fdir, tinyglobby, vite, vitest and
-more, all high). This reads `npm audit --json` and follows each high or
+finding, and one advisory is reported once for each package on its path (plan
+item 110's picomatch advisory showed as picomatch, fdir, tinyglobby, vite,
+vitest and more, all high). This reads `npm audit --json` and follows each high or
 critical package's paths to the advisories on them: the package passes only
 if every high or critical advisory on its paths is excepted. A package
 reported high with no such advisory on its paths fails too, since then the
@@ -61,26 +61,12 @@ class AuditException:
     recheck: str
 
 
-EXCEPTIONS: tuple[AuditException, ...] = (
-    # Added 2026-11-18, plan item 110: remove when picomatch ships a fix.
-    AuditException(
-        advisory="GHSA-fc5q-39xc-vjpf",
-        package="picomatch",
-        expires=date(2026, 12, 18),
-        reason=(
-            "ReDoS in picomatch through 4.0.7, with no patched release. Reached "
-            "only through dev and build tooling (vite, vitest, typescript-eslint): "
-            "neither app's production dependencies include it, and neither app's "
-            "build output contains it. To be affected, an attacker has to supply "
-            "the glob pattern."
-        ),
-        recheck=(
-            "Run `npm view picomatch version` and read the advisory. If a fixed "
-            "picomatch is out, move to it and remove this exception; if not, and "
-            "the reason still holds, set a new date."
-        ),
-    ),
-)
+# None live. The one this check started with (GHSA-fc5q-39xc-vjpf on picomatch,
+# plan item 110) was removed when npm audit stopped reporting the advisory: it
+# was withdrawn on 2026-11-18, and the stale check below failed as designed.
+# A new exception is added here with its own reason, re-check and date, and
+# tests/unit/test_check_npm_audit.py's test_no_exception_is_live changes with it.
+EXCEPTIONS: tuple[AuditException, ...] = ()
 
 
 class AuditCouldNotRun(Exception):
@@ -274,7 +260,9 @@ def main(argv: list[str] | None = None) -> int:
     except AuditCouldNotRun as exc:
         print(f"npm audit: could not run: {exc}")
         return 2
-    problems, notes = check(reports, production, datetime.now(UTC).date())
+    # EXCEPTIONS named here, not left to check()'s default, so it is read when
+    # main runs (a default is bound once, when check is defined).
+    problems, notes = check(reports, production, datetime.now(UTC).date(), EXCEPTIONS)
     for note in notes:
         print(note)
     for problem in problems:
