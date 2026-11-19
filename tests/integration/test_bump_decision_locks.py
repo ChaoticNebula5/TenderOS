@@ -40,7 +40,7 @@ from dataclasses import dataclass
 import pytest
 from _helpers import register_org_and_tender
 from _lock_waits import finished_without_waiting, first_then_second, pause_once, waiting
-from sqlalchemy import select
+from sqlalchemy import select, update
 from tenderos_backend.agents.knowledge.employee_master import EmployeeMasterRow
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
 from tenderos_backend.db.models.audit import AuditEvent
@@ -60,6 +60,7 @@ from tenderos_backend.domain.services import (
     talent_service,
     tender_service,
 )
+from tenderos_backend.domain.services.proposal_service import PreparedFact
 
 pytestmark = pytest.mark.asyncio
 
@@ -561,12 +562,13 @@ async def test_two_regroundings_each_take_their_before_under_the_lock(monkeypatc
 
 async def test_a_redraft_takes_an_existing_claims_before_under_the_lock(monkeypatch):
     """D7, persist_section_and_claims: a re-draft of a draft section finds
-    its claim again by fingerprint and compares its grounding. A regrounding
-    makes the claim unsupported and holds its transaction (A); the re-draft
-    grounds it as needing review (B). The grounding function is patched to
-    give the first draft's, A's and B's answers in turn. On main B read
-    needs_review unlocked, wrote nothing and never waited, so A's
-    unsupported stayed under B's re-draft."""
+    its claim again by fingerprint, locks it and regrounds it. A regrounding
+    makes the claim unsupported and holds its transaction (A); the re-draft,
+    grounding after A under the claim's lock, finds it needs review (B). The
+    grounding function is patched to give the first draft's, A's and B's
+    answers in turn: they stand for the evidence each one grounded on. On
+    main B read needs_review unlocked, wrote nothing and never waited, so
+    A's unsupported stayed under B's re-draft."""
     bid = await _bid()
     answers = iter(["needs_review", "unsupported", "needs_review"])
 
@@ -612,6 +614,127 @@ async def test_a_redraft_takes_an_existing_claims_before_under_the_lock(monkeypa
     _locked_read(seen, "proposal_claims")
     assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "needs_review"
     assert await _version(bid.tender) == start + 2
+
+
+async def _set_item_status(item: uuid.UUID, status: str) -> None:
+    """The certificate's status alone, as a test's own committed step: an
+    archived item stops counting as evidence, an active one counts again."""
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            update(KnowledgeItem).where(KnowledgeItem.id == item).values(status=status)
+        )
+        await uow.commit()
+
+
+async def _drafted_claim_on_a_certificate(bid: _Bid) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A draft section whose factual claim cites a certificate's evidence:
+    (the certificate, its evidence link, the claim)."""
+    cert = await _selected_certificate(bid)
+    async with UnitOfWork() as uow:
+        link = await uow.compliance.create_evidence_link(
+            tender_id=bid.tender,
+            source_kind="certification",
+            content_fingerprint=uuid.uuid4().hex,
+            knowledge_item_id=cert,
+        )
+        await uow.commit()
+        link_id = link.id
+    fact = PreparedFact(
+        label="evidence_1", kind="evidence", excerpt="ISO 27001", evidence_link_id=link_id
+    )
+    cited = ProposalClaimDraft(
+        claim_text="We hold ISO 27001.", claim_type="capability", evidence_refs=["evidence_1"]
+    )
+    await proposal_service.persist_section_and_claims(
+        bid.tender, "Quality", ProposalSectionDraft(content="One.", claims=[cited]), [fact], {}
+    )
+    async with UnitOfWork() as uow:
+        claim = (
+            await uow.session.execute(
+                select(ProposalClaim.id)
+                .join(ProposalSection, ProposalSection.id == ProposalClaim.section_id)
+                .where(ProposalSection.tender_id == bid.tender)
+            )
+        ).scalar_one()
+    assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "grounded"
+    return cert, link_id, claim
+
+
+async def test_a_redraft_keeps_a_regrounding_on_newer_evidence():
+    """D7's rule: the answer grounded on newer evidence wins, not the last
+    writer. The certificate is archived and the claim regrounded to
+    unsupported; a re-draft then begins, so its section's facts no longer
+    offer the certificate and its claim cites nothing (B). The certificate
+    is restored, and a regrounding finds the claim grounded again and holds
+    its transaction (A). On the branch head before this fix, B waited for A
+    under the claim's lock and then wrote its own answer, from the facts it
+    began with: unsupported, over A's newer grounded."""
+    bid = await _bid()
+    cert, _, claim = await _drafted_claim_on_a_certificate(bid)
+    await _set_item_status(cert, "archived")
+    async with UnitOfWork() as uow:
+        await proposal_service.reground_claim(uow, claim)
+        await uow.commit()
+    assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "unsupported"
+    stale = ProposalSectionDraft(
+        content="Two.",
+        claims=[ProposalClaimDraft(claim_text="We hold ISO 27001.", claim_type="capability")],
+    )
+    await _set_item_status(cert, "active")
+    start = await _version(bid.tender)
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def regrounding() -> None:
+        async with UnitOfWork() as uow:
+            await proposal_service.reground_claim(uow, claim)
+            reached.set()
+            await release.wait()
+            await uow.commit()
+
+    first = asyncio.create_task(regrounding())
+    one, two, seen = await first_then_second(
+        first,
+        reached,
+        release,
+        lambda: proposal_service.persist_section_and_claims(bid.tender, "Quality", stale, [], {}),
+        "the re-draft never waited for the regrounding",
+    )
+    _no_errors(one, two)
+    _locked_read(seen, "proposal_claims")
+    assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "grounded"
+    assert await _version(bid.tender) == start + 1, "only A changed the claim"
+
+
+async def test_a_redraft_regrounds_with_its_own_new_citation():
+    """A guard, not a race (it passes on the branch head): the re-draft
+    regrounds an existing claim after it adds this draft's citations as the
+    claim's links, so a new citation counts. The claim starts unsupported
+    (its certificate archived); the re-draft cites a second, active one."""
+    bid = await _bid()
+    cert, _, claim = await _drafted_claim_on_a_certificate(bid)
+    await _set_item_status(cert, "archived")
+    async with UnitOfWork() as uow:
+        await proposal_service.reground_claim(uow, claim)
+        await uow.commit()
+    other = await _selected_certificate(bid)
+    async with UnitOfWork() as uow:
+        link = await uow.compliance.create_evidence_link(
+            tender_id=bid.tender,
+            source_kind="certification",
+            content_fingerprint=uuid.uuid4().hex,
+            knowledge_item_id=other,
+        )
+        await uow.commit()
+        fact = PreparedFact(
+            label="evidence_1", kind="evidence", excerpt="ISO 27001", evidence_link_id=link.id
+        )
+    cited = ProposalClaimDraft(
+        claim_text="We hold ISO 27001.", claim_type="capability", evidence_refs=["evidence_1"]
+    )
+    await proposal_service.persist_section_and_claims(
+        bid.tender, "Quality", ProposalSectionDraft(content="Two.", claims=[cited]), [fact], {}
+    )
+    assert await _value(ProposalClaim.grounding_status, ProposalClaim.id, claim) == "grounded"
 
 
 async def test_an_evidence_link_to_an_item_does_not_wait_for_an_edit_of_it(monkeypatch):
