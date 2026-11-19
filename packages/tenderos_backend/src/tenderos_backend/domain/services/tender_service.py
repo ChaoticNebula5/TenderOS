@@ -80,7 +80,13 @@ async def update_tender(
     status: str | None = None,
 ) -> Tender | None:
     async with UnitOfWork() as uow:
-        current = await uow.tenders.get(tender_id)
+        # Plan item 59, fix 7: locked before the comparison below, so a
+        # second edit of the bid waits for this one and compares with what it
+        # committed. Unlocked, a second edit setting a field back read the old
+        # value, wrote nothing (no net change) and did not bump: its edit was
+        # lost. FOR NO KEY UPDATE (get_for_update), the lock the bump takes
+        # again below, so nothing is upgraded.
+        current = await uow.tenders.get_for_update(tender_id)
         if current is None:
             return None
         # The bid's graph node carries its name, status and submission date

@@ -43,6 +43,20 @@ class ProposalRepository:
     async def get_proposal_section(self, section_id: uuid.UUID) -> ProposalSection | None:
         return await self._session.get(ProposalSection, section_id)
 
+    async def get_proposal_section_for_update(
+        self, section_id: uuid.UUID
+    ) -> ProposalSection | None:
+        """The section, its row locked until this transaction ends, for a
+        person's edit that takes its "before" from it (plan item 59, D5).
+        FOR NO KEY UPDATE, as get_proposal_claim_for_update below: the
+        UPDATE's own lock, which lets a new claim of the section through."""
+        return await self._session.get(
+            ProposalSection,
+            section_id,
+            with_for_update={"key_share": True},
+            populate_existing=True,
+        )
+
     async def get_latest_proposal_section(
         self, tender_id: uuid.UUID, section_name: str
     ) -> ProposalSection | None:
@@ -134,6 +148,22 @@ class ProposalRepository:
 
     async def get_proposal_claim(self, claim_id: uuid.UUID) -> ProposalClaim | None:
         return await self._session.get(ProposalClaim, claim_id)
+
+    async def get_proposal_claim_for_update(self, claim_id: uuid.UUID) -> ProposalClaim | None:
+        """The claim, its row locked until this transaction ends, for a
+        regrounding that takes its "before" from it (plan item 59, D6): a
+        second regrounding waits here and reads the first one's status.
+
+        FOR NO KEY UPDATE, the lock update_proposal_claim's UPDATE takes, so
+        the write upgrades nothing and a new link to the claim (its foreign
+        key check takes KEY SHARE) is not made to wait. populate_existing: a
+        row this session already holds is read again."""
+        return await self._session.get(
+            ProposalClaim,
+            claim_id,
+            with_for_update={"key_share": True},
+            populate_existing=True,
+        )
 
     async def get_proposal_claim_by_fingerprint(
         self, section_id: uuid.UUID, content_fingerprint: str

@@ -196,6 +196,52 @@ class KnowledgeRepository:
     async def get_knowledge_item(self, knowledge_item_id: uuid.UUID) -> KnowledgeItem | None:
         return await self._session.get(KnowledgeItem, knowledge_item_id)
 
+    async def get_knowledge_item_for_update(
+        self, knowledge_item_id: uuid.UUID
+    ) -> KnowledgeItem | None:
+        """The item, its row locked until this transaction ends, for a caller
+        that compares the item's values with what it is about to write (plan
+        item 59, fix 7: the bump decision's "before"). A second such caller
+        waits, then reads what the first committed.
+
+        FOR NO KEY UPDATE, not FOR UPDATE: it is the lock the UPDATE that
+        follows takes, so nothing is upgraded, and it lets an insert of a row
+        that references the item through (the foreign key check takes KEY
+        SHARE). Fourteen foreign keys reference knowledge_items: evidence
+        links, selections, role matches, relationships, claims. Nothing
+        that takes this lock deletes the item or changes its id.
+        populate_existing: a row already in the session is refreshed from the
+        locked read."""
+        result = await self._session.execute(
+            select(KnowledgeItem)
+            .where(KnowledgeItem.id == knowledge_item_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_knowledge_item_for_share(
+        self, knowledge_item_id: uuid.UUID
+    ) -> KnowledgeItem | None:
+        """The item, read FOR SHARE until this transaction ends: for a check
+        of its status that a decision rests on, by a transaction that does
+        not write the item (plan item 59, fix 8: verify's and the select's
+        archived checks). An archive that has written the item but not
+        committed is waited for, and one arriving after the check waits for
+        this transaction.
+
+        FOR SHARE is the weakest mode that conflicts with the archive's
+        UPDATE (FOR NO KEY UPDATE); FOR KEY SHARE would not. A caller must
+        not then write the item: two such transactions would each hold the
+        share the other's write needs, a deadlock."""
+        result = await self._session.execute(
+            select(KnowledgeItem)
+            .where(KnowledgeItem.id == knowledge_item_id)
+            .with_for_update(read=True)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def archived_item_ids(self, knowledge_item_ids: Iterable[uuid.UUID]) -> set[uuid.UUID]:
         """The ids among these whose knowledge item is archived now: for an
         employee, removed from the roster.
@@ -469,11 +515,22 @@ class KnowledgeRepository:
         branch, reads the employee this way before comparing and writing, so
         two merges, or a merge and a verify or profile edit, do not compare
         against values the other is about to change. populate_existing: the
-        duplicate candidates query has usually loaded this row already."""
+        duplicate candidates query has usually loaded this row already.
+
+        Since plan item 59 (PR 20) every employee write that compares first
+        reads this way: the profile edit, verify, and the employee-master
+        import's DUPLICATE branch too. Lock order: the employee, then its
+        knowledge item where a path takes both, then the bids' tenders.
+
+        FOR NO KEY UPDATE since PR 20 (FOR UPDATE in PR 18): the lock the
+        UPDATE that follows takes, as every other row lock of item 59. No
+        foreign key references employees and nothing deletes one, so for
+        inserts it changes nothing; it keeps one mode on the row. Two holders
+        still wait for each other."""
         result = await self._session.execute(
             select(Employee)
             .where(Employee.knowledge_item_id == knowledge_item_id)
-            .with_for_update()
+            .with_for_update(key_share=True)
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()

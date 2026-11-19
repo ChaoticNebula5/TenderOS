@@ -1,7 +1,9 @@
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.requirement import (
@@ -11,12 +13,41 @@ from tenderos_backend.db.models.requirement import (
 )
 
 
+@dataclass(frozen=True)
+class VerdictWrite:
+    """What RequirementRepository.set_verdict_for_text did: "changed" (the
+    verdict written, a new value), "unchanged" (the stored value was the
+    verdict already), "text_changed" (refused: the text is no longer the one
+    judged) or "not_found" (deleted meanwhile). tender_id is the
+    requirement's bid, None only when not found."""
+
+    outcome: Literal["changed", "unchanged", "text_changed", "not_found"]
+    tender_id: uuid.UUID | None
+
+
 class RequirementRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get(self, requirement_id: uuid.UUID) -> Requirement | None:
         return await self._session.get(Requirement, requirement_id)
+
+    async def get_for_update(self, requirement_id: uuid.UUID) -> Requirement | None:
+        """The requirement, its row locked until this transaction ends, for an
+        edit that takes its "before" from it (plan item 59, D4): a second
+        edit waits here and reads the first one's committed values.
+
+        FOR NO KEY UPDATE, the lock the edit's own UPDATE takes, so the write
+        that follows upgrades nothing, and an insert of a row that references
+        the requirement (a compliance entry, a claim's link) is not made to
+        wait. populate_existing: a row this session already holds is read
+        again, not served from the identity map."""
+        return await self._session.get(
+            Requirement,
+            requirement_id,
+            with_for_update={"key_share": True},
+            populate_existing=True,
+        )
 
     async def list_for_tender(
         self, tender_id: uuid.UUID, include_rejected: bool = False
@@ -81,8 +112,48 @@ class RequirementRepository:
         await self._session.refresh(requirement)
         return requirement
 
-    async def set_verified(self, requirement_id: uuid.UUID, verified: bool) -> Requirement:
-        return await self.update_fields(requirement_id, verified=verified)
+    async def set_verdict_for_text(
+        self, requirement_id: uuid.UUID, verified: bool, judged_text: str
+    ) -> VerdictWrite:
+        """Write a verification verdict only if the requirement's text is
+        still `judged_text`, the text the model judged (plan item 59, fix 6).
+
+        One conditional UPDATE: WHERE the text is the judged one and the
+        stored value differs. The model call takes seconds outside any
+        transaction, and a person's edit of the text can commit meanwhile;
+        before, the verdict on the old text was written over the new one.
+        Postgres re-checks the condition on the row an edit just committed,
+        so an edit still open when this runs is waited for and then seen.
+
+        When nothing was written, one read tells the three reasons apart. It
+        runs after the UPDATE, so it can see a later change; either way
+        nothing was written, which is what the caller acts on."""
+        result = await self._session.execute(
+            update(Requirement)
+            .where(
+                Requirement.id == requirement_id,
+                Requirement.requirement_text == judged_text,
+                Requirement.verified.is_distinct_from(verified),
+            )
+            .values(verified=verified)
+            .returning(Requirement.tender_id)
+            .execution_options(synchronize_session=False)
+        )
+        tender_id = result.scalar_one_or_none()
+        if tender_id is not None:
+            return VerdictWrite("changed", tender_id)
+        row = (
+            await self._session.execute(
+                select(Requirement.requirement_text, Requirement.tender_id).where(
+                    Requirement.id == requirement_id
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return VerdictWrite("not_found", None)
+        if row.requirement_text != judged_text:
+            return VerdictWrite("text_changed", row.tender_id)
+        return VerdictWrite("unchanged", row.tender_id)
 
     async def reject(self, requirement_id: uuid.UUID) -> Requirement:
         return await self.update_fields(

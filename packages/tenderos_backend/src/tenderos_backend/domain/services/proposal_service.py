@@ -723,7 +723,10 @@ async def update_section_content(
     itself a new LLM draft to re-run enforce_claim_grounding against.
     """
     async with UnitOfWork() as uow:
-        section = await uow.proposal.get_proposal_section(section_id)
+        # Plan item 59, D5: locked before "before" is taken. Lock order: the
+        # section, then its bid's tender (the bump), as a re-draft's
+        # persist_section_and_claims takes them.
+        section = await uow.proposal.get_proposal_section_for_update(section_id)
         if section is None:
             raise ProposalSectionNotFoundError()
         tender = await uow.tenders.get(section.tender_id)
@@ -960,8 +963,14 @@ async def reground_claim(uow: UnitOfWork, claim_id: uuid.UUID) -> RegroundingRes
     evidence_link_ids_considered below to record what this call actually saw -
     the free instrument this project's own citation-correctness
     investigation has been missing since B9/B12.
+
+    Plan item 59, D6: the claim is read locked, before its grounding_status
+    is compared, so a second regrounding of it (another reanalysis job)
+    waits for the first, reads its status and grounds against the evidence
+    as it is after it. Lock order: the claim, then its bid's tender (the
+    bump), as persist_section_and_claims takes them.
     """
-    claim = await uow.proposal.get_proposal_claim(claim_id)
+    claim = await uow.proposal.get_proposal_claim_for_update(claim_id)
     if claim is None:
         raise ProposalClaimNotFoundError()
     section = await uow.proposal.get_proposal_section(claim.section_id)

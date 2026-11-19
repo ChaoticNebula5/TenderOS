@@ -144,7 +144,7 @@ PROJECTED_WRITERS = frozenset(
         "RequirementRepository.create",
         "RequirementRepository.update_fields",
         "RequirementRepository.delete",
-        "RequirementRepository.set_verified",
+        "RequirementRepository.set_verdict_for_text",
         "RequirementRepository.reject",
         "TalentRepository.create_role_requirement",
         "TalentRepository.link_role_requirement_source",
