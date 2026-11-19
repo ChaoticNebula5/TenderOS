@@ -102,10 +102,14 @@ async def test_a_pending_gate_shows_live_counts_beside_its_snapshot(
     run_id, gate_id = await _open_gate(tender_id, "requirement_review")
 
     # A reviewer verifies the one mandatory requirement after the gate opened.
+    # The verdict's own write: since PR 21 a verified requirement has a check
+    # time (ck_requirement_verified_has_check_time).
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.get(requirement_id)
         assert requirement is not None
-        requirement.verified = True
+        await uow.requirements.set_verdict_for_text(
+            requirement_id, True, requirement.requirement_text
+        )
         await uow.commit()
 
     one = client.get(f"/gates/{gate_id}", headers=headers)
@@ -119,6 +123,50 @@ async def test_a_pending_gate_shows_live_counts_beside_its_snapshot(
         # Live: what is true now.
         assert body["live_summary"]["unverified_mandatory_count"] == 0
         assert body["live_summary"]["mandatory_count"] == 1
+
+
+async def test_a_gate_opened_before_the_two_counts_shows_none_for_them(
+    client: TestClient, register_actor
+):
+    """PR 21 (plan item 59, Q5): a requirement review gate stores its summary
+    when it opens. One opened before the two new counts existed has only the
+    total, unverified_mandatory_count; the response gives null for the two,
+    and its live counts, computed now, have all three."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await _mandatory_requirement(tender_id)
+    old_summary = {
+        "requirement_count": 1,
+        "mandatory_count": 1,
+        "unverified_mandatory_count": 1,
+        "submission_item_count": 0,
+        "clarification_count": 0,
+    }
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.create_run(
+            tender_id=tender_id, prompt_bundle_version="test", model_config={}
+        )
+        gate_id = uuid.uuid4()
+        await uow.gates.create(
+            gate_id=gate_id,
+            tender_id=tender_id,
+            workflow_run_id=run.id,
+            gate_key="requirement_review:plan-0",
+            gate_type="requirement_review",
+            request_payload=build_gate_payload(
+                gate_id, "requirement_review", run.id, targets=[], summary=old_summary
+            ),
+        )
+        await uow.commit()
+
+    body = client.get(f"/gates/{gate_id}", headers=headers).json()
+
+    assert body["summary"]["unverified_mandatory_count"] == 1
+    assert body["summary"]["mandatory_not_verified_yet_count"] is None
+    assert body["summary"]["mandatory_verification_failed_count"] is None
+    assert body["live_summary"]["unverified_mandatory_count"] == 1
+    assert body["live_summary"]["mandatory_not_verified_yet_count"] == 1
+    assert body["live_summary"]["mandatory_verification_failed_count"] == 0
 
 
 async def test_a_decided_gate_has_no_live_counts(client: TestClient, register_actor):

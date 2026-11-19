@@ -134,6 +134,33 @@ describe("GateSummary - each gate_type renders its own typed fields", () => {
     expectSummaryItem("Clarifications", "1");
   });
 
+  it("requirement_review: the two unverified states apart, beside the total (plan item 59, Q5)", () => {
+    const gate = requirementReviewGate();
+    render(
+      <GateDecisionPanel
+        gate={{
+          ...gate,
+          summary: {
+            ...gate.summary,
+            mandatory_not_verified_yet_count: 1,
+            mandatory_verification_failed_count: 1,
+          },
+        }}
+        onDecided={vi.fn()}
+      />,
+    );
+    expectSummaryItem("Unverified mandatory", "2");
+    expectSummaryItem("Not verified yet", "1");
+    expectSummaryItem("Verification failed", "1");
+  });
+
+  it("requirement_review: a gate opened before the two counts shows the total only", () => {
+    render(<GateDecisionPanel gate={requirementReviewGate()} onDecided={vi.fn()} />);
+    expectSummaryItem("Unverified mandatory", "2");
+    expect(screen.queryByText("Not verified yet")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verification failed")).not.toBeInTheDocument();
+  });
+
   it("compliance_review", () => {
     render(<GateDecisionPanel gate={complianceReviewGate()} onDecided={vi.fn()} />);
     expectSummaryItem("Compliance entries", "8");

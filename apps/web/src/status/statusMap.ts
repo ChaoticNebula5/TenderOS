@@ -304,6 +304,25 @@ export function describeVerified(verified: boolean, mandatory: boolean): StatusD
     : { tone: "neutral", label: "Not verified" };
 }
 
+// A requirement's verification in its three states (plan item 59, Q5,
+// RequirementRegister's Verified column; describeVerified above stays for
+// evidence links, which have no check time). The check time tells them
+// apart: not checked yet (no time) and verification failed (a time).
+// chosen, not in DESIGN: a mandatory requirement not checked yet is
+// Warning, as "Not verified" was; one whose check failed is Failed; an
+// optional one is Neutral in both, since the gate counts only mandatory
+// ones. Never "Ready" (reserved).
+export function describeRequirementVerification(
+  verified: boolean,
+  checkedAt: string | null,
+  mandatory: boolean,
+): StatusDescriptor {
+  if (verified) return { tone: "ready", label: "Verified" };
+  const label = checkedAt === null ? "Not verified yet" : "Verification failed";
+  if (!mandatory) return { tone: "neutral", label };
+  return checkedAt === null ? { tone: "warning", label } : { tone: "failed", label };
+}
+
 // Compliance entry approval (ComplianceMatrix's Approved column).
 // DESIGN.md:585-587: 'Booleans that are states (verified, approved,
 // resolved, selected) become badges'. chosen, not in DESIGN (tones and the

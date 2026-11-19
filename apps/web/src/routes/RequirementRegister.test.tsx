@@ -9,6 +9,7 @@ import type {
   RequirementReviewGateResponse,
   WorkflowRunResponse,
 } from "../api/client";
+import { formatDate } from "../format/date";
 import { TenderLayout } from "../shell/TenderLayout";
 import { RequirementRegister } from "./RequirementRegister";
 
@@ -70,6 +71,7 @@ function requirement(overrides: Partial<RequirementResponse>): RequirementRespon
     category: "staffing",
     mandatory: true,
     verified: true,
+    verification_checked_at: null,
     human_reviewed: true,
     rejected_at: null,
     ...overrides,
@@ -205,13 +207,49 @@ describe("RequirementRegister (restyle batch 3)", () => {
 
     const rowOf = async (code: string) => (await screen.findByText(code)).closest("tr")!;
     expect(within(await rowOf("A-1")).getByText("Verified")).toHaveClass("status-badge--ready");
-    expect(within(await rowOf("B-1")).getByText("Not verified")).toHaveClass(
+    expect(within(await rowOf("B-1")).getByText("Not verified yet")).toHaveClass(
       "status-badge--warning",
     );
-    expect(within(await rowOf("C-1")).getByText("Not verified")).toHaveClass(
+    expect(within(await rowOf("C-1")).getByText("Not verified yet")).toHaveClass(
       "status-badge--neutral",
     );
     expect(screen.getByText(/3 requirements, 1 unverified mandatory/)).toBeInTheDocument();
+  });
+
+  it("shows the count line's two parts only when something is unverified (plan item 59, Q5)", async () => {
+    const at = "2026-11-19T10:00:00Z";
+    listRequirements.mockResolvedValue([
+      requirement({ id: "a", display_code: "A-1", verified: true, verification_checked_at: at }),
+      requirement({ id: "b", display_code: "B-1", verified: true, verification_checked_at: at }),
+    ]);
+    listWorkflowRuns.mockResolvedValue([]);
+    renderScreen();
+
+    expect(await screen.findByText("2 requirements, 0 unverified mandatory")).toBeInTheDocument();
+    expect(screen.queryByText(/not verified yet/)).not.toBeInTheDocument();
+  });
+
+  it("tells a failed check from one not run yet, with when it ran (plan item 59, Q5)", async () => {
+    const at = "2026-11-19T10:00:00Z";
+    listRequirements.mockResolvedValue([
+      requirement({ id: "a", display_code: "A-1", verified: true, verification_checked_at: at }),
+      requirement({ id: "b", display_code: "B-1", verified: false, verification_checked_at: at }),
+      requirement({ id: "c", display_code: "C-1", verified: false, verification_checked_at: null }),
+    ]);
+    listWorkflowRuns.mockResolvedValue([]);
+    renderScreen();
+
+    const rowOf = async (code: string) => (await screen.findByText(code)).closest("tr")!;
+    const failed = within(await rowOf("B-1"));
+    expect(failed.getByText("Verification failed")).toHaveClass("status-badge--failed");
+    expect(failed.getByText(`Checked ${formatDate(at)}`)).toBeInTheDocument();
+    expect(within(await rowOf("A-1")).getByText(`Checked ${formatDate(at)}`)).toBeInTheDocument();
+    const notYet = within(await rowOf("C-1"));
+    expect(notYet.getByText("Not verified yet")).toHaveClass("status-badge--warning");
+    expect(notYet.queryByText(/^Checked /)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/3 requirements, 2 unverified mandatory \(1 not verified yet, 1 failed\)/),
+    ).toBeInTheDocument();
   });
 
   it("dims a rejected row with a class and gives it no actions; other rows get the three actions", async () => {

@@ -96,6 +96,9 @@ _EXPECTED_SUMMARY_KEYS = {
         "requirement_count",
         "mandatory_count",
         "unverified_mandatory_count",
+        # Plan item 59, Q5 (PR 21): the total's two parts.
+        "mandatory_not_verified_yet_count",
+        "mandatory_verification_failed_count",
         "submission_item_count",
         "clarification_count",
     },

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.requirement import (
@@ -16,8 +16,9 @@ from tenderos_backend.db.models.requirement import (
 @dataclass(frozen=True)
 class VerdictWrite:
     """What RequirementRepository.set_verdict_for_text did: "changed" (the
-    verdict written, a new value), "unchanged" (the stored value was the
-    verdict already), "text_changed" (refused: the text is no longer the one
+    verdict and its check time written, `verified` moved), "unchanged" (the
+    same verdict again: only its check time written, since PR 21),
+    "text_changed" (refused, nothing written: the text is no longer the one
     judged) or "not_found" (deleted meanwhile). tender_id is the
     requirement's bid, None only when not found."""
 
@@ -116,44 +117,35 @@ class RequirementRepository:
         self, requirement_id: uuid.UUID, verified: bool, judged_text: str
     ) -> VerdictWrite:
         """Write a verification verdict only if the requirement's text is
-        still `judged_text`, the text the model judged (plan item 59, fix 6).
+        still `judged_text`, the text the model judged (plan item 59, fix 6),
+        with the time it was checked (Q5, PR 21).
 
-        One conditional UPDATE: WHERE the text is the judged one and the
-        stored value differs. The model call takes seconds outside any
-        transaction, and a person's edit of the text can commit meanwhile;
-        before, the verdict on the old text was written over the new one.
-        Postgres re-checks the condition on the row an edit just committed,
-        so an edit still open when this runs is waited for and then seen.
+        The model call takes seconds outside any transaction, and a person's
+        edit of the text can commit meanwhile; a verdict on the old text must
+        not land on the new one. So the row is read locked (get_for_update,
+        FOR NO KEY UPDATE, the lock the UPDATE below takes): an edit still
+        open is waited for, and its text is then compared.
 
-        When nothing was written, one read tells the three reasons apart. It
-        runs after the UPDATE, so it can see a later change; either way
-        nothing was written, which is what the caller acts on."""
-        result = await self._session.execute(
+        When the text is the judged one, the verdict and
+        verification_checked_at (the database clock) are written whether or
+        not `verified` changes: a re-check with the same verdict still
+        records when it ran. "changed" or "unchanged" says whether `verified`
+        moved, the only part the graph shows, so the caller bumps on
+        "changed" only. The old value is read under the lock, because an
+        UPDATE's RETURNING gives only the new one."""
+        requirement = await self.get_for_update(requirement_id)
+        if requirement is None:
+            return VerdictWrite("not_found", None)
+        if requirement.requirement_text != judged_text:
+            return VerdictWrite("text_changed", requirement.tender_id)
+        changed = requirement.verified != verified
+        await self._session.execute(
             update(Requirement)
-            .where(
-                Requirement.id == requirement_id,
-                Requirement.requirement_text == judged_text,
-                Requirement.verified.is_distinct_from(verified),
-            )
-            .values(verified=verified)
-            .returning(Requirement.tender_id)
+            .where(Requirement.id == requirement_id)
+            .values(verified=verified, verification_checked_at=func.now())
             .execution_options(synchronize_session=False)
         )
-        tender_id = result.scalar_one_or_none()
-        if tender_id is not None:
-            return VerdictWrite("changed", tender_id)
-        row = (
-            await self._session.execute(
-                select(Requirement.requirement_text, Requirement.tender_id).where(
-                    Requirement.id == requirement_id
-                )
-            )
-        ).one_or_none()
-        if row is None:
-            return VerdictWrite("not_found", None)
-        if row.requirement_text != judged_text:
-            return VerdictWrite("text_changed", row.tender_id)
-        return VerdictWrite("unchanged", row.tender_id)
+        return VerdictWrite("changed" if changed else "unchanged", requirement.tender_id)
 
     async def reject(self, requirement_id: uuid.UUID) -> Requirement:
         return await self.update_fields(

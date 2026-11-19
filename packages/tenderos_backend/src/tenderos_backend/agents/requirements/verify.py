@@ -157,8 +157,9 @@ async def verify_and_persist(
         # Plan item 59, fix 6: written only on the text judged above. A
         # person's edit that committed during the model call refuses it: no
         # write, no bump, one INFO line (the trace above still records the
-        # call). Lock order: the requirement row (the UPDATE), then the
-        # tender (the bump).
+        # call). Q5 (PR 21): on the judged text the check time is written
+        # with every verdict, the same one included. Lock order: the
+        # requirement row (its locked read), then the tender (the bump).
         written = await uow.requirements.set_verdict_for_text(
             requirement_id, verified, requirement_text
         )
@@ -169,7 +170,8 @@ async def verify_and_persist(
                 "verification of requirement %s not written: its text changed while it was judged",
                 requirement_id,
             )
-        # verified is on the graph's Requirement node (plan item 95). In a
+        # verified is on the graph's Requirement node (plan item 95); its
+        # check time is not, so a same-verdict re-check does not bump. In a
         # run this happens in the extraction node, before project_graph; from
         # the Verify button it can happen any time after.
         if written.outcome == "changed" and written.tender_id is not None:

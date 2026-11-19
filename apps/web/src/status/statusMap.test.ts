@@ -8,6 +8,7 @@ import {
   describeSelected,
   describeStatusKeepingRawWord,
   describeReadiness,
+  describeRequirementVerification,
   describeStatus,
   describeVerified,
 } from "./statusMap";
@@ -230,6 +231,30 @@ describe("statusMap", () => {
     expect(describeVerified(true, false)).toEqual({ tone: "ready", label: "Verified" });
     expect(describeVerified(false, true)).toEqual({ tone: "warning", label: "Not verified" });
     expect(describeVerified(false, false)).toEqual({ tone: "neutral", label: "Not verified" });
+  });
+
+  it("describes a requirement's verification in three states; an optional one stays neutral (plan item 59, Q5)", () => {
+    const at = "2026-11-19T10:00:00Z";
+    expect(describeRequirementVerification(true, at, true)).toEqual({
+      tone: "ready",
+      label: "Verified",
+    });
+    expect(describeRequirementVerification(false, null, true)).toEqual({
+      tone: "warning",
+      label: "Not verified yet",
+    });
+    expect(describeRequirementVerification(false, at, true)).toEqual({
+      tone: "failed",
+      label: "Verification failed",
+    });
+    expect(describeRequirementVerification(false, null, false)).toEqual({
+      tone: "neutral",
+      label: "Not verified yet",
+    });
+    expect(describeRequirementVerification(false, at, false)).toEqual({
+      tone: "neutral",
+      label: "Verification failed",
+    });
   });
 
   // UploadAndProcessingStatus renders a parse badge whose DOM text is the

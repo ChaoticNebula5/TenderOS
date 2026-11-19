@@ -30,6 +30,11 @@ class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             name="ck_requirement_category",
         ),
         UniqueConstraint("tender_id", "content_fingerprint", name="uq_requirement_fingerprint"),
+        # 035_requirement_check_time.py (plan item 59, Q5).
+        CheckConstraint(
+            "verified = false OR verification_checked_at IS NOT NULL",
+            name="ck_requirement_verified_has_check_time",
+        ),
         # 004_requirements.py
         Index("idx_requirements_tender_category", "tender_id", "category", "mandatory"),
     )
@@ -50,6 +55,12 @@ class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
     verified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
+    )
+    # When a verdict was last written, from the database clock. With
+    # verified: not checked yet (false, null), verification failed (false, a
+    # time), verified (true, a time). A text edit sets both back.
+    verification_checked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
     )
     human_reviewed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
