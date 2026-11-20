@@ -627,6 +627,18 @@ async def persist_section_and_claims(
                 if locked is None:
                     raise ProposalClaimNotFoundError()
                 claim = locked
+                # Plan item 59, D8 (PR 22): is_factual is not in the
+                # fingerprint, so a draft that now calls a stored narrative
+                # claim factual must not be grounded as narrative. The flag
+                # is the stored value or the draft's: narrative to factual,
+                # never back, so a claim once factual keeps asking for
+                # evidence. It is on the claim's graph node, so a change
+                # bumps. The other columns the key leaves out change nothing
+                # a claim must prove (claim_kind, grounding_status, recomputed
+                # below, and identity).
+                if claim_draft.is_factual and not claim.is_factual:
+                    claim = await uow.proposal.update_proposal_claim(claim.id, is_factual=True)
+                    graph_changed = True
 
             for requirement_id in requirement_ids:
                 if await uow.proposal.link_claim_requirement(claim.id, requirement_id):
