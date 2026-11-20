@@ -340,11 +340,16 @@ async def patch_requirement(
             "verified": updated.verified,
         }
         # The graph's Requirement node carries the category, the mandatory
-        # flag and verified; the text, the reviewed flag, rejected_at and the
-        # check time are not projected (rejected requirements are projected
-        # like live ones, plan item 97), so a confirm or a reject changes no
-        # graph (plan item 95), and a text edit only when it resets a verdict.
-        if any(before[key] != after[key] for key in ("category", "mandatory", "verified")):
+        # flag and verified; the text, the reviewed flag and the check time are
+        # not projected, so a confirm changes no graph (plan item 95), and a
+        # text edit only when it resets a verdict. Whether it is rejected
+        # decides whether the requirement, its compliance entry and a role
+        # whose every source is rejected are in the graph at all (plan item
+        # 97), so a reject bumps; a second reject of a rejected one does not.
+        rejected_changed = (before["rejected_at"] is None) != (after["rejected_at"] is None)
+        if rejected_changed or any(
+            before[key] != after[key] for key in ("category", "mandatory", "verified")
+        ):
             await uow.tenders.bump_state_version(updated.tender_id)
         await uow.audit.create(
             organization_id=organization_id,

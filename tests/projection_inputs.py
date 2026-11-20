@@ -51,6 +51,8 @@ PROJECTED_PROPERTIES: dict[str, frozenset[str]] = {
     # Not requirements.verification_checked_at (plan item 59, Q5, PR 21): the
     # node carries verified only, so a re-check with the same verdict, which
     # writes the time alone, changes no graph and does not bump.
+    # Not rejected_at either: it decides whether the node exists
+    # (PROJECTION_SCOPE below), not a property on it.
     "Requirement": frozenset(
         {"id", "tender_id", "display_code", "category", "mandatory", "verified"}
     ),
@@ -117,6 +119,17 @@ PROJECTED_PROPERTIES: dict[str, frozenset[str]] = {
     "USED_IN": frozenset({"selected", "selected_at", "deselected_at"}),
     "WORKED_ON": frozenset({"confidence", "verified"}),
     "DEMONSTRATES": frozenset({"confidence", "verified"}),
+}
+
+# Columns the projector reads to decide whether a row is in the graph at all,
+# not copied onto a node (plan item 97). A change to one changes which nodes
+# and edges exist, so its writer bumps as for a projected property.
+# tests/integration/test_projection_reach.py has a case for each.
+PROJECTION_SCOPE: dict[str, str] = {
+    "Requirement.rejected_at": (
+        "a rejected requirement is left out, with its compliance entry, the edges into it, "
+        "and a role whose every source requirement is rejected"
+    ),
 }
 
 # Repository methods that write projected data (Class.method). A caller of any

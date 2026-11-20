@@ -180,17 +180,27 @@ class ComplianceRepository:
         return {entry.requirement_id: entry for entry in result.scalars().all()}
 
     async def list_compliance_entries_for_tender(
-        self, tender_id: uuid.UUID
+        self, tender_id: uuid.UUID, include_rejected: bool = False
     ) -> list[ComplianceEntry]:
-        # compliance_entries has no tender_id column of its own (Part C) -
-        # every entry is reached through its one-to-one requirement, so
-        # listing "for a tender" means joining through Requirement rather
-        # than a direct WHERE.
-        result = await self._session.execute(
+        """compliance_entries has no tender_id column of its own (Part C) -
+        every entry is reached through its one-to-one requirement, so
+        listing "for a tender" means joining through Requirement rather
+        than a direct WHERE.
+
+        Plan item 97: an entry whose requirement is rejected is out of scope
+        for the bid, as RequirementRepository.list_for_tender leaves the
+        requirement itself out. Nothing is deleted; the filter reads
+        rejected_at here, so the compliance matrix and gate, readiness,
+        drafting and the graph projection all leave the entry out, and a
+        requirement brought back would bring its entry back."""
+        stmt = (
             select(ComplianceEntry)
             .join(Requirement, Requirement.id == ComplianceEntry.requirement_id)
             .where(Requirement.tender_id == tender_id)
         )
+        if not include_rejected:
+            stmt = stmt.where(Requirement.rejected_at.is_(None))
+        result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
     async def update_compliance_entry(

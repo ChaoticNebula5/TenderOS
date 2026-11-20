@@ -1,15 +1,35 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tenderos_backend.db.models.requirement import Requirement
 from tenderos_backend.db.models.talent import (
     RoleMatch,
     RoleMatchEvidence,
     RoleRequirement,
     RoleRequirementSource,
 )
+
+
+def role_in_scope() -> ColumnElement[bool]:
+    """Plan item 97, Q2: a role is out of scope for its bid when it has at
+    least one source requirement and every one of them is rejected. A role
+    with one live source, or with no source at all, stays in scope.
+
+    One clause, used by every per-bid role listing and by the knowledge
+    reach lookup, so the role screen, the role gate, readiness, the red team,
+    drafting and the graph projection agree on which roles count. It reads
+    rejected_at at query time: nothing is deleted, and a source brought back
+    brings the role back."""
+    any_source = exists().where(RoleRequirementSource.role_requirement_id == RoleRequirement.id)
+    live_source = exists().where(
+        RoleRequirementSource.role_requirement_id == RoleRequirement.id,
+        Requirement.id == RoleRequirementSource.requirement_id,
+        Requirement.rejected_at.is_(None),
+    )
+    return or_(~any_source, live_source)
 
 
 class TalentRepository:
@@ -58,11 +78,14 @@ class TalentRepository:
         return result.scalar_one_or_none()
 
     async def list_role_requirements_for_tender(
-        self, tender_id: uuid.UUID
+        self, tender_id: uuid.UUID, include_rejected: bool = False
     ) -> list[RoleRequirement]:
-        result = await self._session.execute(
-            select(RoleRequirement).where(RoleRequirement.tender_id == tender_id)
-        )
+        """include_rejected=True also lists the roles role_in_scope leaves
+        out (every source requirement rejected)."""
+        stmt = select(RoleRequirement).where(RoleRequirement.tender_id == tender_id)
+        if not include_rejected:
+            stmt = stmt.where(role_in_scope())
+        result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
     # ------------------------------------------------------------------

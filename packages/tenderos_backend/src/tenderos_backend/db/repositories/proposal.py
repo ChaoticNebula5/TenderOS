@@ -1,6 +1,7 @@
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from tenderos_backend.db.models.proposal import (
     ProposalClaimRequirement,
     ProposalSection,
 )
+from tenderos_backend.db.models.requirement import Requirement
 
 
 class ProposalRepository:
@@ -249,6 +251,32 @@ class ProposalRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def list_claims_addressing_only_rejected_requirements(
+        self, tender_id: uuid.UUID
+    ) -> list[tuple[ProposalClaim, list[str]]]:
+        """Plan item 97, Q1: the bid's claims that address at least one
+        requirement and only rejected ones, each with the rejected
+        requirements' display codes, sorted. A claim with no requirement link
+        is not listed (it was never tied to one), and neither is a claim with
+        one live link. Read at query time from rejected_at."""
+        codes = func.array_agg(
+            aggregate_order_by(Requirement.display_code, Requirement.display_code)
+        )
+        result = await self._session.execute(
+            select(ProposalClaim, codes)
+            .join(ProposalSection, ProposalSection.id == ProposalClaim.section_id)
+            .join(
+                ProposalClaimRequirement,
+                ProposalClaimRequirement.proposal_claim_id == ProposalClaim.id,
+            )
+            .join(Requirement, Requirement.id == ProposalClaimRequirement.requirement_id)
+            .where(ProposalSection.tender_id == tender_id)
+            .group_by(ProposalClaim.id)
+            .having(func.bool_and(Requirement.rejected_at.is_not(None)))
+            .order_by(ProposalClaim.id)
+        )
+        return [(claim, list(codes)) for claim, codes in result.all()]
 
     async def link_claim_employee(
         self, proposal_claim_id: uuid.UUID, employee_knowledge_item_id: uuid.UUID

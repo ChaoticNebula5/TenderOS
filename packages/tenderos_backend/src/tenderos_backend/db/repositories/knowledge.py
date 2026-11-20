@@ -27,6 +27,7 @@ from tenderos_backend.db.models.proposal import (
     ProposalSection,
 )
 from tenderos_backend.db.models.talent import RoleMatch, RoleRequirement
+from tenderos_backend.db.repositories.talent import role_in_scope
 
 # The knowledge item types the graph has a node for (D1): the projector's four
 # typed branches (graph_projection/projector.py). The other types
@@ -314,7 +315,8 @@ class KnowledgeRepository:
         "Reachable shared knowledge_item_id set"), five paths:
         1. a selection row for the item, selected or not;
         2. an evidence link to the item;
-        3. a human-selected role match for the employee;
+        3. a human-selected role match for the employee, on a role still in
+           scope (role_in_scope: plan item 97, Q2);
         4. a proposal claim naming the employee;
         5. for an employee, holding a certification the bid reaches by 1 to 4
            (the projector pulls a reached certificate's holder in for HOLDS).
@@ -349,6 +351,7 @@ class KnowledgeRepository:
             .where(
                 RoleMatch.employee_knowledge_item_id.in_(ids),
                 RoleMatch.human_selected.is_(True),
+                role_in_scope(),
             ),
             select(ProposalSection.tender_id)
             .join(ProposalClaim, ProposalClaim.section_id == ProposalSection.id)

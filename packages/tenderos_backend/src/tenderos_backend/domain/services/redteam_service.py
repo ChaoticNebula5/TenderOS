@@ -253,6 +253,9 @@ async def _run_and_record_pass(
         drafts: list[RedteamFindingDraft] = []
         drafts.extend(await redteam_checks.check_missing_mandatory_requirements(uow, tender_id))
         drafts.extend(await redteam_checks.check_unsupported_claims(uow, tender_id))
+        drafts.extend(
+            await redteam_checks.check_claims_addressing_rejected_requirements(uow, tender_id)
+        )
         drafts.extend(await redteam_checks.check_role_qualification_gaps(uow, tender_id))
         drafts.extend(await redteam_checks.check_archived_employee_selected(uow, tender_id))
         drafts.extend(await redteam_checks.check_submission_checklist(uow, tender_id))
@@ -296,7 +299,7 @@ async def _run_and_record_pass(
         for draft in drafts:
             await persist_finding_draft(uow, tender_id, draft)
 
-        # All 7 checks above (plus the LLM critique) re-derive fully fresh
+        # All 8 checks above (plus the LLM critique) re-derive fully fresh
         # from this tender's CURRENT state on every pass, never
         # incrementally - so an unresolved finding whose fingerprint isn't
         # among what was just (re-)persisted is provably no longer present,
