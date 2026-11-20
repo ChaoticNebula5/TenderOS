@@ -13,7 +13,9 @@ from tenderos_api.routes.documents import _read_and_validate_upload
 from tenderos_api.schemas.knowledge import (
     ApproveImportItemRequest,
     EmployeeResponse,
+    ImportAsNewEmployeeRequest,
     ImportBatchResponse,
+    ImportItemCandidatesResponse,
     ImportItemDetailResponse,
     ImportItemResponse,
     ImportItemTargetResponse,
@@ -260,12 +262,17 @@ async def list_import_items(
     batch_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
 ) -> list[ImportItemDetailResponse]:
     rows = await knowledge_service.list_import_items_with_targets(batch_id)
+    candidates = await knowledge_service.list_resume_candidates(batch_id)
     responses = []
     for item, target in rows:
         response = ImportItemDetailResponse.model_validate(item, from_attributes=True)
         if target is not None:
             response.target_employee = ImportItemTargetResponse.model_validate(
                 target, from_attributes=True
+            )
+        if item.id in candidates:
+            response.candidates = ImportItemCandidatesResponse.model_validate(
+                candidates[item.id], from_attributes=True
             )
         responses.append(response)
     return responses
@@ -299,6 +306,8 @@ async def approve_import_item(
             org_id,
             current_user.id,
             target_fingerprint=body.target_fingerprint if body is not None else None,
+            target_employee_id=body.target_employee_id if body is not None else None,
+            candidates_fingerprint=body.candidates_fingerprint if body is not None else None,
         )
     except knowledge_service.ImportItemNotInReviewError as exc:
         raise ImportItemDecisionError.not_in_review(exc.status) from exc
@@ -314,6 +323,42 @@ async def approve_import_item(
         raise ImportItemDecisionError.payload_invalid() from exc
     except knowledge_service.EmployeeArchivedError as exc:
         raise ImportItemDecisionError.target_archived() from exc
+    except knowledge_service.ImportItemCandidatesChangedError as exc:
+        raise ImportItemDecisionError.candidates_changed() from exc
+    except knowledge_service.ImportItemNotACandidateError as exc:
+        raise ImportItemDecisionError.not_a_candidate() from exc
+    except knowledge_service.ImportItemTypeUnsupportedError as exc:
+        raise ImportItemDecisionError.type_unsupported() from exc
+    return ImportItemResponse.model_validate(updated, from_attributes=True)
+
+
+@router.post("/knowledge/import-items/{item_id}/import-as-new", response_model=ImportItemResponse)
+async def import_item_as_new_employee(
+    item_id: UUID,
+    body: ImportAsNewEmployeeRequest,
+    current_user: User = Depends(require_permission(_MANAGE)),
+) -> ImportItemResponse:
+    """Plan item 111: a resume item in review becomes a new employee
+    (knowledge_service.import_item_as_new_employee); the refusals are coded."""
+    _item, org_id = await _import_item_organization_id(item_id)
+    try:
+        updated = await knowledge_service.import_item_as_new_employee(
+            item_id, org_id, current_user.id, body.candidates_fingerprint
+        )
+    except knowledge_service.ImportItemNotInReviewError as exc:
+        raise ImportItemDecisionError.not_in_review(exc.status) from exc
+    except knowledge_service.ImportItemSourceMissingError as exc:
+        raise ImportItemDecisionError.source_missing() from exc
+    except knowledge_service.ImportItemFingerprintRequiredError as exc:
+        raise ImportItemDecisionError.fingerprint_required() from exc
+    except knowledge_service.ImportItemPayloadInvalidError as exc:
+        raise ImportItemDecisionError.payload_invalid() from exc
+    except knowledge_service.ImportItemCandidatesChangedError as exc:
+        raise ImportItemDecisionError.candidates_changed() from exc
+    except knowledge_service.ImportItemStrongMatchError as exc:
+        raise ImportItemDecisionError.strong_match() from exc
+    except knowledge_service.ImportItemTypeUnsupportedError as exc:
+        raise ImportItemDecisionError.type_unsupported() from exc
     return ImportItemResponse.model_validate(updated, from_attributes=True)
 
 

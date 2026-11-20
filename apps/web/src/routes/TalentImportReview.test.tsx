@@ -20,6 +20,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listImportBatches: vi.fn(),
     listImportItems: vi.fn(),
     approveImportItem: vi.fn(),
+    importItemAsNewEmployee: vi.fn(),
     rejectImportItem: vi.fn(),
     uploadResumes: vi.fn(),
     uploadEmployeeMaster: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("../auth/useAuth", () => ({
 const listImportBatches = vi.mocked(apiClient.listImportBatches);
 const listImportItems = vi.mocked(apiClient.listImportItems);
 const approveImportItem = vi.mocked(apiClient.approveImportItem);
+const importItemAsNewEmployee = vi.mocked(apiClient.importItemAsNewEmployee);
 const uploadResumes = vi.mocked(apiClient.uploadResumes);
 const rejectImportItem = vi.mocked(apiClient.rejectImportItem);
 
@@ -65,6 +67,8 @@ function item(overrides: Partial<ImportItemDetailResponse> = {}): ImportItemDeta
     updated_at: "2026-10-10T08:00:00Z",
     extracted_payload: { name: "Avery Quill", email: "avery@example.test", confidence: 0.92 },
     target_employee: null,
+    // Plan item 111: the API's candidates field, null unless a test sets it.
+    candidates: null,
     ...overrides,
   };
 }
@@ -514,7 +518,10 @@ describe("plan item 80: approving a resume merges it", () => {
     expect(changes).toHaveTextContent("Not set (kept)");
   });
 
-  it("offers only Reject for a resume naming no single employee", async () => {
+  // Plan item 111: a resume naming no one now has its candidates (the API's
+  // candidates field); one whose fields or document cannot be read comes
+  // with none, and that is the item that can only be rejected.
+  it("offers only Reject for a resume naming no one whose candidates cannot be read", async () => {
     listImportItems.mockResolvedValue([item(), NO_TARGET]);
     const user = userEvent.setup();
     renderScreen();
@@ -527,7 +534,7 @@ describe("plan item 80: approving a resume merges it", () => {
         .queryAllByRole("button")
         .map((b) => b.textContent),
     ).toEqual(["Reject"]);
-    expect(row).toHaveTextContent("No single employee matches this resume");
+    expect(row).toHaveTextContent("could not be read, so it can only be rejected");
     // The file name, not the document id it is stored with.
     expect(row.querySelector("td")!.textContent).toBe("CV.docx");
   });
@@ -690,5 +697,256 @@ describe("plan item 80: approving a resume merges it", () => {
     expect(merged).toHaveTextContent("Merged into Rowan A. Quill");
     expect(created).toHaveTextContent("Employee: Avery Q.");
     expect(within(merged).queryByLabelText("Changes on approval")).toBeNull();
+  });
+});
+
+// Plan item 111: a resume item in review lists the employees it matches, each
+// with its change list and a "Merge into NAME" button, and "Import as a new
+// person" unless a strong signal matched. Neither name contains "Approve":
+// full-flow.spec.ts clicks any button whose name contains it.
+describe("plan item 111: pick the employee or import as a new person", () => {
+  function candidate(
+    overrides: Partial<apiClient.ImportItemCandidate> = {},
+  ): apiClient.ImportItemCandidate {
+    return {
+      knowledge_item_id: "e7",
+      name: "Sasha Quill",
+      email: "sasha.one@example.test",
+      current_title: "Analyst",
+      professional_location: null,
+      years_experience: null,
+      resume_document_id: null,
+      profile_review_status: "verified",
+      archived: false,
+      signals: ["name"],
+      fingerprint: "fp-e7",
+      changes: [
+        {
+          field: "email",
+          on_file: "sasha.one@example.test",
+          from_resume: null,
+          changes: false,
+          held_by_other: false,
+        },
+        {
+          field: "current_title",
+          on_file: "Analyst",
+          from_resume: "Lead Analyst",
+          changes: true,
+          held_by_other: false,
+        },
+        {
+          field: "professional_location",
+          on_file: null,
+          from_resume: null,
+          changes: false,
+          held_by_other: false,
+        },
+        {
+          field: "years_experience",
+          on_file: null,
+          from_resume: null,
+          changes: false,
+          held_by_other: false,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  const TWO_MATCHES = item({
+    id: "i5",
+    source_ref: "0ae13cd8-1525-4c67-af84-83532c24d8f0/CV.docx",
+    status: "needs_review",
+    error_message: "normalized name matched without a strong identity signal",
+    extracted_payload: { name: "Sasha Quill", current_title: "Lead Analyst", confidence: 0.7 },
+    candidates: {
+      fingerprint: "cands-1",
+      strong_match: false,
+      candidates: [
+        candidate(),
+        candidate({
+          knowledge_item_id: "e8",
+          fingerprint: "fp-e8",
+          email: "sasha.two@example.test",
+        }),
+      ],
+    },
+  });
+
+  async function openRow(user: ReturnType<typeof userEvent.setup>) {
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findAllByText("Sasha Quill");
+    return within(itemsSection()).getAllByRole("row")[1];
+  }
+
+  it("lists each candidate with Merge into, and Import as a new person, and no Approve", async () => {
+    listImportItems.mockResolvedValue([TWO_MATCHES]);
+    const row = await openRow(userEvent.setup());
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([
+      "Merge into Sasha Quill (sasha.one@example.test)",
+      "Merge into Sasha Quill (sasha.two@example.test)",
+      "Import as a new person",
+      "Reject",
+    ]);
+    expect(within(row).queryByRole("button", { name: /Approve/ })).toBeNull();
+    expect(row).toHaveTextContent("Choose the one it belongs to");
+    expect(within(row).getAllByText("Analyst → Lead Analyst (changes)")).toHaveLength(2);
+  });
+
+  it("a pick sends the candidate, its fingerprint and the list's fingerprint", async () => {
+    listImportItems.mockResolvedValue([TWO_MATCHES]);
+    approveImportItem.mockResolvedValue(TWO_MATCHES);
+    const user = userEvent.setup();
+    const row = await openRow(user);
+    await user.click(
+      within(row).getByRole("button", { name: "Merge into Sasha Quill (sasha.two@example.test)" }),
+    );
+    await waitFor(() =>
+      expect(approveImportItem).toHaveBeenCalledWith("i5", "fp-e8", {
+        employeeId: "e8",
+        candidatesFingerprint: "cands-1",
+      }),
+    );
+  });
+
+  it("names each same-name candidate's button apart: email, else title, else position", async () => {
+    listImportItems.mockResolvedValue([
+      {
+        ...TWO_MATCHES,
+        candidates: {
+          ...TWO_MATCHES.candidates!,
+          candidates: [
+            candidate({ knowledge_item_id: "e7", email: null, current_title: "Analyst" }),
+            candidate({ knowledge_item_id: "e8", email: null, current_title: "Surveyor" }),
+            candidate({ knowledge_item_id: "e9", email: null, current_title: null }),
+            candidate({ knowledge_item_id: "e10", email: null, current_title: null }),
+            candidate({ knowledge_item_id: "e11", name: "Ada Quill", email: "ada@example.test" }),
+          ],
+        },
+      },
+    ]);
+    const row = await openRow(userEvent.setup());
+    const names = within(row)
+      .getAllByRole("button", { name: /^Merge into/ })
+      .map((b) => b.textContent);
+    expect(names).toEqual([
+      "Merge into Sasha Quill (Analyst)",
+      "Merge into Sasha Quill (Surveyor)",
+      "Merge into Sasha Quill #3",
+      "Merge into Sasha Quill #4",
+      "Merge into Ada Quill",
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("Import as a new person sends the list's fingerprint", async () => {
+    listImportItems.mockResolvedValue([TWO_MATCHES]);
+    importItemAsNewEmployee.mockResolvedValue(TWO_MATCHES);
+    const user = userEvent.setup();
+    const row = await openRow(user);
+    await user.click(within(row).getByRole("button", { name: "Import as a new person" }));
+    await waitFor(() => expect(importItemAsNewEmployee).toHaveBeenCalledWith("i5", "cands-1"));
+  });
+
+  it("offers no Import as a new person when a strong signal matched, and says why", async () => {
+    listImportItems.mockResolvedValue([
+      { ...TWO_MATCHES, candidates: { ...TWO_MATCHES.candidates!, strong_match: true } },
+    ]);
+    const row = await openRow(userEvent.setup());
+    expect(within(row).queryByRole("button", { name: "Import as a new person" })).toBeNull();
+    expect(row).toHaveTextContent("cannot be imported as a new person");
+  });
+
+  it("offers no Merge into an archived candidate", async () => {
+    listImportItems.mockResolvedValue([
+      {
+        ...TWO_MATCHES,
+        candidates: { ...TWO_MATCHES.candidates!, candidates: [candidate({ archived: true })] },
+      },
+    ]);
+    const row = await openRow(userEvent.setup());
+    expect(within(row).queryByRole("button", { name: /Merge into/ })).toBeNull();
+    expect(row).toHaveTextContent("restore this employee before merging");
+  });
+
+  it("shows an email another employee holds as kept, and why", async () => {
+    const held = candidate();
+    listImportItems.mockResolvedValue([
+      {
+        ...TWO_MATCHES,
+        candidates: {
+          ...TWO_MATCHES.candidates!,
+          candidates: [
+            {
+              ...held,
+              changes: held.changes.map((entry) =>
+                entry.field === "email"
+                  ? { ...entry, from_resume: "jordan@example.test", held_by_other: true }
+                  : entry,
+              ),
+            },
+          ],
+        },
+      },
+    ]);
+    const row = await openRow(userEvent.setup());
+    expect(row).toHaveTextContent(
+      "sasha.one@example.test (kept: another employee has jordan@example.test)",
+    );
+  });
+
+  it("reads the items again after a 409 candidates changed, and says why", async () => {
+    listImportItems.mockResolvedValue([TWO_MATCHES]);
+    importItemAsNewEmployee.mockRejectedValue(
+      new apiClient.ApiError(409, {
+        error: { code: "IMPORT_ITEM_CANDIDATES_CHANGED", message: "The candidates changed." },
+      }),
+    );
+    const user = userEvent.setup();
+    const row = await openRow(user);
+    const reads = listImportItems.mock.calls.length;
+    await user.click(within(row).getByRole("button", { name: "Import as a new person" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The matching employees changed after this item was loaded",
+    );
+    await waitFor(() => expect(listImportItems.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it("offers no decision on an item that is no longer in review", async () => {
+    // The API sends no candidates for a decided item; the row offers no
+    // decision even if a stale read still carried them.
+    listImportItems.mockResolvedValue([{ ...TWO_MATCHES, status: "approved" }]);
+    const row = await openRow(userEvent.setup());
+    expect(within(row).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("keeps Approve for the employee the item names and lists only the others", async () => {
+    const named = candidate({ knowledge_item_id: "e1", name: "Rowan A. Quill" });
+    listImportItems.mockResolvedValue([
+      {
+        ...NEEDS_REVIEW,
+        candidates: {
+          fingerprint: "cands-2",
+          strong_match: true,
+          candidates: [named, candidate({ knowledge_item_id: "e9", name: "Rowan B. Quill" })],
+        },
+      },
+    ]);
+    const user = userEvent.setup();
+    renderScreen();
+    await openItems(user);
+    const row = within(itemsSection()).getAllByRole("row")[1];
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Merge into Rowan B. Quill", "Approve", "Reject"]);
+    expect(row).toHaveTextContent("It also matches");
   });
 });

@@ -4,13 +4,16 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from typing import TypedDict
 
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from tenderos_backend.agents.knowledge.certifications_xlsx import CertificationRow
 from tenderos_backend.agents.knowledge.dedup import (
+    STRONG_SIGNALS,
     DuplicateVerdict,
+    employee_match_signals,
     normalize_employee_email,
     normalize_employee_name,
     resolve_employee_duplicate,
@@ -200,6 +203,32 @@ class ImportItemTargetChangedError(Exception):
     """Plan item 80, Q1: the employee changed after the reviewer loaded the
     item (another merge, an edit, a verify), so they did not see what the
     merge would change. Nothing is written; the screen reloads the item."""
+
+
+class ImportItemCandidatesChangedError(Exception):
+    """Plan item 111: the employees matching a resume item differ from the
+    ones the reviewer was shown (one added, one gone, or one's shown values
+    changed), so the choice was made on a list that no longer holds. Nothing
+    is written; the screen reloads the item."""
+
+
+class ImportItemNotACandidateError(Exception):
+    """Plan item 111: the employee picked for a resume item is not one of the
+    employees it matches now (no signal in common, or in another
+    organization: one refusal for both, so the API does not say whether an
+    id exists elsewhere)."""
+
+
+class ImportItemStrongMatchError(Exception):
+    """Plan item 111, Q3: importing a resume as a new person when an employee
+    on file already has its email or its document (or an employee was made
+    from this document before). A second employee with that email would put
+    every later resume carrying it into review; pick that employee instead."""
+
+
+class ImportItemTypeUnsupportedError(Exception):
+    """Plan item 111: picking an employee or importing as a new person is for
+    resume items (plan item 112 adds the employee master)."""
 
 
 class TenderNotFoundError(Exception):
@@ -569,12 +598,18 @@ _RESUME_IMPORT_ACTOR = "resume_import"
 def _field_value(source: object, field: str) -> object:
     # years_experience is a Numeric column (a Decimal) on the employee and a
     # float on the profile; compared, stored in audit rows and fingerprinted
-    # as a float. A blank string reads as no value, as the automatic branch's
-    # `or` always treated it.
+    # as a float. A string is read without its surrounding spaces, and one
+    # that is blank or only spaces reads as no value (plan item 112's note,
+    # built with item 111): the merge writes these values, so it writes them
+    # trimmed, and a value on file that differs only in surrounding spaces is
+    # the same value.
     value = getattr(source, field)
     if field == "years_experience":
         return float(value) if value is not None else None  # type: ignore[arg-type]
-    return value if value != "" else None
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else None
+    return value
 
 
 @dataclass(frozen=True)
@@ -588,6 +623,10 @@ class ResumeMergeField:
     on_file: object
     from_resume: object
     changes: bool
+    # Plan item 111: the resume's email belongs to another employee on file,
+    # so the merge keeps this employee's (two employees with one email would
+    # send every later resume carrying it to review, as a conflict).
+    held_by_other: bool = False
 
 
 def _same_value(field: str, old: object, new: object) -> bool:
@@ -600,46 +639,75 @@ def _same_value(field: str, old: object, new: object) -> bool:
     return old == new
 
 
+def emails_held_by_others(employees: list[Employee], employee_id: uuid.UUID) -> frozenset[str]:
+    """Plan item 111: the emails, as the duplicate check compares them, of
+    every employee on file other than this one."""
+    held: set[str] = set()
+    for other in employees:
+        if other.knowledge_item_id == employee_id:
+            continue
+        email = normalize_employee_email(other.email)
+        if email is not None:
+            held.add(email)
+    return frozenset(held)
+
+
 def resume_merge_fields(
-    employee: Employee, profile: ExtractedEmployeeProfile
+    employee: Employee,
+    profile: ExtractedEmployeeProfile,
+    held_emails: frozenset[str] = frozenset(),
 ) -> list[ResumeMergeField]:
     """Every field of RESUME_MERGE_FIELDS, in that order. The rule (Q2, the
     automatic branch's since B6): the resume's value wherever it has one; a
-    field it leaves blank keeps what is on file."""
+    field it leaves blank keeps what is on file. Plan item 111: an email
+    another employee holds (held_emails, from emails_held_by_others) is kept,
+    not written."""
     fields: list[ResumeMergeField] = []
     for field in RESUME_MERGE_FIELDS:
         new = _field_value(profile, field)
         old = _field_value(employee, field)
+        held = (
+            field == "email"
+            and isinstance(new, str)
+            and normalize_employee_email(new) in held_emails
+        )
         fields.append(
             ResumeMergeField(
                 field=field,
                 on_file=old,
                 from_resume=new,
-                changes=new is not None and not _same_value(field, old, new),
+                changes=new is not None and not held and not _same_value(field, old, new),
+                held_by_other=held,
             )
         )
     return fields
 
 
 def resume_merge_changes(
-    employee: Employee, profile: ExtractedEmployeeProfile
+    employee: Employee,
+    profile: ExtractedEmployeeProfile,
+    held_emails: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[object, object]]:
     """{field: (on file, from resume)} for every field the merge writes: the
     changing entries of resume_merge_fields, so the merge, the automatic
     branch's review rule and the panel read one list."""
     return {
         entry.field: (entry.on_file, entry.from_resume)
-        for entry in resume_merge_fields(employee, profile)
+        for entry in resume_merge_fields(employee, profile, held_emails)
         if entry.changes
     }
 
 
-def resume_merge_overwrites(employee: Employee, profile: ExtractedEmployeeProfile) -> list[str]:
+def resume_merge_overwrites(
+    employee: Employee,
+    profile: ExtractedEmployeeProfile,
+    held_emails: frozenset[str] = frozenset(),
+) -> list[str]:
     """The changed fields that already hold a value (Q3): filling a blank is
     not an overwrite."""
     return [
         field
-        for field, (old, _new) in resume_merge_changes(employee, profile).items()
+        for field, (old, _new) in resume_merge_changes(employee, profile, held_emails).items()
         if old is not None
     ]
 
@@ -690,8 +758,11 @@ async def _merge_resume_into_employee(
     bids projecting the employee only if the title changed, the one field
     here on the graph node (plan item 95); writes an employee_resume_merge
     audit row. The review status, eligibility and name are not touched.
-    Returns the changes."""
-    changes = resume_merge_changes(employee, profile)
+    Plan item 111: an email another employee holds is kept. Returns the
+    changes."""
+    others = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+    held = emails_held_by_others(others, employee.knowledge_item_id)
+    changes = resume_merge_changes(employee, profile, held)
     before = _merge_audit_values(employee)
     await uow.knowledge.update_employee(
         employee.knowledge_item_id,
@@ -720,6 +791,51 @@ async def _merge_resume_into_employee(
         },
     )
     return changes
+
+
+class ResumeEmployeeFields(TypedDict):
+    """What an employee made from a resume holds (plan item 111): one
+    definition for import_resume's NEW branch and for a reviewer's import as
+    a new person, so the two cannot drift."""
+
+    name: str
+    title: str
+    email: str | None
+    current_title: str | None
+    professional_location: str | None
+    years_experience: float | None
+    resume_document_id: uuid.UUID
+    source_document_id: uuid.UUID
+    parsed_profile: dict
+
+
+def resume_employee_fingerprint(organization_id: uuid.UUID, resume_document_id: uuid.UUID) -> str:
+    """One employee per resume document: a second import of the same
+    document converges on the employee the first made."""
+    return _fingerprint(str(organization_id), "resume", str(resume_document_id))
+
+
+def resume_employee_fields(
+    profile: ExtractedEmployeeProfile, resume_document_id: uuid.UUID
+) -> ResumeEmployeeFields:
+    """The profile's values as the merge reads them (_field_value: strings
+    trimmed, blank as none), and the name trimmed."""
+    name = profile.name.strip()
+    email = _field_value(profile, "email")
+    current_title = _field_value(profile, "current_title")
+    location = _field_value(profile, "professional_location")
+    years = _field_value(profile, "years_experience")
+    return ResumeEmployeeFields(
+        name=name,
+        title=name,
+        email=email if isinstance(email, str) else None,
+        current_title=current_title if isinstance(current_title, str) else None,
+        professional_location=location if isinstance(location, str) else None,
+        years_experience=years if isinstance(years, float) else None,
+        resume_document_id=resume_document_id,
+        source_document_id=resume_document_id,
+        parsed_profile=profile.model_dump(),
+    )
 
 
 async def import_resume(
@@ -801,7 +917,9 @@ async def import_resume(
             # row, never the other way; see approve_import_item).
             employee = await uow.knowledge.get_employee_for_update(target_id)
             assert employee is not None
-            overwrites = resume_merge_overwrites(employee, profile)
+            overwrites = resume_merge_overwrites(
+                employee, profile, emails_held_by_others(candidates, target_id)
+            )
             if employee.profile_review_status == PROFILE_VERIFIED and overwrites:
                 # Q3: a verified profile changes only after a person has
                 # seen the change. Filling a blank, or adding chunks, is not
@@ -837,20 +955,9 @@ async def import_resume(
             return updated
 
         # NEW
-        fingerprint = _fingerprint(str(organization_id), "resume", str(resume_document_id))
-        knowledge_item_id = await _create_or_get_employee(
-            organization_id,
-            fingerprint,
-            name=profile.name,
-            title=profile.name,
-            email=profile.email,
-            current_title=profile.current_title,
-            professional_location=profile.professional_location,
-            years_experience=profile.years_experience,
-            resume_document_id=resume_document_id,
-            source_document_id=resume_document_id,
-            parsed_profile=profile.model_dump(),
-        )
+        fingerprint = resume_employee_fingerprint(organization_id, resume_document_id)
+        fields = resume_employee_fields(profile, resume_document_id)
+        knowledge_item_id = await _create_or_get_employee(organization_id, fingerprint, **fields)
         await uow.knowledge.associate_knowledge_item_chunks(knowledge_item_id, resume_chunk_ids)
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
@@ -1667,6 +1774,8 @@ async def approve_import_item(
     organization_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     target_fingerprint: str | None = None,
+    target_employee_id: uuid.UUID | None = None,
+    candidates_fingerprint: str | None = None,
 ) -> KnowledgeImportItem:
     """G6's POST /knowledge/import-items/{id}/approve, for an item sitting at
     needs_review (a dedup match the deterministic policy could not settle).
@@ -1689,23 +1798,60 @@ async def approve_import_item(
     transaction; approval refuses a pending item before asking for the
     employee lock, so the two never wait on each other in a circle. verify
     and the profile edit take the employee row alone (then bumped bids).
+
+    Plan item 111 (user decisions 2026-11-20): target_employee_id picks the
+    employee to merge into, from the item's candidates (resume_candidates),
+    whether or not the item names one already (Q2). The request carries the
+    candidates_fingerprint the reviewer was shown; a different candidate set
+    is refused (409 IMPORT_ITEM_CANDIDATES_CHANGED), and so is an employee
+    that is not a candidate now. The pick then merges exactly as above, the
+    chosen employee's own fingerprint compared under its row lock. On an
+    approved item, a request naming another employee is refused (Q4): a
+    replay is only the same decision.
     """
     async with UnitOfWork() as uow:
         item = await uow.knowledge.get_import_item_for_update(item_id)
         if item is None:
             raise ImportItemNotFoundError()
         if item.status == "approved":
+            if (
+                target_employee_id is not None
+                and item.target_knowledge_item_id != target_employee_id
+            ):
+                raise ImportItemNotInReviewError(item.status)
             return item
         if item.status != "needs_review":
             raise ImportItemNotInReviewError(item.status)
         batch = await uow.knowledge.get_import_batch(item.batch_id)
+        resume_item = batch is not None and batch.import_type == "bulk_resumes"
+        if target_employee_id is not None and not resume_item:
+            raise ImportItemTypeUnsupportedError()
         merge_changes: dict[str, tuple[object, object]] | None = None
-        if batch is not None and batch.import_type == "bulk_resumes":
+        picked_from: list[uuid.UUID] | None = None
+        if resume_item:
+            target_id = item.target_knowledge_item_id
+            if target_employee_id is not None:
+                picked_from = await _check_resume_pick(
+                    uow, item, organization_id, target_employee_id, candidates_fingerprint
+                )
+                target_id = target_employee_id
             merge_changes = await _approve_resume_merge(
-                uow, item, organization_id, actor_user_id, target_fingerprint
+                uow, item, target_id, organization_id, actor_user_id, target_fingerprint
             )
         before = {"status": item.status}
-        updated = await uow.knowledge.update_import_item(item_id, status="approved")
+        fields: dict[str, object] = {"status": "approved"}
+        if picked_from is not None:
+            fields["target_knowledge_item_id"] = target_employee_id
+        updated = await uow.knowledge.update_import_item(item_id, **fields)
+        metadata: dict[str, object] | None = None
+        if merge_changes is not None:
+            metadata = {
+                "employee": str(updated.target_knowledge_item_id),
+                "fields_changed": sorted(merge_changes),
+            }
+            if picked_from is not None:
+                metadata["decision"] = "pick"
+                metadata["candidates"] = sorted(str(c) for c in picked_from)
         await uow.audit.create(
             organization_id=organization_id,
             actor_type="user",
@@ -1715,14 +1861,7 @@ async def approve_import_item(
             target_id=item_id,
             before=before,
             after={"status": updated.status},
-            metadata=(
-                {
-                    "employee": str(updated.target_knowledge_item_id),
-                    "fields_changed": sorted(merge_changes),
-                }
-                if merge_changes is not None
-                else None
-            ),
+            metadata=metadata,
         )
         if merge_changes is not None:
             await uow.outbox.create(
@@ -1739,17 +1878,18 @@ async def approve_import_item(
 async def _approve_resume_merge(
     uow: UnitOfWork,
     item: KnowledgeImportItem,
+    target_id: uuid.UUID | None,
     organization_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     target_fingerprint: str | None,
 ) -> dict[str, tuple[object, object]]:
-    if item.target_knowledge_item_id is None:
+    if target_id is None:
         raise ImportItemNoTargetError()
     if item.source_document_id is None:
         raise ImportItemSourceMissingError()
     if target_fingerprint is None:
         raise ImportItemFingerprintRequiredError()
-    employee = await uow.knowledge.get_employee_for_update(item.target_knowledge_item_id)
+    employee = await uow.knowledge.get_employee_for_update(target_id)
     if employee is None:
         raise ImportItemNoTargetError()
     knowledge_item = await uow.knowledge.get_knowledge_item(employee.knowledge_item_id)
@@ -1772,6 +1912,164 @@ async def _approve_resume_merge(
         actor_id=str(actor_user_id),
         import_item_id=item.id,
     )
+
+
+def _resume_matches(
+    item: KnowledgeImportItem, profile: ExtractedEmployeeProfile, employees: list[Employee]
+) -> list[tuple[Employee, tuple[str, ...]]]:
+    """Plan item 111: the employees a resume item matches now, by the
+    duplicate check's own signals (the name, the email, the resume
+    document; a resume carries no employee code)."""
+    return employee_match_signals(
+        candidate_employee_code=None,
+        candidate_name=profile.name,
+        candidate_email=profile.email,
+        candidate_resume_document_id=item.source_document_id,
+        candidates=employees,
+    )
+
+
+def resume_candidates_fingerprint(matches: list[tuple[Employee, tuple[str, ...]]]) -> str:
+    """Plan item 111: the candidate list as the reviewer saw it, as one hash:
+    each candidate's id, its signals and its resume_target_fingerprint, in
+    id order. Both decisions send it back, so a candidate added, gone, or
+    changed since the screen loaded is refused, not decided on."""
+    shown = sorted(
+        (str(employee.knowledge_item_id), sorted(signals), resume_target_fingerprint(employee))
+        for employee, signals in matches
+    )
+    return hashlib.sha256(json.dumps(shown).encode()).hexdigest()
+
+
+async def _check_resume_pick(
+    uow: UnitOfWork,
+    item: KnowledgeImportItem,
+    organization_id: uuid.UUID,
+    target_employee_id: uuid.UUID,
+    candidates_fingerprint: str | None,
+) -> list[uuid.UUID]:
+    """Plan item 111: a pick is one of the candidates the reviewer was shown,
+    and that list still holds. Read before the chosen employee is locked
+    (the item is); the chosen employee's own values are then compared under
+    its row lock by _approve_resume_merge. Returns the candidate ids."""
+    if candidates_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    if item.source_document_id is None:
+        raise ImportItemSourceMissingError()
+    profile = _item_profile(item)
+    if profile is None:
+        raise ImportItemPayloadInvalidError()
+    employees = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+    matches = _resume_matches(item, profile, employees)
+    if resume_candidates_fingerprint(matches) != candidates_fingerprint:
+        raise ImportItemCandidatesChangedError()
+    candidate_ids = [employee.knowledge_item_id for employee, _ in matches]
+    if target_employee_id not in candidate_ids:
+        raise ImportItemNotACandidateError()
+    return candidate_ids
+
+
+async def _made_from_item(uow: UnitOfWork, item: KnowledgeImportItem) -> bool:
+    """An approved resume item whose employee was made from its own resume
+    (the NEW branch, or import as a new person), not merged into one made
+    from another document."""
+    if item.target_knowledge_item_id is None or item.source_document_id is None:
+        return False
+    knowledge_item = await uow.knowledge.get_knowledge_item(item.target_knowledge_item_id)
+    return (
+        knowledge_item is not None and knowledge_item.source_document_id == item.source_document_id
+    )
+
+
+async def import_item_as_new_employee(
+    item_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    candidates_fingerprint: str | None,
+) -> KnowledgeImportItem:
+    """Plan item 111 (user decisions 2026-11-20): a resume item in review
+    becomes a new employee, made as import_resume's NEW branch makes one
+    (resume_employee_fields, resume_employee_fingerprint), with the resume's
+    chunks, and the item approved naming them.
+
+    Refused (Q3, 409 IMPORT_ITEM_STRONG_MATCH) when a candidate shares the
+    resume's email or its document, or an employee was already made from this
+    document: a name-only match is allowed, the case this exists for. The
+    candidate list is compared with the one the reviewer saw (409
+    IMPORT_ITEM_CANDIDATES_CHANGED). The employee is created in this
+    transaction, under the item's row lock, so a refusal leaves nothing
+    behind. Status rule (Q4): only needs_review; a replay of an item already
+    imported this way returns it; any other approved item is refused. Audit:
+    knowledge_import_item_approve with decision "new". WORKED_ON: the same
+    ResumeMergeApproved event as a merge. Lock order: the item only."""
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.get_import_item_for_update(item_id)
+        if item is None:
+            raise ImportItemNotFoundError()
+        batch = await uow.knowledge.get_import_batch(item.batch_id)
+        resume_item = batch is not None and batch.import_type == "bulk_resumes"
+        if item.status == "approved":
+            if resume_item and await _made_from_item(uow, item):
+                return item
+            raise ImportItemNotInReviewError(item.status)
+        if item.status != "needs_review":
+            raise ImportItemNotInReviewError(item.status)
+        if not resume_item:
+            raise ImportItemTypeUnsupportedError()
+        if candidates_fingerprint is None:
+            raise ImportItemFingerprintRequiredError()
+        document_id = item.source_document_id
+        if document_id is None:
+            raise ImportItemSourceMissingError()
+        profile = _item_profile(item)
+        if profile is None:
+            raise ImportItemPayloadInvalidError()
+        employees = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+        matches = _resume_matches(item, profile, employees)
+        if resume_candidates_fingerprint(matches) != candidates_fingerprint:
+            raise ImportItemCandidatesChangedError()
+        if any(STRONG_SIGNALS.intersection(signals) for _, signals in matches):
+            raise ImportItemStrongMatchError()
+        fingerprint = resume_employee_fingerprint(organization_id, document_id)
+        if await uow.knowledge.get_knowledge_item_by_fingerprint(
+            organization_id, "employee", fingerprint
+        ):
+            raise ImportItemStrongMatchError()
+        fields = resume_employee_fields(profile, document_id)
+        knowledge_item, _employee = await uow.knowledge.create_employee(
+            organization_id=organization_id, content_fingerprint=fingerprint, **fields
+        )
+        chunks = await uow.documents.list_chunks_for_document(document_id)
+        await uow.knowledge.associate_knowledge_item_chunks(
+            knowledge_item.id, [chunk.id for chunk in chunks]
+        )
+        updated = await uow.knowledge.update_import_item(
+            item_id, status="approved", target_knowledge_item_id=knowledge_item.id
+        )
+        await uow.audit.create(
+            organization_id=organization_id,
+            actor_type="user",
+            actor_id=str(actor_user_id),
+            action="knowledge_import_item_approve",
+            target_type="knowledge_import_item",
+            target_id=item_id,
+            before={"status": "needs_review"},
+            after={"status": updated.status},
+            metadata={
+                "decision": "new",
+                "employee": str(knowledge_item.id),
+                "candidates": sorted(str(e.knowledge_item_id) for e, _ in matches),
+            },
+        )
+        await uow.outbox.create(
+            aggregate_type=AGGREGATE_KNOWLEDGE_IMPORT_ITEM,
+            aggregate_id=item_id,
+            event_type=EVENT_RESUME_MERGE_APPROVED,
+            payload=resume_merge_approved_payload(item_id),
+            idempotency_key=resume_merge_approved_idempotency_key(item_id),
+        )
+        await uow.commit()
+        return updated
 
 
 # Plan item 80: the statuses a reviewer can reject from (a failed item can be
@@ -1860,6 +2158,7 @@ async def list_import_items_with_targets(
         batch = await uow.knowledge.get_import_batch(batch_id)
         if batch is None or batch.import_type != "bulk_resumes":
             return [(item, None) for item in items]
+        employees = await uow.knowledge.find_employee_duplicate_candidates(batch.organization_id)
         out: list[tuple[KnowledgeImportItem, ImportItemTarget | None]] = []
         for item in items:
             target: ImportItemTarget | None = None
@@ -1893,10 +2192,100 @@ async def list_import_items_with_targets(
                             and knowledge_item.source_document_id != item.source_document_id
                         ),
                         changes=(
-                            resume_merge_fields(employee, profile) if profile is not None else None
+                            resume_merge_fields(
+                                employee,
+                                profile,
+                                emails_held_by_others(employees, employee.knowledge_item_id),
+                            )
+                            if profile is not None
+                            else None
                         ),
                     )
             out.append((item, target))
+        return out
+
+
+@dataclass(frozen=True)
+class ImportItemCandidate:
+    """Plan item 111: one employee a resume item matches, as the review panel
+    shows it: the values, the signals it matched on, whether it is archived
+    (no merge), its own fingerprint (sent back with a pick) and what merging
+    into it would change."""
+
+    knowledge_item_id: uuid.UUID
+    name: str
+    email: str | None
+    current_title: str | None
+    professional_location: str | None
+    years_experience: float | None
+    resume_document_id: uuid.UUID | None
+    profile_review_status: str
+    archived: bool
+    signals: list[str]
+    fingerprint: str
+    changes: list[ResumeMergeField]
+
+
+@dataclass(frozen=True)
+class ImportItemCandidates:
+    """Plan item 111: a resume item's candidates, the fingerprint of the list
+    (sent back with either decision), and whether a strong signal matched
+    (then import as a new person is refused, Q3)."""
+
+    fingerprint: str
+    candidates: list[ImportItemCandidate]
+    strong_match: bool
+
+
+async def list_resume_candidates(batch_id: uuid.UUID) -> dict[uuid.UUID, ImportItemCandidates]:
+    """Plan item 111: the candidates of each resume item in review whose
+    resume and profile can be read, by item id. Other import types, decided
+    items, and items with no document or an unreadable profile have none
+    (they can only be rejected, as before)."""
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        if batch is None or batch.import_type != "bulk_resumes":
+            return {}
+        items = await uow.knowledge.list_import_items_for_batch(batch_id)
+        employees = await uow.knowledge.find_employee_duplicate_candidates(batch.organization_id)
+        out: dict[uuid.UUID, ImportItemCandidates] = {}
+        for item in items:
+            profile = _item_profile(item)
+            if item.status != "needs_review" or item.source_document_id is None or profile is None:
+                continue
+            matches = _resume_matches(item, profile, employees)
+            archived = await uow.knowledge.archived_item_ids(
+                employee.knowledge_item_id for employee, _ in matches
+            )
+            out[item.id] = ImportItemCandidates(
+                fingerprint=resume_candidates_fingerprint(matches),
+                candidates=[
+                    ImportItemCandidate(
+                        knowledge_item_id=employee.knowledge_item_id,
+                        name=employee.name,
+                        email=employee.email,
+                        current_title=employee.current_title,
+                        professional_location=employee.professional_location,
+                        years_experience=(
+                            float(employee.years_experience)
+                            if employee.years_experience is not None
+                            else None
+                        ),
+                        resume_document_id=employee.resume_document_id,
+                        profile_review_status=employee.profile_review_status,
+                        archived=employee.knowledge_item_id in archived,
+                        signals=list(signals),
+                        fingerprint=resume_target_fingerprint(employee),
+                        changes=resume_merge_fields(
+                            employee,
+                            profile,
+                            emails_held_by_others(employees, employee.knowledge_item_id),
+                        ),
+                    )
+                    for employee, signals in matches
+                ],
+                strong_match=any(STRONG_SIGNALS.intersection(s) for _, s in matches),
+            )
         return out
 
 

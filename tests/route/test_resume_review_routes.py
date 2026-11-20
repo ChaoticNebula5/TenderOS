@@ -237,16 +237,37 @@ async def test_the_listing_carries_the_change_list_and_a_broken_payload_answers_
     headers, user_id, org_id = register_actor()
     batch_id, item_id, _ = await _seed(org_id, user_id)
     [row] = client.get(f"/knowledge/import-batches/{batch_id}/items", headers=headers).json()
+    # Plan item 111: each entry also says whether another employee holds the
+    # resume's email (none does here).
     assert row["target_employee"]["changes"] == [
-        {"field": "email", "on_file": None, "from_resume": None, "changes": False},
+        {
+            "field": "email",
+            "on_file": None,
+            "from_resume": None,
+            "changes": False,
+            "held_by_other": False,
+        },
         {
             "field": "current_title",
             "on_file": "Analyst",
             "from_resume": "Lead Analyst",
             "changes": True,
+            "held_by_other": False,
         },
-        {"field": "professional_location", "on_file": None, "from_resume": None, "changes": False},
-        {"field": "years_experience", "on_file": None, "from_resume": 9.0, "changes": True},
+        {
+            "field": "professional_location",
+            "on_file": None,
+            "from_resume": None,
+            "changes": False,
+            "held_by_other": False,
+        },
+        {
+            "field": "years_experience",
+            "on_file": None,
+            "from_resume": 9.0,
+            "changes": True,
+            "held_by_other": False,
+        },
     ]
     async with UnitOfWork() as uow:
         await uow.knowledge.update_import_item(uuid.UUID(item_id), extracted_payload={"name": NAME})

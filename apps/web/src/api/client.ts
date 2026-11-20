@@ -938,6 +938,9 @@ export interface ImportItemFieldChange {
   on_file: string | number | null;
   from_resume: string | number | null;
   changes: boolean;
+  // Plan item 111: the resume's email belongs to another employee, so the
+  // merge keeps this one's.
+  held_by_other: boolean;
 }
 
 export interface ImportItemTarget {
@@ -956,10 +959,38 @@ export interface ImportItemTarget {
   changes: ImportItemFieldChange[] | null;
 }
 
+// Plan item 111: one employee a resume item in review matches, with the
+// signals it matched on, its own fingerprint (sent back with a pick) and
+// what merging into it would change.
+export interface ImportItemCandidate {
+  knowledge_item_id: string;
+  name: string;
+  email: string | null;
+  current_title: string | null;
+  professional_location: string | null;
+  years_experience: number | null;
+  resume_document_id: string | null;
+  profile_review_status: string;
+  archived: boolean;
+  signals: string[];
+  fingerprint: string;
+  changes: ImportItemFieldChange[];
+}
+
+// The candidates' fingerprint goes back with either decision; strong_match
+// means "Import as a new person" is refused (409 IMPORT_ITEM_STRONG_MATCH).
+export interface ImportItemCandidates {
+  fingerprint: string;
+  candidates: ImportItemCandidate[];
+  strong_match: boolean;
+}
+
 export interface ImportItemDetailResponse extends ImportItemResponse {
   extracted_payload: Record<string, unknown>;
   // Set for a resume item that names an employee; null otherwise.
   target_employee: ImportItemTarget | null;
+  // Set for a resume item in review whose resume can be read; null otherwise.
+  candidates: ImportItemCandidates | null;
 }
 
 export interface PatchKnowledgeItemRequest {
@@ -1021,13 +1052,32 @@ export function listImportItems(batchId: string): Promise<ImportItemDetailRespon
 // Plan item 80: a resume merge sends the fingerprint of the employee values
 // the reviewer was shown (target_employee.fingerprint); other items send
 // none.
+// Plan item 111: a pick names the candidate and sends the candidate list's
+// fingerprint too.
 export function approveImportItem(
   itemId: string,
   targetFingerprint: string | null = null,
+  pick: { employeeId: string; candidatesFingerprint: string } | null = null,
 ): Promise<ImportItemResponse> {
+  const body: Record<string, string | null> = { target_fingerprint: targetFingerprint };
+  if (pick !== null) {
+    body.target_employee_id = pick.employeeId;
+    body.candidates_fingerprint = pick.candidatesFingerprint;
+  }
   return apiFetch<ImportItemResponse>(`/knowledge/import-items/${itemId}/approve`, {
     method: "POST",
-    body: { target_fingerprint: targetFingerprint },
+    body,
+  });
+}
+
+// Plan item 111: the resume becomes a new employee.
+export function importItemAsNewEmployee(
+  itemId: string,
+  candidatesFingerprint: string,
+): Promise<ImportItemResponse> {
+  return apiFetch<ImportItemResponse>(`/knowledge/import-items/${itemId}/import-as-new`, {
+    method: "POST",
+    body: { candidates_fingerprint: candidatesFingerprint },
   });
 }
 

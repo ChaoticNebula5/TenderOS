@@ -83,6 +83,9 @@ class ImportItemFieldChangeResponse(BaseModel):
     on_file: str | float | None
     from_resume: str | float | None
     changes: bool
+    # Plan item 111: the resume's email belongs to another employee, so the
+    # merge keeps this one's.
+    held_by_other: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -111,11 +114,47 @@ class ImportItemTargetResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ImportItemCandidateResponse(BaseModel):
+    """Plan item 111: one employee a resume item in review matches
+    (knowledge_service.ImportItemCandidate). A pick sends its id and its
+    `fingerprint` back."""
+
+    knowledge_item_id: UUID
+    name: str
+    email: str | None
+    current_title: str | None
+    professional_location: str | None
+    years_experience: float | None
+    resume_document_id: UUID | None
+    profile_review_status: str
+    archived: bool
+    signals: list[str]
+    fingerprint: str
+    changes: list[ImportItemFieldChangeResponse]
+
+    model_config = {"from_attributes": True}
+
+
+class ImportItemCandidatesResponse(BaseModel):
+    """Plan item 111: a resume item's candidates. `fingerprint` goes back with
+    a pick or an import as a new person; `strong_match` means import as a new
+    person is refused (409 IMPORT_ITEM_STRONG_MATCH)."""
+
+    fingerprint: str
+    candidates: list[ImportItemCandidateResponse]
+    strong_match: bool
+
+    model_config = {"from_attributes": True}
+
+
 class ImportItemDetailResponse(ImportItemResponse):
     extracted_payload: dict
     # Plan item 80: set for a resume item that names an employee; null
     # for every other item.
     target_employee: ImportItemTargetResponse | None = None
+    # Plan item 111: set for a resume item in review whose resume can be
+    # read; null for every other item.
+    candidates: ImportItemCandidatesResponse | None = None
 
 
 class KnowledgeSelectionResponse(BaseModel):
@@ -169,6 +208,16 @@ class ApproveImportItemRequest(BaseModel):
     # shown. Required to approve a resume merge (422 without it); other
     # import types ignore it. The body itself is optional.
     target_fingerprint: str | None = None
+    # Plan item 111: the candidate to merge into, instead of the one the
+    # item names, with that candidate's fingerprint as target_fingerprint
+    # and the candidates.fingerprint the reviewer was shown.
+    target_employee_id: UUID | None = None
+    candidates_fingerprint: str | None = None
+
+
+class ImportAsNewEmployeeRequest(BaseModel):
+    # Plan item 111: the candidates.fingerprint the reviewer was shown.
+    candidates_fingerprint: str | None = None
 
 
 class SetKnowledgeSelectionRequest(BaseModel):
