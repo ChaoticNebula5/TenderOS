@@ -219,7 +219,7 @@ async def test_a_bid_edit_bumps_for_its_name_status_or_date_not_its_client():
 # ----------------------------------------------------------------------
 
 
-async def test_a_requirement_edit_bumps_only_for_category_or_mandatory():
+async def test_a_requirement_edit_bumps_only_for_category_mandatory_or_a_reject():
     bid = await _bid()
     chunk = await _chunk(bid["tender"])
     rid = await _requirement(bid["tender"], chunk)
@@ -237,7 +237,9 @@ async def test_a_requirement_edit_bumps_only_for_category_or_mandatory():
     await patch(mandatory=False)
     assert await _version(bid["tender"]) == start + 2
     await patch(action="reject")
-    assert await _version(bid["tender"]) == start + 2, "rejected_at is not projected (item 97)"
+    assert await _version(bid["tender"]) == start + 3, "a reject leaves the graph (item 97)"
+    await patch(action="reject")
+    assert await _version(bid["tender"]) == start + 3, "a second reject changes no graph"
 
 
 async def test_merge_and_split_each_bump_once():

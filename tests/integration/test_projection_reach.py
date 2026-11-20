@@ -8,6 +8,10 @@
    projector puts in its graph, and for no other. Each of the five reach
    paths is the only path for at least one item here, so dropping any one of
    them fails this test.
+3. A rejected requirement is out of scope (plan item 97, PROJECTION_SCOPE):
+   the projector leaves out its node, its compliance node, the edges into it
+   and a role whose every source is rejected, and the reach lookup leaves out
+   an employee picked only on such a role.
 
 The projector writes into a recording stand-in for the Neo4j session, so
 these tests read exactly the rows it would send, with no graph store.
@@ -17,7 +21,7 @@ import uuid
 from typing import Any
 
 import pytest
-from projection_inputs import PROJECTED_PROPERTIES
+from projection_inputs import PROJECTED_PROPERTIES, PROJECTION_SCOPE
 from tenderos_backend.db.repositories.tenders import TenderRepository
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import knowledge_service
@@ -50,6 +54,14 @@ class _RecordingSession:
             row
             for query, params in self.calls
             if f"MERGE (n:{label} " in query
+            for row in params.get("rows", [])
+        ]
+
+    def relationship_rows(self, rel_type: str) -> list[dict[str, Any]]:
+        return [
+            row
+            for query, params in self.calls
+            if f"[r:{rel_type}]" in query
             for row in params.get("rows", [])
         ]
 
@@ -108,6 +120,8 @@ async def _populated_bid() -> dict[str, Any]:
         ids["unreached_holder"] = await employee("Unreached Holder")
         # Left out: reaches only the other bid.
         ids["other_bid_employee"] = await employee("Other Bid Employee")
+        # Left out: selected only on a role whose every source is rejected.
+        ids["out_of_scope_employee"] = await employee("Out Of Scope Employee")
 
         cert, _ = await uow.knowledge.create_certification(
             organization_id=org_id,
@@ -222,6 +236,49 @@ async def _populated_bid() -> dict[str, Any]:
         )
         await uow.proposal.link_claim_requirement(claim.id, requirement.id)
         await uow.proposal.link_claim_evidence(claim.id, evidence.id)
+        # Plan item 97: a rejected requirement with a compliance entry, a role
+        # sourced only from it (with a pick), a role sourced from it and from
+        # the live one, and a link from the claim. Its entry cites the same
+        # evidence as the live entry, so only SUPPORTS to the live one stays.
+        rejected = await uow.requirements.create(
+            tender_id=tender.id,
+            display_code="EXP-002",
+            requirement_text="Twenty years of experience.",
+            normalized_text="twenty years of experience.",
+            category="experience",
+            mandatory=True,
+            source_chunk_id=chunk.id,
+            content_fingerprint=uuid.uuid4().hex,
+        )
+        await uow.requirements.reject(rejected.id)
+        rejected_entry = await uow.compliance.create_compliance_entry(
+            requirement_id=rejected.id, status="fully_compliant"
+        )
+        await uow.compliance.link_evidence(rejected_entry.id, evidence.id)
+        out_of_scope_role = await uow.talent.create_role_requirement(
+            tender_id=tender.id, role_name="Rejected Lead", content_fingerprint=uuid.uuid4().hex
+        )
+        await uow.talent.link_role_requirement_source(out_of_scope_role.id, rejected.id)
+        picked = await uow.talent.create_role_match(
+            out_of_scope_role.id, ids["out_of_scope_employee"]
+        )
+        await uow.talent.update_role_match(picked.id, human_selected=True)
+        mixed_role = await uow.talent.create_role_requirement(
+            tender_id=tender.id, role_name="Mixed Lead", content_fingerprint=uuid.uuid4().hex
+        )
+        await uow.talent.link_role_requirement_source(mixed_role.id, requirement.id)
+        await uow.talent.link_role_requirement_source(mixed_role.id, rejected.id)
+        await uow.proposal.link_claim_requirement(claim.id, rejected.id)
+        ids.update(
+            requirement=requirement.id,
+            entry=entry.id,
+            role=role.id,
+            claim=claim.id,
+            rejected=rejected.id,
+            rejected_entry=rejected_entry.id,
+            out_of_scope_role=out_of_scope_role.id,
+            mixed_role=mixed_role.id,
+        )
         await uow.proposal.link_claim_employee(claim.id, ids["named_employee"])
         for item_id, chosen in (
             (ids["selected_project"], True),
@@ -294,6 +351,7 @@ async def test_the_reach_lookup_matches_the_fact_nodes_the_projector_writes():
         "unreached_cert",
         "other_bid_employee",
         "company_document",
+        "out_of_scope_employee",
     }
     assert projected == {ids[name] for name in reach_paths}, "the test bid's own premise"
 
@@ -308,6 +366,43 @@ async def test_the_reach_lookup_matches_the_fact_nodes_the_projector_writes():
         assert await uow.knowledge.list_tender_ids_projecting(ids["other_bid_employee"]) == [
             ids["other"]
         ]
+
+
+async def test_a_rejected_requirement_and_what_hangs_off_it_are_not_projected():
+    """Plan item 97: every PROJECTION_SCOPE column has its case here."""
+    assert set(PROJECTION_SCOPE) == {"Requirement.rejected_at"}, "a new scope column needs a case"
+    ids = await _populated_bid()
+    session = await _project(ids["tender"])
+
+    def node_ids(label: str) -> set[str]:
+        return {row["id"] for row in session.node_rows(label)}
+
+    def edges(rel_type: str, start: str, end: str) -> set[tuple[str, str]]:
+        return {(row[start], row[end]) for row in session.relationship_rows(rel_type)}
+
+    live, rejected = str(ids["requirement"]), str(ids["rejected"])
+    assert node_ids("Requirement") == {live}
+    assert node_ids("Compliance") == {str(ids["entry"])}
+    assert node_ids("Role") == {str(ids["role"]), str(ids["mixed_role"])}
+    assert node_ids("ProposalClaim") == {str(ids["claim"])}, "the claim stays"
+    assert edges("DECIDES", "compliance_id", "requirement_id") == {(str(ids["entry"]), live)}
+    assert edges("SATISFIES", "role_id", "requirement_id") == {
+        (str(ids["role"]), live),
+        (str(ids["mixed_role"]), live),
+    }
+    assert edges("ADDRESSES", "claim_id", "requirement_id") == {(str(ids["claim"]), live)}
+    assert {compliance for _, compliance in edges("SUPPORTS", "evidence_id", "compliance_id")} == {
+        str(ids["entry"])
+    }
+    fills = {row["role_id"] for row in session.relationship_rows("FILLS")}
+    assert str(ids["out_of_scope_role"]) not in fills
+    sent = [
+        str(value)
+        for _query, params in session.calls
+        for row in params.get("rows", [])
+        for value in row.values()
+    ]
+    assert rejected not in sent, "nothing the projector sends names the rejected requirement"
 
 
 async def test_a_knowledge_edit_bumps_its_bids_once_each_in_sorted_order(monkeypatch):

@@ -247,9 +247,17 @@ class RequirementRepository:
         return result.scalar_one_or_none()
 
     async def list_clarification_items_for_tender(
-        self, tender_id: uuid.UUID
+        self, tender_id: uuid.UUID, include_rejected: bool = False
     ) -> list[ClarificationItem]:
-        result = await self._session.execute(
-            select(ClarificationItem).where(ClarificationItem.tender_id == tender_id)
-        )
+        """Plan item 97: a clarification linked to a rejected requirement is
+        out of scope for the bid, as the requirement is, so the requirement
+        gate's clarification_count and readiness's open_clarifications leave it
+        out. One with no requirement link stays. Nothing is deleted; the filter
+        reads rejected_at at query time."""
+        stmt = select(ClarificationItem).where(ClarificationItem.tender_id == tender_id)
+        if not include_rejected:
+            stmt = stmt.outerjoin(
+                Requirement, Requirement.id == ClarificationItem.requirement_id
+            ).where(Requirement.rejected_at.is_(None))
+        result = await self._session.execute(stmt)
         return list(result.scalars().all())

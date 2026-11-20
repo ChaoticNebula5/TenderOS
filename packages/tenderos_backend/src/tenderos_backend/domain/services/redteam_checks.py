@@ -94,6 +94,42 @@ async def check_unsupported_claims(
     return drafts
 
 
+CLAIM_ADDRESSES_REJECTED_REQUIREMENT = "claim_addresses_rejected_requirement"
+
+
+async def check_claims_addressing_rejected_requirements(
+    uow: UnitOfWork, tender_id: uuid.UUID
+) -> list[RedteamFindingDraft]:
+    """Plan item 97, Q1 (user decision b): a claim whose requirement links
+    are all to rejected requirements. The claim stays in the proposal and
+    stays checked (check_unsupported_claims still applies), since rejecting a
+    requirement does not take the sentence out of the bid; this asks a person
+    to rewrite or remove it. Minor, so it never blocks readiness (blocker 3
+    reads critical findings only) and is not counted at the finding gate.
+
+    The condition names the claim and that it has no live link, not the
+    rejected requirements: a second rejected link is the same problem, so it
+    keeps the same finding."""
+    drafts: list[RedteamFindingDraft] = []
+    for claim, codes in await uow.proposal.list_claims_addressing_only_rejected_requirements(
+        tender_id
+    ):
+        drafts.append(
+            RedteamFindingDraft(
+                target_type="proposal_claim",
+                target_id=claim.id,
+                finding_category=CLAIM_ADDRESSES_REJECTED_REQUIREMENT,
+                severity="minor",
+                finding_text=(
+                    "This claim addresses only rejected requirements "
+                    f"({', '.join(codes)}). Rewrite it or remove it."
+                ),
+                violated_condition=f"proposal_claim_id={claim.id}; live_requirement_links=0",
+            )
+        )
+    return drafts
+
+
 async def check_role_qualification_gaps(
     uow: UnitOfWork, tender_id: uuid.UUID
 ) -> list[RedteamFindingDraft]:

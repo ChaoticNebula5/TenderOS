@@ -86,7 +86,13 @@ async def project_tender(
     # Gather every tender-scoped row up front (all reads happen before any
     # write, so a read failure never leaves a half-written graph).
     # ------------------------------------------------------------------
-    requirements = await uow.requirements.list_for_tender(tender_id, include_rejected=True)
+    # Plan item 97: live requirements only. A rejected requirement is out of
+    # scope for the bid, and so are its compliance entry (the listing leaves
+    # it out) and a role whose every source is rejected (likewise), so no
+    # graph check or impact walk reaches them. The edges into it are filtered
+    # below by requirement_by_id. Claims stay: a claim is text in the
+    # proposal, so only its ADDRESSES edge to the rejected requirement goes.
+    requirements = await uow.requirements.list_for_tender(tender_id)
     evidence_links = await uow.compliance.list_evidence_links_for_tender(tender_id)
     compliance_entries = await uow.compliance.list_compliance_entries_for_tender(tender_id)
     role_requirements = await uow.talent.list_role_requirements_for_tender(tender_id)
@@ -415,6 +421,7 @@ async def project_tender(
             {"role_id": str(role_id), "requirement_id": str(src.requirement_id)}
             for role_id, sources in role_sources_by_role.items()
             for src in sources
+            if src.requirement_id in requirement_by_id
         ],
     )
     provides_rows = [
@@ -460,6 +467,7 @@ async def project_tender(
             {"claim_id": str(claim_id), "requirement_id": str(link.requirement_id)}
             for claim_id, links in claim_requirements_by_claim.items()
             for link in links
+            if link.requirement_id in requirement_by_id
         ],
     )
     named_in_rows: list[dict[str, object]] = [
