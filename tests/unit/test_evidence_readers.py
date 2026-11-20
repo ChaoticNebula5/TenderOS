@@ -38,6 +38,9 @@ ROSTER_READERS = Counter(
         # Plan item 111 (PR 24): a resume item's candidates say which are
         # removed from the roster (no merge into them), a roster question.
         ("domain/services/knowledge_service.py", "list_resume_candidates"): 1,
+        # Plan item 112: the certificate holder choice leaves out employees
+        # removed from the roster, a roster question.
+        ("domain/services/knowledge_service.py", "list_certificate_holders"): 1,
     }
 )
 

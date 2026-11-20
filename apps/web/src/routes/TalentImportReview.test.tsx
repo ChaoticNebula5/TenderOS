@@ -21,6 +21,7 @@ vi.mock("../api/client", async (importOriginal) => {
     listImportItems: vi.fn(),
     approveImportItem: vi.fn(),
     importItemAsNewEmployee: vi.fn(),
+    listCertificateHolders: vi.fn(),
     rejectImportItem: vi.fn(),
     uploadResumes: vi.fn(),
     uploadEmployeeMaster: vi.fn(),
@@ -36,6 +37,7 @@ const listImportBatches = vi.mocked(apiClient.listImportBatches);
 const listImportItems = vi.mocked(apiClient.listImportItems);
 const approveImportItem = vi.mocked(apiClient.approveImportItem);
 const importItemAsNewEmployee = vi.mocked(apiClient.importItemAsNewEmployee);
+const listCertificateHolders = vi.mocked(apiClient.listCertificateHolders);
 const uploadResumes = vi.mocked(apiClient.uploadResumes);
 const rejectImportItem = vi.mocked(apiClient.rejectImportItem);
 
@@ -69,6 +71,9 @@ function item(overrides: Partial<ImportItemDetailResponse> = {}): ImportItemDeta
     target_employee: null,
     // Plan item 111: the API's candidates field, null unless a test sets it.
     candidates: null,
+    // Plan item 112: the master fields, null unless a test sets them.
+    master_target: null,
+    master_candidates: null,
     ...overrides,
   };
 }
@@ -539,8 +544,11 @@ describe("plan item 80: approving a resume merges it", () => {
     expect(row.querySelector("td")!.textContent).toBe("CV.docx");
   });
 
-  it("keeps Approve for another import type's item that names no one", async () => {
-    listImportBatches.mockResolvedValue([batch({ import_type: "employee_master_xlsx" })]);
+  // Plan item 112: an employee-master item naming no one now gets candidates
+  // (and a certification item a holder choice) instead of Approve; a type
+  // whose approval still changes the status only keeps Approve.
+  it("keeps Approve for a status-only import type's item that names no one", async () => {
+    listImportBatches.mockResolvedValue([batch({ import_type: "manual" })]);
     listImportItems.mockResolvedValue([{ ...NO_TARGET, source_ref: "row_2" }]);
     const user = userEvent.setup();
     renderScreen();
@@ -948,5 +956,325 @@ describe("plan item 111: pick the employee or import as a new person", () => {
         .map((b) => b.textContent),
     ).toEqual(["Merge into Rowan B. Quill", "Approve", "Reject"]);
     expect(row).toHaveTextContent("It also matches");
+  });
+});
+
+// Plan item 112: an employee-master item applies its row (Approve on the
+// employee it names, with the change list; "Apply to NAME" for a candidate;
+// "Import as a new person"), and a certification item is recorded for a
+// holder chosen from the organization's live employees. No new button
+// contains "Approve": full-flow.spec.ts clicks any button whose name does.
+describe("plan item 112: employee-master and certification approval", () => {
+  function masterChanges(
+    overrides: Partial<Record<string, Partial<apiClient.MasterApplyField>>> = {},
+  ): apiClient.MasterApplyField[] {
+    const base: apiClient.MasterApplyField[] = [
+      {
+        field: "name",
+        on_file: "Tamsin Reed",
+        from_sheet: "Tamsin Reed",
+        changes: false,
+        held_by_other: false,
+      },
+      {
+        field: "employee_code",
+        on_file: null,
+        from_sheet: "EMP-9",
+        changes: true,
+        held_by_other: false,
+      },
+      {
+        field: "current_title",
+        on_file: "Analyst",
+        from_sheet: "Lead Analyst",
+        changes: true,
+        held_by_other: false,
+      },
+      {
+        field: "status",
+        on_file: "active",
+        from_sheet: null,
+        changes: false,
+        held_by_other: false,
+      },
+    ];
+    return base.map((entry) => ({ ...entry, ...overrides[entry.field] }));
+  }
+
+  function masterCandidate(
+    overrides: Partial<apiClient.MasterCandidate> = {},
+  ): apiClient.MasterCandidate {
+    return {
+      knowledge_item_id: "m1",
+      name: "Tamsin Reed",
+      employee_code: "EMP-1",
+      current_title: "Analyst",
+      status: "active",
+      archived: false,
+      signals: ["name"],
+      fingerprint: "fp-m1",
+      changes: masterChanges(),
+      ...overrides,
+    };
+  }
+
+  const MASTER_NAMED = item({
+    id: "i7",
+    source_ref: "row_2",
+    status: "needs_review",
+    error_message: "normalized name matched without a strong identity signal",
+    extracted_payload: { employee_code: "EMP-9", name: "Tamsin Reed", role: "Lead Analyst" },
+    master_target: {
+      knowledge_item_id: "m1",
+      name: "Tamsin Reed",
+      employee_code: null,
+      current_title: "Analyst",
+      status: "active",
+      archived: false,
+      fingerprint: "fp-target",
+      changes: masterChanges(),
+    },
+    master_candidates: {
+      fingerprint: "mc-1",
+      strong_match: false,
+      candidates: [masterCandidate({ employee_code: null })],
+    },
+  });
+
+  const MASTER_NO_TARGET = item({
+    ...MASTER_NAMED,
+    id: "i8",
+    master_target: null,
+    master_candidates: {
+      fingerprint: "mc-2",
+      strong_match: false,
+      candidates: [
+        masterCandidate(),
+        masterCandidate({ knowledge_item_id: "m2", employee_code: "EMP-2", fingerprint: "fp-m2" }),
+      ],
+    },
+  });
+
+  async function openMaster(user: ReturnType<typeof userEvent.setup>) {
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Review items" }));
+    await screen.findAllByText("Tamsin Reed");
+    return within(itemsSection()).getAllByRole("row")[1];
+  }
+
+  beforeEach(() => {
+    listImportBatches.mockResolvedValue([batch({ import_type: "employee_master_xlsx" })]);
+  });
+
+  it("shows what approving applies to the named employee and sends its fingerprint", async () => {
+    listImportItems.mockResolvedValue([MASTER_NAMED]);
+    approveImportItem.mockResolvedValue(MASTER_NAMED);
+    const user = userEvent.setup();
+    const row = await openMaster(user);
+    const changes = within(row).getByLabelText("Changes on approval");
+    expect(changes).toHaveTextContent("Not set → EMP-9 (changes)");
+    expect(changes).toHaveTextContent("Analyst → Lead Analyst (changes)");
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+      // The named employee is the only candidate, so no Apply; a name-only
+      // match can still be a new person.
+    ).toEqual(["Import as a new person", "Approve", "Reject"]);
+    await user.click(within(row).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveImportItem).toHaveBeenCalledWith("i7", "fp-target"));
+  });
+
+  it("says an archived employee stays archived", async () => {
+    listImportItems.mockResolvedValue([
+      { ...MASTER_NAMED, master_target: { ...MASTER_NAMED.master_target!, archived: true } },
+    ]);
+    const row = await openMaster(userEvent.setup());
+    expect(row).toHaveTextContent("Approving updates their record and they stay archived");
+  });
+
+  it("shows a code another employee holds as kept", async () => {
+    listImportItems.mockResolvedValue([
+      {
+        ...MASTER_NAMED,
+        master_target: {
+          ...MASTER_NAMED.master_target!,
+          changes: masterChanges({ employee_code: { changes: false, held_by_other: true } }),
+        },
+      },
+    ]);
+    const row = await openMaster(userEvent.setup());
+    expect(row).toHaveTextContent("Not set (kept: another employee has EMP-9)");
+  });
+
+  it("offers Apply to each same-name candidate, named apart by code, and no Approve", async () => {
+    listImportItems.mockResolvedValue([MASTER_NO_TARGET]);
+    approveImportItem.mockResolvedValue(MASTER_NO_TARGET);
+    const user = userEvent.setup();
+    const row = await openMaster(user);
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual([
+      "Apply to Tamsin Reed (EMP-1)",
+      "Apply to Tamsin Reed (EMP-2)",
+      "Import as a new person",
+      "Reject",
+    ]);
+    expect(within(row).queryByRole("button", { name: /Approve/ })).toBeNull();
+    await user.click(within(row).getByRole("button", { name: "Apply to Tamsin Reed (EMP-2)" }));
+    await waitFor(() =>
+      expect(approveImportItem).toHaveBeenCalledWith("i8", "fp-m2", {
+        employeeId: "m2",
+        candidatesFingerprint: "mc-2",
+      }),
+    );
+  });
+
+  it("imports a master row as a new person with the list's fingerprint", async () => {
+    listImportItems.mockResolvedValue([MASTER_NO_TARGET]);
+    importItemAsNewEmployee.mockResolvedValue(MASTER_NO_TARGET);
+    const user = userEvent.setup();
+    const row = await openMaster(user);
+    await user.click(within(row).getByRole("button", { name: "Import as a new person" }));
+    await waitFor(() => expect(importItemAsNewEmployee).toHaveBeenCalledWith("i8", "mc-2"));
+  });
+
+  it("offers no Import as a new person when a code matched, and says why", async () => {
+    listImportItems.mockResolvedValue([
+      {
+        ...MASTER_NO_TARGET,
+        master_candidates: { ...MASTER_NO_TARGET.master_candidates!, strong_match: true },
+      },
+    ]);
+    const row = await openMaster(userEvent.setup());
+    expect(within(row).queryByRole("button", { name: "Import as a new person" })).toBeNull();
+    expect(row).toHaveTextContent("cannot be imported as a new person");
+  });
+
+  it("offers only Reject for a master row that cannot be read", async () => {
+    listImportItems.mockResolvedValue([
+      { ...MASTER_NO_TARGET, master_candidates: null, extracted_payload: { name: "Tamsin Reed" } },
+    ]);
+    const row = await openMaster(userEvent.setup());
+    expect(
+      within(row)
+        .queryAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Reject"]);
+    expect(row).toHaveTextContent("This row's fields could not be read");
+  });
+
+  describe("certifications", () => {
+    const HOLDERS: apiClient.CertificateHolder[] = [
+      {
+        knowledge_item_id: "h1",
+        name: "Ivo Marsh",
+        employee_code: null,
+        email: "ivo.one@example.test",
+        current_title: "Engineer",
+        fingerprint: "fp-h1",
+      },
+      {
+        knowledge_item_id: "h2",
+        name: "Ivo Marsh",
+        employee_code: "EMP-3",
+        email: null,
+        current_title: "Engineer",
+        fingerprint: "fp-h2",
+      },
+      {
+        knowledge_item_id: "h3",
+        name: "Nell Oak",
+        employee_code: null,
+        email: null,
+        current_title: null,
+        fingerprint: "fp-h3",
+      },
+    ];
+
+    const CERT = item({
+      id: "i9",
+      source_ref: "row_4",
+      status: "needs_review",
+      error_message: "no employee found with employee_code 'EMP-9' in this organization",
+      extracted_payload: { employee_ref: "EMP-9", name: "PRINCE2", issuer: "Axelos" },
+    });
+
+    async function openCert(user: ReturnType<typeof userEvent.setup>) {
+      renderScreen();
+      await user.click(await screen.findByRole("button", { name: "Review items" }));
+      await screen.findByText("PRINCE2");
+      await waitFor(() => expect(listCertificateHolders).toHaveBeenCalledWith("b1"));
+      return within(itemsSection()).getAllByRole("row")[1];
+    }
+
+    beforeEach(() => {
+      listImportBatches.mockResolvedValue([batch({ import_type: "certification_documents" })]);
+      listCertificateHolders.mockResolvedValue(HOLDERS);
+    });
+
+    it("lists the holders named apart, and records for the chosen one", async () => {
+      listImportItems.mockResolvedValue([CERT]);
+      approveImportItem.mockResolvedValue(CERT);
+      const user = userEvent.setup();
+      const row = await openCert(user);
+      const select = await within(row).findByLabelText("Holder");
+      await waitFor(() =>
+        expect(
+          within(select)
+            .getAllByRole("option")
+            .map((o) => o.textContent),
+        ).toEqual([
+          "Choose an employee",
+          "Ivo Marsh (ivo.one@example.test)",
+          "Ivo Marsh (EMP-3)",
+          "Nell Oak",
+        ]),
+      );
+      expect(
+        within(row)
+          .queryAllByRole("button")
+          .map((b) => b.textContent),
+      ).toEqual(["Record for the chosen holder", "Reject"]);
+      expect(
+        within(row).getByRole("button", { name: "Record for the chosen holder" }),
+      ).toBeDisabled();
+      await user.selectOptions(select, "h1");
+      expect(row).toHaveTextContent(
+        "Ivo Marsh has no employee code; recording this gives them EMP-9",
+      );
+      await user.click(within(row).getByRole("button", { name: "Record for the chosen holder" }));
+      await waitFor(() =>
+        expect(approveImportItem).toHaveBeenCalledWith("i9", "fp-h1", { employeeId: "h1" }),
+      );
+    });
+
+    // PR 25's review: a different code on file is kept, and the panel asks
+    // for the sheet to be fixed instead.
+    it("says a holder's different code is kept and asks to fix the sheet", async () => {
+      listImportItems.mockResolvedValue([CERT]);
+      const user = userEvent.setup();
+      const row = await openCert(user);
+      await user.selectOptions(await within(row).findByLabelText("Holder"), "h2");
+      expect(row).not.toHaveTextContent("has no employee code");
+      expect(row).toHaveTextContent(
+        "This sheet's holder code (EMP-9) doesn't match Ivo Marsh's code (EMP-3). Fix it in " +
+          "the sheet so the row imports cleanly next time.",
+      );
+      await user.selectOptions(within(row).getByLabelText("Holder"), "h1");
+      expect(row).not.toHaveTextContent("doesn't match");
+    });
+
+    it("says a company-wide certificate has no home yet for a blank holder", async () => {
+      listImportItems.mockResolvedValue([
+        { ...CERT, extracted_payload: { employee_ref: null, name: "PRINCE2" } },
+      ]);
+      const row = await openCert(userEvent.setup());
+      expect(row).toHaveTextContent(
+        "A certificate held by the company rather than a person cannot be recorded yet",
+      );
+    });
   });
 });

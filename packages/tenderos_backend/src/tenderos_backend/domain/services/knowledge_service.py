@@ -27,6 +27,7 @@ from tenderos_backend.agents.knowledge.relationships import (
 )
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
 from tenderos_backend.core.enums import Role
+from tenderos_backend.core.evidence_validity import today_utc
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.document import Document
 from tenderos_backend.db.models.knowledge import (
@@ -393,66 +394,212 @@ async def _create_or_get_employee(
             return existing.id
 
 
-async def _create_or_get_certification(
-    organization_id: uuid.UUID,
-    fingerprint: str,
-    source_document_id: uuid.UUID,
-    chunk_text: str,
-    title: str,
-    holder_employee_item_id: uuid.UUID | None = None,
-    issuer: str | None = None,
-    credential_id: str | None = None,
-    valid_from: date | None = None,
-    valid_until: date | None = None,
-    status: str = "active",
-) -> uuid.UUID:
-    """Same shape and same reason as _create_or_get_employee above, for
-    import_certification_row's own NEW-certification branch - with one
-    addition, because this call site is not like the employee ones.
-    import_employee_master_row/import_resume attach an already-committed
-    document's real chunk id; import_certification_row instead fabricates
-    a synthetic one (document_service.create_synthetic_chunk) for its own
-    source_chunk_id.
-    If that chunk were created on the CALLER's uow before calling this
-    function (this function's own separate UnitOfWork, a separate
-    connection), a losing racer's chunk would already be committed by the
-    time create_certification's IntegrityError fires here - an orphaned,
-    never-referenced document_chunks row left behind on every lost race.
-    Creating the chunk INSIDE this function's own transaction instead
-    means a loser's chunk rolls back together with its failed insert -
-    genuinely no orphan, not just a tolerated one.
+# Plan item 112 (user decisions 2026-11-20): what an employee-master row
+# writes onto an employee, in the order the review panel shows it. The import
+# types whose items are master rows.
+MASTER_APPLY_FIELDS = ("name", "employee_code", "current_title", "status")
+MASTER_IMPORT_TYPES = frozenset({"employee_master_csv", "employee_master_xlsx"})
+# The fields of MASTER_APPLY_FIELDS on the employee's graph node (the code is
+# not projected: tests/projection_inputs.py's PROJECTION_SCOPE).
+_MASTER_PROJECTED_FIELDS = frozenset({"name", "current_title", "status"})
+# The automatic branch's audit actor (Q8): an apply no person decided.
+_MASTER_IMPORT_ACTOR = "employee_master_import"
 
-    Parameters mirror KnowledgeRepository.create_certification's own
-    signature exactly, same reasoning as _create_or_get_employee's own
-    docstring on why this isn't a **fields: object passthrough.
-    """
-    async with UnitOfWork() as uow:
-        try:
-            chunk = await create_synthetic_chunk(uow, source_document_id, chunk_text)
-            knowledge_item, _certification = await uow.knowledge.create_certification(
-                organization_id=organization_id,
-                title=title,
-                content_fingerprint=fingerprint,
-                holder_employee_item_id=holder_employee_item_id,
-                issuer=issuer,
-                credential_id=credential_id,
-                valid_from=valid_from,
-                valid_until=valid_until,
-                source_document_id=source_document_id,
-                source_chunk_id=chunk.id,
-                status=status,
-            )
-            await uow.commit()
-            return knowledge_item.id
-        except IntegrityError:
-            await uow.rollback()
-            async with UnitOfWork() as reread_uow:
-                existing = await reread_uow.knowledge.get_knowledge_item_by_fingerprint(
-                    organization_id, "certification", fingerprint
-                )
-            if existing is None:
-                raise
-            return existing.id
+
+@dataclass(frozen=True)
+class MasterApplyField:
+    """One of MASTER_APPLY_FIELDS as the apply sees it: the value on file,
+    the sheet's (None where it writes nothing: a blank cell, or a status that
+    maps to none), and whether the apply writes it. The review panel renders
+    these as they are; it has no copy of the rule."""
+
+    field: str
+    on_file: object
+    from_sheet: object
+    changes: bool
+    # The sheet's code belongs to another employee, so it is not written:
+    # employee codes are unique in an organization (uq_employee_code_per_org).
+    held_by_other: bool = False
+
+
+def master_row_from_payload(payload: dict) -> EmployeeMasterRow | None:
+    """A master import item's extracted_payload as the row it was made from
+    (import_employee_master_row stores the parser's values, already trimmed);
+    None when it does not read as one (no name)."""
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    def text(key: str) -> str | None:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            return None
+        return value.strip() or None
+
+    return EmployeeMasterRow(
+        row_number=0,
+        employee_code=text("employee_code"),
+        name=name.strip(),
+        role=text("role"),
+        status=text("status"),
+    )
+
+
+def codes_held_by_others(employees: list[Employee], employee_id: uuid.UUID) -> frozenset[str]:
+    """The employee codes of every employee on file other than this one."""
+    return frozenset(
+        other.employee_code
+        for other in employees
+        if other.knowledge_item_id != employee_id and other.employee_code is not None
+    )
+
+
+def master_apply_fields(
+    employee: Employee,
+    item_status: str,
+    row: EmployeeMasterRow,
+    held_codes: frozenset[str] = frozenset(),
+) -> list[MasterApplyField]:
+    """Every field of MASTER_APPLY_FIELDS, in that order. The rule:
+    - the title: the row's role wherever it has one (the master is the
+      organization's own HR record, so it overwrites even a verified title,
+      as the import always has);
+    - the status: only "removed" maps to one (archived). Nothing restores an
+      archived employee (Q6, user decision 2026-11-20: parity with the
+      import); restoring is the profile's own action;
+    - the name: the sheet's, when it differs as the duplicate check compares
+      names (Q5 b: the review case where the code matched);
+    - the code: the sheet's, when it has one that differs, unless another
+      employee holds it (Q5 b, and for a name match whose sheet code differs
+      from the one on file: the user's addition 2026-11-20).
+    In the automatic branch the name and the code never differ (a duplicate
+    is a code match with the same name), so the one rule serves both."""
+    new_status = _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS.get(row.status or "")
+    code_held = row.employee_code is not None and row.employee_code in held_codes
+    return [
+        MasterApplyField(
+            field="name",
+            on_file=employee.name,
+            from_sheet=row.name,
+            changes=normalize_employee_name(row.name) != normalize_employee_name(employee.name),
+        ),
+        MasterApplyField(
+            field="employee_code",
+            on_file=employee.employee_code,
+            from_sheet=row.employee_code,
+            changes=(
+                row.employee_code is not None
+                and not code_held
+                and row.employee_code != employee.employee_code
+            ),
+            held_by_other=code_held,
+        ),
+        MasterApplyField(
+            field="current_title",
+            on_file=employee.current_title,
+            from_sheet=row.role,
+            changes=row.role is not None and row.role != employee.current_title,
+        ),
+        MasterApplyField(
+            field="status",
+            on_file=item_status,
+            from_sheet=new_status,
+            changes=new_status is not None and new_status != item_status,
+        ),
+    ]
+
+
+def master_target_fingerprint(employee: Employee, item_status: str) -> str:
+    """What the master panel shows of an employee, as one hash: the name,
+    the code, the title and the status. Approval compares it with the values
+    read under the employee's row lock."""
+    shown = {
+        "name": employee.name,
+        "employee_code": employee.employee_code,
+        "current_title": employee.current_title,
+        "status": item_status,
+    }
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
+def _master_audit_values(employee: Employee, item_status: str) -> dict[str, object]:
+    return {
+        "name": employee.name,
+        "employee_code": employee.employee_code,
+        "current_title": employee.current_title,
+        "status": item_status,
+    }
+
+
+async def _apply_master_row_to_employee(
+    uow: UnitOfWork,
+    organization_id: uuid.UUID,
+    employee: Employee,
+    knowledge_item: KnowledgeItem,
+    row: EmployeeMasterRow,
+    *,
+    actor_type: str,
+    actor_id: str,
+    import_item_id: uuid.UUID,
+) -> dict[str, tuple[object, object]]:
+    """The one master apply (plan item 112), for import_employee_master_row's
+    automatic branch and for approval, so the two cannot drift. `employee`
+    and `knowledge_item` are read under their row locks by the caller, in
+    that order (FOR NO KEY UPDATE: both are written here). Writes the
+    changed fields of master_apply_fields; bumps the bids projecting the
+    employee if the name, the title or the status changed (plan item 95; a
+    "removed" row archives, plan items 86 and 88); writes an
+    employee_master_apply audit row (Q8, both callers). Returns the changes.
+    Lock order: the employee, then its knowledge item, then the bids."""
+    others = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+    held = codes_held_by_others(others, employee.knowledge_item_id)
+    entries = master_apply_fields(employee, knowledge_item.status, row, held)
+    changes = {entry.field: (entry.on_file, entry.from_sheet) for entry in entries if entry.changes}
+    before = _master_audit_values(employee, knowledge_item.status)
+    employee_fields = {field: new for field, (_old, new) in changes.items() if field != "status"}
+    if employee_fields:
+        await uow.knowledge.update_employee(employee.knowledge_item_id, **employee_fields)
+    if "status" in changes:
+        await uow.knowledge.update_knowledge_item(
+            employee.knowledge_item_id, status=changes["status"][1]
+        )
+    if _MASTER_PROJECTED_FIELDS.intersection(changes):
+        await _bump_bids_projecting(uow, employee.knowledge_item_id)
+    await uow.audit.create(
+        organization_id=organization_id,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        action="employee_master_apply",
+        target_type="employee",
+        target_id=employee.knowledge_item_id,
+        before=before,
+        after=_master_audit_values(employee, knowledge_item.status),
+        metadata={"import_item_id": str(import_item_id), "fields_changed": sorted(changes)},
+    )
+    return changes
+
+
+class MasterEmployeeFields(TypedDict):
+    """What an employee made from a master row holds: one definition for
+    import_employee_master_row's NEW branch and for a reviewer's import as a
+    new person (plan item 112), so the two cannot drift."""
+
+    name: str
+    title: str
+    employee_code: str | None
+    current_title: str | None
+
+
+def master_employee_fingerprint(organization_id: uuid.UUID, row: EmployeeMasterRow) -> str:
+    return _fingerprint(
+        str(organization_id), row.employee_code or "", normalize_employee_name(row.name)
+    )
+
+
+def master_employee_fields(row: EmployeeMasterRow) -> MasterEmployeeFields:
+    return MasterEmployeeFields(
+        name=row.name, title=row.name, employee_code=row.employee_code, current_title=row.role
+    )
 
 
 async def import_employee_master_row(
@@ -520,40 +667,35 @@ async def import_employee_master_row(
             # Plan item 59, fix 7: "before" comes from the employee's row
             # locked (the duplicate check read it unlocked), then from its
             # knowledge item locked. Lock order: the employee, then the item,
-            # then the bids' tenders, as verify and the resume merge.
+            # then the bids' tenders, as verify and the resume merge. Plan
+            # item 112: through the one apply approval uses too.
             employee = await uow.knowledge.get_employee_for_update(target_id)
             if employee is None:
                 raise EmployeeNotFoundError()
-            before_title = employee.current_title
-            new_title = row.role or before_title
-            await uow.knowledge.update_employee(target_id, current_title=new_title)
-            projected_changed = new_title != before_title
-            if item_status:
-                existing = await uow.knowledge.get_knowledge_item_for_update(target_id)
-                before_status = existing.status if existing is not None else ""
-                await uow.knowledge.update_knowledge_item(target_id, status=item_status)
-                projected_changed = projected_changed or item_status != before_status
-            if projected_changed:
-                # The title and status are on the employee's graph node
-                # (plan item 95; a "removed" row archives, plan items 86, 88).
-                await _bump_bids_projecting(uow, target_id)
+            knowledge_item = await uow.knowledge.get_knowledge_item_for_update(target_id)
+            if knowledge_item is None:
+                raise EmployeeNotFoundError()
+            await _apply_master_row_to_employee(
+                uow,
+                organization_id,
+                employee,
+                knowledge_item,
+                row,
+                actor_type="system",
+                actor_id=_MASTER_IMPORT_ACTOR,
+                import_item_id=import_item.id,
+            )
             updated = await uow.knowledge.update_import_item(
                 import_item.id, status="approved", target_knowledge_item_id=target_id
             )
             await uow.commit()
             return updated
 
-        # NEW
-        fingerprint = _fingerprint(
-            str(organization_id), row.employee_code or "", normalize_employee_name(row.name)
-        )
+        # NEW (plan item 112: one definition with a reviewer's import as new)
         knowledge_item_id = await _create_or_get_employee(
             organization_id,
-            fingerprint,
-            name=row.name,
-            title=row.name,
-            employee_code=row.employee_code,
-            current_title=row.role,
+            master_employee_fingerprint(organization_id, row),
+            **master_employee_fields(row),
         )
         if item_status:
             # _create_or_get_employee commits on its own and can converge onto
@@ -1165,6 +1307,121 @@ async def import_capability(
         return updated
 
 
+def certification_row_from_payload(payload: dict) -> CertificationRow | None:
+    """A certification import item's extracted_payload as the row it was
+    made from (plan item 112); None when it does not read as one (no name,
+    or a date that is not an ISO date)."""
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    def text(key: str) -> str | None:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            return None
+        return value.strip() or None
+
+    def day(key: str) -> tuple[bool, date | None]:
+        value = payload.get(key)
+        if value is None:
+            return True, None
+        if not isinstance(value, str):
+            return False, None
+        try:
+            return True, date.fromisoformat(value)
+        except ValueError:
+            return False, None
+
+    issue_ok, issue_date = day("issue_date")
+    expiry_ok, expiry_date = day("expiry_date")
+    if not (issue_ok and expiry_ok):
+        return None
+    return CertificationRow(
+        row_number=0,
+        cert_key=text("cert_key"),
+        employee_ref=text("employee_ref"),
+        name=name.strip(),
+        issuer=text("issuer"),
+        issue_date=issue_date,
+        expiry_date=expiry_date,
+    )
+
+
+def certification_fingerprint(
+    organization_id: uuid.UUID, holder_id: uuid.UUID, row: CertificationRow
+) -> str:
+    """A certificate's identity: (holder, name, issue date, expiry date)."""
+    return _fingerprint(
+        str(organization_id),
+        str(holder_id),
+        row.name,
+        row.issue_date.isoformat() if row.issue_date else "",
+        row.expiry_date.isoformat() if row.expiry_date else "",
+    )
+
+
+async def _create_certificate_from_row(
+    uow: UnitOfWork,
+    organization_id: uuid.UUID,
+    holder_id: uuid.UUID,
+    row: CertificationRow,
+    source_document_id: uuid.UUID,
+    today: date,
+) -> tuple[uuid.UUID, bool]:
+    """The one certificate creation (plan item 112), for
+    import_certification_row's automatic branch and for approval with a
+    chosen holder, so the two cannot drift. Returns (the certificate's
+    knowledge item id, whether this call created it).
+
+    An existing certificate with this fingerprint is the answer. Otherwise
+    the status is expired or active against `today`, and a synthetic chunk
+    "<name>, issued by <issuer>, valid from <date> to <date>." on the sheet
+    (reused for the same text, plan item 59 PR 19) is its source. Both are
+    written in the caller's transaction, inside a savepoint: a concurrent
+    identical row that commits first makes the insert fail on
+    uq_knowledge_item_fingerprint, the savepoint rolls back (the chunk with
+    it, so no orphan), and the certificate that won is read and returned.
+    The chunk's per-document lock is held until the caller commits.
+
+    No bump: a new certificate reaches no bid until something links it
+    (tests/projection_inputs.py's ALLOWED_WITHOUT_BUMP)."""
+    fingerprint = certification_fingerprint(organization_id, holder_id, row)
+    existing = await uow.knowledge.get_knowledge_item_by_fingerprint(
+        organization_id, "certification", fingerprint
+    )
+    if existing is not None:
+        return existing.id, False
+    status = "expired" if row.expiry_date and row.expiry_date < today else "active"
+    chunk_text = (
+        f"{row.name}, issued by {row.issuer or 'an unspecified issuer'}, "
+        f"valid from {row.issue_date.isoformat() if row.issue_date else 'an unspecified date'} "
+        f"to {row.expiry_date.isoformat() if row.expiry_date else 'an unspecified date'}."
+    )
+    try:
+        async with uow.session.begin_nested():
+            chunk = await create_synthetic_chunk(uow, source_document_id, chunk_text)
+            knowledge_item, _certification = await uow.knowledge.create_certification(
+                organization_id=organization_id,
+                title=row.name,
+                content_fingerprint=fingerprint,
+                holder_employee_item_id=holder_id,
+                issuer=row.issuer,
+                valid_from=row.issue_date,
+                valid_until=row.expiry_date,
+                source_document_id=source_document_id,
+                source_chunk_id=chunk.id,
+                status=status,
+            )
+        return knowledge_item.id, True
+    except IntegrityError:
+        won = await uow.knowledge.get_knowledge_item_by_fingerprint(
+            organization_id, "certification", fingerprint
+        )
+        if won is None:
+            raise
+        return won.id, False
+
+
 async def import_certification_row(
     organization_id: uuid.UUID,
     batch_id: uuid.UUID,
@@ -1206,47 +1463,10 @@ async def import_certification_row(
         return import_item
 
     async with UnitOfWork() as uow:
-        holder: uuid.UUID | None = None
-        # TODO(human): handle a blank employee cell (row.employee_ref is
-        # None) - currently falls straight through the `if row.employee_ref`
-        # check below with holder left at None, which lets the function
-        # continue on to create an APPROVED certification with no holder at
-        # all (KNOWN_LIMITATIONS.md: "a certification row with a blank
-        # employee cell creates an approved, holderless certification
-        # instead of routing to review").
-        #
-        # Steps (plain-English, not code):
-        #   1. Before the `if row.employee_ref:` block below, check whether
-        #      row.employee_ref is falsy (None or blank - the parser already
-        #      collapses an empty cell to None, so a plain truthiness check
-        #      is enough).
-        #   2. If it is, decide the review outcome for this row and call
-        #      uow.knowledge.update_import_item(import_item.id, status=...,
-        #      error_message=...) - same call shape as the sibling
-        #      "employee_ref given but not found" branch a few lines below,
-        #      which you can use as a direct template.
-        #   3. await uow.commit() and return the updated item, same as that
-        #      sibling branch - do not fall through to the certification-
-        #      creation code further down.
-        #
-        # What's already available:
-        #   - `row: CertificationRow` - .employee_ref is None here (that's
-        #     why you're in this branch), plus .row_number, .name, etc.
-        #   - `import_item` - already created above, in this same open
-        #     transaction, not yet committed.
-        #   - `uow` - the same UnitOfWork the "not found" branch below uses.
-        #
-        # The specific edge case worth deciding by hand: the status
-        # vocabulary (Part C's CHECK constraint on knowledge_import_items.
-        # status) has no value more specific than "needs_review" - it
-        # cannot distinguish "no employee was ever specified" from
-        # "employee_ref was given but doesn't match anyone" at the status
-        # level. The only place that distinction CAN live is the
-        # error_message text, which means whether to preserve it (and how)
-        # is a real, not-obvious choice, not boilerplate - the "not found"
-        # branch's own message ("no employee found with employee_code...")
-        # would be actively misleading reused verbatim for a row that never
-        # had a code typed in at all.
+        # A blank holder cell goes to review, never to a holderless approved
+        # certificate (KNOWN_LIMITATIONS.md). The status cannot tell "no
+        # holder given" from "a holder code not found", so the reason text
+        # says which.
         if not row.employee_ref:
             updated = await uow.knowledge.update_import_item(
                 import_item.id,
@@ -1271,42 +1491,10 @@ async def import_certification_row(
             )
             await uow.commit()
             return updated
-        holder = employee.knowledge_item_id
-
-        fingerprint = _fingerprint(
-            str(organization_id),
-            str(holder),
-            row.name,
-            row.issue_date.isoformat() if row.issue_date else "",
-            row.expiry_date.isoformat() if row.expiry_date else "",
-        )
-        existing = await uow.knowledge.get_knowledge_item_by_fingerprint(
-            organization_id, "certification", fingerprint
-        )
-        if existing is not None:
-            updated = await uow.knowledge.update_import_item(
-                import_item.id, status="approved", target_knowledge_item_id=existing.id
-            )
-            await uow.commit()
-            return updated
-
-        item_status = "expired" if row.expiry_date and row.expiry_date < today else "active"
-        chunk_text = (
-            f"{row.name}, issued by {row.issuer or 'an unspecified issuer'}, "
-            f"valid from {row.issue_date.isoformat() if row.issue_date else 'an unspecified date'} "
-            f"to {row.expiry_date.isoformat() if row.expiry_date else 'an unspecified date'}."
-        )
-        knowledge_item_id = await _create_or_get_certification(
-            organization_id,
-            fingerprint,
-            source_document_id,
-            chunk_text,
-            title=row.name,
-            holder_employee_item_id=holder,
-            issuer=row.issuer,
-            valid_from=row.issue_date,
-            valid_until=row.expiry_date,
-            status=item_status,
+        # Plan item 112: through the one creation approval uses too, in this
+        # transaction (a savepoint converges a concurrent identical row).
+        knowledge_item_id, _created = await _create_certificate_from_row(
+            uow, organization_id, employee.knowledge_item_id, row, source_document_id, today
         )
         updated = await uow.knowledge.update_import_item(
             import_item.id, status="approved", target_knowledge_item_id=knowledge_item_id
@@ -1808,26 +1996,48 @@ async def approve_import_item(
     chosen employee's own fingerprint compared under its row lock. On an
     approved item, a request naming another employee is refused (Q4): a
     replay is only the same decision.
+
+    Plan item 112 (user decisions 2026-11-20): an employee-master item
+    applies its row through _apply_master_row_to_employee, the automatic
+    branch's own apply, onto the employee it names or one picked from its
+    candidates (as resumes, by the master's own signals: the code and the
+    name); target_fingerprint is master_target_fingerprint. An archived
+    employee is applied to and stays archived (Q6). A certification item is
+    created under the holder the reviewer chose (target_employee_id, any
+    live employee of the organization) through _create_certificate_from_row;
+    target_fingerprint is certificate_holder_fingerprint, compared under the
+    holder's row lock, and the sheet's holder code is written onto a holder
+    who has none, so the same row finds them next time. Lock order for a
+    certification: the item, the holder's employee row (FOR NO KEY UPDATE:
+    the code write is an UPDATE of it), the holder's knowledge item (FOR
+    SHARE: read, never written here), the sheet's chunk lock, the insert.
     """
     async with UnitOfWork() as uow:
         item = await uow.knowledge.get_import_item_for_update(item_id)
         if item is None:
             raise ImportItemNotFoundError()
+        batch = await uow.knowledge.get_import_batch(item.batch_id)
+        import_type = batch.import_type if batch is not None else None
         if item.status == "approved":
-            if (
-                target_employee_id is not None
-                and item.target_knowledge_item_id != target_employee_id
+            if target_employee_id is not None and (
+                await _decided_employee(uow, item, import_type) != target_employee_id
             ):
                 raise ImportItemNotInReviewError(item.status)
             return item
         if item.status != "needs_review":
             raise ImportItemNotInReviewError(item.status)
-        batch = await uow.knowledge.get_import_batch(item.batch_id)
-        resume_item = batch is not None and batch.import_type == "bulk_resumes"
-        if target_employee_id is not None and not resume_item:
+        resume_item = import_type == "bulk_resumes"
+        master_item = import_type in MASTER_IMPORT_TYPES
+        certification_item = import_type == "certification_documents"
+        if target_employee_id is not None and not (
+            resume_item or master_item or certification_item
+        ):
             raise ImportItemTypeUnsupportedError()
         merge_changes: dict[str, tuple[object, object]] | None = None
+        master_changes: dict[str, tuple[object, object]] | None = None
+        certificate: dict[str, object] | None = None
         picked_from: list[uuid.UUID] | None = None
+        new_target: uuid.UUID | None = None
         if resume_item:
             target_id = item.target_knowledge_item_id
             if target_employee_id is not None:
@@ -1835,23 +2045,47 @@ async def approve_import_item(
                     uow, item, organization_id, target_employee_id, candidates_fingerprint
                 )
                 target_id = target_employee_id
+                new_target = target_employee_id
             merge_changes = await _approve_resume_merge(
                 uow, item, target_id, organization_id, actor_user_id, target_fingerprint
             )
+        elif master_item:
+            row = master_row_from_payload(item.extracted_payload)
+            if row is None:
+                raise ImportItemPayloadInvalidError()
+            target_id = item.target_knowledge_item_id
+            if target_employee_id is not None:
+                picked_from = await _check_master_pick(
+                    uow, row, organization_id, target_employee_id, candidates_fingerprint
+                )
+                target_id = target_employee_id
+                new_target = target_employee_id
+            master_changes = await _approve_master_apply(
+                uow, item, row, target_id, organization_id, actor_user_id, target_fingerprint
+            )
+        elif certification_item:
+            assert batch is not None
+            certificate = await _approve_certificate(
+                uow, item, batch, organization_id, target_employee_id, target_fingerprint
+            )
+            new_target = uuid.UUID(str(certificate["certification"]))
         before = {"status": item.status}
         fields: dict[str, object] = {"status": "approved"}
-        if picked_from is not None:
-            fields["target_knowledge_item_id"] = target_employee_id
+        if new_target is not None:
+            fields["target_knowledge_item_id"] = new_target
         updated = await uow.knowledge.update_import_item(item_id, **fields)
         metadata: dict[str, object] | None = None
-        if merge_changes is not None:
+        changes = merge_changes if merge_changes is not None else master_changes
+        if changes is not None:
             metadata = {
                 "employee": str(updated.target_knowledge_item_id),
-                "fields_changed": sorted(merge_changes),
+                "fields_changed": sorted(changes),
             }
             if picked_from is not None:
                 metadata["decision"] = "pick"
                 metadata["candidates"] = sorted(str(c) for c in picked_from)
+        if certificate is not None:
+            metadata = certificate
         await uow.audit.create(
             organization_id=organization_id,
             actor_type="user",
@@ -1912,6 +2146,183 @@ async def _approve_resume_merge(
         actor_id=str(actor_user_id),
         import_item_id=item.id,
     )
+
+
+async def _decided_employee(
+    uow: UnitOfWork, item: KnowledgeImportItem, import_type: str | None
+) -> uuid.UUID | None:
+    """The employee an approved item was decided for: the one it names, or
+    for a certification item the certificate's holder (Q4's replay rule)."""
+    if import_type == "certification_documents" and item.target_knowledge_item_id is not None:
+        certification = await uow.knowledge.get_certification(item.target_knowledge_item_id)
+        return certification.holder_employee_item_id if certification is not None else None
+    return item.target_knowledge_item_id
+
+
+def _master_matches(
+    row: EmployeeMasterRow, employees: list[Employee]
+) -> list[tuple[Employee, tuple[str, ...]]]:
+    """Plan item 112: the employees a master row matches now, by the
+    duplicate check's own signals (the code and the name; a master row
+    carries no email or document)."""
+    return employee_match_signals(
+        candidate_employee_code=row.employee_code,
+        candidate_name=row.name,
+        candidate_email=None,
+        candidate_resume_document_id=None,
+        candidates=employees,
+    )
+
+
+async def _item_statuses(uow: UnitOfWork, ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+    statuses: dict[uuid.UUID, str] = {}
+    for knowledge_item_id in ids:
+        knowledge_item = await uow.knowledge.get_knowledge_item(knowledge_item_id)
+        statuses[knowledge_item_id] = knowledge_item.status if knowledge_item is not None else ""
+    return statuses
+
+
+def master_candidates_fingerprint(
+    matches: list[tuple[Employee, tuple[str, ...]]], statuses: dict[uuid.UUID, str]
+) -> str:
+    """As resume_candidates_fingerprint, for a master row's candidates: each
+    one's id, signals and master_target_fingerprint, in id order."""
+    shown = sorted(
+        (
+            str(employee.knowledge_item_id),
+            sorted(signals),
+            master_target_fingerprint(employee, statuses.get(employee.knowledge_item_id, "")),
+        )
+        for employee, signals in matches
+    )
+    return hashlib.sha256(json.dumps(shown).encode()).hexdigest()
+
+
+async def _check_master_pick(
+    uow: UnitOfWork,
+    row: EmployeeMasterRow,
+    organization_id: uuid.UUID,
+    target_employee_id: uuid.UUID,
+    candidates_fingerprint: str | None,
+) -> list[uuid.UUID]:
+    """As _check_resume_pick, for a master row: the pick is one of the
+    candidates shown, and that list still holds (read under the item's lock,
+    before the chosen employee is locked). Returns the candidate ids."""
+    if candidates_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    employees = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+    matches = _master_matches(row, employees)
+    candidate_ids = [employee.knowledge_item_id for employee, _ in matches]
+    statuses = await _item_statuses(uow, candidate_ids)
+    if master_candidates_fingerprint(matches, statuses) != candidates_fingerprint:
+        raise ImportItemCandidatesChangedError()
+    if target_employee_id not in candidate_ids:
+        raise ImportItemNotACandidateError()
+    return candidate_ids
+
+
+async def _approve_master_apply(
+    uow: UnitOfWork,
+    item: KnowledgeImportItem,
+    row: EmployeeMasterRow,
+    target_id: uuid.UUID | None,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    target_fingerprint: str | None,
+) -> dict[str, tuple[object, object]]:
+    if target_id is None:
+        raise ImportItemNoTargetError()
+    if target_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    employee = await uow.knowledge.get_employee_for_update(target_id)
+    if employee is None:
+        raise ImportItemNoTargetError()
+    knowledge_item = await uow.knowledge.get_knowledge_item_for_update(target_id)
+    if knowledge_item is None:
+        raise ImportItemNoTargetError()
+    if master_target_fingerprint(employee, knowledge_item.status) != target_fingerprint:
+        raise ImportItemTargetChangedError()
+    return await _apply_master_row_to_employee(
+        uow,
+        organization_id,
+        employee,
+        knowledge_item,
+        row,
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        import_item_id=item.id,
+    )
+
+
+def certificate_holder_fingerprint(employee: Employee, archived: bool) -> str:
+    """What the holder choice shows of an employee, as one hash: the name,
+    the code and whether they are archived (plan item 112)."""
+    shown = {"name": employee.name, "employee_code": employee.employee_code, "archived": archived}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
+async def _approve_certificate(
+    uow: UnitOfWork,
+    item: KnowledgeImportItem,
+    batch: KnowledgeImportBatch,
+    organization_id: uuid.UUID,
+    holder_id: uuid.UUID | None,
+    target_fingerprint: str | None,
+) -> dict[str, object]:
+    """Plan item 112: a certification item in review becomes a certificate
+    under the holder the reviewer chose. Returns the audit metadata."""
+    if holder_id is None:
+        raise ImportItemNoTargetError()
+    if target_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    row = certification_row_from_payload(item.extracted_payload)
+    if row is None:
+        raise ImportItemPayloadInvalidError()
+    if batch.source_document_id is None:
+        raise ImportItemSourceMissingError()
+    # FOR NO KEY UPDATE, the mode the code write's UPDATE takes: a FOR SHARE
+    # read upgraded by a later write is the lock-upgrade trap (plan item 59,
+    # PR 20).
+    holder = await uow.knowledge.get_employee_for_update(holder_id)
+    if holder is None or holder.organization_id != organization_id:
+        raise ImportItemNotACandidateError()
+    holder_item = await uow.knowledge.get_knowledge_item_for_share(holder_id)
+    if holder_item is None:
+        raise ImportItemNotACandidateError()
+    archived = holder_item.status == KNOWLEDGE_ITEM_ARCHIVED
+    if archived:
+        raise EmployeeArchivedError()
+    if certificate_holder_fingerprint(holder, archived) != target_fingerprint:
+        raise ImportItemTargetChangedError()
+    # Both codes go in the audit row (user, PR 25's review): a sheet code
+    # that differs from one the holder already has is kept as it is, so the
+    # row comes back to review until the sheet is fixed. Read before the
+    # write below, which a rolled-back savepoint would leave unreadable.
+    holder_code = holder.employee_code
+    code_written = False
+    if row.employee_ref is not None and holder.employee_code is None:
+        # The sheet's code onto a holder who has none, so the same row finds
+        # them next time (the re-import check). Not when another employee
+        # holds it: codes are unique in an organization.
+        if await uow.knowledge.get_employee_by_code(organization_id, row.employee_ref) is None:
+            try:
+                async with uow.session.begin_nested():
+                    await uow.knowledge.update_employee(holder_id, employee_code=row.employee_ref)
+                code_written = True
+            except IntegrityError:
+                # Taken by a concurrent write since the read above.
+                code_written = False
+    certification_id, created = await _create_certificate_from_row(
+        uow, organization_id, holder_id, row, batch.source_document_id, today_utc()
+    )
+    return {
+        "certification": str(certification_id),
+        "holder": str(holder_id),
+        "created": created,
+        "sheet_holder_code": row.employee_ref,
+        "holder_code": holder_code,
+        "holder_code_written": code_written,
+    }
 
 
 def _resume_matches(
@@ -2001,12 +2412,23 @@ async def import_item_as_new_employee(
     behind. Status rule (Q4): only needs_review; a replay of an item already
     imported this way returns it; any other approved item is refused. Audit:
     knowledge_import_item_approve with decision "new". WORKED_ON: the same
-    ResumeMergeApproved event as a merge. Lock order: the item only."""
+    ResumeMergeApproved event as a merge. Lock order: the item only.
+
+    Plan item 112: an employee-master item becomes a new employee made as
+    import_employee_master_row's NEW branch makes one (master_employee_fields,
+    master_employee_fingerprint, and the row's status), refused when a
+    candidate shares its code (the master's one strong signal: codes are
+    unique) or an employee already has its fingerprint. No WORKED_ON event:
+    a master row carries no resume."""
     async with UnitOfWork() as uow:
         item = await uow.knowledge.get_import_item_for_update(item_id)
         if item is None:
             raise ImportItemNotFoundError()
         batch = await uow.knowledge.get_import_batch(item.batch_id)
+        if batch is not None and batch.import_type in MASTER_IMPORT_TYPES:
+            return await _import_master_item_as_new(
+                uow, item, organization_id, actor_user_id, candidates_fingerprint
+            )
         resume_item = batch is not None and batch.import_type == "bulk_resumes"
         if item.status == "approved":
             if resume_item and await _made_from_item(uow, item):
@@ -2070,6 +2492,73 @@ async def import_item_as_new_employee(
         )
         await uow.commit()
         return updated
+
+
+async def _import_master_item_as_new(
+    uow: UnitOfWork,
+    item: KnowledgeImportItem,
+    organization_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    candidates_fingerprint: str | None,
+) -> KnowledgeImportItem:
+    """import_item_as_new_employee for an employee-master item (plan item
+    112), in the caller's transaction, under the item's row lock."""
+    row = master_row_from_payload(item.extracted_payload)
+    if item.status == "approved":
+        if row is not None and item.target_knowledge_item_id is not None:
+            made = await uow.knowledge.get_knowledge_item(item.target_knowledge_item_id)
+            if made is not None and made.content_fingerprint == master_employee_fingerprint(
+                organization_id, row
+            ):
+                return item
+        raise ImportItemNotInReviewError(item.status)
+    if item.status != "needs_review":
+        raise ImportItemNotInReviewError(item.status)
+    if candidates_fingerprint is None:
+        raise ImportItemFingerprintRequiredError()
+    if row is None:
+        raise ImportItemPayloadInvalidError()
+    employees = await uow.knowledge.find_employee_duplicate_candidates(organization_id)
+    matches = _master_matches(row, employees)
+    statuses = await _item_statuses(uow, [employee.knowledge_item_id for employee, _ in matches])
+    if master_candidates_fingerprint(matches, statuses) != candidates_fingerprint:
+        raise ImportItemCandidatesChangedError()
+    if any(STRONG_SIGNALS.intersection(signals) for _, signals in matches):
+        raise ImportItemStrongMatchError()
+    fingerprint = master_employee_fingerprint(organization_id, row)
+    if await uow.knowledge.get_knowledge_item_by_fingerprint(
+        organization_id, "employee", fingerprint
+    ):
+        raise ImportItemStrongMatchError()
+    knowledge_item, _employee = await uow.knowledge.create_employee(
+        organization_id=organization_id,
+        content_fingerprint=fingerprint,
+        **master_employee_fields(row),
+    )
+    item_status = _EMPLOYEE_STATUS_TO_KNOWLEDGE_ITEM_STATUS.get(row.status or "")
+    if item_status:
+        # As the NEW branch: a new employee reaches no bid, so no bump.
+        await uow.knowledge.update_knowledge_item(knowledge_item.id, status=item_status)
+    updated = await uow.knowledge.update_import_item(
+        item.id, status="approved", target_knowledge_item_id=knowledge_item.id
+    )
+    await uow.audit.create(
+        organization_id=organization_id,
+        actor_type="user",
+        actor_id=str(actor_user_id),
+        action="knowledge_import_item_approve",
+        target_type="knowledge_import_item",
+        target_id=item.id,
+        before={"status": "needs_review"},
+        after={"status": updated.status},
+        metadata={
+            "decision": "new",
+            "employee": str(knowledge_item.id),
+            "candidates": sorted(str(e.knowledge_item_id) for e, _ in matches),
+        },
+    )
+    await uow.commit()
+    return updated
 
 
 # Plan item 80: the statuses a reviewer can reject from (a failed item can be
@@ -2287,6 +2776,184 @@ async def list_resume_candidates(batch_id: uuid.UUID) -> dict[uuid.UUID, ImportI
                 strong_match=any(STRONG_SIGNALS.intersection(s) for _, s in matches),
             )
         return out
+
+
+@dataclass(frozen=True)
+class MasterTarget:
+    """Plan item 112: the employee a master item names, as the review panel
+    shows it: the values, the status, the fingerprint Approve sends back, and
+    what approving writes (None for a payload that does not read as a row)."""
+
+    knowledge_item_id: uuid.UUID
+    name: str
+    employee_code: str | None
+    current_title: str | None
+    status: str
+    archived: bool
+    fingerprint: str
+    changes: list[MasterApplyField] | None
+
+
+@dataclass(frozen=True)
+class MasterCandidate:
+    """Plan item 112: one employee a master item in review matches (the
+    code, the name), as ImportItemCandidate for resumes."""
+
+    knowledge_item_id: uuid.UUID
+    name: str
+    employee_code: str | None
+    current_title: str | None
+    status: str
+    archived: bool
+    signals: list[str]
+    fingerprint: str
+    changes: list[MasterApplyField]
+
+
+@dataclass(frozen=True)
+class MasterCandidates:
+    """A master item's candidates, the list's fingerprint (sent back with a
+    pick or import as new), and whether import as new is refused: a code
+    matched, or an employee already has the row's NEW fingerprint."""
+
+    fingerprint: str
+    candidates: list[MasterCandidate]
+    strong_match: bool
+
+
+async def list_master_review(
+    batch_id: uuid.UUID,
+) -> tuple[dict[uuid.UUID, MasterTarget], dict[uuid.UUID, MasterCandidates]]:
+    """Plan item 112: for an employee-master batch, the employee each item
+    names (any status), and the candidates of each item in review whose
+    payload reads as a row, by item id. Other import types get neither."""
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        if batch is None or batch.import_type not in MASTER_IMPORT_TYPES:
+            return {}, {}
+        items = await uow.knowledge.list_import_items_for_batch(batch_id)
+        employees = await uow.knowledge.find_employee_duplicate_candidates(batch.organization_id)
+        by_id = {employee.knowledge_item_id: employee for employee in employees}
+        # Statuses only for the employees shown: the targets and candidates.
+        shown_ids: set[uuid.UUID] = set()
+        for item in items:
+            if item.target_knowledge_item_id in by_id:
+                shown_ids.add(item.target_knowledge_item_id)
+            row = master_row_from_payload(item.extracted_payload)
+            if item.status == "needs_review" and row is not None:
+                shown_ids.update(e.knowledge_item_id for e, _ in _master_matches(row, employees))
+        statuses = await _item_statuses(uow, sorted(shown_ids))
+        targets: dict[uuid.UUID, MasterTarget] = {}
+        candidates: dict[uuid.UUID, MasterCandidates] = {}
+        for item in items:
+            row = master_row_from_payload(item.extracted_payload)
+            target = (
+                by_id.get(item.target_knowledge_item_id) if item.target_knowledge_item_id else None
+            )
+            if target is not None:
+                status = statuses.get(target.knowledge_item_id, "")
+                targets[item.id] = MasterTarget(
+                    knowledge_item_id=target.knowledge_item_id,
+                    name=target.name,
+                    employee_code=target.employee_code,
+                    current_title=target.current_title,
+                    status=status,
+                    archived=status == KNOWLEDGE_ITEM_ARCHIVED,
+                    fingerprint=master_target_fingerprint(target, status),
+                    changes=(
+                        master_apply_fields(
+                            target,
+                            status,
+                            row,
+                            codes_held_by_others(employees, target.knowledge_item_id),
+                        )
+                        if row is not None
+                        else None
+                    ),
+                )
+            if item.status != "needs_review" or row is None:
+                continue
+            matches = _master_matches(row, employees)
+            made_before = await uow.knowledge.get_knowledge_item_by_fingerprint(
+                batch.organization_id,
+                "employee",
+                master_employee_fingerprint(batch.organization_id, row),
+            )
+            candidates[item.id] = MasterCandidates(
+                fingerprint=master_candidates_fingerprint(matches, statuses),
+                candidates=[
+                    MasterCandidate(
+                        knowledge_item_id=employee.knowledge_item_id,
+                        name=employee.name,
+                        employee_code=employee.employee_code,
+                        current_title=employee.current_title,
+                        status=statuses.get(employee.knowledge_item_id, ""),
+                        archived=statuses.get(employee.knowledge_item_id)
+                        == KNOWLEDGE_ITEM_ARCHIVED,
+                        signals=list(signals),
+                        fingerprint=master_target_fingerprint(
+                            employee, statuses.get(employee.knowledge_item_id, "")
+                        ),
+                        changes=master_apply_fields(
+                            employee,
+                            statuses.get(employee.knowledge_item_id, ""),
+                            row,
+                            codes_held_by_others(employees, employee.knowledge_item_id),
+                        ),
+                    )
+                    for employee, signals in matches
+                ],
+                strong_match=(
+                    any(STRONG_SIGNALS.intersection(s) for _, s in matches)
+                    or made_before is not None
+                ),
+            )
+        return targets, candidates
+
+
+@dataclass(frozen=True)
+class CertificateHolder:
+    """Plan item 112: one live employee a certification item can be given
+    to, with the fingerprint Approve sends back with the choice."""
+
+    knowledge_item_id: uuid.UUID
+    name: str
+    employee_code: str | None
+    email: str | None
+    current_title: str | None
+    fingerprint: str
+
+
+async def list_certificate_holders(batch_id: uuid.UUID) -> list[CertificateHolder] | None:
+    """Plan item 112 (Q7 a): the organization's live employees, by name, for
+    a certification batch's holder choice; [] for other import types, None
+    for no such batch. Archived employees are left out: removed from the
+    roster, they hold no new certificate (approval refuses one, 409
+    EMPLOYEE_ARCHIVED)."""
+    async with UnitOfWork() as uow:
+        batch = await uow.knowledge.get_import_batch(batch_id)
+        if batch is None:
+            return None
+        if batch.import_type != "certification_documents":
+            return []
+        employees = await uow.knowledge.find_employee_duplicate_candidates(batch.organization_id)
+        archived = await uow.knowledge.archived_item_ids(
+            employee.knowledge_item_id for employee in employees
+        )
+        return [
+            CertificateHolder(
+                knowledge_item_id=employee.knowledge_item_id,
+                name=employee.name,
+                employee_code=employee.employee_code,
+                email=employee.email,
+                current_title=employee.current_title,
+                fingerprint=certificate_holder_fingerprint(employee, False),
+            )
+            for employee in sorted(
+                employees, key=lambda e: (e.name.casefold(), str(e.knowledge_item_id))
+            )
+            if employee.knowledge_item_id not in archived
+        ]
 
 
 async def list_knowledge_selections(

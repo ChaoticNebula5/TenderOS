@@ -147,6 +147,82 @@ class ImportItemCandidatesResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MasterApplyFieldResponse(BaseModel):
+    """Plan item 112: one field as the master apply sees it
+    (knowledge_service.MasterApplyField), in the apply's own order: name,
+    employee_code, current_title, status."""
+
+    field: str
+    on_file: str | None
+    from_sheet: str | None
+    changes: bool
+    # The sheet's code belongs to another employee, so it is not written.
+    held_by_other: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class MasterTargetResponse(BaseModel):
+    """Plan item 112: the employee a master item names, as the review panel
+    shows it (knowledge_service.MasterTarget). `fingerprint` goes back with
+    Approve; `archived` means the employee stays archived (Q6)."""
+
+    knowledge_item_id: UUID
+    name: str
+    employee_code: str | None
+    current_title: str | None
+    status: str
+    archived: bool
+    fingerprint: str
+    # What approving writes; null when the item's payload is not a master row
+    # (approval then answers 409 IMPORT_ITEM_PAYLOAD_INVALID).
+    changes: list[MasterApplyFieldResponse] | None
+
+    model_config = {"from_attributes": True}
+
+
+class MasterCandidateResponse(BaseModel):
+    """Plan item 112: one employee a master item in review matches (the code,
+    the name). A pick sends its id and `fingerprint` back."""
+
+    knowledge_item_id: UUID
+    name: str
+    employee_code: str | None
+    current_title: str | None
+    status: str
+    archived: bool
+    signals: list[str]
+    fingerprint: str
+    changes: list[MasterApplyFieldResponse]
+
+    model_config = {"from_attributes": True}
+
+
+class MasterCandidatesResponse(BaseModel):
+    """Plan item 112: a master item's candidates; as ImportItemCandidatesResponse."""
+
+    fingerprint: str
+    candidates: list[MasterCandidateResponse]
+    strong_match: bool
+
+    model_config = {"from_attributes": True}
+
+
+class CertificateHolderResponse(BaseModel):
+    """Plan item 112: a live employee a certification item can be given to.
+    Approve sends `knowledge_item_id` as target_employee_id and
+    `fingerprint` as target_fingerprint."""
+
+    knowledge_item_id: UUID
+    name: str
+    employee_code: str | None
+    email: str | None
+    current_title: str | None
+    fingerprint: str
+
+    model_config = {"from_attributes": True}
+
+
 class ImportItemDetailResponse(ImportItemResponse):
     extracted_payload: dict
     # Plan item 80: set for a resume item that names an employee; null
@@ -155,6 +231,10 @@ class ImportItemDetailResponse(ImportItemResponse):
     # Plan item 111: set for a resume item in review whose resume can be
     # read; null for every other item.
     candidates: ImportItemCandidatesResponse | None = None
+    # Plan item 112: set for an employee-master item that names an employee,
+    # and for one in review whose row can be read; null for every other item.
+    master_target: MasterTargetResponse | None = None
+    master_candidates: MasterCandidatesResponse | None = None
 
 
 class KnowledgeSelectionResponse(BaseModel):
@@ -205,18 +285,24 @@ class RejectImportItemRequest(BaseModel):
 
 class ApproveImportItemRequest(BaseModel):
     # Plan item 80, Q1: the target_employee.fingerprint the reviewer was
-    # shown. Required to approve a resume merge (422 without it); other
-    # import types ignore it. The body itself is optional.
+    # shown. Required to approve a resume merge (422 without it); plan item
+    # 112: and an employee-master or certification item (the
+    # master_target's, a master candidate's, or the chosen holder's). The
+    # body itself is optional (other import types ignore it).
     target_fingerprint: str | None = None
     # Plan item 111: the candidate to merge into, instead of the one the
     # item names, with that candidate's fingerprint as target_fingerprint
-    # and the candidates.fingerprint the reviewer was shown.
+    # and the candidates.fingerprint the reviewer was shown. Plan item 112:
+    # the same for a master item; for a certification item, the holder
+    # chosen from GET /knowledge/import-batches/{id}/holders (no
+    # candidates_fingerprint).
     target_employee_id: UUID | None = None
     candidates_fingerprint: str | None = None
 
 
 class ImportAsNewEmployeeRequest(BaseModel):
-    # Plan item 111: the candidates.fingerprint the reviewer was shown.
+    # Plan item 111: the candidates.fingerprint the reviewer was shown
+    # (plan item 112: master_candidates.fingerprint for a master item).
     candidates_fingerprint: str | None = None
 
 

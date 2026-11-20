@@ -4,6 +4,7 @@ import {
   ApiError,
   approveImportItem,
   importItemAsNewEmployee,
+  listCertificateHolders,
   listImportBatches,
   listImportItems,
   rejectImportItem,
@@ -12,11 +13,15 @@ import {
   uploadResumes,
 } from "../api/client";
 import type {
+  CertificateHolder,
   ImportBatchResponse,
   ImportItemCandidate,
   ImportItemDetailResponse,
   ImportItemFieldChange,
   ImportItemTarget,
+  MasterApplyField,
+  MasterCandidate,
+  MasterTarget,
 } from "../api/client";
 import { formatErrorDetail, readEnvelopeCode } from "../api/formatErrorDetail";
 import { useAuth } from "../auth/useAuth";
@@ -97,9 +102,15 @@ export function TalentImportReview() {
   // button carries aria-busy, and both of that row's buttons are disabled.
   const [acting, setActing] = useState<{
     itemId: string;
-    action: "approve" | "reject" | "pick" | "new";
+    action: "approve" | "reject" | "pick" | "new" | "apply" | "record";
     employeeId?: string;
   } | null>(null);
+  // Plan item 112: a certification batch's holder choice (the organization's
+  // live employees) and the holder chosen on each row.
+  const [holders, setHolders] = useState<CertificateHolder[] | null>(null);
+  const [chosenHolder, setChosenHolder] = useState<Record<string, string>>({});
+  const selectedImportType = batches?.find((b) => b.id === selectedBatchId)?.import_type ?? null;
+  const certificationBatch = selectedImportType === "certification_documents";
 
   // `quiet` for the poll's reads: a failed one shows no error (the rows
   // stay, and the next read tries again).
@@ -162,6 +173,23 @@ export function TalentImportReview() {
     };
   }, [selectedBatchId, itemsReload]);
 
+  // Plan item 112: a certification batch's holders, read with its items.
+  useEffect(() => {
+    setHolders(null);
+    if (!selectedBatchId || !certificationBatch) return;
+    let cancelled = false;
+    listCertificateHolders(selectedBatchId)
+      .then((result) => {
+        if (!cancelled) setHolders(result);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load the employees a certificate can be given to");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedBatchId, certificationBatch, itemsReload]);
+
   // Opening a batch, or - on the batch already open - fetching its items
   // again (item 18b).
   function handleReviewItems(batchId: string) {
@@ -221,6 +249,9 @@ export function TalentImportReview() {
   // which the server computes from the items.
   async function refreshSelectedItems() {
     if (selectedBatchId) await readOpenBatchItems(selectedBatchId);
+    if (selectedBatchId && certificationBatch) {
+      setHolders(await listCertificateHolders(selectedBatchId));
+    }
     void refreshBatches(true);
   }
 
@@ -233,7 +264,11 @@ export function TalentImportReview() {
     setError(null);
     setActing({ itemId, action: "approve" });
     try {
-      await approveImportItem(itemId, item.target_employee?.fingerprint ?? null);
+      // Plan item 112: a master item sends its master_target's fingerprint.
+      await approveImportItem(
+        itemId,
+        item.target_employee?.fingerprint ?? item.master_target?.fingerprint ?? null,
+      );
       await refreshSelectedItems();
     } catch (err) {
       const code = err instanceof ApiError ? readEnvelopeCode(err.body) : null;
@@ -292,12 +327,50 @@ export function TalentImportReview() {
     }
   }
 
+  // Plan item 112: the master row applied to a chosen candidate.
+  async function handleMasterPick(item: ImportItemDetailResponse, candidate: MasterCandidate) {
+    if (item.master_candidates === null) return;
+    setError(null);
+    setActing({ itemId: item.id, action: "apply", employeeId: candidate.knowledge_item_id });
+    try {
+      await approveImportItem(item.id, candidate.fingerprint, {
+        employeeId: candidate.knowledge_item_id,
+        candidatesFingerprint: item.master_candidates.fingerprint,
+      });
+      await refreshSelectedItems();
+    } catch (err) {
+      await handleDecisionError(err, "Apply");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  // Plan item 112: the certificate recorded for the chosen holder, with the
+  // holder's fingerprint.
+  async function handleRecordCertificate(item: ImportItemDetailResponse) {
+    const holder = holders?.find((h) => h.knowledge_item_id === chosenHolder[item.id]);
+    if (holder === undefined) return;
+    setError(null);
+    setActing({ itemId: item.id, action: "record" });
+    try {
+      await approveImportItem(item.id, holder.fingerprint, {
+        employeeId: holder.knowledge_item_id,
+      });
+      await refreshSelectedItems();
+    } catch (err) {
+      await handleDecisionError(err, "Recording the certificate");
+    } finally {
+      setActing(null);
+    }
+  }
+
   async function handleImportAsNew(item: ImportItemDetailResponse) {
-    if (item.candidates === null) return;
+    const fingerprint = item.candidates?.fingerprint ?? item.master_candidates?.fingerprint;
+    if (fingerprint === undefined) return;
     setError(null);
     setActing({ itemId: item.id, action: "new" });
     try {
-      await importItemAsNewEmployee(item.id, item.candidates.fingerprint);
+      await importItemAsNewEmployee(item.id, fingerprint);
       await refreshSelectedItems();
     } catch (err) {
       await handleDecisionError(err, "Import as a new person");
@@ -324,6 +397,18 @@ export function TalentImportReview() {
   // names, so one naming none can only be rejected (Approve hidden), as
   // can one whose changes cannot be shown (target_employee.changes null).
   const resumeBatch = selectedBatch?.import_type === "bulk_resumes";
+  // Plan item 112: a master item applies its row to the employee it names
+  // (Approve, with the change list), or to a candidate; a certification
+  // item is recorded for a chosen holder (no Approve).
+  const masterBatch =
+    selectedBatch?.import_type === "employee_master_csv" ||
+    selectedBatch?.import_type === "employee_master_xlsx";
+
+  function approvable(item: ImportItemDetailResponse): boolean {
+    if (resumeBatch) return item.target_employee !== null && item.target_employee.changes !== null;
+    if (masterBatch) return item.master_target !== null && item.master_target.changes !== null;
+    return !certificationBatch;
+  }
 
   // Plan item 78: the open batch's items are read again too while that
   // batch is unfinished, including once more on the read that finds it
@@ -469,7 +554,11 @@ export function TalentImportReview() {
                         <StatusBadge {...describeStatus("importItem", item.status)} />
                       </td>
                       <td className="talent-import__detail">
-                        <ItemDetail item={item} resumeBatch={resumeBatch} />
+                        <ItemDetail
+                          item={item}
+                          resumeBatch={resumeBatch}
+                          masterBatch={masterBatch}
+                        />
                         {item.status === "needs_review" && item.candidates !== null && (
                           <ResumeCandidates
                             item={item}
@@ -479,13 +568,33 @@ export function TalentImportReview() {
                             onImportAsNew={() => handleImportAsNew(item)}
                           />
                         )}
+                        {item.status === "needs_review" && item.master_candidates !== null && (
+                          <MasterCandidates
+                            item={item}
+                            busy={busy}
+                            acting={acting}
+                            onPick={(candidate) => handleMasterPick(item, candidate)}
+                            onImportAsNew={() => handleImportAsNew(item)}
+                          />
+                        )}
+                        {item.status === "needs_review" && certificationBatch && (
+                          <CertificateHolderChoice
+                            item={item}
+                            holders={holders}
+                            chosen={chosenHolder[item.id] ?? ""}
+                            busy={busy}
+                            recording={busy && acting?.action === "record"}
+                            onChoose={(holderId) =>
+                              setChosenHolder((chosen) => ({ ...chosen, [item.id]: holderId }))
+                            }
+                            onRecord={() => handleRecordCertificate(item)}
+                          />
+                        )}
                       </td>
                       <td className="cell-actions">
                         {item.status === "needs_review" && (
                           <div className="action-row">
-                            {(!resumeBatch ||
-                              (item.target_employee !== null &&
-                                item.target_employee.changes !== null)) && (
+                            {approvable(item) && (
                               <Button
                                 variant="quiet"
                                 onClick={() => handleApprove(item)}
@@ -546,21 +655,32 @@ function itemCountLine(items: ImportItemDetailResponse[]): string {
 function ItemDetail({
   item,
   resumeBatch,
+  masterBatch,
 }: {
   item: ImportItemDetailResponse;
   resumeBatch: boolean;
+  masterBatch: boolean;
 }) {
   const fields = payloadFields(item.extracted_payload);
   return (
     <>
       {item.error_message && <p className="talent-import__reason">{item.error_message}</p>}
       {item.target_employee !== null && <ResumeMatch item={item} target={item.target_employee} />}
+      {item.master_target !== null && <MasterMatch item={item} target={item.master_target} />}
       {resumeBatch &&
         item.target_employee === null &&
         item.status === "needs_review" &&
         item.candidates === null && (
           <p className="talent-import__match">
             This resume&apos;s fields or document could not be read, so it can only be rejected.
+          </p>
+        )}
+      {masterBatch &&
+        item.master_target === null &&
+        item.status === "needs_review" &&
+        item.master_candidates === null && (
+          <p className="talent-import__match">
+            This row&apos;s fields could not be read, so it can only be rejected.
           </p>
         )}
       {fields.length > 0 && (
@@ -615,24 +735,33 @@ const SIGNAL_LABELS: Record<string, string> = {
   employee_code: "employee code",
 };
 
-// The text after "Merge into" for each candidate. Two candidates sharing a
+// The text naming each employee on a button or in a choice. Two sharing a
 // name (plan item 111's own case) would give two buttons one accessible name,
-// so a shared name carries the email, or the title when there is no email;
-// a label still shared after that carries the candidate's position.
-function candidateLabels(candidates: ImportItemCandidate[]): Map<string, string> {
+// so a shared name carries the first detail it has (a resume candidate's
+// email, else title; a master candidate's code, else title; a holder's code,
+// else email, else title); a label still shared after that carries the
+// position.
+function distinctLabels<T extends { knowledge_item_id: string; name: string }>(
+  people: T[],
+  details: (person: T) => (string | null)[],
+): Map<string, string> {
   const count = (values: string[], value: string) => values.filter((v) => v === value).length;
-  const names = candidates.map((c) => c.name);
-  const labels = candidates.map((c) => {
-    if (count(names, c.name) < 2) return c.name;
-    const detail = c.email ?? c.current_title;
-    return detail ? `${c.name} (${detail})` : c.name;
+  const names = people.map((p) => p.name);
+  const labels = people.map((p) => {
+    if (count(names, p.name) < 2) return p.name;
+    const detail = details(p).find((d) => d !== null && d !== "");
+    return detail ? `${p.name} (${detail})` : p.name;
   });
   return new Map(
-    candidates.map((c, i) => [
-      c.knowledge_item_id,
+    people.map((p, i) => [
+      p.knowledge_item_id,
       count(labels, labels[i]) < 2 ? labels[i] : `${labels[i]} #${i + 1}`,
     ]),
   );
+}
+
+function candidateLabels(candidates: ImportItemCandidate[]): Map<string, string> {
+  return distinctLabels(candidates, (c) => [c.email, c.current_title]);
 }
 
 // Plan item 111: the employees this resume matches (the duplicate check's
@@ -787,6 +916,246 @@ function ResumeMatch({
           <dd>this file becomes their resume; its text is added to their record</dd>
         </div>
       </dl>
+    </div>
+  );
+}
+
+// Plan item 112: an employee-master row's apply, field by field, as the
+// backend computes it (knowledge_service.master_apply_fields).
+const MASTER_FIELD_LABELS: Record<string, string> = {
+  name: "Name",
+  employee_code: "Employee code",
+  current_title: "Title",
+  status: "Status",
+};
+
+function masterLine(entry: MasterApplyField): string {
+  const onFile = entry.on_file ?? NOT_SET;
+  if (entry.held_by_other) {
+    return `${onFile} (kept: another employee has ${entry.from_sheet ?? NOT_SET})`;
+  }
+  return entry.changes
+    ? `${onFile} → ${entry.from_sheet ?? NOT_SET} (changes)`
+    : `${onFile} (kept)`;
+}
+
+function MasterChanges({ label, changes }: { label: string; changes: MasterApplyField[] }) {
+  return (
+    <dl className="talent-import__merge-list" aria-label={label}>
+      {changes.map((entry) => (
+        <div key={entry.field} className={entry.changes ? "is-changed" : undefined}>
+          <dt>{MASTER_FIELD_LABELS[entry.field] ?? entry.field}</dt>
+          <dd>{masterLine(entry)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// Q6 (user decision 2026-11-20): an approval restores no one; an archived
+// employee's record is updated and they stay archived.
+const ARCHIVED_STAYS =
+  "is archived (removed from the roster). Approving updates their record and they stay " +
+  "archived; restore them from their profile if they are back.";
+
+function MasterMatch({ item, target }: { item: ImportItemDetailResponse; target: MasterTarget }) {
+  const employee = <Link to={`/talent/employees/${target.knowledge_item_id}`}>{target.name}</Link>;
+  if (item.status !== "needs_review") {
+    return <p className="talent-import__match">Employee: {employee}</p>;
+  }
+  if (target.changes === null) {
+    return (
+      <div className="talent-import__match">
+        <p>Matches {employee}.</p>
+        <p>
+          This row&apos;s fields could not be read, so what approving would change cannot be shown.
+          Reject it, or upload the file again.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="talent-import__match">
+      <p>Matches {employee}. Approving applies this row to their record:</p>
+      <MasterChanges label="Changes on approval" changes={target.changes} />
+      {target.archived && (
+        <p>
+          {target.name} {ARCHIVED_STAYS}
+        </p>
+      )}
+    </div>
+  );
+}
+
+const MASTER_SIGNAL_LABELS: Record<string, string> = {
+  name: "name",
+  employee_code: "employee code",
+};
+
+// Plan item 112: a master row's candidates (the code, the name), each with
+// what applying the row would change and an "Apply to NAME" button, and
+// "Import as a new person" unless a code matched. The employee the item
+// names keeps its Approve; the others are listed here.
+function MasterCandidates({
+  item,
+  busy,
+  acting,
+  onPick,
+  onImportAsNew,
+}: {
+  item: ImportItemDetailResponse;
+  busy: boolean;
+  acting: { itemId: string; action: string; employeeId?: string } | null;
+  onPick: (candidate: MasterCandidate) => void;
+  onImportAsNew: () => void;
+}) {
+  if (item.master_candidates === null) return null;
+  const labels = distinctLabels(item.master_candidates.candidates, (c) => [
+    c.employee_code,
+    c.current_title,
+  ]);
+  const others = item.master_candidates.candidates.filter(
+    (c) => c.knowledge_item_id !== item.master_target?.knowledge_item_id,
+  );
+  return (
+    <div className="talent-import__candidates">
+      {others.length > 0 && (
+        <p className="talent-import__match">
+          {item.master_target === null
+            ? "No single employee matches this row. Choose the one it belongs to:"
+            : "It also matches:"}
+        </p>
+      )}
+      {others.map((candidate) => (
+        <div
+          key={candidate.knowledge_item_id}
+          className="talent-import__candidate"
+          aria-label={`Candidate ${labels.get(candidate.knowledge_item_id)}`}
+        >
+          <p>
+            <Link to={`/talent/employees/${candidate.knowledge_item_id}`}>{candidate.name}</Link>
+            {candidate.archived ? " (archived)" : ""}, matched on{" "}
+            {candidate.signals.map((s) => MASTER_SIGNAL_LABELS[s] ?? s).join(", ")}
+          </p>
+          <MasterChanges
+            label={`Changes applying to ${labels.get(candidate.knowledge_item_id)}`}
+            changes={candidate.changes}
+          />
+          {candidate.archived && (
+            <p>
+              {candidate.name} {ARCHIVED_STAYS}
+            </p>
+          )}
+          <Button
+            variant="quiet"
+            onClick={() => onPick(candidate)}
+            disabled={busy}
+            busy={
+              busy &&
+              acting?.action === "apply" &&
+              acting.employeeId === candidate.knowledge_item_id
+            }
+          >
+            Apply to {labels.get(candidate.knowledge_item_id)}
+          </Button>
+        </div>
+      ))}
+      {item.master_candidates.strong_match ? (
+        <p className="talent-import__match">
+          An employee on file already has this row&apos;s employee code, or was made from this same
+          row, so it cannot be imported as a new person.
+        </p>
+      ) : (
+        <Button
+          variant="quiet"
+          onClick={onImportAsNew}
+          disabled={busy}
+          busy={busy && acting?.action === "new"}
+        >
+          Import as a new person
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// Plan item 112 (Q7 a): a certification row in review is recorded for a
+// holder chosen from the organization's live employees. The sheet's holder
+// code is written onto a holder who has none, so the same row finds them
+// next time. A blank holder cell may be a certificate the company holds,
+// which cannot be recorded yet.
+function CertificateHolderChoice({
+  item,
+  holders,
+  chosen,
+  busy,
+  recording,
+  onChoose,
+  onRecord,
+}: {
+  item: ImportItemDetailResponse;
+  holders: CertificateHolder[] | null;
+  chosen: string;
+  busy: boolean;
+  recording: boolean;
+  onChoose: (holderId: string) => void;
+  onRecord: () => void;
+}) {
+  const ref = item.extracted_payload.employee_ref;
+  const sheetCode = typeof ref === "string" && ref !== "" ? ref : null;
+  const labels = distinctLabels(holders ?? [], (h) => [h.employee_code, h.email, h.current_title]);
+  const holder = holders?.find((h) => h.knowledge_item_id === chosen);
+  return (
+    <div className="talent-import__candidates">
+      {sheetCode === null ? (
+        <p className="talent-import__match">
+          This row names no holder. A certificate held by the company rather than a person cannot be
+          recorded yet: choose the person who holds it, or reject it.
+        </p>
+      ) : (
+        <p className="talent-import__match">
+          No employee has the code {sheetCode}. Choose the person who holds this certificate:
+        </p>
+      )}
+      <Field label="Holder">
+        <select
+          value={chosen}
+          onChange={(event) => onChoose(event.target.value)}
+          disabled={busy || holders === null}
+        >
+          <option value="">Choose an employee</option>
+          {(holders ?? []).map((h) => (
+            <option key={h.knowledge_item_id} value={h.knowledge_item_id}>
+              {labels.get(h.knowledge_item_id)}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {holder !== undefined && sheetCode !== null && holder.employee_code === null && (
+        <p className="talent-import__match">
+          {holder.name} has no employee code; recording this gives them {sheetCode}.
+        </p>
+      )}
+      {/* PR 25's review: a different code on file is kept (the certification
+          sheet is not the HR record), so the row comes back until the sheet
+          is fixed. */}
+      {holder !== undefined &&
+        sheetCode !== null &&
+        holder.employee_code !== null &&
+        holder.employee_code !== sheetCode && (
+          <p className="talent-import__match">
+            This sheet&apos;s holder code ({sheetCode}) doesn&apos;t match {holder.name}&apos;s code
+            ({holder.employee_code}). Fix it in the sheet so the row imports cleanly next time.
+          </p>
+        )}
+      <Button
+        variant="quiet"
+        onClick={onRecord}
+        disabled={busy || holder === undefined}
+        busy={recording}
+      >
+        Record for the chosen holder
+      </Button>
     </div>
   );
 }
