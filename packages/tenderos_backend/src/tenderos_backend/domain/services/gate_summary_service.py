@@ -36,14 +36,26 @@ FINDING_GATE_SEVERITIES = ("critical", "major")
 
 
 async def requirement_review_summary(uow: UnitOfWork, tender_id: uuid.UUID) -> dict:
+    """`unverified_mandatory_count` stays the total of the two counts beside
+    it (plan item 59, Q5, PR 21): mandatory requirements not checked yet (no
+    check time) and those whose check failed (false, with a time). A
+    snapshot taken before the two existed has only the total, and the panel
+    shows no line for them."""
     requirements = await uow.requirements.list_for_tender(tender_id)
     submission_items = await uow.requirements.list_submission_items_for_tender(tender_id)
     clarifications = await uow.requirements.list_clarification_items_for_tender(tender_id)
     mandatory = [r for r in requirements if r.mandatory]
+    unverified = [r for r in mandatory if not r.verified]
     return {
         "requirement_count": len(requirements),
         "mandatory_count": len(mandatory),
-        "unverified_mandatory_count": len([r for r in mandatory if not r.verified]),
+        "unverified_mandatory_count": len(unverified),
+        "mandatory_not_verified_yet_count": len(
+            [r for r in unverified if r.verification_checked_at is None]
+        ),
+        "mandatory_verification_failed_count": len(
+            [r for r in unverified if r.verification_checked_at is not None]
+        ),
         "submission_item_count": len(submission_items),
         "clarification_count": len(clarifications),
     }

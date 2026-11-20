@@ -47,9 +47,15 @@ class GateTargetRef(BaseModel):
 class RequirementReviewSummary(BaseModel):
     requirement_count: int
     mandatory_count: int
+    # The total of the two below.
     unverified_mandatory_count: int
     submission_item_count: int
     clarification_count: int
+    # Plan item 59, Q5 (PR 21): mandatory requirements not checked yet, and
+    # those whose check failed. None on a gate opened before these existed;
+    # its snapshot has only the total.
+    mandatory_not_verified_yet_count: int | None = None
+    mandatory_verification_failed_count: int | None = None
 
 
 class ComplianceReviewSummary(BaseModel):

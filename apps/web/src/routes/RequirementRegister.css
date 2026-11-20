@@ -23,6 +23,16 @@
   color: var(--ink-3);
 }
 
+/* When a requirement was last checked (plan item 59, Q5), under its badge
+   in the Verified cell: label-sized, in the secondary ink. */
+.requirements__checked {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--ink-3);
+  font-size: var(--text-label);
+  white-space: nowrap;
+}
+
 /* The actions column shrinks to its content. From 600px up the three
    actions stay on one line (without this, the 1% width lets .action-row
    wrap them into a stack even on a wide screen); at phone width they wrap

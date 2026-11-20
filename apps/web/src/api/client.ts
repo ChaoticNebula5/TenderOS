@@ -667,12 +667,16 @@ interface GateResponseBase {
 // pending gate only (null once decided; never for final_readiness, whose
 // live counts are the Readiness page's own report). Both come from the
 // backend's gate_summary_service.
+// unverified_mandatory_count is the total of the two counts after it (plan
+// item 59, Q5), which are absent from a snapshot taken before they existed.
 export interface RequirementReviewSummary {
   requirement_count: number;
   mandatory_count: number;
   unverified_mandatory_count: number;
   submission_item_count: number;
   clarification_count: number;
+  mandatory_not_verified_yet_count?: number | null;
+  mandatory_verification_failed_count?: number | null;
 }
 
 export interface RequirementReviewGateResponse extends GateResponseBase {
@@ -822,6 +826,10 @@ export interface RequirementResponse {
   source_chunk_id: string;
   confidence: number | null;
   verified: boolean;
+  // Plan item 59, Q5 (PR 21): when the last verdict was written. With
+  // verified false, null is "not verified yet" and a time is "verification
+  // failed".
+  verification_checked_at: string | null;
   human_reviewed: boolean;
   rejected_at: string | null;
   created_at: string;

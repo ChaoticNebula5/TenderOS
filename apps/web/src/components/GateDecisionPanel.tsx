@@ -325,15 +325,25 @@ function summaryItems(gate: GateResponse, which: "snapshot" | "live"): SummaryIt
   switch (gate.gate_type) {
     case "requirement_review": {
       const c = pick(gate.summary, gate.live_summary);
-      return (
-        c && [
-          ["Requirements", String(c.requirement_count)],
-          ["Mandatory", String(c.mandatory_count)],
-          ["Unverified mandatory", String(c.unverified_mandatory_count)],
-          ["Submission items", String(c.submission_item_count)],
-          ["Clarifications", String(c.clarification_count)],
-        ]
+      if (c === null) return null;
+      const items: SummaryItem[] = [
+        ["Requirements", String(c.requirement_count)],
+        ["Mandatory", String(c.mandatory_count)],
+        ["Unverified mandatory", String(c.unverified_mandatory_count)],
+      ];
+      // Plan item 59, Q5: the total's two parts. A snapshot taken before
+      // they existed has neither, and then no line, as for item 86's count.
+      if (typeof c.mandatory_not_verified_yet_count === "number") {
+        items.push(["Not verified yet", String(c.mandatory_not_verified_yet_count)]);
+      }
+      if (typeof c.mandatory_verification_failed_count === "number") {
+        items.push(["Verification failed", String(c.mandatory_verification_failed_count)]);
+      }
+      items.push(
+        ["Submission items", String(c.submission_item_count)],
+        ["Clarifications", String(c.clarification_count)],
       );
+      return items;
     }
     case "compliance_review": {
       const c = pick(gate.summary, gate.live_summary);

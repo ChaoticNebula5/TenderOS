@@ -16,6 +16,10 @@ class RequirementResponse(BaseModel):
     source_chunk_id: UUID
     confidence: float | None
     verified: bool
+    # Plan item 59, Q5 (PR 21): when the last verdict was written. With
+    # verified false, null is "not verified yet" and a time is "verification
+    # failed".
+    verification_checked_at: datetime | None
     human_reviewed: bool
     rejected_at: datetime | None
     created_at: datetime

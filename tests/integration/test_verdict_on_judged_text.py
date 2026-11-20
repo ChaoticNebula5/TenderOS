@@ -5,8 +5,10 @@ verify_and_persist reads a requirement's text, asks the model whether the
 source supports it (seconds, outside any transaction), then writes the
 verdict. A person's text edit that commits during the call used to get the
 verdict on the old text, and a bump if it changed `verified`. Now the write
-is one conditional UPDATE, WHERE requirement_text is still the text judged:
-a refused write means no write, no bump and one INFO line. A requirement
+reads the row locked and compares requirement_text with the text judged
+(a single conditional UPDATE until PR 21, which writes the check time with
+every verdict and so needs the old value of `verified`): a refused write
+means no write, no bump and one INFO line. A requirement
 deleted meanwhile (merge and split delete them) keeps today's
 RequirementNotFoundError.
 

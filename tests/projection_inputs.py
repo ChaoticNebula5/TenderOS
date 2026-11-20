@@ -48,6 +48,9 @@ PROJECTED_PROPERTIES: dict[str, frozenset[str]] = {
     "Tender": frozenset(
         {"id", "tender_id", "organization_id", "name", "status", "state_version", "submission_date"}
     ),
+    # Not requirements.verification_checked_at (plan item 59, Q5, PR 21): the
+    # node carries verified only, so a re-check with the same verdict, which
+    # writes the time alone, changes no graph and does not bump.
     "Requirement": frozenset(
         {"id", "tender_id", "display_code", "category", "mandatory", "verified"}
     ),

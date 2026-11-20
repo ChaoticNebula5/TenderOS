@@ -308,6 +308,7 @@ async def patch_requirement(
             "mandatory": requirement.mandatory,
             "human_reviewed": requirement.human_reviewed,
             "rejected_at": requirement.rejected_at.isoformat() if requirement.rejected_at else None,
+            "verified": requirement.verified,
         }
 
         if action == "reject":
@@ -317,6 +318,13 @@ async def patch_requirement(
             if requirement_text is not None:
                 fields["requirement_text"] = requirement_text
                 fields["normalized_text"] = normalize_text(requirement_text)
+                if requirement_text != requirement.requirement_text:
+                    # Plan item 59, Q5 (PR 21): the verdict was on the old
+                    # text, so it goes back to not checked yet (false, no
+                    # time), under the lock above. The person can press
+                    # Verify again. The same text sent again keeps it.
+                    fields["verified"] = False
+                    fields["verification_checked_at"] = None
             if category is not None:
                 fields["category"] = category
             if mandatory is not None:
@@ -329,12 +337,14 @@ async def patch_requirement(
             "mandatory": updated.mandatory,
             "human_reviewed": updated.human_reviewed,
             "rejected_at": updated.rejected_at.isoformat() if updated.rejected_at else None,
+            "verified": updated.verified,
         }
-        # The graph's Requirement node carries the category and mandatory
-        # flag; the text, the reviewed flag and rejected_at are not projected
-        # (rejected requirements are projected like live ones, plan item 97),
-        # so a confirm, a text edit or a reject changes no graph (plan item 95).
-        if before["category"] != after["category"] or before["mandatory"] != after["mandatory"]:
+        # The graph's Requirement node carries the category, the mandatory
+        # flag and verified; the text, the reviewed flag, rejected_at and the
+        # check time are not projected (rejected requirements are projected
+        # like live ones, plan item 97), so a confirm or a reject changes no
+        # graph (plan item 95), and a text edit only when it resets a verdict.
+        if any(before[key] != after[key] for key in ("category", "mandatory", "verified")):
             await uow.tenders.bump_state_version(updated.tender_id)
         await uow.audit.create(
             organization_id=organization_id,

@@ -11,7 +11,8 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { useListReads } from "../hooks/useListReads";
 import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
-import { describeVerified } from "../status/statusMap";
+import { formatDate } from "../format/date";
+import { describeRequirementVerification } from "../status/statusMap";
 import "./RequirementRegister.css";
 
 // Screen 8 (Part J). Routes: GET /tenders/{id}/requirements (G5, already
@@ -113,9 +114,12 @@ export function RequirementRegister() {
     }
   }
 
-  const unverifiedMandatory = requirements.filter(
-    (r) => r.mandatory && !r.verified && !r.rejected_at,
-  ).length;
+  const unverified = requirements.filter((r) => r.mandatory && !r.verified && !r.rejected_at);
+  const unverifiedMandatory = unverified.length;
+  // Plan item 59, Q5: the two unverified states apart - not checked yet (no
+  // check time) and verification failed (a time).
+  const notVerifiedYet = unverified.filter((r) => r.verification_checked_at === null).length;
+  const verificationFailed = unverifiedMandatory - notVerifiedYet;
 
   // The gate heading and its panel always render together, as siblings:
   // full-flow.spec.ts (gatePanel()) finds the panel as the heading's following
@@ -150,6 +154,10 @@ export function RequirementRegister() {
         <p className="count-line">
           {requirements.length} {requirements.length === 1 ? "requirement" : "requirements"},{" "}
           {unverifiedMandatory} unverified mandatory
+          {/* Plan item 59, Q5: the total's two parts, only when there is one
+              to split, so a fully verified register reads as before. */}
+          {unverifiedMandatory > 0 &&
+            ` (${notVerifiedYet} not verified yet, ${verificationFailed} failed)`}
         </p>
       )}
 
@@ -184,7 +192,21 @@ export function RequirementRegister() {
                 <td>{r.category}</td>
                 <td>{r.mandatory ? "yes" : "no"}</td>
                 <td>
-                  <StatusBadge {...describeVerified(r.verified, r.mandatory)} />
+                  {/* Plan item 59, Q5: the state and, once checked, when -
+                      inside this one cell, so the spec's Reviewed cell keeps
+                      its index. */}
+                  <StatusBadge
+                    {...describeRequirementVerification(
+                      r.verified,
+                      r.verification_checked_at,
+                      r.mandatory,
+                    )}
+                  />
+                  {r.verification_checked_at !== null && (
+                    <span className="requirements__checked">
+                      Checked {formatDate(r.verification_checked_at)}
+                    </span>
+                  )}
                 </td>
                 <td>{r.human_reviewed ? "yes" : "no"}</td>
                 <td>
