@@ -56,27 +56,25 @@ class DuplicateResolution:
     # review queue entry - e.g. "employee_code matched but name differs"
 
 
-# Precedence policy over four simultaneous partial-match signals (employee_
-# code, name, resume_document_id, email) - strong signals (code/resume/
-# email) matching different candidates is a genuine conflict, not just
-# "pick the best one," hence NEEDS_REVIEW rather than a forced pick below.
-def resolve_employee_duplicate(
+# The identity signals that alone point at one person; a name is not one.
+STRONG_SIGNALS = frozenset({"employee_code", "email", "resume_document_id"})
+
+
+def employee_match_signals(
     candidate_employee_code: str | None,
     candidate_name: str,
     candidate_email: str | None,
     candidate_resume_document_id: uuid.UUID | None,
     candidates: list[Employee],
-) -> DuplicateResolution:
-    if not candidates:
-        return DuplicateResolution(
-            DuplicateVerdict.NEW,
-            None,
-            "no matching employee_code/email/name/resume on file",
-        )
-
+) -> list[tuple[Employee, tuple[str, ...]]]:
+    """Every employee with at least one signal in common with the incoming
+    record, each with the signals it matched, in the candidates' order.
+    resolve_employee_duplicate decides on this list, and a review item's
+    candidates are this list (plan item 111), so the screen offers exactly
+    the employees the duplicate check weighed."""
     candidate_normalized_name = normalize_employee_name(candidate_name)
-    candidate_matches: list[tuple[Employee, tuple[str, ...]]] = []
     normalized_candidate_email = normalize_employee_email(candidate_email)
+    candidate_matches: list[tuple[Employee, tuple[str, ...]]] = []
 
     for candidate in candidates:
         signals: list[str] = []
@@ -101,17 +99,39 @@ def resolve_employee_duplicate(
             signals.append("email")
         if signals:
             candidate_matches.append((candidate, tuple(signals)))
+    return candidate_matches
 
-    strong_signals = {
-        "employee_code",
-        "email",
-        "resume_document_id",
-    }
+
+# Precedence policy over four simultaneous partial-match signals (employee_
+# code, name, resume_document_id, email) - strong signals (code/resume/
+# email) matching different candidates is a genuine conflict, not just
+# "pick the best one," hence NEEDS_REVIEW rather than a forced pick below.
+def resolve_employee_duplicate(
+    candidate_employee_code: str | None,
+    candidate_name: str,
+    candidate_email: str | None,
+    candidate_resume_document_id: uuid.UUID | None,
+    candidates: list[Employee],
+) -> DuplicateResolution:
+    if not candidates:
+        return DuplicateResolution(
+            DuplicateVerdict.NEW,
+            None,
+            "no matching employee_code/email/name/resume on file",
+        )
+
+    candidate_matches = employee_match_signals(
+        candidate_employee_code,
+        candidate_name,
+        candidate_email,
+        candidate_resume_document_id,
+        candidates,
+    )
 
     strong_matches = [
         (employee, signals)
         for employee, signals in candidate_matches
-        if any(signal in strong_signals for signal in signals)
+        if any(signal in STRONG_SIGNALS for signal in signals)
     ]
 
     if len(strong_matches) > 1:
@@ -120,7 +140,7 @@ def resolve_employee_duplicate(
                 signal
                 for _, matched_signals in strong_matches
                 for signal in matched_signals
-                if signal in strong_signals
+                if signal in STRONG_SIGNALS
             }
         )
 

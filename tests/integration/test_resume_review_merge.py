@@ -552,20 +552,23 @@ async def test_the_automatic_branch_merges_an_unverified_profile_with_a_system_a
 
 async def test_approval_and_the_automatic_branch_merge_identically():
     """One merge function, two callers: the same profile into two identical
-    unverified employees, once automatically and once by approval."""
+    unverified employees, once automatically and once by approval. Plan item
+    111: in two organizations, since the merge keeps an email another
+    employee of the same organization holds."""
     org_id, user_id = await _org()
+    review_org, review_user = await _org()
     auto_id, auto_document = await _employee(org_id, user_id, verified=False, name="Auto Vale")
-    review_id, _ = await _employee(org_id, user_id, verified=False, name="Review Vale")
+    review_id, _ = await _employee(review_org, review_user, verified=False, name="Review Vale")
     profile = _profile()
 
     await _import_duplicate(
         org_id, user_id, auto_id, auto_document, profile.model_copy(update={"name": "Auto Vale"})
     )
     item_id, _, _ = await _review_item(
-        org_id, user_id, review_id, profile.model_copy(update={"name": "Review Vale"})
+        review_org, review_user, review_id, profile.model_copy(update={"name": "Review Vale"})
     )
     await knowledge_service.approve_import_item(
-        item_id, org_id, user_id, target_fingerprint=await _fingerprint(review_id)
+        item_id, review_org, review_user, target_fingerprint=await _fingerprint(review_id)
     )
 
     auto = await _employee_row(auto_id)

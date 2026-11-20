@@ -91,6 +91,27 @@
   font-weight: 600;
 }
 
+/* Plan item 111: the employees a resume item matches, each with what merging
+   into it would change and its own "Merge into" button, then "Import as a
+   new person" (TalentImportReview.tsx, ResumeCandidates). */
+.talent-import__candidates {
+  margin: var(--space-2) 0 0;
+}
+
+.talent-import__candidate {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0 0;
+  border-top: 1px solid var(--rule);
+}
+
+.talent-import__candidate p {
+  margin: 0 0 var(--space-1);
+}
+
+.talent-import__candidate .talent-import__merge-list {
+  margin: 0 0 var(--space-2);
+}
+
 /* The parsed fields: label and value in two columns, labels in ink-2. A
    fixed label column (wide enough for "Certifications mentioned" at label
    size), so the values line up from one item row to the next; a longer,

@@ -35,6 +35,9 @@ ROSTER_READERS = Counter(
         # holds until the select commits. It still asks "removed from the
         # roster", not "valid evidence".
         ("domain/services/talent_service.py", "archived_employee_ids"): 1,
+        # Plan item 111 (PR 24): a resume item's candidates say which are
+        # removed from the roster (no merge into them), a roster question.
+        ("domain/services/knowledge_service.py", "list_resume_candidates"): 1,
     }
 )
 

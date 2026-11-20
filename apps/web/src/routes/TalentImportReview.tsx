@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import {
   ApiError,
   approveImportItem,
+  importItemAsNewEmployee,
   listImportBatches,
   listImportItems,
   rejectImportItem,
@@ -12,7 +13,9 @@ import {
 } from "../api/client";
 import type {
   ImportBatchResponse,
+  ImportItemCandidate,
   ImportItemDetailResponse,
+  ImportItemFieldChange,
   ImportItemTarget,
 } from "../api/client";
 import { formatErrorDetail, readEnvelopeCode } from "../api/formatErrorDetail";
@@ -60,7 +63,9 @@ import "./TalentImportReview.css";
 // - setup's résumé import `section` that has a heading "Items" -> `tbody tr`, one row
 //   per item, each with its own "Approve" button while needs_review. That
 //   locator also matches ANY ancestor section of the heading, so the Items
-//   <section> is a direct child of <main>, never nested.
+//   <section> is a direct child of <main>, never nested. That "Approve" is a
+//   substring match, so plan item 111's buttons ("Merge into NAME", "Import
+//   as a new person") never contain the word.
 // - A batch's status is computed from its items on every read
 //   (knowledge_service._compute_batch_progress), so after an Approve or
 //   Reject the batch list is read again too (item 66 walk: the batch row
@@ -90,9 +95,11 @@ export function TalentImportReview() {
   const [uploading, setUploading] = useState(false);
   // The item whose Approve or Reject is in flight, and which one: that
   // button carries aria-busy, and both of that row's buttons are disabled.
-  const [acting, setActing] = useState<{ itemId: string; action: "approve" | "reject" } | null>(
-    null,
-  );
+  const [acting, setActing] = useState<{
+    itemId: string;
+    action: "approve" | "reject" | "pick" | "new";
+    employeeId?: string;
+  } | null>(null);
 
   // `quiet` for the poll's reads: a failed one shows no error (the rows
   // stay, and the next read tries again).
@@ -243,6 +250,57 @@ export function TalentImportReview() {
       } else {
         setError(err instanceof ApiError ? `Approve failed (${err.status})` : "Approve failed");
       }
+    } finally {
+      setActing(null);
+    }
+  }
+
+  // Plan item 111: a refusal because the employee or the candidate list
+  // changed since this row was loaded wrote nothing; the items are read
+  // again so the row shows the current list before a second decision.
+  async function handleDecisionError(err: unknown, what: string) {
+    const code = err instanceof ApiError ? readEnvelopeCode(err.body) : null;
+    if (code === "IMPORT_ITEM_TARGET_CHANGED" || code === "IMPORT_ITEM_CANDIDATES_CHANGED") {
+      setError(
+        "The matching employees changed after this item was loaded. The row now shows the " +
+          "current values; review them, then decide again.",
+      );
+      await refreshSelectedItems().catch(() => {
+        // The error above stays; Review items reads them again.
+      });
+    } else if (code !== null) {
+      setError(`${what} failed: ${formatErrorDetail(err)}`);
+    } else {
+      setError(err instanceof ApiError ? `${what} failed (${err.status})` : `${what} failed`);
+    }
+  }
+
+  async function handlePick(item: ImportItemDetailResponse, candidate: ImportItemCandidate) {
+    if (item.candidates === null) return;
+    setError(null);
+    setActing({ itemId: item.id, action: "pick", employeeId: candidate.knowledge_item_id });
+    try {
+      await approveImportItem(item.id, candidate.fingerprint, {
+        employeeId: candidate.knowledge_item_id,
+        candidatesFingerprint: item.candidates.fingerprint,
+      });
+      await refreshSelectedItems();
+    } catch (err) {
+      await handleDecisionError(err, "Merge");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function handleImportAsNew(item: ImportItemDetailResponse) {
+    if (item.candidates === null) return;
+    setError(null);
+    setActing({ itemId: item.id, action: "new" });
+    try {
+      await importItemAsNewEmployee(item.id, item.candidates.fingerprint);
+      await refreshSelectedItems();
+    } catch (err) {
+      await handleDecisionError(err, "Import as a new person");
     } finally {
       setActing(null);
     }
@@ -412,6 +470,15 @@ export function TalentImportReview() {
                       </td>
                       <td className="talent-import__detail">
                         <ItemDetail item={item} resumeBatch={resumeBatch} />
+                        {item.status === "needs_review" && item.candidates !== null && (
+                          <ResumeCandidates
+                            item={item}
+                            busy={busy}
+                            acting={acting}
+                            onPick={(candidate) => handlePick(item, candidate)}
+                            onImportAsNew={() => handleImportAsNew(item)}
+                          />
+                        )}
                       </td>
                       <td className="cell-actions">
                         {item.status === "needs_review" && (
@@ -488,11 +555,14 @@ function ItemDetail({
     <>
       {item.error_message && <p className="talent-import__reason">{item.error_message}</p>}
       {item.target_employee !== null && <ResumeMatch item={item} target={item.target_employee} />}
-      {resumeBatch && item.target_employee === null && item.status === "needs_review" && (
-        <p className="talent-import__match">
-          No single employee matches this resume, so it can only be rejected.
-        </p>
-      )}
+      {resumeBatch &&
+        item.target_employee === null &&
+        item.status === "needs_review" &&
+        item.candidates === null && (
+          <p className="talent-import__match">
+            This resume&apos;s fields or document could not be read, so it can only be rejected.
+          </p>
+        )}
       {fields.length > 0 && (
         <dl className="talent-import__fields-list">
           {fields.map((field) => (
@@ -525,6 +595,141 @@ const FIELD_LABELS: Record<string, string> = {
 function showValue(field: string, value: string | number | null): string {
   if (value === null) return NOT_SET;
   return field === "years_experience" ? formatYears(Number(value)) : String(value);
+}
+
+// One line per field of the merge's own change list (the backend decides
+// every value; this renders it).
+function changeLine(entry: ImportItemFieldChange): string {
+  if (entry.held_by_other) {
+    return `${showValue(entry.field, entry.on_file)} (kept: another employee has ${showValue(entry.field, entry.from_resume)})`;
+  }
+  return entry.changes
+    ? `${showValue(entry.field, entry.on_file)} → ${showValue(entry.field, entry.from_resume)} (changes)`
+    : `${showValue(entry.field, entry.on_file)} (kept)`;
+}
+
+const SIGNAL_LABELS: Record<string, string> = {
+  name: "name",
+  email: "email",
+  resume_document_id: "this resume on file",
+  employee_code: "employee code",
+};
+
+// The text after "Merge into" for each candidate. Two candidates sharing a
+// name (plan item 111's own case) would give two buttons one accessible name,
+// so a shared name carries the email, or the title when there is no email;
+// a label still shared after that carries the candidate's position.
+function candidateLabels(candidates: ImportItemCandidate[]): Map<string, string> {
+  const count = (values: string[], value: string) => values.filter((v) => v === value).length;
+  const names = candidates.map((c) => c.name);
+  const labels = candidates.map((c) => {
+    if (count(names, c.name) < 2) return c.name;
+    const detail = c.email ?? c.current_title;
+    return detail ? `${c.name} (${detail})` : c.name;
+  });
+  return new Map(
+    candidates.map((c, i) => [
+      c.knowledge_item_id,
+      count(labels, labels[i]) < 2 ? labels[i] : `${labels[i]} #${i + 1}`,
+    ]),
+  );
+}
+
+// Plan item 111: the employees this resume matches (the duplicate check's
+// own list), each with what merging into it would change and a "Merge into
+// NAME" button, and "Import as a new person" unless one matched on a strong
+// signal. The employee the item already names keeps its Approve above; the
+// others are listed here, so a name-only best guess can be overruled (Q2).
+function ResumeCandidates({
+  item,
+  busy,
+  acting,
+  onPick,
+  onImportAsNew,
+}: {
+  item: ImportItemDetailResponse;
+  busy: boolean;
+  acting: { itemId: string; action: string; employeeId?: string } | null;
+  onPick: (candidate: ImportItemCandidate) => void;
+  onImportAsNew: () => void;
+}) {
+  if (item.candidates === null) return null;
+  // Over every candidate, the named one included: its panel above shows the
+  // same name, so a button below must still say which employee it is.
+  const labels = candidateLabels(item.candidates.candidates);
+  const others = item.candidates.candidates.filter(
+    (c) => c.knowledge_item_id !== item.target_employee?.knowledge_item_id,
+  );
+  return (
+    <div className="talent-import__candidates">
+      {others.length > 0 && (
+        <p className="talent-import__match">
+          {item.target_employee === null
+            ? "No single employee matches this resume. Choose the one it belongs to:"
+            : "It also matches:"}
+        </p>
+      )}
+      {others.map((candidate) => (
+        <div
+          key={candidate.knowledge_item_id}
+          className="talent-import__candidate"
+          aria-label={`Candidate ${candidate.name}`}
+        >
+          <p>
+            <Link to={`/talent/employees/${candidate.knowledge_item_id}`}>{candidate.name}</Link> (
+            {candidate.archived
+              ? "archived"
+              : candidate.profile_review_status === "verified"
+                ? "verified profile"
+                : "profile not verified yet"}
+            ), matched on {candidate.signals.map((s) => SIGNAL_LABELS[s] ?? s).join(", ")}
+          </p>
+          <dl
+            className="talent-import__merge-list"
+            aria-label={`Changes merging into ${candidate.name}`}
+          >
+            {candidate.changes.map((entry) => (
+              <div key={entry.field} className={entry.changes ? "is-changed" : undefined}>
+                <dt>{FIELD_LABELS[entry.field] ?? entry.field}</dt>
+                <dd>{changeLine(entry)}</dd>
+              </div>
+            ))}
+          </dl>
+          {candidate.archived ? (
+            <p>Archived: restore this employee before merging a resume into them.</p>
+          ) : (
+            <Button
+              variant="quiet"
+              onClick={() => onPick(candidate)}
+              disabled={busy}
+              busy={
+                busy &&
+                acting?.action === "pick" &&
+                acting.employeeId === candidate.knowledge_item_id
+              }
+            >
+              Merge into {labels.get(candidate.knowledge_item_id)}
+            </Button>
+          )}
+        </div>
+      ))}
+      {item.candidates.strong_match ? (
+        <p className="talent-import__match">
+          An employee on file already has this resume&apos;s email or document, so it cannot be
+          imported as a new person.
+        </p>
+      ) : (
+        <Button
+          variant="quiet"
+          onClick={onImportAsNew}
+          disabled={busy}
+          busy={busy && acting?.action === "new"}
+        >
+          Import as a new person
+        </Button>
+      )}
+    </div>
+  );
 }
 
 function ResumeMatch({
@@ -573,9 +778,7 @@ function ResumeMatch({
             <dd>
               {/* One text per value line, so "Surveyor" in the parsed
                   fields above stays the only element with that text. */}
-              {entry.changes
-                ? `${showValue(entry.field, entry.on_file)} → ${showValue(entry.field, entry.from_resume)} (changes)`
-                : `${showValue(entry.field, entry.on_file)} (kept)`}
+              {changeLine(entry)}
             </dd>
           </div>
         ))}

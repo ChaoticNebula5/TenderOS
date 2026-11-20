@@ -201,6 +201,40 @@ class ImportItemDecisionError(APIError):
             "approving.",
         )
 
+    @classmethod
+    def candidates_changed(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_CANDIDATES_CHANGED",
+            "The employees matching this resume changed after it was loaded. Review the "
+            "updated list, then decide again.",
+        )
+
+    @classmethod
+    def not_a_candidate(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_NOT_A_CANDIDATE",
+            "That employee is not one this resume matches; choose one of the employees shown.",
+        )
+
+    @classmethod
+    def strong_match(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_STRONG_MATCH",
+            "An employee on file already has this resume's email or document, so it cannot "
+            "become a new person; merge it into that employee instead.",
+        )
+
+    @classmethod
+    def type_unsupported(cls) -> "ImportItemDecisionError":
+        return cls(
+            409,
+            "IMPORT_ITEM_TYPE_UNSUPPORTED",
+            "Choosing an employee or importing as a new person is only for resume items.",
+        )
+
 
 class UserNotFoundError(APIError):
     def __init__(self) -> None:
