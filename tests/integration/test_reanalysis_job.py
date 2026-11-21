@@ -26,9 +26,11 @@ from sqlalchemy import select
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
+from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.models.reanalysis_claim import ReanalysisClaim
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -239,6 +241,64 @@ async def test_reanalyze_knowledge_selection_change_reopens_compliance_and_regro
     assert events["ProposalChanged"].payload["claim_id"] == str(claim_id)
     assert events["ProposalChanged"].payload["grounding_status"] == "unsupported"
     assert events["ProposalChanged"].payload["evidence_link_ids_considered"] == []
+
+
+async def test_the_jobs_compliance_calls_are_recorded_under_its_reanalysis_claim(monkeypatch):
+    """PR 29 (Q1 b): the reanalysis job runs under a reanalysis claim, not a
+    run or an operation, and its compliance calls were written with no
+    owner at all. Each is now recorded under the claim it ran for."""
+    org_id, tender_id = await _make_org_and_tender("Reanalysis Trace Owner Test")
+    requirement_id, _, _ = await _make_approved_requirement_with_evidence(tender_id, org_id)
+    knowledge_item_id = uuid.uuid4()
+
+    async def _fake_project_tender(_tender_id: uuid.UUID) -> None:
+        return None
+
+    async def _fake_preview_impact(_tender_id, _knowledge_item_id) -> list[dict]:
+        return [{"labels": ["Requirement"], "affected": {"id": str(requirement_id)}}]
+
+    monkeypatch.setattr(reanalysis.graph_service, "project_tender", _fake_project_tender)
+    monkeypatch.setattr(reanalysis.graph_service, "preview_impact", _fake_preview_impact)
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "compliance_proposal",
+        ComplianceProposal,
+        [
+            ComplianceProposal(
+                status="non_compliant",
+                evidence_refs=[],
+                confidence=0.9,
+                reasoning_summary="No valid evidence remains for this requirement.",
+            )
+        ],
+    )
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda: fake_client)
+
+    await reanalysis.reanalyze_knowledge_selection_change(
+        str(tender_id), str(knowledge_item_id), state_version=7
+    )
+
+    async with get_session() as session:
+        claim_id = (
+            await session.execute(
+                select(ReanalysisClaim.id).where(
+                    ReanalysisClaim.tender_id == tender_id,
+                    ReanalysisClaim.knowledge_item_id == knowledge_item_id,
+                    ReanalysisClaim.state_version == 7,
+                )
+            )
+        ).scalar_one()
+        rows = (
+            await session.execute(
+                select(
+                    AgentTrace.agent_name,
+                    AgentTrace.reanalysis_claim_id,
+                    AgentTrace.operation_id,
+                    AgentTrace.workflow_run_id,
+                ).where(AgentTrace.tender_id == tender_id)
+            )
+        ).all()
+    assert [tuple(r) for r in rows] == [("compliance_proposal", claim_id, None, None)]
 
 
 async def test_affected_ids_splits_rows_by_label_and_ignores_unrelated_ones():

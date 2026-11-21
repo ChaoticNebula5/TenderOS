@@ -42,6 +42,7 @@ async def _write_trace(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None,
     task_id: uuid.UUID | None,
+    operation_id: uuid.UUID | None = None,
     model: str,
     status: str,
     outcome: LLMResult[FindingExplanation] | LLMError | None = None,
@@ -52,6 +53,7 @@ async def _write_trace(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             agent_name=_AGENT_NAME,
             model=model,
             prompt_version=bundle_version(),
@@ -69,6 +71,7 @@ async def explain_finding(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> FindingExplanation:
     """E6's explanation call - one deterministic finding, one call, mirrors
     propose_compliance/score_candidate's one-call-per-target shape. Note
@@ -95,6 +98,7 @@ async def explain_finding(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             model=model,
             status="failed",
             outcome=exc,
@@ -106,6 +110,7 @@ async def explain_finding(
         tender_id=tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        operation_id=operation_id,
         model=model,
         status="completed",
         outcome=llm_result,

@@ -46,6 +46,18 @@ async def claim_reanalysis(
     return token
 
 
+async def claim_id(
+    tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, state_version: int
+) -> uuid.UUID | None:
+    """The id of this selection change's claim row (PR 29): the reanalysis
+    job's LLM calls are recorded under it (agent_traces.reanalysis_claim_id).
+    Looked up by the claim's own unique key (uq_reanalysis_claim) rather than
+    returned by claim_reanalysis, whose token-only contract its callers and
+    tests rely on."""
+    async with UnitOfWork() as uow:
+        return await uow.reanalysis_claims.id_for(tender_id, knowledge_item_id, state_version)
+
+
 async def complete_reanalysis(claim_token: uuid.UUID) -> bool:
     """Mark the claim completed. False when the token is no longer current
     (the lease lapsed and another delivery took the claim over)."""

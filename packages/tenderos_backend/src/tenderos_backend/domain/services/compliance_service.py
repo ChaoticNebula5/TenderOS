@@ -444,6 +444,7 @@ async def evaluate_compliance_for_requirement(
     requirement_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    reanalysis_claim_id: uuid.UUID | None = None,
     today: date | None = None,
 ) -> ComplianceEntry:
     """The full per-requirement pipeline (retrieve -> propose -> materialize
@@ -486,6 +487,7 @@ async def evaluate_compliance_for_requirement(
         tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        reanalysis_claim_id=reanalysis_claim_id,
     )
 
     materialized = await materialize_evidence(tender_id, prepared, proposal.evidence_refs)

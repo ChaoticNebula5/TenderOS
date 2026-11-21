@@ -7,6 +7,7 @@ an otherwise-retryable exception type.
 """
 
 from tenderos_backend.agents.llm.client import (
+    LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
     ProviderRequestRejectedError,
@@ -37,6 +38,41 @@ def test_a_request_the_provider_rejected_is_always_terminal():
         attempt_count=0,
         max_attempts=5,
         retry_budget_remaining=10,
+    )
+    assert decision.should_retry is False
+
+
+def test_an_llm_timeout_is_retried_once_after_the_task_level_backoff_as_for_a_5xx():
+    # PR 29 (Q4 a): exactly the 5xx rule. The workflow job classifies after
+    # mark_task_failed has counted the failure, so the first failure arrives
+    # with attempt_count 1: 30 s x 2^1 = 60 s.
+    decision = classify_task_failure(
+        LLMTimeoutError("no answer within the 180 s call deadline"),
+        attempt_count=1,
+        max_attempts=2,
+        retry_budget_remaining=10,
+    )
+    assert decision.should_retry is True
+    assert decision.delay_seconds == 60.0
+    assert decision.budget_cost == 1
+
+
+def test_a_second_llm_timeout_is_not_retried():
+    decision = classify_task_failure(
+        LLMTimeoutError("no answer within the 180 s call deadline"),
+        attempt_count=2,
+        max_attempts=2,
+        retry_budget_remaining=10,
+    )
+    assert decision.should_retry is False
+
+
+def test_an_llm_timeout_with_no_budget_left_is_not_retried():
+    decision = classify_task_failure(
+        LLMTimeoutError("no answer within the 180 s call deadline"),
+        attempt_count=1,
+        max_attempts=2,
+        retry_budget_remaining=0,
     )
     assert decision.should_retry is False
 

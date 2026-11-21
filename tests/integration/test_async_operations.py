@@ -24,7 +24,7 @@ from rq import Queue
 from rq.executions import Execution
 from rq.job import JobStatus
 from sqlalchemy import func, select, text, update
-from tenderos_backend.agents.llm.client import LLMTimeoutError
+from tenderos_backend.agents.llm.client import LLMTimeoutError, ProviderRequestRejectedError
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
@@ -588,6 +588,23 @@ async def test_an_llm_timeout_ends_the_operation_failed_with_llm_timeout(monkeyp
     # The safe message, not the exception text.
     assert final.error_message == operation_jobs._FAILURES["LLM_TIMEOUT"]
     assert "60 s" not in (final.error_message or "")
+
+
+async def test_a_rejected_request_ends_the_operation_failed_with_llm_rejected(monkeypatch):
+    # PR 29 (Q6 a): before, a request the provider rejected ended as
+    # INTERNAL_ERROR ("Something went wrong on our side").
+    async def rejected(operation: AsyncOperation) -> None:
+        raise ProviderRequestRejectedError(400, "INVALID_ARGUMENT")
+
+    _replace_redteam_handler(monkeypatch, rejected)
+    requested = await _request("op-rejected@example.com")
+
+    await run_operation(str(requested.operation.id))
+
+    final = await _reload(requested.operation.id)
+    assert (final.status, final.error_code) == ("failed", "LLM_REJECTED")
+    assert final.error_message == operation_jobs._FAILURES["LLM_REJECTED"]
+    assert "INVALID_ARGUMENT" not in (final.error_message or "")
 
 
 async def test_an_unexpected_error_ends_failed_with_a_generic_message(monkeypatch):

@@ -684,6 +684,7 @@ async def draft_proposal_for_tender(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> list[ProposalSection]:
     """The full pipeline: for every section template that has grounding
     data (or is always_on), build its grounded context, draft it, enforce
@@ -715,6 +716,7 @@ async def draft_proposal_for_tender(
             tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
         )
         section = await persist_section_and_claims(
             tender_id, template.name, draft, prepared, compliance_status

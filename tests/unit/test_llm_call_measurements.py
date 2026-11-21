@@ -76,7 +76,11 @@ def _response(text: str = '{"text": "ok"}', prompt_tokens: int = 1000, output_to
     return SimpleNamespace(
         text=text,
         usage_metadata=SimpleNamespace(
-            prompt_token_count=prompt_tokens, candidates_token_count=output_tokens
+            prompt_token_count=prompt_tokens,
+            candidates_token_count=output_tokens,
+            # PR 29: the SDK's usage object always has this field (unset,
+            # None, when the model did not think).
+            thoughts_token_count=None,
         ),
     )
 
@@ -445,6 +449,7 @@ async def test_trace_measurements_from_a_result():
         "input_tokens": 120,
         "output_tokens": 30,
         "estimated_cost_usd": 0.02,
+        "thinking_tokens": None,  # PR 29: a field of its own; not set here
     }
 
 
@@ -459,6 +464,7 @@ async def test_trace_measurements_from_a_measured_error():
         "input_tokens": None,
         "output_tokens": None,
         "estimated_cost_usd": None,
+        "thinking_tokens": None,
     }
 
 
@@ -471,6 +477,7 @@ async def test_trace_measurements_from_an_unmeasured_error_or_nothing_are_all_un
             "input_tokens",
             "output_tokens",
             "estimated_cost_usd",
+            "thinking_tokens",
         )
     )
 

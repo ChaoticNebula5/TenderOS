@@ -75,16 +75,35 @@ _PRICE_PER_MILLION_TOKENS_USD: dict[str, tuple[float, float]] = {
 }
 
 
+def has_price(model: str) -> bool:
+    """Whether a call to `model` can record a cost (PR 29: the startup
+    warning in factory.log_llm_provider names a configured model that
+    cannot)."""
+    return model in _PRICE_PER_MILLION_TOKENS_USD
+
+
 def _estimate_cost_usd(
-    model: str, input_tokens: int | None, output_tokens: int | None
+    model: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    thinking_tokens: int | None = None,
 ) -> float | None:
+    """PR 29: thinking tokens are billed at the output rate. Google's
+    pricing page (https://ai.google.dev/gemini-api/docs/pricing, which now
+    redirects to https://aistudio.google.com/docs/pricing; read 2026-11-21)
+    labels each model's output row "Output price (including thinking
+    tokens)". So the answer's tokens and the thinking tokens are priced
+    together at the output rate, while agent_traces keeps them in two
+    columns (output_tokens, thinking_tokens). No thinking count (None) is
+    priced as none."""
     if input_tokens is None or output_tokens is None:
         return None
     rates = _PRICE_PER_MILLION_TOKENS_USD.get(model)
     if rates is None:
         return None
     input_rate, output_rate = rates
-    return (input_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate
+    billed_output = output_tokens + (thinking_tokens or 0)
+    return (input_tokens / 1_000_000) * input_rate + (billed_output / 1_000_000) * output_rate
 
 
 def _cache_key(model: str, system_prompt: str, user_prompt: str, schema_name: str) -> str:
@@ -172,6 +191,7 @@ class GeminiClient:
         requests = _Requests()
         input_tokens: int | None = None
         output_tokens: int | None = None
+        thinking_tokens: int | None = None
         try:
             try:
                 response = await asyncio.wait_for(
@@ -191,6 +211,9 @@ class GeminiClient:
             usage = response.usage_metadata
             input_tokens = usage.prompt_token_count if usage else None
             output_tokens = usage.candidates_token_count if usage else None
+            # PR 29: the SDK leaves thoughts_token_count unset when the model
+            # did not think, so a response with usage and no count thought 0.
+            thinking_tokens = (usage.thoughts_token_count or 0) if usage else None
 
             response_text = response.text
             if response_text is None:
@@ -223,7 +246,10 @@ class GeminiClient:
                 attempts=requests.made,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
-                estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),
+                estimated_cost_usd=_estimate_cost_usd(
+                    model, input_tokens, output_tokens, thinking_tokens
+                ),
+                thinking_tokens=thinking_tokens,
             )
             raise
 
@@ -242,9 +268,13 @@ class GeminiClient:
             # a response with no usage - honestly absent, not a false
             # zero-cost claim. (A cache hit returns 0.0 above: it made no
             # request, so its cost is known. Before PR 28's review it was
-            # None too.)
-            estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),
+            # None too.) Thinking tokens are priced as output (PR 29; see
+            # _estimate_cost_usd).
+            estimated_cost_usd=_estimate_cost_usd(
+                model, input_tokens, output_tokens, thinking_tokens
+            ),
             attempts=requests.made,
+            thinking_tokens=thinking_tokens,
         )
 
     async def _call_with_retry(

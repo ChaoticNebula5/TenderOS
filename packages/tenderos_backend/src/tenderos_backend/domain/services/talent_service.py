@@ -489,6 +489,8 @@ async def evaluate_role_match(
     role_requirement_id: uuid.UUID,
     employee: Employee,
     today: date | None = None,
+    workflow_run_id: uuid.UUID | None = None,
+    task_id: uuid.UUID | None = None,
 ) -> RoleMatch:
     """The full per-(role, candidate) pipeline: gather evidence, compute
     mechanical signals, call the LLM, enforce gap visibility, persist.
@@ -526,6 +528,8 @@ async def evaluate_role_match(
         profile,
         evidence,
         role.tender_id,
+        workflow_run_id=workflow_run_id,
+        task_id=task_id,
     )
     enforced = enforce_gap_visibility(scoring, signals)
 

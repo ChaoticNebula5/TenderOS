@@ -70,6 +70,7 @@ async def _write_trace(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None,
     task_id: uuid.UUID | None,
+    operation_id: uuid.UUID | None = None,
     model: str,
     status: str,
     facts: list[GroundedFactRef],
@@ -81,6 +82,7 @@ async def _write_trace(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             agent_name=_AGENT_NAME,
             model=model,
             prompt_version=bundle_version(),
@@ -115,6 +117,7 @@ async def draft_section(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> ProposalSectionDraft:
     """E7's proposal-drafting call - one section, its own narrow grounded
     fact bundle, one call. Returns the LLM's raw draft unmodified; it does
@@ -141,6 +144,7 @@ async def draft_section(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             model=model,
             status="failed",
             facts=facts,
@@ -153,6 +157,7 @@ async def draft_section(
         tender_id=tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        operation_id=operation_id,
         model=model,
         status="completed",
         facts=facts,

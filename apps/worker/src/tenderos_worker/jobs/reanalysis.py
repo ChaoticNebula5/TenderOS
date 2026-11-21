@@ -157,6 +157,10 @@ async def reanalyze_knowledge_selection_change(
             state_version,
         )
         return
+    # PR 29 (Q1 b): this job's LLM calls are recorded under its claim, so
+    # cost per reanalysis is reportable. Looked up after a successful claim:
+    # the row exists and is this delivery's.
+    reanalysis_claim_id = await reanalysis_service.claim_id(tid, kid, state_version)
 
     await graph_service.project_tender(tid)
     rows = await graph_service.preview_impact(tid, kid)
@@ -172,7 +176,10 @@ async def reanalyze_knowledge_selection_change(
         # other" shape this project has hit repeatedly.
         try:
             entry = await evaluate_compliance_for_requirement(
-                client, settings.reasoning_model, requirement_id
+                client,
+                settings.reasoning_model,
+                requirement_id,
+                reanalysis_claim_id=reanalysis_claim_id,
             )
             async with UnitOfWork() as uow:
                 await uow.outbox.create(

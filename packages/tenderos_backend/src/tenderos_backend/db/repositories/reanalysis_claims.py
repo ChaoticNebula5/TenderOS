@@ -18,6 +18,20 @@ class ReanalysisClaimRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def id_for(
+        self, tender_id: uuid.UUID, knowledge_item_id: uuid.UUID, state_version: int
+    ) -> uuid.UUID | None:
+        """The claim row's id by its unique key (uq_reanalysis_claim); PR 29
+        records the reanalysis job's LLM calls under it."""
+        result = await self._session.execute(
+            select(ReanalysisClaim.id).where(
+                ReanalysisClaim.tender_id == tender_id,
+                ReanalysisClaim.knowledge_item_id == knowledge_item_id,
+                ReanalysisClaim.state_version == state_version,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def claim(
         self,
         tender_id: uuid.UUID,

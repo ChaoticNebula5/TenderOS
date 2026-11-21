@@ -8,6 +8,7 @@ import uuid
 
 import docx
 import pytest
+from sqlalchemy import select
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.talent import (
     CandidateScoring,
@@ -15,6 +16,7 @@ from tenderos_backend.agents.schemas.talent import (
     RoleExtractionOutput,
     TalentStrength,
 )
+from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
@@ -215,6 +217,56 @@ async def test_node_extracts_one_role_and_scores_one_candidate(monkeypatch):
         f"valid_until and isn't archived), got {link.validity_status!r} - "
         "proposal drafting's _facts_from_team filter would silently exclude this"
     )
+
+
+async def test_the_nodes_scoring_calls_are_recorded_under_its_run_and_task(monkeypatch):
+    """PR 29: evaluate_role_match took no run or task id, so every
+    candidate-scoring call made during a run was written with no run, and
+    the cost-budget gate (which sums by run) never counted it."""
+    org_id, tender_id = await _make_org_and_tender("Talent Node Trace Owner Test")
+    await _make_staffing_requirement(org_id, tender_id)
+    await _make_candidate(org_id)
+    workflow_run_id = await _make_workflow_run_row(tender_id)
+
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "role_extraction",
+        RoleExtractionOutput,
+        [
+            RoleExtractionOutput(
+                roles=[
+                    ExtractedRole(
+                        role_name="Project Manager",
+                        required_skills=["Stakeholder management"],
+                        source_requirement_refs=["req_1"],
+                    )
+                ]
+            )
+        ],
+    )
+    fake_client.script(
+        "talent_scoring",
+        CandidateScoring,
+        [CandidateScoring(score=0.5, strengths=[], gaps=[])],
+    )
+    monkeypatch.setattr(talent, "_build_llm_client", lambda: fake_client)
+    task_id = await _make_talent_task(workflow_run_id)
+    state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
+
+    await talent_analysis_node(state)
+
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(AgentTrace.agent_name, AgentTrace.workflow_run_id, AgentTrace.task_id)
+                .where(AgentTrace.tender_id == tender_id)
+                .order_by(AgentTrace.agent_name)
+            )
+        ).all()
+    assert [tuple(r) for r in rows] == [
+        ("role_extraction", workflow_run_id, task_id),
+        ("talent_scoring", workflow_run_id, task_id),
+    ]
 
 
 async def test_node_does_not_match_a_removed_employee_to_a_role(monkeypatch):
