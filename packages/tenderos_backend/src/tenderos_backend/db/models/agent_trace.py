@@ -20,6 +20,8 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "OR (tender_id IS NULL AND organization_id IS NOT NULL)",
             name="ck_agent_trace_scope",
         ),
+        # 036_agent_trace_attempts.py
+        CheckConstraint("attempts IS NULL OR attempts >= 0", name="ck_agent_trace_attempts"),
         # 004_requirements.py
         Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
     )
@@ -49,7 +51,12 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     tool_names: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
+    # The whole call's wall time, retries and backoff included (PR 28).
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PR 28: the provider requests that time covered (0 for a cache hit; the
+    # repair call counts). NULL on rows written before migration 036, and
+    # when a request's count is not known.
+    attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)

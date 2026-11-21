@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import re
 import time
+from dataclasses import dataclass
 
 import httpx
 from google import genai
@@ -10,12 +12,16 @@ from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 
 from tenderos_backend.agents.llm.client import (
+    CallMeasurement,
+    LLMError,
     LLMResult,
     LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
+    ProviderRequestRejectedError,
     RateLimitedError,
     TransientProviderError,
+    elapsed_ms,
 )
 
 # Part P: verify this SDK surface (google-genai's Client/errors/types shape,
@@ -86,6 +92,16 @@ def _cache_key(model: str, system_prompt: str, user_prompt: str, schema_name: st
     return f"llm_cache:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
 
 
+@dataclass
+class _Requests:
+    """PR 28: the provider requests one call has made so far. A mutable
+    counter passed into _call_with_retry, not that coroutine's return value:
+    when the call deadline cancels the retry loop, nothing is returned, and
+    the count must still reach the LLMTimeoutError's measurement."""
+
+    made: int = 0
+
+
 def _redacted_validation_summary(exc: ValidationError) -> str:
     """B15: ValidationError's own __str__ embeds each error's input_value
     verbatim - the raw text that failed schema validation, which is
@@ -130,54 +146,88 @@ class GeminiClient:
         user_prompt: str,
         response_schema: type[T],
     ) -> LLMResult[T]:
+        # PR 28: latency_ms is the whole call's wall time from here, the
+        # cache lookup, every retry and every backoff included; `attempts`
+        # beside it says how many provider requests that time covered.
+        start = time.monotonic()
         cache_key = _cache_key(model, system_prompt, user_prompt, response_schema.__name__)
         cached = await self._redis.get(cache_key)
         if cached is not None:
+            # A cache hit makes no provider request (attempts 0), so it is
+            # known to cost nothing: 0.0, not None (PR 28 review). Tokens
+            # stay None: none were counted for this call. Rows from before
+            # migration 036 wrote None here and have no attempts, so the
+            # report still shows them as unknown.
             return LLMResult(
                 parsed=response_schema.model_validate_json(cached),
                 provider="gemini",
                 model=model,
                 input_tokens=None,
                 output_tokens=None,
-                latency_ms=0,
-                estimated_cost_usd=None,
+                latency_ms=elapsed_ms(start),
+                estimated_cost_usd=0.0,
+                attempts=0,
             )
 
-        start = time.monotonic()
+        requests = _Requests()
+        input_tokens: int | None = None
+        output_tokens: int | None = None
         try:
-            response = await asyncio.wait_for(
-                self._call_with_retry(model, system_prompt, user_prompt, response_schema),
-                timeout=_CALL_DEADLINE_SECONDS,
+            try:
+                response = await asyncio.wait_for(
+                    self._call_with_retry(
+                        model, system_prompt, user_prompt, response_schema, requests
+                    ),
+                    timeout=_CALL_DEADLINE_SECONDS,
+                )
+            except TimeoutError as exc:
+                raise LLMTimeoutError(
+                    f"{agent_name}: no answer within the "
+                    f"{_CALL_DEADLINE_SECONDS:.0f} s call deadline"
+                ) from exc
+
+            # Read before the answer is checked: a malformed answer was
+            # billed too, and its measurement keeps these tokens.
+            usage = response.usage_metadata
+            input_tokens = usage.prompt_token_count if usage else None
+            output_tokens = usage.candidates_token_count if usage else None
+
+            response_text = response.text
+            if response_text is None:
+                raise MalformedOutputError(f"{agent_name}: empty response body")
+
+            try:
+                parsed = response_schema.model_validate_json(response_text)
+            except ValidationError as exc:
+                # `from None`, not `from exc` - chaining would still attach
+                # the original ValidationError (and its own unredacted
+                # input_value) to this exception's traceback, visible to
+                # anything that later logs it via logger.exception(), even
+                # though this exception's own message is now safe. See
+                # _redacted_validation_summary's own docstring for what it
+                # strips and why.
+                raise MalformedOutputError(
+                    f"{agent_name}: response did not match {response_schema.__name__}: "
+                    f"{_redacted_validation_summary(exc)}"
+                ) from None
+        except LLMError as exc:
+            # PR 28: every failure this adapter raises leaves with what the
+            # call measured, so the agent's trace row keeps the provider,
+            # latency and attempts. Every provider failure is an LLMError
+            # (a 4xx other than 404 and 429 is ProviderRequestRejectedError).
+            # An exception that is not one passes through unmeasured, and
+            # no agent writes a row for it.
+            exc.measurement = CallMeasurement(
+                provider="gemini",
+                latency_ms=elapsed_ms(start),
+                attempts=requests.made,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),
             )
-        except TimeoutError as exc:
-            raise LLMTimeoutError(
-                f"{agent_name}: no answer within the {_CALL_DEADLINE_SECONDS:.0f} s call deadline"
-            ) from exc
-        latency_ms = int((time.monotonic() - start) * 1000)
+            raise
 
-        response_text = response.text
-        if response_text is None:
-            raise MalformedOutputError(f"{agent_name}: empty response body")
-
-        try:
-            parsed = response_schema.model_validate_json(response_text)
-        except ValidationError as exc:
-            # `from None`, not `from exc` - chaining would still attach the
-            # original ValidationError (and its own unredacted input_value)
-            # to this exception's traceback, visible to anything that later
-            # logs it via logger.exception(), even though this exception's
-            # own message is now safe. See _redacted_validation_summary's
-            # own docstring for what it strips and why.
-            raise MalformedOutputError(
-                f"{agent_name}: response did not match {response_schema.__name__}: "
-                f"{_redacted_validation_summary(exc)}"
-            ) from None
-
-        usage = response.usage_metadata
         await self._redis.set(cache_key, response_text, ex=self._cache_ttl_seconds)
-
-        input_tokens = usage.prompt_token_count if usage else None
-        output_tokens = usage.candidates_token_count if usage else None
 
         return LLMResult(
             parsed=parsed,
@@ -185,20 +235,29 @@ class GeminiClient:
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            latency_ms=latency_ms,
+            latency_ms=elapsed_ms(start),
             # See _PRICE_PER_MILLION_TOKENS_USD's own module-level comment -
             # a hardcoded approximation from published pricing, not a real
-            # billing integration. None (not 0.0) for a cache hit (no fresh
-            # token counts above) or an unmapped model id - honestly absent,
-            # not a false zero-cost claim.
+            # billing integration. None (not 0.0) for an unmapped model id or
+            # a response with no usage - honestly absent, not a false
+            # zero-cost claim. (A cache hit returns 0.0 above: it made no
+            # request, so its cost is known. Before PR 28's review it was
+            # None too.)
             estimated_cost_usd=_estimate_cost_usd(model, input_tokens, output_tokens),
+            attempts=requests.made,
         )
 
     async def _call_with_retry(
-        self, model: str, system_prompt: str, user_prompt: str, response_schema: type[BaseModel]
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        response_schema: type[BaseModel],
+        requests: _Requests,
     ) -> genai_types.GenerateContentResponse:
         attempt = 0
         while True:
+            requests.made += 1
             try:
                 return await self._client.aio.models.generate_content(
                     model=model,
@@ -223,8 +282,14 @@ class GeminiClient:
                     continue
                 # Any other 4xx is a deterministic request problem (I4: "no
                 # automatic retry") - a bad request shape, not something a
-                # second attempt fixes.
-                raise
+                # second attempt fixes. PR 28 review: raised as an LLMError,
+                # so the agent records the call and the workflow retry
+                # policy treats it as terminal, where the SDK's own
+                # ClientError wrote no trace row and failed as unknown.
+                # `from None`: the ClientError's text holds the provider's
+                # message, which can quote the request (see
+                # ProviderRequestRejectedError).
+                raise ProviderRequestRejectedError(status, _error_kind(exc)) from None
             except httpx.TimeoutException as exc:
                 raise LLMTimeoutError(
                     f"provider request timed out after {_HTTP_TIMEOUT_MS // 1000} s"
@@ -234,6 +299,18 @@ class GeminiClient:
                     raise TransientProviderError(str(exc)) from exc
                 await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
                 attempt += 1
+
+
+_ERROR_KIND = re.compile(r"[A-Z][A-Z_]{0,63}")
+
+
+def _error_kind(exc: genai_errors.ClientError) -> str:
+    """The provider's error kind (google-genai's APIError.status, the
+    google.rpc code name such as INVALID_ARGUMENT or PERMISSION_DENIED),
+    kept only when it has that shape, so nothing else from the response
+    can reach the error's message; "unknown" otherwise."""
+    kind = getattr(exc, "status", None)
+    return kind if isinstance(kind, str) and _ERROR_KIND.fullmatch(kind) else "unknown"
 
 
 def _retry_after_seconds(exc: genai_errors.ClientError) -> float | None:

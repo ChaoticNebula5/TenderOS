@@ -1,10 +1,24 @@
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
-from tenderos_backend.agents.llm.client import LLMResult, MalformedOutputError
+from tenderos_backend.agents.llm.client import (
+    CallMeasurement,
+    LLMResult,
+    MalformedOutputError,
+    elapsed_ms,
+)
+
+
+def estimated_tokens(text: str) -> int:
+    """PR 28: the fake's token count, characters / 4 rounded up (a common
+    rule of thumb for English text, not any tokenizer). It gives the report
+    and the panels non-zero, size-shaped numbers on the fake stack; the cost
+    stays 0, so a fake row is never read as a real price."""
+    return (len(text) + 3) // 4
 
 
 @dataclass
@@ -108,6 +122,10 @@ class FakeLLMClient:
         user_prompt: str,
         response_schema: type[T],
     ) -> LLMResult[T]:
+        # PR 28: measured like a real call (wall time from here), so the fake
+        # stack's latency is real, if near 0, rather than a fixed 0.
+        start = time.monotonic()
+        input_tokens = estimated_tokens(system_prompt + user_prompt)
         self.calls.append(
             {
                 "agent_name": agent_name,
@@ -131,16 +149,26 @@ class FakeLLMClient:
                 f"(or .set_fallback(...) for an open-ended run) first."
             )
         if next_response is _MALFORMED_SENTINEL:
-            raise MalformedOutputError(f"{agent_name}: scripted malformed output")
+            error = MalformedOutputError(f"{agent_name}: scripted malformed output")
+            error.measurement = CallMeasurement(
+                provider="fake",
+                latency_ms=elapsed_ms(start),
+                attempts=1,
+                input_tokens=input_tokens,
+                output_tokens=0,
+                estimated_cost_usd=0.0,
+            )
+            raise error
 
         return LLMResult(
             parsed=next_response,
             provider="fake",
             model=model,
-            input_tokens=0,
-            output_tokens=0,
-            latency_ms=0,
+            input_tokens=input_tokens,
+            output_tokens=estimated_tokens(next_response.model_dump_json()),
+            latency_ms=elapsed_ms(start),
             estimated_cost_usd=0.0,
+            attempts=1,
         )
 
 

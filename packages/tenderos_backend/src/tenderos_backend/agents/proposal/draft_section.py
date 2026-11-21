@@ -1,7 +1,13 @@
 import uuid
 from dataclasses import dataclass
 
-from tenderos_backend.agents.llm.client import LLMClient, LLMError, LLMResult, call_with_repair
+from tenderos_backend.agents.llm.client import (
+    LLMClient,
+    LLMError,
+    LLMResult,
+    call_with_repair,
+    trace_measurements,
+)
 from tenderos_backend.agents.prompts.loader import bundle_version, load_prompt
 from tenderos_backend.agents.prompts.untrusted_content import wrap_untrusted_content
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
@@ -67,7 +73,7 @@ async def _write_trace(
     model: str,
     status: str,
     facts: list[GroundedFactRef],
-    result: LLMResult[ProposalSectionDraft] | None = None,
+    outcome: LLMResult[ProposalSectionDraft] | LLMError | None = None,
     error_code: str | None = None,
 ) -> None:
     async with UnitOfWork() as uow:
@@ -76,15 +82,13 @@ async def _write_trace(
             workflow_run_id=workflow_run_id,
             task_id=task_id,
             agent_name=_AGENT_NAME,
-            provider=result.provider if result else None,
             model=model,
             prompt_version=bundle_version(),
             input_refs=_fact_input_refs(facts),
-            output_refs=_draft_output_refs(result.parsed) if result else {},
-            latency_ms=result.latency_ms if result else None,
-            input_tokens=result.input_tokens if result else None,
-            output_tokens=result.output_tokens if result else None,
-            estimated_cost_usd=result.estimated_cost_usd if result else None,
+            output_refs=_draft_output_refs(outcome.parsed)
+            if isinstance(outcome, LLMResult)
+            else {},
+            **trace_measurements(outcome),
             status=status,
             error_code=error_code,
         )
@@ -140,6 +144,7 @@ async def draft_section(
             model=model,
             status="failed",
             facts=facts,
+            outcome=exc,
             error_code=type(exc).__name__,
         )
         raise
@@ -151,6 +156,6 @@ async def draft_section(
         model=model,
         status="completed",
         facts=facts,
-        result=llm_result,
+        outcome=llm_result,
     )
     return llm_result.parsed

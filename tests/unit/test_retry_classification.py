@@ -9,6 +9,7 @@ an otherwise-retryable exception type.
 from tenderos_backend.agents.llm.client import (
     MalformedOutputError,
     ModelNotFoundError,
+    ProviderRequestRejectedError,
     RateLimitedError,
     TransientProviderError,
 )
@@ -21,6 +22,18 @@ from tenderos_backend.orchestration.retry import (
 def test_model_not_found_is_always_terminal():
     decision = classify_task_failure(
         ModelNotFoundError("no such model"),
+        attempt_count=0,
+        max_attempts=5,
+        retry_budget_remaining=10,
+    )
+    assert decision.should_retry is False
+
+
+def test_a_request_the_provider_rejected_is_always_terminal():
+    # PR 28 review: a 4xx other than 404 and 429. Before, the SDK's own
+    # ClientError took the unknown branch and was retried once.
+    decision = classify_task_failure(
+        ProviderRequestRejectedError(400, "INVALID_ARGUMENT"),
         attempt_count=0,
         max_attempts=5,
         retry_budget_remaining=10,

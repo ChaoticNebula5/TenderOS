@@ -34,6 +34,7 @@ def _result(value: str) -> LLMResult[_Schema]:
         output_tokens=1,
         latency_ms=1,
         estimated_cost_usd=None,
+        attempts=1,
     )
 
 
