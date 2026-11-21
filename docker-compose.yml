@@ -90,6 +90,37 @@ services:
       retries: 20
       start_period: 30s
 
+  # Plan item 100: the backend tests' own Neo4j, so a test run never touches
+  # the stack's graph (15 test files empty the whole graph they reach).
+  # Community edition has one user database per server, so tests get a second
+  # server, not a second database. Its one database is named tenderos-test,
+  # and the tests refuse a database name not ending in -test: a run pointed at
+  # the stack's server finds no such database and fails instead of wiping it.
+  # (Neo4j refuses "_" in a database name, hence the dash; observed.)
+  # The "test" profile keeps it out of `docker compose up` and
+  # scripts/fake-stack.ps1; scripts/test-backend.ps1 starts it. Loopback
+  # only, on 7688; its own volume; heap and page cache capped, since it runs
+  # beside the stack's Neo4j on one machine. Same credentials as the stack's.
+  neo4j_test:
+    image: neo4j:5.26.32-community@sha256:42ef3ebfd671ebd01fdebb6dcbe80cf7b45eef2aa3d346ef4132f7ef31e67d2f
+    profiles: ["test"]
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_initial_dbms_default__database: tenderos-test
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    volumes:
+      - neo4j_test_data:/data
+    ports:
+      - "127.0.0.1:7688:7687"
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER} -p ${NEO4J_PASSWORD} -d tenderos-test 'RETURN 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
   # S3-compatible object store behind the unchanged boto3 adapter
   # (db/storage.py). VersityGW replaces MinIO: minio/minio is no longer
   # pullable from Docker Hub and upstream MinIO is archived. A recorded
@@ -390,6 +421,7 @@ volumes:
   postgres_data:
   redis_data:
   neo4j_data:
+  neo4j_test_data:
   s3_data:
   grafana_data:
 

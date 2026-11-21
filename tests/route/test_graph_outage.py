@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from neo4j import AsyncGraphDatabase
 from tenderos_api.main import app
+from tenderos_backend.core.config import settings
 from tenderos_backend.domain.services import graph_service
 
 pytestmark = pytest.mark.asyncio
@@ -31,7 +32,7 @@ async def _session_on_an_unresolvable_host() -> AsyncIterator:
         f"bolt://{_UNRESOLVABLE_HOST}:7687", auth=("neo4j", "unused")
     )
     try:
-        async with driver.session() as session:
+        async with driver.session(database=settings.neo4j_database) as session:
             yield session
     finally:
         await driver.close()

@@ -36,13 +36,18 @@ typecheck:
 # on /0 shared a namespace with any live worker (KNOWN_LIMITATIONS.md,
 # "make test points pytest at the live stack's Neo4j and Redis DB 0").
 # Neo4j has no such split - Community edition has one user database - so
-# still stop the api/worker containers before running this target.
+# the tests get their own server (plan item 100): docker-compose.yml's
+# neo4j_test, in the "test" profile, started here and left running, with
+# its one database tenderos-test. tests/conftest.py refuses a database name
+# not ending in -test. scripts/test-backend.ps1 also checks the server and
+# that the stack's api/worker containers are stopped; this target does not.
 #
 # The variables themselves live in scripts/test-backend.env (B17 Phase 0),
 # the single definition shared with scripts/test-backend.ps1 - make is not
 # installed on every machine this project runs on, and the env used to be
 # retyped by hand there. `set -a` exports every KEY=VALUE the file sets.
 test:
+	docker compose --profile test up -d --wait neo4j_test
 	set -a && . scripts/test-backend.env && set +a && uv run pytest
 
 migrate:

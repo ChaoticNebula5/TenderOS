@@ -43,6 +43,7 @@ import greenlet
 import pytest
 import pytest_asyncio
 from models_schema import rebuild_from_models
+from neo4j_guard import refuse_unless_test_graph
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool, Pool, QueuePool, StaticPool
@@ -140,8 +141,8 @@ async def _graph_constraints():
     # Phase 4 plan item 49: Neo4j's constraints, as `migrate` applies them in the
     # stack, so a fixture writing one key twice fails here as production would.
     # Requested with _models_schema, by the same conftests. They outlive the run
-    # on the shared Neo4j, which is what the stack wants too; DETACH DELETE
-    # leaves them alone.
+    # on the tests' own Neo4j (plan item 100); DETACH DELETE leaves them alone.
+    await refuse_unless_test_graph()
     await ensure_constraints()
 
 

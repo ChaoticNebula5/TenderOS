@@ -6,9 +6,10 @@ the first conflict it finds and names one pair; this lists them all, and also
 finds null keys, which a uniqueness constraint ignores.
 
 Exits 0 if clean, 1 if anything is wrong, and 2 if the graph is empty, because
-an empty graph proves nothing: the backend suite empties the shared Neo4j, so
-project it first (scripts/project_all_tenders.py). If anything is found, stop
-the app and run scripts/rebuild_graph.py --yes.
+an empty graph proves nothing: project it first (scripts/project_all_tenders.py).
+(The backend suite no longer empties the stack's graph: it runs on its own
+Neo4j since plan item 100.) If anything is found, stop the app and run
+scripts/rebuild_graph.py --yes.
 
 Run from the repo root against the stack's published ports:
 

@@ -115,12 +115,16 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      # Plan item 100: shaped like docker-compose.yml's neo4j_test, the
+      # tests' own server: 7688 on the runner and one database named
+      # tenderos-test, as scripts/test-backend.env says.
       neo4j:
         image: neo4j:5.26.32-community@sha256:42ef3ebfd671ebd01fdebb6dcbe80cf7b45eef2aa3d346ef4132f7ef31e67d2f
         env:
           NEO4J_AUTH: neo4j/changeme
+          NEO4J_initial_dbms_default__database: tenderos-test
         ports:
-          - 7687:7687
+          - 7688:7687
         options: >-
           --health-cmd "cypher-shell -u neo4j -p changeme 'RETURN 1'"
           --health-interval 5s --health-timeout 5s --health-retries 20
