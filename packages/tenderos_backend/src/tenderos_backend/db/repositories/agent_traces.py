@@ -26,6 +26,7 @@ class AgentTraceRepository:
         output_refs: dict | None = None,
         tool_names: list | None = None,
         latency_ms: int | None = None,
+        attempts: int | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         estimated_cost_usd: float | None = None,
@@ -50,6 +51,7 @@ class AgentTraceRepository:
             output_refs=output_refs or {},
             tool_names=tool_names or [],
             latency_ms=latency_ms,
+            attempts=attempts,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             estimated_cost_usd=estimated_cost_usd,
@@ -66,10 +68,13 @@ class AgentTraceRepository:
         (see cost_budget_gate_node's own docstring for why the run is the
         right scope). COALESCE to 0, not NULL: a run with zero traces yet,
         or where every trace's own estimated_cost_usd is still NULL (an
-        unmapped model id, or a cache hit - see gemini_adapter.py's own
-        _estimate_cost_usd), must read as "$0 spent," not "unknown," so
+        unmapped model id, a response with no usage, or a cache hit written
+        before PR 28 - since then a cache hit records 0.0; see
+        gemini_adapter.py), must read as "$0 spent," not "unknown," so
         the budget check's own `< settings.max_tender_cost_usd` comparison
-        never has to special-case None."""
+        never has to special-case None. Every row counts, whatever its
+        status: since PR 28 a failed call's row can carry a cost too (a
+        malformed answer was billed, and a failed repair adds both)."""
         result = await self._session.execute(
             select(func.coalesce(func.sum(AgentTrace.estimated_cost_usd), 0)).where(
                 AgentTrace.workflow_run_id == workflow_run_id

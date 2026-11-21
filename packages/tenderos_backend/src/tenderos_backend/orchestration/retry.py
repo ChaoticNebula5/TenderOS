@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from tenderos_backend.agents.llm.client import (
     MalformedOutputError,
     ModelNotFoundError,
+    ProviderRequestRejectedError,
     RateLimitedError,
     TransientProviderError,
 )
@@ -147,6 +148,11 @@ def classify_task_failure(
     - `ModelNotFoundError`: terminal, always. I4 is explicit - "no
       automatic retry." A config problem, not a transient one; no
       number of attempts fixes a model ID that doesn't exist.
+    - `ProviderRequestRejectedError` (PR 28 review): terminal, always. The
+      provider refused the request itself (a 4xx other than 404 and 429:
+      a bad request shape, permissions, billing, a refusal); the same
+      request sent again is refused again. Before it existed this was
+      the SDK's own ClientError and took the unknown branch below.
     - Anything else (not an `LLMError` at all - a DB error, a bug, a
       `KeyError`): retryable, once, with a fixed modest delay - not
       exponential, since nothing here confirms the failure is actually
@@ -169,7 +175,7 @@ def classify_task_failure(
     if retry_budget_remaining <= 0 or attempt_count >= max_attempts:
         return RetryDecision(should_retry=False)
 
-    if isinstance(exc, ModelNotFoundError | MalformedOutputError):
+    if isinstance(exc, ModelNotFoundError | MalformedOutputError | ProviderRequestRejectedError):
         return RetryDecision(should_retry=False)
 
     if isinstance(exc, RateLimitedError):
