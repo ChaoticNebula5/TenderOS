@@ -9802,7 +9802,7 @@ of a third and fourth hand-rolled copy.
 
 ---
 
-## [found during B17 Phase 0, owner: NOT Phase 0] `make test` points pytest at the live stack's Neo4j and Redis DB 0; the `_test` guard protects Postgres only, and six fixtures run `MATCH (n) DETACH DELETE n`
+## [found during B17 Phase 0, RESOLVED by phase 4 plan item 100 (PR 26)] `make test` points pytest at the live stack's Neo4j and Redis DB 0; the `_test` guard protects Postgres only, and six fixtures run `MATCH (n) DETACH DELETE n`
 
 - **Discovered:** B17 Phase 0 item 9 (the D4/D5 directed-vs-undirected
   comparison). The live Neo4j held **0 nodes** while the live Postgres
@@ -9857,6 +9857,39 @@ of a third and fourth hand-rolled copy.
   graph fixtures, run project_all_tenders.py before relying on the live
   graph or on the invariant checker. The guard can be bypassed with
   -AllowRunningStack.
+- **Resolved 2026-11-21 (phase 4 plan item 100, PR 26): the tests have their
+  own Neo4j.** By then 15 test files emptied the whole graph they reached.
+    - **The server:** docker-compose.yml's `neo4j_test`, in the `test`
+      profile (so neither `docker compose up` nor scripts/fake-stack.ps1
+      starts it), on `127.0.0.1:7688`, with its own volume `neo4j_test_data`
+      and its heap and page cache capped. Its one database is named
+      `tenderos-test` (`NEO4J_initial_dbms_default__database`; observed:
+      Neo4j refuses `_` in a database name, so the suffix is `-test`).
+      scripts/test-backend.ps1 and `make test` start it and leave it running;
+      CI's test job runs the same shape on 7688.
+    - **Fail-closed name:** scripts/test-backend.env sets `NEO4J_DATABASE`
+      to `tenderos-test`. test-backend.ps1 refuses a name not ending in
+      `-test` and asks the server which database a session reaches;
+      tests/neo4j_guard.py (run by tests/conftest.py's `_graph_constraints`)
+      does both again, so a plain `uv run pytest` with `.env` stops before
+      any test runs. The stack's server has no `-test` database, so a run
+      pointed at it fails "database not found" instead of wiping it.
+    - **Every session names the database:** a session without `database=`
+      would reach a server's default, which on the stack's server is the
+      real graph. tests/unit/test_neo4j_sessions_name_the_database.py reads
+      every `.session(...)` and `.execute_query(...)` call in apps/,
+      packages/, scripts/ and tests/ and fails on one that names none.
+    - **Credentials are fixed at creation:** `neo4j_test` keeps the
+      credentials it was first created with (`NEO4J_AUTH` applies only to
+      an empty volume). If the stack's Neo4j password in `.env` changes,
+      the runner will report an auth failure for the test server until its
+      own volume, `neo4j_test_data`, is recreated. Never touch `neo4j_data`,
+      the stack's graph.
+    - **Retired:** the working rule of re-projecting
+      (project_all_tenders.py) after a test run. The app containers are
+      still stopped for a run (user decision 2026-11-21, item 100's Q2): no
+      test touches the stack's data now, but the lock-timing tests should
+      not share the machine with a live worker.
 
 ---
 

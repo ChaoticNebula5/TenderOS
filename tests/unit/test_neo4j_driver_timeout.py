@@ -15,6 +15,7 @@ import time
 import pytest
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import ServiceUnavailable
+from tenderos_backend.core.config import settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,7 +38,7 @@ async def test_connection_timeout_bounds_a_real_unreachable_host():
     try:
         start = time.monotonic()
         with pytest.raises(ServiceUnavailable):
-            async with driver.session() as session:
+            async with driver.session(database=settings.neo4j_database) as session:
                 await session.run("RETURN 1")
         elapsed = time.monotonic() - start
         # Generous margin above the 5s connection_timeout for CI/local

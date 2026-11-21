@@ -12,11 +12,20 @@
     - POSTGRES_DSN must end in _test (tests/integration/conftest.py checks
       this too; failing here is earlier and louder).
     - REDIS_URL must be database 1 (the running stack's RQ uses 0).
+    - NEO4J_DATABASE must end in -test (plan item 100; tests/conftest.py
+      checks this too). The tests' Neo4j is its own server,
+      docker-compose.yml's neo4j_test ("test" profile, 127.0.0.1:7688),
+      started here if it is not already up, never the stack's.
+    - The server behind NEO4J_URI must answer for that database (the
+      stack's server has no tenderos-test database, so a URI pointing at it
+      fails here, before pytest).
     - The server behind POSTGRES_DSN must report PostgreSQL 16.x (another
       server on the port fails here, before pytest).
     - The stack's api, four workers and outbox_dispatcher
-      containers must be stopped: six fixtures run `MATCH (n) DETACH DELETE n` against the one
-      shared Neo4j (KNOWN_LIMITATIONS.md). -AllowRunningStack overrides it.
+      containers must be stopped. No test touches the stack's data any
+      more (its Postgres database, Redis db 0, bucket and Neo4j are all
+      separate), but a live worker would share the machine with the
+      lock-timing tests. -AllowRunningStack overrides it.
       If Docker cannot be asked (no docker command, or the engine does not
       answer), this refuses too, rather than reading no output as "none
       running".
@@ -59,6 +68,12 @@ if (-not $vars["POSTGRES_DSN"].EndsWith("_test")) {
 if (-not $vars["REDIS_URL"].EndsWith("/1")) {
     throw "refusing: REDIS_URL in $envFile is not database 1: $($vars['REDIS_URL'])"
 }
+# Plan item 100: 15 test files empty the whole graph they reach, so the
+# database must be the tests' own. Neo4j refuses "_" in a database name,
+# hence -test, not _test.
+if (-not $vars["NEO4J_DATABASE"] -or -not $vars["NEO4J_DATABASE"].EndsWith("-test")) {
+    throw "refusing: NEO4J_DATABASE in $envFile does not end in -test: $($vars['NEO4J_DATABASE'])"
+}
 
 if (-not $AllowRunningStack) {
     # The answer is trusted only if docker itself succeeded. An unreachable
@@ -86,8 +101,8 @@ if (-not $AllowRunningStack) {
     $running = @($psOutput | Where-Object { $_ -is [string] })
     $apps = @($running | Where-Object { $_ -in @("api", "workflow_worker", "ingestion_worker", "maintenance_worker", "operations_worker", "outbox_dispatcher") })
     if ($apps.Count -gt 0) {
-        throw ("refusing: stack app containers are running ($($apps -join ', ')). pytest wipes " +
-            "the shared Neo4j and must not race a live worker. Stop them first, e.g. " +
+        throw ("refusing: stack app containers are running ($($apps -join ', ')). The " +
+            "lock-timing tests must not share the machine with a live worker. Stop them first, e.g. " +
             "docker compose stop api workflow_worker ingestion_worker maintenance_worker operations_worker outbox_dispatcher web, or pass -AllowRunningStack.")
     }
 }
@@ -154,7 +169,42 @@ if ($pgMajor -ne 16) {
     throw "refusing: the Postgres server at $dbHost reports version $pgLabel, not 16.x. Another server holds that port; the project's container publishes 5433 (docker-compose.yml)."
 }
 
-Write-Host "test env from $envFile (POSTGRES_DSN=...$($vars['POSTGRES_DSN'].Split('/')[-1]) on $dbHost, PostgreSQL $pgLabel, REDIS_URL=$($vars['REDIS_URL']), HF offline, cache $hfCache)"
+# Plan item 100: the tests' own Neo4j. Started through its profile with the
+# base compose file only: no other service is named, so nothing else is
+# created or recreated, and --wait returns once its healthcheck passes. It is
+# left running afterwards (user decision 2026-11-21, item 100's Q1), so the
+# next run skips the cold start.
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    throw "refusing: the docker command is not on PATH, so the tests' Neo4j (neo4j_test) cannot be started."
+}
+Push-Location $repo
+try {
+    $upOutput = & docker compose --profile test up -d --wait neo4j_test 2>&1
+    $upCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+if ($upCode -ne 0) {
+    $detail = (@($upOutput) | ForEach-Object { "$_" }) -join " "
+    throw "refusing: the tests' Neo4j did not start (docker compose --profile test up -d --wait neo4j_test exited $upCode): $detail"
+}
+
+# Then ask the server at NEO4J_URI which database a session on
+# NEO4J_DATABASE reaches. The stack's server has no -test database, so a URI
+# pointing at it fails here. Credentials come from Settings, never printed.
+Push-Location $repo
+try {
+    $probe = "import neo4j; from tenderos_backend.core.config import settings as s; d = neo4j.GraphDatabase.driver(s.neo4j_uri, auth=(s.neo4j_user, s.neo4j_password), connection_timeout=10); r = d.execute_query('CALL db.info() YIELD name RETURN name', database_=s.neo4j_database); print(r.records[0]['name']); d.close()"
+    $graphName = (& uv run --frozen python -c $probe 2>&1 | Out-String).Trim()
+    $graphCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+if ($graphCode -ne 0 -or $graphName -ne $vars["NEO4J_DATABASE"]) {
+    throw "refusing: the Neo4j server at $($vars['NEO4J_URI']) did not answer for database $($vars['NEO4J_DATABASE']). Output: $graphName"
+}
+
+Write-Host "test env from $envFile (POSTGRES_DSN=...$($vars['POSTGRES_DSN'].Split('/')[-1]) on $dbHost, PostgreSQL $pgLabel, REDIS_URL=$($vars['REDIS_URL']), Neo4j $graphName on $($vars['NEO4J_URI']), HF offline, cache $hfCache)"
 
 Push-Location $repo
 try {

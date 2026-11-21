@@ -22,6 +22,7 @@ import tenderos_api.main as api_main
 from fastapi.testclient import TestClient
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import DriverError
+from tenderos_backend.core.config import settings
 from tenderos_backend.graph_projection import driver as driver_module
 
 _NEVER_CONTACTED = "bolt://192.0.2.1:7687"
@@ -56,7 +57,7 @@ def test_api_shutdown_closes_the_shared_driver(monkeypatch):
 
     assert driver_module._driver is None
     with pytest.raises(DriverError):
-        shared.session()
+        shared.session(database=settings.neo4j_database)
 
 
 @pytest.mark.asyncio
@@ -68,7 +69,7 @@ async def test_close_driver_closes_and_clears_the_shared_driver(monkeypatch):
 
     assert driver_module._driver is None
     with pytest.raises(DriverError):
-        shared.session()
+        shared.session(database=settings.neo4j_database)
 
 
 @pytest.mark.asyncio
@@ -128,7 +129,7 @@ def test_a_driver_collected_unclosed_fails_the_test(unraisable):
 @pytest.mark.asyncio
 async def test_a_session_collected_unclosed_fails_the_test(unraisable):
     driver = _new_driver()
-    leaked = driver.session()
+    leaked = driver.session(database=settings.neo4j_database)
     del leaked
     gc.collect()
 
@@ -141,7 +142,7 @@ async def test_a_session_collected_unclosed_fails_the_test(unraisable):
 @pytest.mark.asyncio
 async def test_a_driver_and_session_closed_properly_fail_nothing(unraisable):
     driver = _new_driver()
-    async with driver.session():
+    async with driver.session(database=settings.neo4j_database):
         pass
     await driver.close()
     del driver
