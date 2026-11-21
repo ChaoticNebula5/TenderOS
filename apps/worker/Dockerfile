@@ -28,7 +28,17 @@ COPY packages/tenderos_backend/pyproject.toml packages/tenderos_backend/pyprojec
 # step installed them from a tree with no code yet, and `uv run` in the CMD
 # rebuilt and reinstalled both on every container start (seen in the logs:
 # "Uninstalled 2 packages ... Installed 2 packages").
-RUN uv sync --frozen --no-install-workspace --package tenderos-worker
+# Plan item 98: uv's cache lives in a BuildKit cache mount, not in the
+# image. Without it, a change to uv.lock (or to a pyproject.toml) re-ran this
+# step from nothing and downloaded every wheel again (one rebuild took about
+# 35 min), and the cache itself (about 1.3 GB, hardlinked into the venv) was
+# left in the layer. The mount persists on the build machine between builds,
+# is shared by the api and worker images (one id), and is never part of any
+# layer. It is another filesystem, so uv cannot hardlink from it:
+# UV_LINK_MODE=copy, set on these RUN lines only, copies the files into the
+# venv instead (uv would fall back to copying anyway, with a warning).
+RUN --mount=type=cache,id=tenderos-uv,target=/root/.cache/uv \
+    UV_LINK_MODE=copy uv sync --frozen --no-install-workspace --package tenderos-worker
 
 # ingestion/embed.py's SentenceTransformer(_MODEL_NAME) otherwise downloads
 # from Hugging Face on first real use - fine on a warm dev machine with
@@ -60,8 +70,10 @@ COPY alembic.ini alembic.ini
 # the worker.
 COPY prompts prompts
 
-# The workspace packages, now that their code is here (see the first sync).
-RUN uv sync --frozen --package tenderos-worker
+# The workspace packages, now that their code is here (see the first sync),
+# with the same cache mount (plan item 98).
+RUN --mount=type=cache,id=tenderos-uv,target=/root/.cache/uv \
+    UV_LINK_MODE=copy uv sync --frozen --package tenderos-worker
 
 # Phase 4 item 28: the venv's program runs directly, not under `uv run`.
 # uv 0.12.3 did forward SIGTERM (observed), but the image is already
