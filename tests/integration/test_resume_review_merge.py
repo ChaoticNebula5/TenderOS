@@ -448,7 +448,11 @@ async def test_a_failed_item_can_still_be_rejected_but_not_approved():
     assert rejected.status == "rejected"
 
 
-async def test_an_employee_master_review_item_keeps_its_status_only_approval():
+async def test_an_employee_master_review_item_needs_the_fingerprint_and_queues_no_extraction():
+    """Plan item 112 changed this: a master item no longer approves status
+    only. It applies its row, so it needs the fingerprint of what was shown
+    (tests/integration/test_master_and_certificate_approval.py), and it
+    queues no WORKED_ON extraction: a master row carries no resume."""
     org_id, user_id = await _org()
     employee_id, _ = await _employee(org_id, user_id, verified=True)
     batch_id = await _batch(org_id, user_id, "employee_master_xlsx")
@@ -460,12 +464,22 @@ async def test_an_employee_master_review_item_keeps_its_status_only_approval():
             item.id, status="needs_review", target_knowledge_item_id=employee_id
         )
         await uow.commit()
-    before = await _employee_row(employee_id)
-    approved = await knowledge_service.approve_import_item(item.id, org_id, user_id)
-    after = await _employee_row(employee_id)
+    with pytest.raises(knowledge_service.ImportItemFingerprintRequiredError):
+        await knowledge_service.approve_import_item(item.id, org_id, user_id)
+    employee = await _employee_row(employee_id)
+    assert employee is not None
+    async with UnitOfWork() as uow:
+        knowledge_item = await uow.knowledge.get_knowledge_item(employee_id)
+    assert knowledge_item is not None
+    approved = await knowledge_service.approve_import_item(
+        item.id,
+        org_id,
+        user_id,
+        target_fingerprint=knowledge_service.master_target_fingerprint(
+            employee, knowledge_item.status
+        ),
+    )
     assert approved.status == "approved"
-    assert before is not None and after is not None
-    assert after.current_title == before.current_title
     assert await _merge_events(item.id) == 0
 
 

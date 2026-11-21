@@ -403,12 +403,13 @@ async def test_two_concurrent_picks_merge_once():
     assert await _merge_events(item_id) == 1
 
 
-async def test_choosing_an_employee_is_only_for_resume_items():
+async def test_choosing_an_employee_is_not_for_every_import_type():
+    """Plan item 112 added employee-master items to both actions and
+    certification items to the choice; the other import types still have
+    neither, and a certification item cannot become a new person."""
     org_id, user_id = await _org()
     first = await _employee(org_id)
-    _, item_id, _, _ = await _review_item(
-        org_id, user_id, _profile(), import_type="employee_master_xlsx"
-    )
+    _, item_id, _, _ = await _review_item(org_id, user_id, _profile(), import_type="manual")
     with pytest.raises(knowledge_service.ImportItemTypeUnsupportedError):
         await knowledge_service.approve_import_item(
             item_id,
@@ -420,6 +421,11 @@ async def test_choosing_an_employee_is_only_for_resume_items():
         )
     with pytest.raises(knowledge_service.ImportItemTypeUnsupportedError):
         await knowledge_service.import_item_as_new_employee(item_id, org_id, user_id, "y")
+    _, certificate_item, _, _ = await _review_item(
+        org_id, user_id, _profile(), import_type="certification_documents"
+    )
+    with pytest.raises(knowledge_service.ImportItemTypeUnsupportedError):
+        await knowledge_service.import_item_as_new_employee(certificate_item, org_id, user_id, "y")
 
 
 # --------------------------------------------------------- import as new

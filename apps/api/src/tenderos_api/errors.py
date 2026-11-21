@@ -154,8 +154,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_NO_TARGET",
-            "This resume matches no single employee, so there is nothing to merge it into; "
-            "reject it instead.",
+            "This item names no employee to apply it to (for a certification: no holder "
+            "was chosen); choose one, or reject it.",
         )
 
     @classmethod
@@ -163,7 +163,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_SOURCE_MISSING",
-            "This import item has no resume document to merge from; upload the resume again.",
+            "This import item's source document is gone (the resume, or the certification "
+            "sheet); upload it again.",
         )
 
     @classmethod
@@ -171,7 +172,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             422,
             "IMPORT_ITEM_FINGERPRINT_REQUIRED",
-            "Approving a resume merge needs the target_fingerprint of the employee values shown.",
+            "Approving this item needs the fingerprint of the values shown "
+            "(target_fingerprint, and candidates_fingerprint for a choice among candidates).",
         )
 
     @classmethod
@@ -179,8 +181,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_PAYLOAD_INVALID",
-            "This resume's extracted fields could not be read, so what approving would change "
-            "cannot be shown; reject it, or upload the resume again.",
+            "This item's extracted fields could not be read, so what approving would change "
+            "cannot be shown; reject it, or upload the file again.",
         )
 
     @classmethod
@@ -197,7 +199,7 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "EMPLOYEE_ARCHIVED",
-            "The matched employee is archived (removed from the roster); restore it before "
+            "The chosen employee is archived (removed from the roster); restore them before "
             "approving.",
         )
 
@@ -206,7 +208,7 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_CANDIDATES_CHANGED",
-            "The employees matching this resume changed after it was loaded. Review the "
+            "The employees matching this item changed after it was loaded. Review the "
             "updated list, then decide again.",
         )
 
@@ -215,7 +217,7 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_NOT_A_CANDIDATE",
-            "That employee is not one this resume matches; choose one of the employees shown.",
+            "That employee is not one this item can go to; choose one of the employees shown.",
         )
 
     @classmethod
@@ -223,8 +225,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_STRONG_MATCH",
-            "An employee on file already has this resume's email or document, so it cannot "
-            "become a new person; merge it into that employee instead.",
+            "An employee on file already has this item's email, document or employee code, "
+            "so it cannot become a new person; apply it to that employee instead.",
         )
 
     @classmethod
@@ -232,7 +234,8 @@ class ImportItemDecisionError(APIError):
         return cls(
             409,
             "IMPORT_ITEM_TYPE_UNSUPPORTED",
-            "Choosing an employee or importing as a new person is only for resume items.",
+            "Choosing an employee is for resume, employee-master and certification items, and "
+            "importing as a new person for resume and employee-master items.",
         )
 
 

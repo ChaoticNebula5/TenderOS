@@ -207,8 +207,9 @@ ALLOWED_WITHOUT_BUMP: dict[str, str] = {
     "tenderos_backend/domain/services/knowledge_service.py::_create_or_get_employee": (
         "a new knowledge item reaches no bid until something links it"
     ),
-    "tenderos_backend/domain/services/knowledge_service.py::_create_or_get_certification": (
-        "a new knowledge item reaches no bid until something links it"
+    "tenderos_backend/domain/services/knowledge_service.py::_create_certificate_from_row": (
+        "a new knowledge item reaches no bid until something links it (plan item 112: the "
+        "automatic branch and approval share it)"
     ),
     "tenderos_backend/domain/services/knowledge_service.py::import_past_project": (
         "a new knowledge item reaches no bid until something links it"
@@ -218,6 +219,12 @@ ALLOWED_WITHOUT_BUMP: dict[str, str] = {
     ),
     "tenderos_backend/domain/services/knowledge_service.py::import_item_as_new_employee": (
         "a new knowledge item reaches no bid until something links it (plan item 111)"
+    ),
+    "tenderos_backend/domain/services/knowledge_service.py::_import_master_item_as_new": (
+        "a new knowledge item reaches no bid until something links it (plan item 112)"
+    ),
+    "tenderos_backend/domain/services/knowledge_service.py::_approve_certificate": (
+        "writes only the holder's employee_code, which is not projected (plan item 112)"
     ),
     "tenderos_backend/domain/services/knowledge_service.py::replace_employee_resume": (
         "writes only employees.resume_document_id, which is not projected"

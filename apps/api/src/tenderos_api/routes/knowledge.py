@@ -12,6 +12,7 @@ from tenderos_api.idempotency import IdempotencyContext, get_idempotency_context
 from tenderos_api.routes.documents import _read_and_validate_upload
 from tenderos_api.schemas.knowledge import (
     ApproveImportItemRequest,
+    CertificateHolderResponse,
     EmployeeResponse,
     ImportAsNewEmployeeRequest,
     ImportBatchResponse,
@@ -21,6 +22,8 @@ from tenderos_api.schemas.knowledge import (
     ImportItemTargetResponse,
     KnowledgeItemResponse,
     KnowledgeSelectionResponse,
+    MasterCandidatesResponse,
+    MasterTargetResponse,
     PatchEmployeeProfileRequest,
     PatchKnowledgeItemRequest,
     RejectImportItemRequest,
@@ -263,6 +266,7 @@ async def list_import_items(
 ) -> list[ImportItemDetailResponse]:
     rows = await knowledge_service.list_import_items_with_targets(batch_id)
     candidates = await knowledge_service.list_resume_candidates(batch_id)
+    master_targets, master_candidates = await knowledge_service.list_master_review(batch_id)
     responses = []
     for item, target in rows:
         response = ImportItemDetailResponse.model_validate(item, from_attributes=True)
@@ -274,8 +278,31 @@ async def list_import_items(
             response.candidates = ImportItemCandidatesResponse.model_validate(
                 candidates[item.id], from_attributes=True
             )
+        if item.id in master_targets:
+            response.master_target = MasterTargetResponse.model_validate(
+                master_targets[item.id], from_attributes=True
+            )
+        if item.id in master_candidates:
+            response.master_candidates = MasterCandidatesResponse.model_validate(
+                master_candidates[item.id], from_attributes=True
+            )
         responses.append(response)
     return responses
+
+
+@router.get(
+    "/knowledge/import-batches/{batch_id}/holders",
+    response_model=list[CertificateHolderResponse],
+)
+async def list_certificate_holders(
+    batch_id: UUID, current_user: User = Depends(require_permission(_MANAGE))
+) -> list[CertificateHolderResponse]:
+    """Plan item 112: the employees a certification batch's items can be
+    given to (the organization's live employees); [] for other batches."""
+    holders = await knowledge_service.list_certificate_holders(batch_id)
+    if holders is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Import batch not found")
+    return [CertificateHolderResponse.model_validate(h, from_attributes=True) for h in holders]
 
 
 async def _import_item_organization_id(item_id: UUID) -> tuple[KnowledgeImportItem, UUID]:
@@ -298,7 +325,9 @@ async def approve_import_item(
     current_user: User = Depends(require_permission(_MANAGE)),
 ) -> ImportItemResponse:
     """Plan item 80: a resume item merges into its employee
-    (knowledge_service.approve_import_item); the refusals are coded."""
+    (knowledge_service.approve_import_item); the refusals are coded. Plan
+    item 112: an employee-master item applies its row to its employee, and a
+    certification item becomes a certificate under the chosen holder."""
     _item, org_id = await _import_item_organization_id(item_id)
     try:
         updated = await knowledge_service.approve_import_item(

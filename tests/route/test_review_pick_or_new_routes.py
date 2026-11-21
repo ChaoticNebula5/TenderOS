@@ -227,7 +227,9 @@ async def test_a_second_decision_on_a_decided_item_answers_409(client: TestClien
 
 async def test_other_import_types_answer_409_type_unsupported(client: TestClient, register_actor):
     headers, user_id, org_id = register_actor()
-    batch_id, item_id, (first, _) = await _seed(org_id, user_id, import_type="employee_master_xlsx")
+    # Plan item 112 gave employee-master items both actions; a "manual"
+    # batch's items still have neither.
+    batch_id, item_id, (first, _) = await _seed(org_id, user_id, import_type="manual")
     assert _row(client, headers, batch_id)["candidates"] is None
     for path, body in (
         (

@@ -985,12 +985,73 @@ export interface ImportItemCandidates {
   strong_match: boolean;
 }
 
+// Plan item 112: one field as an employee-master apply sees it
+// (knowledge_service.MasterApplyField), in the apply's order: name,
+// employee_code, current_title, status. The screen renders these and
+// computes nothing.
+export interface MasterApplyField {
+  field: string;
+  on_file: string | null;
+  from_sheet: string | null;
+  changes: boolean;
+  // The sheet's code belongs to another employee, so it is not written.
+  held_by_other: boolean;
+}
+
+// The employee a master item names. `fingerprint` goes back on Approve;
+// `archived` means approving leaves them archived (nothing restores).
+export interface MasterTarget {
+  knowledge_item_id: string;
+  name: string;
+  employee_code: string | null;
+  current_title: string | null;
+  status: string;
+  archived: boolean;
+  fingerprint: string;
+  // null when the item's payload is not a master row (Reject only).
+  changes: MasterApplyField[] | null;
+}
+
+export interface MasterCandidate {
+  knowledge_item_id: string;
+  name: string;
+  employee_code: string | null;
+  current_title: string | null;
+  status: string;
+  archived: boolean;
+  signals: string[];
+  fingerprint: string;
+  changes: MasterApplyField[];
+}
+
+// strong_match: a code matched, or an employee was made from this same row,
+// so "Import as a new person" is refused (409 IMPORT_ITEM_STRONG_MATCH).
+export interface MasterCandidates {
+  fingerprint: string;
+  candidates: MasterCandidate[];
+  strong_match: boolean;
+}
+
+// Plan item 112: a live employee a certification item can be given to.
+export interface CertificateHolder {
+  knowledge_item_id: string;
+  name: string;
+  employee_code: string | null;
+  email: string | null;
+  current_title: string | null;
+  fingerprint: string;
+}
+
 export interface ImportItemDetailResponse extends ImportItemResponse {
   extracted_payload: Record<string, unknown>;
   // Set for a resume item that names an employee; null otherwise.
   target_employee: ImportItemTarget | null;
   // Set for a resume item in review whose resume can be read; null otherwise.
   candidates: ImportItemCandidates | null;
+  // Plan item 112: set for an employee-master item that names an employee,
+  // and for one in review whose row can be read; null otherwise.
+  master_target: MasterTarget | null;
+  master_candidates: MasterCandidates | null;
 }
 
 export interface PatchKnowledgeItemRequest {
@@ -1053,16 +1114,20 @@ export function listImportItems(batchId: string): Promise<ImportItemDetailRespon
 // the reviewer was shown (target_employee.fingerprint); other items send
 // none.
 // Plan item 111: a pick names the candidate and sends the candidate list's
-// fingerprint too.
+// fingerprint too. Plan item 112: an employee-master item sends its
+// master_target's (or a master candidate's) fingerprint; a certification
+// item names the chosen holder with the holder's fingerprint and no list.
 export function approveImportItem(
   itemId: string,
   targetFingerprint: string | null = null,
-  pick: { employeeId: string; candidatesFingerprint: string } | null = null,
+  pick: { employeeId: string; candidatesFingerprint?: string } | null = null,
 ): Promise<ImportItemResponse> {
   const body: Record<string, string | null> = { target_fingerprint: targetFingerprint };
   if (pick !== null) {
     body.target_employee_id = pick.employeeId;
-    body.candidates_fingerprint = pick.candidatesFingerprint;
+    if (pick.candidatesFingerprint !== undefined) {
+      body.candidates_fingerprint = pick.candidatesFingerprint;
+    }
   }
   return apiFetch<ImportItemResponse>(`/knowledge/import-items/${itemId}/approve`, {
     method: "POST",
@@ -1070,7 +1135,13 @@ export function approveImportItem(
   });
 }
 
-// Plan item 111: the resume becomes a new employee.
+// Plan item 112: the employees a certification batch's items can be given to.
+export function listCertificateHolders(batchId: string): Promise<CertificateHolder[]> {
+  return apiFetch<CertificateHolder[]>(`/knowledge/import-batches/${batchId}/holders`);
+}
+
+// Plan item 111: the resume becomes a new employee (plan item 112: or the
+// employee-master row does).
 export function importItemAsNewEmployee(
   itemId: string,
   candidatesFingerprint: string,

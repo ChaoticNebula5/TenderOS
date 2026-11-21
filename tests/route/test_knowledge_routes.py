@@ -79,11 +79,13 @@ async def _seed_needs_review_item(org_id: str, created_by: str) -> tuple[str, st
     users, not a free-standing UUID (first attempt at this helper used a
     bare uuid.uuid4() here and hit ForeignKeyViolationError on every
     caller - fixed by threading register_actor's own user_id through)."""
-    # An employee-master row (plan item 80): approving one still changes its
-    # status only. A resume item now merges into the employee it names, and
-    # one naming none is refused (test_resume_review_routes.py).
+    # A "manual" batch's item: approving one still changes its status only.
+    # A resume item merges into the employee it names (plan item 80,
+    # test_resume_review_routes.py), and since plan item 112 an
+    # employee-master item applies its row and a certification item needs a
+    # holder (test_master_and_certificate_routes.py).
     batch = await knowledge_service.create_import_batch(
-        uuid.UUID(org_id), "employee_master_xlsx", None, uuid.UUID(created_by)
+        uuid.UUID(org_id), "manual", None, uuid.UUID(created_by)
     )
     async with UnitOfWork() as uow:
         item = await uow.knowledge.create_import_item(
