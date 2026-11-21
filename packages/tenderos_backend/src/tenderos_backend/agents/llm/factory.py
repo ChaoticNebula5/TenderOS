@@ -4,7 +4,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
-from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
+from tenderos_backend.agents.llm.gemini_adapter import GeminiClient, has_price
 from tenderos_backend.core.config import settings
 
 # B17: the one real place this codebase decides gemini vs fake - closing a
@@ -48,6 +48,27 @@ def log_llm_provider() -> None:
             "llm provider %s: LLM calls go to the live provider and cost money",
             settings.llm_provider,
         )
+        _warn_unpriced_models()
+
+
+# The model settings the agents call (core/config.py); each names a model id.
+_MODEL_SETTINGS = ("extractor_model", "verifier_model", "reasoning_model")
+
+
+def _warn_unpriced_models() -> None:
+    """PR 29 (Q7 a): one WARNING per configured model id outside
+    gemini_adapter's price table. Such a model's calls record no cost, so
+    cost per tender reads unknown for them, silently, until the table
+    names it. A warning, not a refusal: a new model must not stop the
+    stack. Names the setting and the model id, never a key."""
+    for name in _MODEL_SETTINGS:
+        model = getattr(settings, name)
+        if not has_price(model):
+            logger.warning(
+                "llm price: %s=%s has no price in the table; its calls record no cost",
+                name.upper(),
+                model,
+            )
 
 
 def fake_llm_client() -> FakeLLMClient:

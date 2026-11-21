@@ -274,6 +274,7 @@ async def _run_and_record_pass(
         tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        operation_id=operation_id,
     )
     for finding in critique.findings:
         target_id = label_to_id.get(finding.target_claim_label)

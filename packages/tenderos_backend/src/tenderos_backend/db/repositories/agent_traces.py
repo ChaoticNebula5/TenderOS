@@ -19,6 +19,8 @@ class AgentTraceRepository:
         organization_id: uuid.UUID | None = None,
         workflow_run_id: uuid.UUID | None = None,
         task_id: uuid.UUID | None = None,
+        operation_id: uuid.UUID | None = None,
+        reanalysis_claim_id: uuid.UUID | None = None,
         provider: str | None = None,
         model: str | None = None,
         prompt_version: str | None = None,
@@ -31,6 +33,7 @@ class AgentTraceRepository:
         output_tokens: int | None = None,
         estimated_cost_usd: float | None = None,
         error_code: str | None = None,
+        thinking_tokens: int | None = None,
     ) -> AgentTrace:
         # Exactly one of tender_id/organization_id is required - enforced by
         # ck_agent_trace_scope at the DB layer already, checked here too so a
@@ -38,11 +41,20 @@ class AgentTraceRepository:
         # of a raw IntegrityError from the flush below.
         if (tender_id is None) == (organization_id is None):
             raise ValueError("AgentTrace requires exactly one of tender_id, organization_id")
+        # PR 29: ck_agent_trace_one_owner, checked here first for the same
+        # reason as the scope check above.
+        owners = [workflow_run_id, operation_id, reanalysis_claim_id]
+        if sum(owner is not None for owner in owners) > 1:
+            raise ValueError(
+                "AgentTrace takes at most one of workflow_run_id, operation_id, reanalysis_claim_id"
+            )
         trace = AgentTrace(
             tender_id=tender_id,
             organization_id=organization_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
+            reanalysis_claim_id=reanalysis_claim_id,
             agent_name=agent_name,
             provider=provider,
             model=model,
@@ -55,6 +67,7 @@ class AgentTraceRepository:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             estimated_cost_usd=estimated_cost_usd,
+            thinking_tokens=thinking_tokens,
             status=status,
             error_code=error_code,
         )

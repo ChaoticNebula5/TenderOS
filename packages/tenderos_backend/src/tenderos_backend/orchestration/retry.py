@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import (
+    LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
     ProviderRequestRejectedError,
@@ -67,13 +68,14 @@ def classify_task_failure(
     and `TenderState.retry_budget_remaining` both exist in the schema and
     are both seeded with real values (`max_attempts` defaults to 2 at the
     DB level; `retry_budget_remaining` is seeded to 10 in
-    `apps/worker/.../jobs/workflow.py`), but nothing anywhere reads
-    either one - every node's `except Exception` block goes straight to
+    `apps/worker/.../jobs/workflow.py`), but before this nothing read
+    either one - every node's `except Exception` block went straight to
     `mark_task_failed` + re-raise, unconditionally. This function is
-    where that decision is made; nothing calls it yet (see this file's
-    own KNOWN_LIMITATIONS.md entry for why wiring it into the 8 node
-    files - a LangGraph topology change - is deliberately a separate,
-    later pass from writing the decision itself).
+    where that decision is made. Its caller is `_handle_graph_failure`
+    in `apps/worker/.../jobs/workflow.py`, which classifies each failed
+    run against its most recently failed task, after `mark_task_failed`
+    has counted the attempt; the nodes themselves still only mark the
+    task failed and re-raise.
 
     Two live trigger events this session, not hypothetical:
     1. A real 45.1-minute live E2E run hit a real `RateLimitedError`
@@ -136,6 +138,14 @@ def classify_task_failure(
       own short constants - see the module-level comment on why a
       task-level retry needs to wait longer than a call-level one
       already did.
+    - `LLMTimeoutError` (PR 29): exactly the 5xx rule above. A timed-out
+      call has already waited up to its 180 s deadline, its own retries and
+      backoff included; one more attempt after the task-level backoff is
+      worth a unit of budget, and a second timeout fails the task
+      (`max_attempts` defaults to 2). The workflow job classifies after
+      `mark_task_failed` has counted the failure, so the one retry waits
+      30 s x 2^1 = 60 s. It took the unknown branch below (15 s) until
+      PR 29 (Stage 1, limit 3).
     - `MalformedOutputError`: terminal, not retried at this layer.
       `call_with_repair`'s one-repair-then-fail already ran and still
       failed. This project runs every LLM call at temperature=0
@@ -185,7 +195,7 @@ def classify_task_failure(
             delay = _task_level_backoff(attempt_count)
         return RetryDecision(should_retry=True, delay_seconds=delay, budget_cost=1)
 
-    if isinstance(exc, TransientProviderError):
+    if isinstance(exc, TransientProviderError | LLMTimeoutError):
         return RetryDecision(
             should_retry=True, delay_seconds=_task_level_backoff(attempt_count), budget_cost=1
         )

@@ -173,6 +173,7 @@ async def evaluate_commercial_for_tender(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> list[PricingFinding]:
     """The full pipeline: ingest every .xlsx document uploaded to this
     tender, run every deterministic check across all of them together
@@ -221,7 +222,13 @@ async def evaluate_commercial_for_tender(
             continue
 
         explanation = await explain_finding(
-            client, model, draft, tender_id, workflow_run_id=workflow_run_id, task_id=task_id
+            client,
+            model,
+            draft,
+            tender_id,
+            workflow_run_id=workflow_run_id,
+            task_id=task_id,
+            operation_id=operation_id,
         )
         async with UnitOfWork() as uow:
             # Checked again: a concurrent run (the workflow's commercial step

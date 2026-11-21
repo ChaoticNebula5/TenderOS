@@ -157,6 +157,7 @@ class FakeLLMClient:
                 input_tokens=input_tokens,
                 output_tokens=0,
                 estimated_cost_usd=0.0,
+                thinking_tokens=0,
             )
             raise error
 
@@ -169,6 +170,8 @@ class FakeLLMClient:
             latency_ms=elapsed_ms(start),
             estimated_cost_usd=0.0,
             attempts=1,
+            # PR 29: the fake never thinks.
+            thinking_tokens=0,
         )
 
 

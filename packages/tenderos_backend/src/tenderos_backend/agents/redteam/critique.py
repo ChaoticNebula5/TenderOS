@@ -37,6 +37,7 @@ async def _write_trace(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None,
     task_id: uuid.UUID | None,
+    operation_id: uuid.UUID | None = None,
     model: str,
     status: str,
     outcome: LLMResult[RedteamCritique] | LLMError | None = None,
@@ -47,6 +48,7 @@ async def _write_trace(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             agent_name=_AGENT_NAME,
             model=model,
             prompt_version=bundle_version(),
@@ -88,6 +90,7 @@ async def critique_proposal(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    operation_id: uuid.UUID | None = None,
 ) -> RedteamCritique:
     """E8's adversarial-LLM step - the 5th and last of Red Team's check
     list, run after the 4 deterministic/graph checks (redteam_checks.py)
@@ -118,6 +121,7 @@ async def critique_proposal(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            operation_id=operation_id,
             model=model,
             status="failed",
             outcome=exc,
@@ -129,6 +133,7 @@ async def critique_proposal(
         tender_id=tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        operation_id=operation_id,
         model=model,
         status="completed",
         outcome=llm_result,

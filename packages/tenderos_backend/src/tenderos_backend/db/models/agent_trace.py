@@ -22,6 +22,16 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ),
         # 036_agent_trace_attempts.py
         CheckConstraint("attempts IS NULL OR attempts >= 0", name="ck_agent_trace_attempts"),
+        # 037_agent_trace_owners_thinking.py: a call is owned by at most
+        # one of a workflow run, an async operation and a reanalysis claim.
+        CheckConstraint(
+            "num_nonnulls(workflow_run_id, operation_id, reanalysis_claim_id) <= 1",
+            name="ck_agent_trace_one_owner",
+        ),
+        CheckConstraint(
+            "thinking_tokens IS NULL OR thinking_tokens >= 0",
+            name="ck_agent_trace_thinking_tokens",
+        ),
         # 004_requirements.py
         Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
     )
@@ -37,6 +47,14 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflow_tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    # PR 29: the other two owners (ck_agent_trace_one_owner). An async
+    # operation's calls, and the reanalysis job's, were written with no owner.
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("async_operations.id", ondelete="SET NULL"), nullable=True
+    )
+    reanalysis_claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("reanalysis_claims.id", ondelete="SET NULL"), nullable=True
     )
     agent_name: Mapped[str] = mapped_column(nullable=False)
     provider: Mapped[str | None] = mapped_column(nullable=True)
@@ -58,7 +76,11 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # when a request's count is not known.
     attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The answer's tokens only; thinking tokens are counted beside them.
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PR 29: tokens the model spent thinking, billed at the output rate and
+    # included in estimated_cost_usd. NULL before migration 037.
+    thinking_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     status: Mapped[str] = mapped_column(nullable=False)
     error_code: Mapped[str | None] = mapped_column(nullable=True)

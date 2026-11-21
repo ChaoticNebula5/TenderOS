@@ -11726,6 +11726,9 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      none of the classified subclasses), so it gets the unknown-exception
      branch: one retry after a fixed delay. Reasonable for a timeout; not
      a dedicated branch.
+     **Resolved (PR 29, 2026-11-21):** it now has the 5xx rule, one retry
+     after the task-level backoff (60 s for the first failure, since the
+     workflow job classifies after the failure is counted).
   4. **The SSE stream's starting point moved from the API host's clock to
      the database's `now()`** (`apps/api/src/tenderos_api/outbox_stream.py`,
      shared by the workflow stream), for the same clock-gap reason as

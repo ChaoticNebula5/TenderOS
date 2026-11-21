@@ -21,10 +21,12 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from _helpers import register_org_and_tender
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
+from tenderos_backend.domain.services import operation_service, reanalysis_service
 from tenderos_backend.domain.services.llm_report import ReportScope, build_report, render_text
 
 pytestmark = pytest.mark.asyncio
@@ -277,3 +279,118 @@ async def test_the_command_refuses_a_bad_id_with_exit_1():
 
     assert code == 1
     assert "llm_report:" in stderr.getvalue()
+
+
+# ---------------------------------------------------------------- PR 29: owners and thinking
+
+
+async def _seed_owners() -> dict[str, uuid.UUID]:
+    """One tender's calls from each kind of owner (migration 037), and one
+    organization-scoped import call."""
+    email = f"report-owners-{uuid.uuid4().hex[:8]}@example.com"
+    registered, tender = await register_org_and_tender(
+        email, "Report Owners Org", "Report Owners Tender"
+    )
+    org_id, tender_id = registered.organization.id, tender.id
+    operation = (
+        await operation_service.request_operation(
+            org_id, tender_id, "redteam_run", registered.user.id
+        )
+    ).operation
+    knowledge_item_id = uuid.uuid4()
+    assert await reanalysis_service.claim_reanalysis(tender_id, knowledge_item_id, 3) is not None
+    claim_id = await reanalysis_service.claim_id(tender_id, knowledge_item_id, 3)
+    assert claim_id is not None
+    async with UnitOfWork() as uow:
+        run = await uow.workflow.create_run(
+            tender_id=tender_id, prompt_bundle_version="test", model_config={}
+        )
+        rows = [
+            # (agent, owner kwargs, cost, thinking)
+            ("extract", {"workflow_run_id": run.id}, "0.010", 0),
+            ("critique", {"operation_id": operation.id}, "0.020", 100),
+            ("critique", {"operation_id": operation.id}, "0.030", 0),
+            ("compliance", {"reanalysis_claim_id": claim_id}, "0.005", 0),
+            ("verify", {}, "0.001", 0),  # on-demand verification: no owner
+        ]
+        for agent, owner, cost, thinking in rows:
+            await uow.agent_traces.create(
+                agent_name=agent,
+                status="completed",
+                tender_id=tender_id,
+                provider="gemini",
+                model="gemini-3.5-flash",
+                attempts=1,
+                latency_ms=100,
+                input_tokens=10,
+                output_tokens=5,
+                thinking_tokens=thinking,
+                estimated_cost_usd=Decimal(cost),
+                **owner,
+            )
+        await uow.agent_traces.create(
+            agent_name="resume",
+            status="completed",
+            organization_id=org_id,
+            provider="gemini",
+            model="gemini-3.5-flash",
+            attempts=1,
+            latency_ms=100,
+            estimated_cost_usd=Decimal("0.002"),
+        )
+        await uow.commit()
+    return {
+        "org": org_id,
+        "tender": tender_id,
+        "run": run.id,
+        "operation": operation.id,
+        "claim": claim_id,
+    }
+
+
+async def test_cost_by_source_splits_a_tenders_spend_by_owner():
+    ids = await _seed_owners()
+
+    report = await _report(organization_id=ids["org"])
+
+    by_source = {r["source"]: r for r in report["cost_by_source"]}
+    assert set(by_source) == {"run", "operation", "reanalysis", "no owner", "organization"}
+    assert by_source["run"]["cost_usd"] == pytest.approx(0.010)
+    assert by_source["operation"]["cost_usd"] == pytest.approx(0.050)
+    assert by_source["operation"]["calls"] == 2
+    assert by_source["reanalysis"]["cost_usd"] == pytest.approx(0.005)
+    assert by_source["no owner"]["cost_usd"] == pytest.approx(0.001)
+    assert by_source["organization"]["cost_usd"] == pytest.approx(0.002)
+
+
+async def test_cost_per_operation_and_per_reanalysis():
+    ids = await _seed_owners()
+
+    report = await _report(tender_id=ids["tender"])
+
+    [operation] = report["cost_by_operation"]
+    assert operation["operation_id"] == str(ids["operation"])
+    assert operation["kind"] == "redteam_run"
+    assert operation["calls"] == 2
+    assert operation["cost_usd"] == pytest.approx(0.050)
+    [claim] = report["cost_by_reanalysis"]
+    assert claim["reanalysis_claim_id"] == str(ids["claim"])
+    assert claim["cost_usd"] == pytest.approx(0.005)
+    text = render_text(report)
+    assert "Cost by source" in text
+    assert "Cost per operation" in text
+    assert "redteam_run" in text
+    assert "Cost per reanalysis" in text
+
+
+async def test_thinking_tokens_are_shown_apart_from_output_tokens():
+    ids = await _seed_owners()
+
+    report = await _report(tender_id=ids["tender"])
+
+    assert report["totals"]["thinking_tokens"] == 100
+    assert report["totals"]["output_tokens"] == 25
+    critique = _by(report["cost_by_agent"], agent_name="critique")
+    assert critique["thinking_tokens"] == 100
+    text = render_text(report)
+    assert "thinking tokens 100" in text

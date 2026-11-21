@@ -82,6 +82,7 @@ async def _write_trace(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None,
     task_id: uuid.UUID | None,
+    reanalysis_claim_id: uuid.UUID | None = None,
     model: str,
     status: str,
     candidates: list[EvidenceCandidateRef],
@@ -93,6 +94,7 @@ async def _write_trace(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            reanalysis_claim_id=reanalysis_claim_id,
             agent_name=_AGENT_NAME,
             model=model,
             prompt_version=bundle_version(),
@@ -129,6 +131,7 @@ async def propose_compliance(
     tender_id: uuid.UUID,
     workflow_run_id: uuid.UUID | None = None,
     task_id: uuid.UUID | None = None,
+    reanalysis_claim_id: uuid.UUID | None = None,
 ) -> ComplianceProposal:
     """E4's compliance-proposal call - one requirement, its retrieved
     evidence candidates, one call. Never asked to echo requirement_id back
@@ -163,6 +166,7 @@ async def propose_compliance(
             tender_id=tender_id,
             workflow_run_id=workflow_run_id,
             task_id=task_id,
+            reanalysis_claim_id=reanalysis_claim_id,
             model=model,
             status="failed",
             candidates=candidates,
@@ -175,6 +179,7 @@ async def propose_compliance(
         tender_id=tender_id,
         workflow_run_id=workflow_run_id,
         task_id=task_id,
+        reanalysis_claim_id=reanalysis_claim_id,
         model=model,
         status="completed",
         candidates=candidates,

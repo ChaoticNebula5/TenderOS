@@ -19,6 +19,9 @@ class CallMeasurement:
       it is not known.
     - tokens and cost: None when the provider returned no usage (a timeout, a
       rate limit, a 5xx) or the model has no price.
+    - thinking_tokens (PR 29): the tokens the model spent thinking, apart
+      from output_tokens (the answer). Billed at the output rate, so
+      estimated_cost_usd includes them; see gemini_adapter._estimate_cost_usd.
     """
 
     provider: str
@@ -27,6 +30,7 @@ class CallMeasurement:
     input_tokens: int | None = None
     output_tokens: int | None = None
     estimated_cost_usd: float | None = None
+    thinking_tokens: int | None = None
 
 
 class LLMError(Exception):
@@ -112,6 +116,8 @@ class LLMResult[T: BaseModel]:
     estimated_cost_usd: float | None
     # Provider requests made, beside latency_ms; see CallMeasurement.
     attempts: int | None
+    # PR 29: thinking tokens, apart from output_tokens; see CallMeasurement.
+    thinking_tokens: int | None = None
 
 
 class TraceMeasurements(TypedDict):
@@ -125,6 +131,7 @@ class TraceMeasurements(TypedDict):
     input_tokens: int | None
     output_tokens: int | None
     estimated_cost_usd: float | None
+    thinking_tokens: int | None
 
 
 def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> TraceMeasurements:
@@ -147,6 +154,7 @@ def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> Trace
             input_tokens=None,
             output_tokens=None,
             estimated_cost_usd=None,
+            thinking_tokens=None,
         )
     return TraceMeasurements(
         provider=source.provider,
@@ -155,6 +163,7 @@ def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> Trace
         input_tokens=source.input_tokens,
         output_tokens=source.output_tokens,
         estimated_cost_usd=source.estimated_cost_usd,
+        thinking_tokens=source.thinking_tokens,
     )
 
 
@@ -239,6 +248,7 @@ async def call_with_repair[T: BaseModel](
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         estimated_cost_usd=result.estimated_cost_usd,
+        thinking_tokens=result.thinking_tokens,
     )
     # Never None here (`second` is measured); `or second` only narrows the type.
     both = _both_requests(first, second, elapsed_ms(start)) or second
@@ -249,6 +259,7 @@ async def call_with_repair[T: BaseModel](
         input_tokens=both.input_tokens,
         output_tokens=both.output_tokens,
         estimated_cost_usd=both.estimated_cost_usd,
+        thinking_tokens=both.thinking_tokens,
     )
 
 
@@ -273,4 +284,5 @@ def _both_requests(
         input_tokens=_sum_known(first.input_tokens, second.input_tokens),
         output_tokens=_sum_known(first.output_tokens, second.output_tokens),
         estimated_cost_usd=_sum_known(first.estimated_cost_usd, second.estimated_cost_usd),
+        thinking_tokens=_sum_known(first.thinking_tokens, second.thinking_tokens),
     )

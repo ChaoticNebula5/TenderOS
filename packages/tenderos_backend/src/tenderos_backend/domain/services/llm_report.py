@@ -6,6 +6,9 @@ from it.
 What it reports, for one scope (a run, a tender, an organization, a start
 date, or everything):
 - cost per organization, tender, run and agent;
+- cost by source (run, operation, reanalysis, organization, no owner), per
+  operation (with its kind) and per reanalysis claim (PR 29);
+- input, output and thinking tokens (PR 29: thinking apart from output);
 - latency p50, p95 and max per agent, provider and model;
 - timeouts and retries per agent, provider and model.
 
@@ -60,8 +63,24 @@ _COST_COLUMNS = """
     bool_and(COALESCE(t.provider = 'fake', false)) AS fake,
     COALESCE(sum(t.estimated_cost_usd), 0) AS known_cost_usd,
     count(*) FILTER (WHERE t.estimated_cost_usd IS NULL) AS unknown_cost_calls,
-    count(*) FILTER (WHERE t.attempts = 0) AS cache_hits
+    count(*) FILTER (WHERE t.attempts = 0) AS cache_hits,
+    COALESCE(sum(t.input_tokens), 0) AS input_tokens,
+    COALESCE(sum(t.output_tokens), 0) AS output_tokens,
+    COALESCE(sum(t.thinking_tokens), 0) AS thinking_tokens
 """
+
+# PR 29 (Q1 b): who a call's spend belongs to. At most one owner is set
+# (ck_agent_trace_one_owner). "organization" is an organization-scoped call
+# (a knowledge import); "no owner" is a tender call with none: on-demand
+# verification, and rows written before migration 037.
+_SOURCE = """CASE
+    WHEN t.workflow_run_id IS NOT NULL THEN 'run'
+    WHEN t.operation_id IS NOT NULL THEN 'operation'
+    WHEN t.reanalysis_claim_id IS NOT NULL THEN 'reanalysis'
+    WHEN t.tender_id IS NULL THEN 'organization'
+    ELSE 'no owner'
+END"""
+_OPERATIONS_JOIN = "LEFT JOIN async_operations AS op ON op.id = t.operation_id"
 
 # Latency samples: provider calls only (PR 28 review). A cache hit (0) and a
 # row with no attempts (before migration 036, where a cache hit read as a
@@ -80,6 +99,10 @@ NOTES = [
     "calls with unknown attempts are counted beside them, not in them.",
     "Fake rows cost 0 by design and their tokens are estimates (characters / 4): marked (fake).",
     "Rows written before migration 036 have no attempts: counted as attempts unknown.",
+    "A call's owner is its run, its operation or its reanalysis; 'organization' is a knowledge "
+    "import, and 'no owner' is on-demand verification or a row from before migration 037.",
+    "Thinking tokens are counted apart from output tokens and priced as output "
+    "(Google bills them at the output rate); rows before migration 037 count none.",
 ]
 
 
@@ -143,13 +166,19 @@ async def _cost_by(
     where: str,
     params: dict[str, Any],
     top: int,
+    *,
+    join: str = "",
+    only: str = "",
 ) -> list[dict[str, Any]]:
     """Cost grouped by `keys` ((sql expression, output name) pairs): at most
-    `top` groups, the costliest known first."""
+    `top` groups, the costliest known first. `join` adds a table; `only`
+    narrows the rows (a fixed condition, never a value)."""
     select_keys = ", ".join(f"{expr} AS {name}" for expr, name in keys)
     group = ", ".join(str(i + 1) for i in range(len(keys)))
+    if only:
+        where = f"{where} AND {only}" if where else f"WHERE {only}"
     sql = (
-        f"SELECT {select_keys}, {_COST_COLUMNS} {_FROM} {where} "
+        f"SELECT {select_keys}, {_COST_COLUMNS} {_FROM} {join} {where} "
         f"GROUP BY {group} ORDER BY known_cost_usd DESC, calls DESC LIMIT :top"
     )
     return [_cost_row(row) for row in await _rows(session, sql, {**params, "top": top})]
@@ -187,6 +216,25 @@ async def build_report(session: AsyncSession, scope: ReportScope, *, top: int = 
     )
     report["cost_by_agent"] = await _cost_by(
         session, [("t.agent_name", "agent_name")], where, params, top
+    )
+    # PR 29: where the spend came from, and the two owners a run is not.
+    report["cost_by_source"] = await _cost_by(session, [(_SOURCE, "source")], where, params, top)
+    report["cost_by_operation"] = await _cost_by(
+        session,
+        [("t.operation_id", "operation_id"), ("op.kind", "kind"), ("t.tender_id", "tender_id")],
+        where,
+        params,
+        top,
+        join=_OPERATIONS_JOIN,
+        only="t.operation_id IS NOT NULL",
+    )
+    report["cost_by_reanalysis"] = await _cost_by(
+        session,
+        [("t.reanalysis_claim_id", "reanalysis_claim_id"), ("t.tender_id", "tender_id")],
+        where,
+        params,
+        top,
+        only="t.reanalysis_claim_id IS NOT NULL",
     )
 
     group = (
@@ -300,7 +348,11 @@ def _cost_section(
     label: str,
     rows: list[dict[str, Any]],
     name: Callable[[dict[str, Any]], str],
+    *,
+    tokens: bool = False,
 ) -> list[str]:
+    """One cost table; `tokens` adds the input, output and thinking token
+    sums (PR 29) before the cost column."""
     body = [
         [
             name(r),
@@ -308,12 +360,21 @@ def _cost_section(
             str(r["failed"]),
             str(r["cache_hits"]),
             ", ".join(r["providers"]),
+            *(
+                [f"{r['input_tokens']:,}", f"{r['output_tokens']:,}", f"{r['thinking_tokens']:,}"]
+                if tokens
+                else []
+            ),
             format_cost(r),
         ]
         for r in rows
     ]
-    headers = [label, "CALLS", "FAILED", "CACHE HITS", "PROVIDERS", "COST"]
-    return [title, *_table(headers, body, numeric={1, 2, 3}), ""]
+    headers = [label, "CALLS", "FAILED", "CACHE HITS", "PROVIDERS"]
+    numeric = {1, 2, 3}
+    if tokens:
+        headers += ["INPUT TOKENS", "OUTPUT TOKENS", "THINKING TOKENS"]
+        numeric |= {5, 6, 7}
+    return [title, *_table([*headers, "COST"], body, numeric=numeric), ""]
 
 
 def render_text(report: dict) -> str:
@@ -334,8 +395,16 @@ def render_text(report: dict) -> str:
         f"  calls {totals['calls']}, failed {totals['failed']}, cache hits "
         f"{totals['cache_hits']}, providers {', '.join(totals['providers']) or '-'}",
         f"  cost {format_cost(totals) if totals['calls'] else '-'}",
+        f"  tokens: input {totals['input_tokens']}, output {totals['output_tokens']}, "
+        f"thinking tokens {totals['thinking_tokens']}",
         "",
     ]
+    out += _cost_section(
+        "Cost by source",
+        "SOURCE",
+        report["cost_by_source"],
+        lambda r: r["source"],
+    )
     out += _cost_section(
         "Cost per organization",
         "ORGANIZATION",
@@ -355,7 +424,23 @@ def render_text(report: dict) -> str:
         lambda r: r["workflow_run_id"] or "(no run)",
     )
     out += _cost_section(
-        "Cost per agent", "AGENT", report["cost_by_agent"], lambda r: r["agent_name"]
+        "Cost per operation",
+        "OPERATION (KIND)",
+        report["cost_by_operation"],
+        lambda r: f"{r['operation_id']} ({r['kind'] or 'gone'})",
+    )
+    out += _cost_section(
+        "Cost per reanalysis",
+        "REANALYSIS CLAIM",
+        report["cost_by_reanalysis"],
+        lambda r: r["reanalysis_claim_id"],
+    )
+    out += _cost_section(
+        "Cost per agent",
+        "AGENT",
+        report["cost_by_agent"],
+        lambda r: r["agent_name"],
+        tokens=True,
     )
 
     latency = [

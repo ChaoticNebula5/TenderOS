@@ -15,7 +15,12 @@ import uuid
 from collections.abc import Awaitable, Callable
 
 from rq.timeouts import JobTimeoutException
-from tenderos_backend.agents.llm.client import LLMClient, LLMTimeoutError, RateLimitedError
+from tenderos_backend.agents.llm.client import (
+    LLMClient,
+    LLMTimeoutError,
+    ProviderRequestRejectedError,
+    RateLimitedError,
+)
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.models.async_operation import AsyncOperation
@@ -34,6 +39,9 @@ logger = logging.getLogger(__name__)
 _FAILURES: dict[str, str] = {
     "LLM_TIMEOUT": "The AI provider took too long to answer. Please try again.",
     "LLM_RATE_LIMITED": "The AI provider is busy right now. Please try again in a few minutes.",
+    # PR 29 (Q6 a): the provider refused the request itself (a 4xx other
+    # than 404 and 429). Retrying the same request will not help.
+    "LLM_REJECTED": "The AI provider refused this request. Please contact support if it persists.",
     "JOB_TIMEOUT": "This took longer than allowed and was stopped. Please try again.",
     "INTERNAL_ERROR": "Something went wrong on our side. Please try again.",
 }
@@ -86,8 +94,12 @@ async def _run_proposal_generation(operation: AsyncOperation) -> None:
     # Stage 2: what POST .../proposal/generate used to run inside the
     # request. The drafted sections are the result; the web app re-reads
     # GET .../proposal/sections once the operation has succeeded.
+    # operation_id: its calls are recorded as this operation's (PR 29).
     await proposal_service.draft_proposal_for_tender(
-        _build_llm_client(), settings.reasoning_model, operation.tender_id
+        _build_llm_client(),
+        settings.reasoning_model,
+        operation.tender_id,
+        operation_id=operation.id,
     )
 
 
@@ -95,8 +107,12 @@ async def _run_commercial_validation(operation: AsyncOperation) -> None:
     # Stage 2: what POST /pricing-documents/{id}/validate used to run inside
     # the request. Tender-wide, as before (cross-document checks need every
     # sheet); findings already stored are looked up, not explained again.
+    # operation_id: its calls are recorded as this operation's (PR 29).
     await commercial_service.evaluate_commercial_for_tender(
-        _build_llm_client(), settings.reasoning_model, operation.tender_id
+        _build_llm_client(),
+        settings.reasoning_model,
+        operation.tender_id,
+        operation_id=operation.id,
     )
 
 
@@ -113,6 +129,8 @@ def _error_code_for(exc: BaseException) -> str:
         return "LLM_TIMEOUT"
     if isinstance(exc, RateLimitedError):
         return "LLM_RATE_LIMITED"
+    if isinstance(exc, ProviderRequestRejectedError):
+        return "LLM_REJECTED"
     return "INTERNAL_ERROR"
 
 

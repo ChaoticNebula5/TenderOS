@@ -79,7 +79,14 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
             for employee in candidates:
                 attempted += 1
                 try:
-                    await evaluate_role_match(client, settings.reasoning_model, role.id, employee)
+                    await evaluate_role_match(
+                        client,
+                        settings.reasoning_model,
+                        role.id,
+                        employee,
+                        workflow_run_id=workflow_run_id,
+                        task_id=task_id,
+                    )
                     evaluated += 1
                 except Exception:
                     logger.exception(
