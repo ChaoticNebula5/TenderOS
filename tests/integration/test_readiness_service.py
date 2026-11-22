@@ -18,6 +18,7 @@ blocker 9's, are in test_readiness_saved_facts.py.
 """
 
 import asyncio
+import logging
 import uuid
 from datetime import date
 
@@ -30,6 +31,7 @@ from tenderos_backend.db.models.knowledge import Employee
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.readiness import ReadinessReport
 from tenderos_backend.db.models.tender import Tender
+from tenderos_backend.db.repositories.graph_projection import GraphProjectionRepository
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import (
@@ -700,6 +702,109 @@ async def test_stale_graph_projection_clears_once_projected():
     result = await readiness_service.evaluate_readiness(tender_id)
     categories = {b["category"] for b in result.blockers}
     assert readiness_service.STALE_GRAPH_PROJECTION not in categories
+
+
+# PR 30, plan item 113: one WARNING per stale blocker, with the version and
+# whether a projection at that version is running.
+def _stale_lines(caplog) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == readiness_service.__name__
+        and r.levelno == logging.WARNING
+        and r.getMessage().startswith("readiness: stale graph projection blocker added")
+    ]
+
+
+async def _state_version(tender_id: uuid.UUID) -> int:
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tender_id)
+    assert tender is not None
+    return tender.state_version
+
+
+@pytest.mark.parametrize("running", [False, True])
+async def test_the_stale_blocker_is_logged_with_its_version_and_any_running_projection(
+    caplog, running
+):
+    _org_id, tender_id = await _org_and_tender(f"StaleLogged{running}")
+    version = await _state_version(tender_id)
+    if running:
+        async with UnitOfWork() as uow:
+            await uow.graph_projection.create_run(tender_id, version)
+            await uow.commit()
+
+    with caplog.at_level(logging.WARNING, logger=readiness_service.__name__):
+        result = await readiness_service.evaluate_readiness(tender_id)
+
+    assert readiness_service.STALE_GRAPH_PROJECTION in _categories(result)
+    [line] = _stale_lines(caplog)
+    message = line.getMessage()
+    assert str(tender_id) in message
+    assert f"at state version {version} (reason stale, latest completed projection None)" in (
+        message
+    )
+    assert message.endswith(f"a projection at this version is running: {running}")
+    assert (line.state_version, line.stale_reason, line.projection_running) == (
+        version,
+        "stale",
+        running,
+    )
+
+
+async def test_a_projection_running_at_another_version_does_not_count(caplog):
+    _org_id, tender_id = await _org_and_tender("StaleOtherVersion")
+    version = await _state_version(tender_id)
+    async with UnitOfWork() as uow:
+        await uow.graph_projection.create_run(tender_id, version - 1)
+        await uow.commit()
+
+    with caplog.at_level(logging.WARNING, logger=readiness_service.__name__):
+        await readiness_service.evaluate_readiness(tender_id)
+
+    [line] = _stale_lines(caplog)
+    assert line.projection_running is False
+
+
+async def test_a_failed_projection_at_this_version_is_not_running(caplog):
+    _org_id, tender_id = await _org_and_tender("StaleFailedRun")
+    version = await _state_version(tender_id)
+    async with UnitOfWork() as uow:
+        run = await uow.graph_projection.create_run(tender_id, version)
+        await uow.graph_projection.mark_failed(run.id, "test: the projection failed")
+        await uow.commit()
+
+    with caplog.at_level(logging.WARNING, logger=readiness_service.__name__):
+        await readiness_service.evaluate_readiness(tender_id)
+
+    [line] = _stale_lines(caplog)
+    assert line.projection_running is False
+
+
+async def test_a_fresh_graph_logs_no_stale_line(caplog):
+    _org_id, tender_id = await _org_and_tender("FreshNoLine")
+    await _project(tender_id)
+
+    with caplog.at_level(logging.WARNING, logger=readiness_service.__name__):
+        await readiness_service.evaluate_readiness(tender_id)
+
+    assert _stale_lines(caplog) == []
+
+
+async def test_a_failed_projection_lookup_reads_unknown_and_keeps_the_report(caplog, monkeypatch):
+    _org_id, tender_id = await _org_and_tender("StaleLookupFails")
+
+    async def broken(self, tender_id, state_version):
+        raise ConnectionError("database went away")
+
+    monkeypatch.setattr(GraphProjectionRepository, "has_running_run", broken)
+    with caplog.at_level(logging.WARNING, logger=readiness_service.__name__):
+        result = await readiness_service.evaluate_readiness(tender_id)
+
+    assert readiness_service.STALE_GRAPH_PROJECTION in _categories(result)
+    [line] = _stale_lines(caplog)
+    assert line.getMessage().endswith("a projection at this version is running: unknown")
+    assert line.projection_running is None
 
 
 # ----------------------------------------------------------------------

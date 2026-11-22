@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import exists, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -109,3 +109,19 @@ class GraphProjectionRepository:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def has_running_run(self, tender_id: uuid.UUID, state_version: int) -> bool:
+        """PR 30, plan item 113: whether a projection of this tender at this
+        state version is recorded as running. What the table says: a run
+        that died without marking itself failed would read as running too.
+        On idx_graph_projection_latest (tender_id, source_state_version)."""
+        result = await self._session.execute(
+            select(
+                exists().where(
+                    GraphProjectionRun.tender_id == tender_id,
+                    GraphProjectionRun.source_state_version == state_version,
+                    GraphProjectionRun.status == "running",
+                )
+            )
+        )
+        return bool(result.scalar_one())

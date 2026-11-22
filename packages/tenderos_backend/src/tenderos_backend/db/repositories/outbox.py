@@ -5,6 +5,7 @@ from sqlalchemy import and_, delete, exists, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from tenderos_backend.core.log_context import current_log_context
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.domain.events.outbox_events import (
@@ -33,12 +34,19 @@ class OutboxRepository:
         payload: dict,
         idempotency_key: str,
     ) -> OutboxEvent:
+        """PR 30: the event records the current log context's request id
+        (core/log_context.py), so its job's lines carry the request's id.
+        Read from the context, not passed by the 23 callers: it is a log
+        correlation id, bound once per request by the api's middleware (and
+        per job by the worker, so a job's follow-up events keep it), and a
+        missing one costs a log join, never data. None outside a request."""
         event = OutboxEvent(
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
             event_type=event_type,
             payload=payload,
             idempotency_key=idempotency_key,
+            request_id=current_log_context().get("request_id"),
         )
         self._session.add(event)
         await self._session.flush()

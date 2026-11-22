@@ -23,6 +23,7 @@ from tenderos_backend.agents.llm.client import (
 )
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
+from tenderos_backend.core.log_context import bind_log_context
 from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.session import engine
 from tenderos_backend.domain.services import (
@@ -151,6 +152,10 @@ async def run_operation(operation_id: str) -> None:
     if current is None:
         logger.warning("operation %s not found; nothing to run", op_id)
         return
+    # PR 30: the operation's own tender and organization, for every line
+    # below (its OperationRequested payload names neither). Bound inside
+    # run_operation_job's asyncio.run, so the binding ends with it.
+    bind_log_context(tender_id=current.tender_id, org_id=current.organization_id)
     handler = _HANDLERS.get(current.kind)
     if handler is None:
         logger.error("operation %s has unknown kind %r; not running it", op_id, current.kind)

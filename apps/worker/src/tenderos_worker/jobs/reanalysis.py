@@ -4,6 +4,7 @@ import uuid
 from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
+from tenderos_backend.core.log_context import bind_log_context
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_COMPLIANCE_ENTRY,
@@ -161,6 +162,9 @@ async def reanalyze_knowledge_selection_change(
     # cost per reanalysis is reportable. Looked up after a successful claim:
     # the row exists and is this delivery's.
     reanalysis_claim_id = await reanalysis_service.claim_id(tid, kid, state_version)
+    # PR 30: from here the job's lines name its claim. RQ runs this
+    # coroutine in its own event loop task, so the binding ends with it.
+    bind_log_context(reanalysis_claim_id=reanalysis_claim_id)
 
     await graph_service.project_tender(tid)
     rows = await graph_service.preview_impact(tid, kid)

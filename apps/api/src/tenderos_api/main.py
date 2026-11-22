@@ -32,6 +32,7 @@ from tenderos_api.errors import (
     register_exception_handlers,
 )
 from tenderos_api.logging_filters import install_access_log_redaction
+from tenderos_api.middleware.request_id import RequestIdMiddleware
 from tenderos_api.rate_limit import (
     GLOBAL_LIMIT,
     GLOBAL_WINDOW_SECONDS,
@@ -347,6 +348,7 @@ async def _catch_unhandled_exceptions(
 # Middleware order. Outermost first, this is what a request passes through:
 #
 #   ServerErrorMiddleware        Starlette's own, always outermost
+#   RequestIdMiddleware
 #   CORSMiddleware
 #   _security_headers
 #   _catch_unhandled_exceptions
@@ -364,7 +366,10 @@ async def _catch_unhandled_exceptions(
 # the 429 used to skip CORS and the security headers entirely.)
 #
 # Why this order:
-# - CORS outermost: every response that reaches the browser, including a
+# - RequestIdMiddleware outermost (PR 30): every response carries
+#   X-Request-ID, CORS preflights included, and every layer's log lines
+#   carry the request's id, the catch-all's traceback among them.
+# - CORS next: every response that reaches the browser, including a
 #   429, a 413 and a 500 from the catch-all, carries
 #   Access-Control-Allow-Origin. Otherwise the browser hides the response
 #   and the web app cannot tell a rate limit from an outage.
@@ -396,6 +401,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Retry-After"],
 )
+app.add_middleware(RequestIdMiddleware)
 
 
 register_exception_handlers(app)

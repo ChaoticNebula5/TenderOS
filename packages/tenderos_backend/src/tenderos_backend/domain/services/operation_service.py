@@ -12,6 +12,7 @@ Every transition writes its outbox event in the same transaction as the
 state change, so a status the web app is told about is always committed.
 """
 
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from tenderos_backend.domain.events.outbox_events import (
     operation_status_changed_idempotency_key,
     operation_status_changed_payload,
 )
+
+logger = logging.getLogger(__name__)
 
 # Design numbers, not measured. RQ kills a job at its timeout, so each kind's
 # job timeout bounds how long one run can take; the lease set at claim is
@@ -119,6 +122,9 @@ async def request_operation(
                 )
                 await _status_event(uow, created.id, "queued")
                 await uow.commit()
+                # PR 30: the request's own line, so one operation reads end
+                # to end in the logs (the request id comes from the context).
+                logger.info("operation %s requested: %s on tender %s", created.id, kind, tender_id)
                 return OperationRequest(operation=created, created=True)
             active = await uow.operations.get_active(tender_id, kind)
             if active is not None:

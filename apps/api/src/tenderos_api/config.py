@@ -2,6 +2,8 @@ from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from tenderos_backend.core.config import reject_production_problems
+from tenderos_backend.core.config import settings as backend_settings
+from tenderos_backend.core.log_redaction import startup_refusals_logged
 
 
 class Settings(BaseSettings):
@@ -86,4 +88,8 @@ def _api_production_problems(s: Settings) -> list[str]:
 
 
 settings = Settings()
-reject_production_problems(_api_production_problems(settings))
+# PR 30: a refusal is also one ERROR line, in the backend's LOG_FORMAT (this
+# Settings has no log_format of its own; the backend's is the one
+# configure_logging() reads).
+with startup_refusals_logged(backend_settings.log_format):
+    reject_production_problems(_api_production_problems(settings))

@@ -57,7 +57,9 @@ async def rerank(query: str, candidates: list[str]) -> list[float]:
         # A local variable's annotation is never evaluated at run time, so
         # PairInput needs no runtime import here.
         pairs: list[PairInput] = [(query, candidate) for candidate in candidates]
-        scores = _get_model().predict(pairs)
+        # show_progress_bar=False: the same "Batches" bar as embed.py's encode
+        # (PR 30), which would break the JSON log lines.
+        scores = _get_model().predict(pairs, show_progress_bar=False)
         return scores.tolist()
 
     return await asyncio.to_thread(_score)
