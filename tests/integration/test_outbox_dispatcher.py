@@ -3,12 +3,14 @@ import contextlib
 import logging
 import socket
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 
 import pytest
 from _helpers import make_ready_run_inputs
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
 from rq import Queue
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
@@ -24,7 +26,7 @@ from tenderos_backend.domain.services import (
     tender_service,
     workflow_service,
 )
-from tenderos_worker import outbox_dispatcher
+from tenderos_worker import heartbeats, outbox_dispatcher
 from tenderos_worker.jobs.ingestion import PARSER_VERSION
 from tenderos_worker.outbox_dispatcher import MAX_ATTEMPTS, _dispatch_once
 from tenderos_worker.settings import settings
@@ -266,6 +268,59 @@ async def _run_loop_until(condition, *, timeout: float = _LOOP_WAIT_SECONDS) -> 
         loop_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await loop_task
+
+
+async def test_a_finished_tick_writes_the_dispatchers_heartbeat():
+    """Observability PR 31: each tick that finished stamps the dispatcher's
+    heartbeat key (heartbeats.py), which the metrics_exporter reads."""
+    connection = Redis.from_url(settings.redis_url)
+    connection.delete(heartbeats.DISPATCHER_HEARTBEAT_KEY)
+    started = time.time()
+    try:
+        await _run_loop_until(
+            lambda: connection.get(heartbeats.DISPATCHER_HEARTBEAT_KEY) is not None
+        )
+        stamp = float(connection.get(heartbeats.DISPATCHER_HEARTBEAT_KEY))
+        assert started - 1 <= stamp <= time.time() + 1
+    finally:
+        connection.delete(heartbeats.DISPATCHER_HEARTBEAT_KEY)
+        connection.close()
+
+
+async def test_a_failing_tick_writes_no_heartbeat(monkeypatch):
+    """A dispatcher that is alive but whose ticks fail (Postgres unreachable,
+    a bug) must age like a stopped one, so the stamp follows only a tick
+    that finished."""
+    connection = Redis.from_url(settings.redis_url)
+    connection.delete(heartbeats.DISPATCHER_HEARTBEAT_KEY)
+    ticks = 0
+
+    async def _failing_tick(_queues=None):
+        nonlocal ticks
+        ticks += 1
+        raise RuntimeError("tick fails on purpose")
+
+    monkeypatch.setattr(outbox_dispatcher, "_dispatch_once", _failing_tick)
+    monkeypatch.setattr(outbox_dispatcher, "POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(outbox_dispatcher, "MAX_ERROR_BACKOFF_SECONDS", 0.01)
+    try:
+        await _run_loop_until(lambda: ticks >= 3)
+        assert connection.get(heartbeats.DISPATCHER_HEARTBEAT_KEY) is None
+    finally:
+        connection.delete(heartbeats.DISPATCHER_HEARTBEAT_KEY)
+        connection.close()
+
+
+async def test_a_heartbeat_redis_refuses_takes_the_outage_path():
+    """Redis gone between the enqueue and the stamp: the tick's own outage
+    error (a WARNING and the backoff), not a traceback."""
+
+    class _Unreachable:
+        def set(self, *_args, **_kwargs):
+            raise RedisConnectionError("refused")
+
+    with pytest.raises(outbox_dispatcher.RedisUnavailableError):
+        await outbox_dispatcher._write_heartbeat(_Unreachable())  # type: ignore[arg-type]
 
 
 class _HostClockBehind(datetime):

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import jwt
 
 from tenderos_backend.core.enums import Role
+from tenderos_backend.core.metrics import REFRESH_TOKEN_REUSE
 from tenderos_backend.core.security import (
     create_access_token,
     create_refresh_token,
@@ -320,6 +321,8 @@ async def _grace_resend(uow: UnitOfWork, presented: RefreshToken) -> str | None:
 async def _revoke_for_reuse(uow: UnitOfWork, presented: RefreshToken) -> None:
     revoked = await uow.refresh_tokens.revoke_family(presented.family_id, "reuse")
     await uow.commit()
+    # Observability PR 31: counted, so a spike shows on a graph (design section 2).
+    REFRESH_TOKEN_REUSE.inc()
     logger.warning(
         "refresh token reuse: token %s presented again; family %s of user %s revoked (%d token(s))",
         presented.id,

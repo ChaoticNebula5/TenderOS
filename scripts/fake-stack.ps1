@@ -22,7 +22,16 @@
        and fails unless all four say fake.
   No behaviour change to the stack itself: this only runs the commands that
   were previously typed by hand.
+
+  -Observability (observability PR 31, decision Q11 a): afterwards, builds
+  and starts the observability profile's metrics_exporter and Prometheus
+  (Grafana joins with PR 32's dashboards), then waits until Prometheus is
+  ready and the exporter is still running. The exporter needs
+  METRICS_EXPORTER_DB_PASSWORD (in .env, or in this shell for a throwaway
+  run); without it migrate skips the exporter's role and the exporter
+  refuses to start, which fails this step.
 #>
+param([switch]$Observability)
 # "Continue", not "Stop": in Windows PowerShell 5.1, "Stop" turns any
 # stderr line from a native program (docker prints ordinary progress
 # there) into a terminating NativeCommandError when stderr is redirected.
@@ -75,6 +84,26 @@ try {
     }
     if ($bad.Count -gt 0) { throw "NOT a fake stack - LLM_PROVIDER is not fake in: $($bad -join ', ')" }
     Write-Host "fake stack up: every LLM call is answered by FakeLLMClient (label all results fake)."
+
+    if ($Observability) {
+        & docker compose @files up -d --build --force-recreate metrics_exporter prometheus
+        if ($LASTEXITCODE -ne 0) { throw "the observability services did not start" }
+        $ready = $false
+        for ($i = 0; $i -lt 20; $i++) {
+            try {
+                $answer = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:9090/-/ready"
+                if ($answer.StatusCode -eq 200) { $ready = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 3
+        }
+        if (-not $ready) { throw "Prometheus never became ready (docker compose logs prometheus)" }
+        # The exporter refuses at start without its password: give it time to
+        # exit, then require it still running.
+        Start-Sleep -Seconds 5
+        $state = (& docker inspect -f "{{.State.Status}}" tenderos-metrics_exporter-1).Trim()
+        if ($state -ne "running") { throw "metrics_exporter is $state, not running (docker compose logs metrics_exporter; is METRICS_EXPORTER_DB_PASSWORD set?)" }
+        Write-Host "observability up: Prometheus on http://127.0.0.1:9090, scraping the api and metrics_exporter."
+    }
 } finally {
     Pop-Location
 }

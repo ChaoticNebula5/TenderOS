@@ -13,6 +13,7 @@ without a running stack (the live proof is in the item's E2E runs):
 """
 
 import ipaddress
+import json
 import re
 from pathlib import Path
 
@@ -124,7 +125,8 @@ def test_the_streams_are_unbuffered_with_a_timeout_above_the_heartbeat():
 
 
 def test_the_access_log_never_records_a_query_string():
-    formats = dict(re.findall(r"log_format\s+(\w+)\s+((?:'[^']*'\s*)+);", NGINX))
+    # PR 31: the format may name a parameter (escape=json) before its strings.
+    formats = dict(re.findall(r"log_format\s+(\w+)\s+(?:escape=\w+\s+)?((?:'[^']*'\s*)+);", NGINX))
     (used,) = re.findall(r"^\s*access_log\s+\S+\s+(\w+)(?:\s+if=\$\w+)?;", NGINX, re.MULTILINE)
     assert used in formats, "the server's access_log uses a format defined here"
     for variable in (
@@ -141,6 +143,46 @@ def test_the_access_log_never_records_a_query_string():
     assert re.search(
         r'map \$request_uri \$request_path \{\s*"~\^\(\?<(\w+)>\[\^\?\]\*\)" \$\1;\s*\}', NGINX
     )
+
+
+def test_each_access_line_is_one_json_object_with_the_request_id():
+    """Observability PR 31: the access line is JSON, escaped by nginx itself
+    (escape=json), and carries $request_id, the id nginx sends the api. Its
+    strings, with every variable replaced by an awkward value, must parse."""
+    match = re.search(r"log_format\s+(\w+)\s+escape=json\s+((?:'[^']*'\s*)+);", NGINX)
+    assert match, "the access log format is escape=json"
+    (used,) = re.findall(r"^\s*access_log\s+\S+\s+(\w+)(?:\s+if=\$\w+)?;", NGINX, re.MULTILINE)
+    assert used == match[1]
+    template = "".join(re.findall(r"'([^']*)'", match[2]))
+    # nginx's escape=json turns " and \ into \" and \\; the stand-in is
+    # already escaped the same way. Numbers are bare in the template.
+    numbers = {"$status": "200", "$body_bytes_sent": "512", "$request_time": "0.004"}
+    variables = sorted(set(re.findall(r"\$\w+", template)), key=len, reverse=True)
+    line = template
+    for variable in variables:
+        line = line.replace(variable, numbers.get(variable, 'a \\"quoted\\" \\\\ value'))
+    record = json.loads(line)
+    assert {"ts", "request_id", "method", "path", "status", "request_time"} <= set(record)
+    assert '"request_id":"$request_id"' in template
+    assert '"path":"$request_path"' in template
+
+
+def test_nginx_sends_its_own_request_id_and_blocks_the_api_metrics():
+    """Observability PR 31: X-Request-ID is set from $request_id on every
+    proxied request, replacing whatever the browser sent; /api/metrics is
+    answered 404 by nginx, ahead of the /api/ prefix (a regex location wins
+    over a plain prefix)."""
+    assert "proxy_set_header X-Request-ID $request_id" in _directives(PROXY_HEADERS)
+    for block in _API_LOCATIONS:
+        assert "include /etc/nginx/conf.d/proxy_headers.inc" in _directives(_location(block))
+    # _location() includes the block's own `location ...` line first.
+    metrics = _directives(_location("~ ^/api/metrics(/|$)"))
+    assert metrics[1:] == ["return 404"], metrics
+    assert "location ^~ /api/" not in NGINX
+    for path in ("/api/metrics", "/api/metrics/", "/api/metrics/x"):
+        assert re.match(r"^/api/metrics(/|$)", path), path
+    for path in ("/api/metricsx", "/api/tenders/metrics"):
+        assert not re.match(r"^/api/metrics(/|$)", path), path
 
 
 # --- plan item 58: compression and the CSP report endpoint ------------------------

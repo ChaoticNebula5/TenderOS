@@ -21,6 +21,7 @@ loading a conftest's fixtures twice. `tests/` is on `sys.path` because
 
 from sqlalchemy import Connection, text
 from tenderos_backend.db.models import Base
+from tenderos_backend.db.observability import create_views_statements
 
 TEST_DATABASE_SUFFIX = "_test"
 
@@ -55,10 +56,17 @@ def check_safe_to_drop(conn: Connection) -> None:
 def build_from_models(conn: Connection) -> None:
     """The extensions the migrations create, then every model's table, on an
     empty schema. document_chunks.embedding is VECTOR(384), so create_all()
-    fails without the vector extension."""
+    fails without the vector extension.
+
+    Then the observability schema's views (migration 039, observability PR
+    31), which no model describes: the metrics_exporter's tests read them.
+    Dropping `public` with CASCADE (rebuild_from_models) drops these views
+    too, since they depend on its tables, so each build makes them again."""
     conn.execute(text("CREATE EXTENSION pgcrypto"))
     conn.execute(text("CREATE EXTENSION vector"))
     Base.metadata.create_all(conn)
+    for statement in create_views_statements():
+        conn.execute(text(statement))
 
 
 def rebuild_from_models(conn: Connection) -> None:

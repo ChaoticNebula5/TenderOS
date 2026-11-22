@@ -54,6 +54,10 @@ dependencies = [
     # working against the live docker-compose neo4j service since B0/B1) -
     # matching it here rather than picking a fresh range.
     "neo4j>=6.4.1,<7",
+    # Observability PR 31: the api's /metrics and the metrics_exporter
+    # (decision Q3 a). Apache-2.0 (with BSD-2-Clause parts); no
+    # instrumentation package on top of it.
+    "prometheus-client>=0.26.0",
 ]
 
 [build-system]

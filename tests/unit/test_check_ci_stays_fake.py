@@ -133,9 +133,11 @@ def test_a_workflow_that_sets_a_live_provider_fails(tree):
             'operations"]\n    env_file: .env\n    environment:\n',
         ),
         (
+            # PR 31: migrate's environment is a mapping (the anchor merged,
+            # then the exporter's password), so the merge line is removed.
             "migrate",
-            "apply_constraints\n    env_file: .env\n    environment: *fake-provider\n",
-            "apply_constraints\n    env_file: .env\n",
+            "    environment:\n      <<: *fake-provider\n      METRICS_EXPORTER_DB_PASSWORD:",
+            "    environment:\n      METRICS_EXPORTER_DB_PASSWORD:",
         ),
     ],
 )

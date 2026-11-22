@@ -67,6 +67,16 @@ _COLUMNS_SQL = (
     "AND att.attnum > 0 AND NOT att.attisdropped"
 )
 
+# Observability PR 31: the observability schema's views. Migration 039
+# creates them with its own SQL and the models' build from
+# tenderos_backend.db.observability, so both copies are compared: each
+# view's definition as Postgres renders it, and its columns in order.
+_VIEWS_SQL = "SELECT viewname, definition FROM pg_views WHERE schemaname = 'observability'"
+_VIEW_COLUMNS_SQL = (
+    "SELECT table_name, ordinal_position, column_name, data_type "
+    "FROM information_schema.columns WHERE table_schema = 'observability'"
+)
+
 # Shown in a failure message for something one build has and the other lacks.
 _ABSENT = "<absent>"
 
@@ -120,6 +130,8 @@ def _schema(sync_dsn: str) -> dict[str, dict[str, str]]:
             ).fetchall()
             indexes = conn.execute(text(_INDEXES_SQL)).fetchall()
             columns = conn.execute(text(_COLUMNS_SQL)).fetchall()
+            views = conn.execute(text(_VIEWS_SQL)).fetchall()
+            view_columns = conn.execute(text(_VIEW_COLUMNS_SQL)).fetchall()
     finally:
         engine.dispose()
 
@@ -129,7 +141,13 @@ def _schema(sync_dsn: str) -> dict[str, dict[str, str]]:
         "column type": {},
         "column nullability": {},
         "column default": {},
+        "observability view": {},
+        "observability view column": {},
     }
+    for name, definition in views:
+        schema["observability view"][name] = " ".join(definition.split())
+    for view, position, column, data_type in view_columns:
+        schema["observability view column"][f"{view} #{position}"] = f"{column} {data_type}"
     for table, contype, name, definition in constraints:
         if table != "alembic_version":
             schema["constraint"][f"{table} {name} ({contype})"] = definition

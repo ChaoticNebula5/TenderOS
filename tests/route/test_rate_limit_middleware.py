@@ -24,6 +24,7 @@ from redis.asyncio import Redis as AsyncRedis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from tenderos_api import main as api_main
 from tenderos_api import rate_limit
+from tenderos_backend.core.metrics import REGISTRY
 
 pytestmark = pytest.mark.asyncio
 
@@ -263,6 +264,20 @@ async def test_other_routes_still_fail_open_when_redis_is_unreachable(
 ):
     response = client.get("/health/live")
     assert response.status_code == 200, response.text
+
+
+async def test_every_request_during_the_outage_is_counted(client: TestClient, unreachable_redis):
+    """Observability PR 31: the WARNING is one line per interval, the counter
+    moves for every request the limiter could not check, login's 503s
+    included."""
+    before = REGISTRY.get_sample_value("tenderos_rate_limiter_redis_unavailable_total") or 0.0
+
+    assert client.get("/health/live").status_code == 200
+    assert client.get("/health/live").status_code == 200
+    assert client.post("/auth/login", json=_login_body()).status_code == 503
+
+    after = REGISTRY.get_sample_value("tenderos_rate_limiter_redis_unavailable_total")
+    assert after == before + 3
 
 
 async def test_signed_in_requests_still_work_during_the_outage(

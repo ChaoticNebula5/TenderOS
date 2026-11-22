@@ -4,6 +4,7 @@ import os
 import sys
 
 from redis import Redis
+from redis.client import Pipeline
 from rq import Queue, Worker
 from rq.defaults import DEFAULT_WORKER_TTL
 from rq.job import Job
@@ -18,23 +19,13 @@ from tenderos_backend.core.log_context import (
 )
 from tenderos_backend.core.log_redaction import configure_logging
 
+from tenderos_worker.heartbeats import write_worker_heartbeat
+
+# Re-exported: the names moved to queues.py (observability PR 31).
+from tenderos_worker.queues import KNOWN_QUEUE_NAMES, OPERATIONS_QUEUE, QUEUE_NAMES
 from tenderos_worker.settings import settings
 
 logger = logging.getLogger(__name__)
-
-# Queue names per Build Guide Part B §R1 (Long-Running Execution Model).
-QUEUE_NAMES = ["ingestion", "workflow", "projection", "evaluation", "maintenance"]
-
-# Phase 4 Stage 2. Async operations (red team, proposal generation,
-# commercial re-validation: work a person clicked and is waiting on) have
-# their own queue, served by its own worker process (the operations_worker
-# compose service, `python -m tenderos_worker.worker operations`). On the
-# shared "workflow" queue an operation waited behind whatever workflow job
-# was running, up to its 1800 s timeout; measured on the fake stack, a
-# proposal generation started 7.3 s late, after a gate's resume job.
-# The default worker does not listen to it.
-OPERATIONS_QUEUE = "operations"
-KNOWN_QUEUE_NAMES = [*QUEUE_NAMES, OPERATIONS_QUEUE]
 
 
 # Plan item 45. An idle RQ worker blocks in BLPOP for its dequeue timeout
@@ -216,6 +207,16 @@ class LogContextWorkerMixin(BaseWorker):
             super().execute_job(job, queue)
         finally:
             reset_log_context(token)
+
+    def heartbeat(self, timeout: int | None = None, pipeline: Pipeline | None = None) -> None:
+        """Observability PR 31: RQ's own heartbeat, then a durable one per
+        queue this worker serves (heartbeats.py), on the same pipeline when
+        RQ passes one. RQ calls this from its idle loop and while it watches
+        a job, so the stamps stop only when the worker does."""
+        super().heartbeat(timeout, pipeline)
+        write_worker_heartbeat(
+            pipeline if pipeline is not None else self.connection, self.queue_names()
+        )
 
 
 class LogContextWorker(LogContextWorkerMixin, Worker):

@@ -1,8 +1,10 @@
-from typing import cast
+import logging
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from tenderos_backend.core.log_context import bind_log_context
 from tenderos_backend.db.models.user import User
 from tenderos_backend.db.models.workflow import ApprovalGate
 from tenderos_backend.db.unit_of_work import UnitOfWork
@@ -34,6 +36,60 @@ from tenderos_api.schemas.gates import (
 )
 
 router = APIRouter(tags=["gates"])
+logger = logging.getLogger(__name__)
+
+# Which W2 check refused the final gate's approval (READINESS_CHANGED).
+REPORT_CHANGED = "report_changed"
+VERSION_MOVED = "version_moved"
+
+
+def _report_facts(result: readiness_service.ReadinessResult | None) -> dict[str, Any] | None:
+    """One readiness report as the refusal line gives it: ids, flags,
+    numbers, a time and blocker codes. Never a blocker's message, which
+    names documents, requirements or claims."""
+    if result is None:
+        return None
+    return {
+        "report_id": str(result.report_id),
+        "ready": result.ready,
+        "version": result.tender_state_version,
+        "last_generated_at": (
+            result.last_generated_at.isoformat() if result.last_generated_at else None
+        ),
+        "blocker_codes": sorted(str(b.get("category")) for b in result.blockers),
+        "counts": dict(result.counts),
+    }
+
+
+def _log_readiness_changed(
+    gate: ApprovalGate,
+    check: str,
+    latest: readiness_service.ReadinessResult | None,
+    recomputed: readiness_service.ReadinessResult | None,
+) -> None:
+    """Observability PR 31 (plan item 117, and for production): one INFO line
+    each time W2 refuses with READINESS_CHANGED, naming which check fired
+    (REPORT_CHANGED: the recompute's report is not the latest stored one
+    read just before it; VERSION_MOVED: the bid's version moved before the
+    decision was written) and both reports it compared, so the refusal
+    explains itself without a probe. `latest`, not "shown": the server never
+    knows which report the page showed, only the latest stored one, and
+    whether that is the right one to compare against is one of item 117's
+    open questions. The gate's tender is bound into the log context first,
+    so this line and the rest of the request's carry it."""
+    bind_log_context(tender_id=str(gate.tender_id))
+    logger.info(
+        "final gate %s approval refused with READINESS_CHANGED (%s)",
+        gate.id,
+        check,
+        extra={
+            "gate_id": str(gate.id),
+            "readiness_check": check,
+            "latest_report": _report_facts(latest),
+            "recomputed_report": _report_facts(recomputed),
+        },
+    )
+
 
 # gate_type -> its matching response subclass, same dict-dispatch style
 # orchestration/gates.py's own GATE_TYPE_ACTIONS already uses. Every gate
@@ -178,10 +234,13 @@ async def decide_gate(
     waived = False
     waived_blockers: list[dict] | None = None
     required_version: int | None = None
+    latest: readiness_service.ReadinessResult | None = None
+    fresh: readiness_service.ReadinessResult | None = None
     if gate.gate_type == "final_readiness" and body.decision == "approve":
-        shown = await readiness_service.get_latest_readiness(gate.tender_id)
+        latest = await readiness_service.get_latest_readiness(gate.tender_id)
         fresh = await readiness_service.evaluate_readiness(gate.tender_id)
-        if shown is None or fresh.report_id != shown.report_id:
+        if latest is None or fresh.report_id != latest.report_id:
+            _log_readiness_changed(gate, REPORT_CHANGED, latest, fresh)
             raise ReadinessChangedError()
         required_version = fresh.tender_state_version
         if not fresh.ready and not body.waive:
@@ -220,6 +279,7 @@ async def decide_gate(
             decision=exc.decision,
         ) from exc
     except gate_service.TenderStateMovedError as exc:
+        _log_readiness_changed(gate, VERSION_MOVED, latest, fresh)
         raise ReadinessChangedError() from exc
 
     return _gate_to_response(updated)
