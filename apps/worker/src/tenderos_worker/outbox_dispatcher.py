@@ -21,6 +21,7 @@ from sqlalchemy import text
 from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
+from tenderos_backend.core.log_context import bind_log_context, job_meta, log_context_scope
 from tenderos_backend.core.log_redaction import configure_logging
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.session import engine
@@ -524,6 +525,23 @@ _ROUTES: dict[
 }
 
 
+def _event_log_context(event: OutboxEvent) -> dict[str, object]:
+    """PR 30: the ids an event's lines carry, here and in its job: the api
+    request that wrote it (outbox_events.request_id), and the run,
+    operation, tender and organization its payload names under the payload
+    builders' own keys (domain/events/outbox_events.py). bind_log_context
+    drops anything that is not a valid id."""
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    return {
+        "request_id": event.request_id,
+        "run_id": payload.get("workflow_run_id"),
+        "operation_id": payload.get("operation_id"),
+        "tender_id": payload.get("tender_id"),
+        "org_id": payload.get("organization_id"),
+    }
+
+
+@log_context_scope
 async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID) -> None:
     """Claims (by id) and processes one candidate event inside one
     transaction - major finding #22's real fix. `claim_by_id`'s own
@@ -555,6 +573,13 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
       makes that safe.
     - SET LOCAL lock_timeout and idle_in_transaction_session_timeout bound
       how long this transaction can hold the row lock (see the constants).
+
+    PR 30: once claimed, the event's ids are bound (_event_log_context, then
+    the job id), so every line below names the request and run it belongs
+    to, and the job is enqueued with them in its meta (log_context.job_meta),
+    which the worker binds again (worker.LogContextWorkerMixin). The scope
+    (log_context_scope) undoes the binding when this returns, so the next
+    event's lines do not carry this one's ids.
     """
     async with UnitOfWork() as uow:
         await uow.session.execute(text(f"SET LOCAL lock_timeout = '{CLAIM_LOCK_TIMEOUT}'"))
@@ -567,6 +592,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
         event = await uow.outbox.claim_by_id(event_id, max_attempts=MAX_ATTEMPTS)
         if event is None:
             return
+        bind_log_context(**_event_log_context(event))
 
         enqueue_succeeded = True
         job_id = None
@@ -587,6 +613,7 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
                 (event.aggregate_type, event.event_type), _default_dispatch
             )
             queue_name, job_fn, job_args, job_id = build_dispatch(event)
+            bind_log_context(job_id=job_id)
             await asyncio.to_thread(
                 queues[queue_name].enqueue,
                 job_fn,
@@ -594,6 +621,15 @@ async def _dispatch_claimed_event(queues: dict[str, Queue], event_id: uuid.UUID)
                 job_id=job_id,
                 job_timeout=_job_timeout_for(event, queue_name),
                 unique=True,
+                meta=job_meta(),
+            )
+            logger.info(
+                "outbox event %s (%s/%s) enqueued as job %s on %s",
+                event_id,
+                event.aggregate_type,
+                event.event_type,
+                job_id,
+                queue_name,
             )
         except DuplicateJobError:
             logger.info(

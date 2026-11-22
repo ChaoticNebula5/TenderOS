@@ -176,6 +176,41 @@ def _no_valid_evidence_message(entry: Any, links: list, live: dict[uuid.UUID, It
     return generic[:-1] + ": its evidence " + " and ".join(parts) + "."
 
 
+async def _log_stale_projection_blocker(stale: GraphStaleError) -> None:
+    """PR 30, plan item 113: one WARNING each time readiness adds the
+    stale-projection blocker, naming the tender, the state version the
+    freshness check read, why it was stale ("stale": no completed projection
+    at that version; "damaged": one completed but the graph is incomplete),
+    and whether a projection at that version is recorded as running. Item
+    113's watch is the "damaged" case read while a re-projection at the same
+    version is still writing; these lines count it. The same facts go in
+    `extra`, so the JSON line can be filtered on them. A failure to look the
+    projection up never changes the report: it is logged as unknown."""
+    version = stale.current_state_version
+    running: bool | None
+    try:
+        async with UnitOfWork() as uow:
+            running = await uow.graph_projection.has_running_run(stale.tender_id, version)
+    except Exception:
+        logger.exception("readiness: could not read projection runs for tender %s", stale.tender_id)
+        running = None
+    logger.warning(
+        "readiness: stale graph projection blocker added for tender %s at state version %s "
+        "(reason %s, latest completed projection %s); a projection at this version is "
+        "running: %s",
+        stale.tender_id,
+        version,
+        stale.reason,
+        stale.projected_state_version,
+        "unknown" if running is None else running,
+        extra={
+            "state_version": version,
+            "stale_reason": stale.reason,
+            "projection_running": running,
+        },
+    )
+
+
 async def evaluate_readiness(tender_id: uuid.UUID) -> ReadinessResult:
     """B12's deterministic readiness policy - the Build Guide makes readiness
     a deterministic function of the current records: an LLM can describe the
@@ -574,10 +609,11 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
     # the next generate after Neo4j recovers stores a new report.
     try:
         await check_freshness_with_retry(tender_id)
-    except GraphStaleError:
+    except GraphStaleError as stale:
         blockers.append(
             _blocker(STALE_GRAPH_PROJECTION, "tender", tender_id, "Graph projection is stale.")
         )
+        await _log_stale_projection_blocker(stale)
     except Exception:
         # check_freshness reaches Neo4j - a driver error, connection
         # failure, or timeout is a different failure mode than a

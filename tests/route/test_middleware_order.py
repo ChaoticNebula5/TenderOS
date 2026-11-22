@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from tenderos_api import main as api_main
 from tenderos_api.main import app
+from tenderos_api.middleware.request_id import RequestIdMiddleware
 from tenderos_backend.domain.services import auth_service
 
 pytestmark = pytest.mark.asyncio
@@ -52,6 +53,7 @@ async def test_middleware_order_is_pinned():
     layers = [m.kwargs.get("dispatch", m.cls) for m in app.user_middleware]
 
     assert layers == [
+        RequestIdMiddleware,
         CORSMiddleware,
         api_main._security_headers,
         api_main._catch_unhandled_exceptions,

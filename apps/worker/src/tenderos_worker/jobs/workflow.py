@@ -10,6 +10,7 @@ from langgraph.types import Command
 from redis import Redis
 from rq import Queue
 from rq.timeouts import JobTimeoutException
+from tenderos_backend.core.log_context import job_meta
 from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import run_reaper
@@ -175,6 +176,10 @@ async def _handle_graph_failure(run_id: uuid.UUID, exc: Exception, job_id: str |
         job_id=retry_id,
         job_timeout=WORKFLOW_JOB_TIMEOUT_SECONDS,
         ttl=retry_job_ttl_seconds(),
+        # PR 30: the failed job's ids (the request that started the run,
+        # the run itself) carry over to its retry; the retry's own job id is
+        # bound by the worker from job.id.
+        meta=job_meta(),
     )
     logger.info(
         "workflow run %s: scheduled retry %s in %.1fs after %s (task %s, attempt %d/%d)",

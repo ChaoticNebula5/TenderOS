@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from tenderos_backend.core.enums import Role
+from tenderos_backend.core.log_context import bind_log_context
 from tenderos_backend.core.security import decode_token
 from tenderos_backend.db.models.user import User
 from tenderos_backend.db.session import get_session as _get_backend_session
@@ -483,6 +484,24 @@ async def _check_permission(organization_id: UUID, current_user: User, action: s
             raise OrgAccessDeniedError()
 
 
+# Path parameters that name a log context id (core/log_context.py), by the
+# context field they fill.
+_PATH_LOG_IDS = (("tender_id", "tender_id"), ("run_id", "run_id"), ("operation_id", "operation_id"))
+
+
+def _bind_request_log_context(request: Request, organization_id: UUID) -> None:
+    """PR 30: once the caller is allowed in, the request's lines and the
+    outbox events it writes say which organization, and which tender, run
+    or operation from the path, they concern. Only after the permission
+    check, so a refused request names no organization it was refused for.
+    bind_log_context checks every value is a UUID (a malformed path id is
+    dropped, not logged). No reset: this runs in the request's own task
+    (FastAPI awaits dependencies in the task that then runs the route), and
+    that task, with its context, ends with the request."""
+    path_ids = {field: request.path_params.get(param) for param, field in _PATH_LOG_IDS}
+    bind_log_context(org_id=organization_id, **path_ids)
+
+
 def require_permission(action: str) -> Callable[..., Awaitable[User]]:
     """Dependency factory: only lets the request through if the caller has a
     membership in the request's organization AND that membership's role is
@@ -493,6 +512,7 @@ def require_permission(action: str) -> Callable[..., Awaitable[User]]:
     async def _dependency(request: Request, current_user: User = Depends(get_current_user)) -> User:
         organization_id = await _resolve_organization_id(request)
         await _check_permission(organization_id, current_user, action)
+        _bind_request_log_context(request, organization_id)
         return current_user
 
     return _dependency
@@ -509,6 +529,7 @@ def require_permission_for_sse(action: str) -> Callable[..., Awaitable[User]]:
     ) -> User:
         organization_id = await _resolve_organization_id(request)
         await _check_permission(organization_id, current_user, action)
+        _bind_request_log_context(request, organization_id)
         return current_user
 
     return _dependency
@@ -548,6 +569,7 @@ def require_permission_with_org(action: str) -> Callable[..., Awaitable[Authoriz
     ) -> AuthorizedActor:
         organization_id = await _resolve_organization_id(request)
         await _check_permission(organization_id, current_user, action)
+        _bind_request_log_context(request, organization_id)
         return AuthorizedActor(user=current_user, organization_id=organization_id)
 
     return _dependency
@@ -576,6 +598,7 @@ async def require_gate_decision_permission(
 
     organization_id = await _resolve_organization_id(request)
     await _check_permission(organization_id, current_user, action_for_gate_type(gate.gate_type))
+    _bind_request_log_context(request, organization_id)
     return current_user
 
 

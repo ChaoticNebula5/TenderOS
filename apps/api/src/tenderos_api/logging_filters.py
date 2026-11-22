@@ -29,6 +29,8 @@ log; that needs the same redaction at deployment (plan item 3, host part).
 import logging
 import re
 
+from tenderos_backend.core.log_redaction import redact_record_extras
+
 ACCESS_LOGGER_NAME = "uvicorn.access"
 REDACTED_TICKET = "ticket=[redacted]"
 
@@ -50,6 +52,10 @@ class RedactSseTicketFilter(logging.Filter):
     ('%s - "%s %s HTTP/%s" %d'), so the args are rewritten, not only the
     format string; the message is rewritten too in case a caller logged
     an already formatted line.
+
+    PR 30: every `extra=` field too, since the JSON format writes each one
+    out (log_redaction.redact_record_extras). uvicorn's access records carry
+    none today; this keeps it so if one ever does.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -59,6 +65,7 @@ class RedactSseTicketFilter(logging.Filter):
             record.args = tuple(
                 redact_tickets(arg) if isinstance(arg, str) else arg for arg in record.args
             )
+        redact_record_extras(record, redact_tickets)
         return True
 
 

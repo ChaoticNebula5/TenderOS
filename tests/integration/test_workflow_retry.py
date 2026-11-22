@@ -12,6 +12,7 @@ import pytest
 from redis import Redis
 from rq import Queue
 from tenderos_backend.agents.llm.client import ModelNotFoundError, RateLimitedError
+from tenderos_backend.core.log_context import JOB_META_KEY, log_context
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
@@ -202,6 +203,26 @@ async def test_the_retry_is_recorded_as_the_current_job_before_it_is_enqueued(mo
 
     assert enqueued_as == [retry_job_id(run_id, 1)]
     assert await _current_job(run_id) == ("running", retry_job_id(run_id, 1), 1)
+
+
+async def test_a_retry_carries_the_failed_jobs_ids_in_its_meta():
+    """PR 30: the retry keeps the request and run ids the failing job had
+    (its RQ meta), without that job's own id: the worker binds the retry's
+    own from job.id."""
+    _org_id, tender_id = await _make_org_and_tender("RetryCarriesIds")
+    run_id, _task_id = await _make_run_with_failed_task(tender_id)
+    request_id = "cd" * 16  # the W3C shape, low-entropy so it reads as no secret
+
+    with log_context(request_id=request_id, run_id=run_id, job_id=start_job_id(run_id)):
+        assert await _fail(run_id, RateLimitedError("429", retry_after_seconds=1.0))
+
+    connection = Redis.from_url(settings.redis_url)
+    try:
+        job = Queue("workflow", connection=connection).fetch_job(retry_job_id(run_id, 1))
+    finally:
+        connection.close()
+    assert job is not None
+    assert job.meta == {JOB_META_KEY: {"request_id": request_id, "run_id": str(run_id)}}
 
 
 async def test_a_real_retry_is_scheduled_under_its_recorded_id():

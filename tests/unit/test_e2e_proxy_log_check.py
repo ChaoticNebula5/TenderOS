@@ -3,7 +3,11 @@ refresh cookies (plan item 34, option 2) and CSP violations in one E2E run's
 compose log."""
 
 import importlib.util
+import logging
 from pathlib import Path
+
+from tenderos_backend.core.log_context import RECORD_ATTRIBUTE
+from tenderos_backend.core.log_format import JsonFormatter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
@@ -31,6 +35,32 @@ def _check(*lines: str) -> list[str]:
 
 def test_a_clean_run_passes():
     assert _check(_WEB_STREAM, _API_STREAM, "postgres-1  | anything ticket=abc") == []
+
+
+def _api_json_line(path: str) -> str:
+    """The api's access line as PR 30's JSON format writes it (the real
+    formatter), behind compose's prefix."""
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("10.89.27.1:40000", "GET", path, "1.1", 200),
+        None,
+    )
+    setattr(record, RECORD_ATTRIBUTE, {"request_id": "cd" * 16})
+    return f"api-1  | {_T} {JsonFormatter().format(record)}"
+
+
+def test_the_apis_json_lines_are_read_too():
+    """PR 30: LOG_FORMAT=json is the default, so CI's E2E writes the api's
+    access line as JSON; the check still finds its stream lines and an
+    unredacted ticket in them."""
+    stream = "/workflow-runs/r1/events/stream?ticket=[redacted]"
+    assert _check(_WEB_STREAM, _api_json_line(stream)) == []
+    leaked = _api_json_line(stream.replace("[redacted]", "s3cr3t"))
+    assert _check(_WEB_STREAM, leaked) == ["line 2: api log holds an unredacted ticket"]
 
 
 def test_a_ticket_in_the_nginx_log_fails_without_printing_it():

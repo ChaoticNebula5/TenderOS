@@ -50,7 +50,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     """
 
     def _encode() -> list[list[float]]:
-        vectors = _get_model().encode(texts, convert_to_numpy=True)
+        # show_progress_bar=False (PR 30): sentence-transformers draws a
+        # "Batches" bar on stderr whenever its logger is at INFO, as
+        # configure_logging() sets it, and a bar is not a log line: it broke
+        # one JSON object per line in the worker logs (observed).
+        vectors = _get_model().encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return vectors.tolist()
 
     return await asyncio.to_thread(_encode)

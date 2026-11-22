@@ -6,8 +6,16 @@ import sys
 from redis import Redis
 from rq import Queue, Worker
 from rq.defaults import DEFAULT_WORKER_TTL
+from rq.job import Job
+from rq.worker import BaseWorker
 from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
+from tenderos_backend.core.log_context import (
+    JOB_META_KEY,
+    bind_log_context,
+    log_context_from,
+    reset_log_context,
+)
 from tenderos_backend.core.log_redaction import configure_logging
 
 from tenderos_worker.settings import settings
@@ -179,6 +187,41 @@ def preload_operations_module() -> None:
         raise SystemExit(1)
 
 
+def job_log_context(job: Job) -> dict[str, str]:
+    """The ids a job's lines carry: those its enqueuer put in its meta (the
+    dispatcher, or a workflow retry; log_context.job_meta), each checked
+    again here since meta comes back from Redis, and the job's own id."""
+    ids = log_context_from((job.meta or {}).get(JOB_META_KEY))
+    ids["job_id"] = job.id
+    return ids
+
+
+class LogContextWorkerMixin(BaseWorker):
+    """PR 30: a job's ids are bound for the whole of execute_job, so RQ's own
+    lines about the job and every line the job writes carry them. Bound in
+    the parent, before Worker.execute_job forks the work horse: a forked
+    child keeps its parent's context, and the parent's own lines while it
+    watches the horse (a timeout, a killed horse) carry them too. Unbound
+    when the job ends, so the next job starts clean.
+
+    RQ's line naming the job as it is dequeued comes before execute_job,
+    so it has no ids; it names the job id in its text.
+
+    A mixin, so the same binding goes on RQ's forking Worker here and on its
+    SimpleWorker in the tests (which cannot fork on the Windows dev host)."""
+
+    def execute_job(self, job: Job, queue: Queue) -> None:
+        token = bind_log_context(**job_log_context(job))
+        try:
+            super().execute_job(job, queue)
+        finally:
+            reset_log_context(token)
+
+
+class LogContextWorker(LogContextWorkerMixin, Worker):
+    """RQ's forking Worker with the job's ids bound (LogContextWorkerMixin)."""
+
+
 def main() -> None:
     configure_logging()
     # B17: a real no-op unless LLM_PROVIDER=fake - see that function's own
@@ -192,7 +235,7 @@ def main() -> None:
         preload_operations_module()
     connection = worker_connection(settings.redis_url, WORKER_TTL)
     queues = [Queue(name, connection=connection) for name in queue_names]
-    worker = Worker(queues, connection=connection, worker_ttl=WORKER_TTL)
+    worker = LogContextWorker(queues, connection=connection, worker_ttl=WORKER_TTL)
     # After RQ's own setup (Worker.__init__ runs _set_connection), so this is
     # the timeout the blocking wait really gets (plan item 45).
     logger.info(

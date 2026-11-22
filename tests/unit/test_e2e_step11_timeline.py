@@ -15,8 +15,12 @@ lines' times; the CI case further down has them apart.
 """
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
+
+from tenderos_backend.core.log_context import RECORD_ATTRIBUTE
+from tenderos_backend.core.log_format import JsonFormatter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
@@ -107,6 +111,41 @@ def test_the_passing_run():
     assert t.event_before_refetch == "WorkflowRunStatusChanged"
     assert abs(t.event_before_refetch_seconds - 0.435677) < 1e-6
     assert t.note == "refetch after a workflow event, no reconnect"
+
+
+def _json_line(prefix: str, ts: str, logger: str, message: str) -> str:
+    """A line as PR 30's JSON format writes it (the real formatter), behind
+    compose's prefix and timestamp."""
+    record = logging.LogRecord(logger, logging.INFO, __file__, 0, message, None, None)
+    setattr(record, RECORD_ATTRIBUTE, {"request_id": "cd" * 16})
+    return f"{prefix} {ts} {JsonFormatter().format(record)}"
+
+
+def _as_json(line: str) -> str:
+    """One of PASSING's text lines, rewritten as the JSON line the same
+    event writes since PR 30: uvicorn's access line (uvicorn.access) or RQ's
+    own (rq.worker), each with its message unchanged."""
+    prefix, rest = line.split("| ", 1)
+    ts, text = rest.split(" ", 1)
+    if prefix.startswith("api"):
+        # uvicorn's AccessFormatter adds the status phrase; the JSON line
+        # has the record's own message, with the bare status code.
+        message = text.removeprefix("INFO:     ").rsplit(" ", 1)[0]
+        return _json_line(prefix + "|", ts, "uvicorn.access", message)
+    message = text.split(" INFO rq.worker: ", 1)[1]
+    return _json_line(prefix + "|", ts, "rq.worker", message)
+
+
+def test_the_passing_run_reads_the_same_from_json_lines():
+    """PR 30: LOG_FORMAT=json is the default, so CI's E2E writes these lines
+    as JSON. The quotes inside a JSON message are escaped (\\"POST ...\\"),
+    and the script's patterns still match: same timeline as the text log."""
+    json_log = "\n".join(_as_json(line) for line in PASSING)
+    assert '\\"POST /gates/af29/decision HTTP/1.1\\"' in json_log
+    from_json = timeline_mod.read_timeline(json_log, PASSING_OUTBOX)
+    assert from_json == timeline_mod.read_timeline("\n".join(PASSING), PASSING_OUTBOX)
+    assert from_json.job == "resume_workflow_job"
+    assert from_json.refetch == "2026-11-03T08:13:20.527Z"
 
 
 def test_the_tabs_own_first_fetch_is_not_the_refetch():

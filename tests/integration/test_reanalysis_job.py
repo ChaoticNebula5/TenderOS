@@ -26,6 +26,7 @@ from sqlalchemy import select
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.compliance import ComplianceProposal
 from tenderos_backend.agents.schemas.proposal import ProposalClaimDraft, ProposalSectionDraft
+from tenderos_backend.core.log_context import current_log_context
 from tenderos_backend.db.models.agent_trace import AgentTrace
 from tenderos_backend.db.models.compliance import EvidenceLink
 from tenderos_backend.db.models.organization import Organization
@@ -241,6 +242,43 @@ async def test_reanalyze_knowledge_selection_change_reopens_compliance_and_regro
     assert events["ProposalChanged"].payload["claim_id"] == str(claim_id)
     assert events["ProposalChanged"].payload["grounding_status"] == "unsupported"
     assert events["ProposalChanged"].payload["evidence_link_ids_considered"] == []
+
+
+async def test_the_jobs_lines_name_its_reanalysis_claim(monkeypatch):
+    """PR 30: once the job holds its claim, its log lines carry the claim's
+    id (core/log_context.py). Read in the projection step, the first thing
+    the job does after claiming; no affected requirement, so no LLM call."""
+    _org_id, tender_id = await _make_org_and_tender("Reanalysis Log Context Test")
+    knowledge_item_id = uuid.uuid4()
+    seen: list[dict[str, str]] = []
+
+    async def _recording_project_tender(_tender_id: uuid.UUID) -> None:
+        seen.append(current_log_context())
+
+    async def _no_impact(_tender_id, _knowledge_item_id) -> list[dict]:
+        return []
+
+    monkeypatch.setattr(reanalysis.graph_service, "project_tender", _recording_project_tender)
+    monkeypatch.setattr(reanalysis.graph_service, "preview_impact", _no_impact)
+
+    await reanalysis.reanalyze_knowledge_selection_change(
+        str(tender_id), str(knowledge_item_id), state_version=11
+    )
+
+    async with get_session() as session:
+        claim_id = (
+            await session.execute(
+                select(ReanalysisClaim.id).where(
+                    ReanalysisClaim.tender_id == tender_id,
+                    ReanalysisClaim.knowledge_item_id == knowledge_item_id,
+                    ReanalysisClaim.state_version == 11,
+                )
+            )
+        ).scalar_one()
+    # Every projection the job asks for (it projects again when it finds the
+    # graph stale after its first) runs under the claim.
+    assert seen
+    assert {ids.get("reanalysis_claim_id") for ids in seen} == {str(claim_id)}
 
 
 async def test_the_jobs_compliance_calls_are_recorded_under_its_reanalysis_claim(monkeypatch):

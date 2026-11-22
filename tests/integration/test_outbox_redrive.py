@@ -13,7 +13,9 @@ delivers them.
 
 import importlib.util
 import io
+import json
 import logging
+import os
 import subprocess
 import sys
 import uuid
@@ -702,7 +704,11 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
     """The real entry point (main: the project's logging set up, asyncio.run)
     in its own process, with the test environment: the event's INFO line
     reaches stderr, SQLAlchemy logs no statement, and no payload value
-    reaches either stream."""
+    reaches either stream.
+
+    PR 30: the line is JSON (LOG_FORMAT's default, set here so a local
+    setting cannot change it), so it is read as JSON, not as the old text
+    format."""
     secret = f"Tender name {uuid.uuid4().hex} for the command check"
     event_id = await _event(
         made,
@@ -722,6 +728,7 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
         text=True,
         timeout=120,
         cwd=REPO_ROOT,
+        env={**os.environ, "LOG_FORMAT": "json"},
     )
 
     assert done.returncode == 0, done.stderr
@@ -729,10 +736,13 @@ async def test_the_script_run_as_a_command_prints_no_payload_and_no_sql(made):
         f"{event_id} TenderCreated failed: would re-drive: no consumer acts on this event type"
         in (done.stdout)
     )
-    assert (
-        f"INFO tenderos_backend.domain.services.outbox_redrive: outbox event {event_id} "
-        "(TenderCreated) would re-drive: no consumer acts on this event type"
-    ) in done.stderr
+    logged = [json.loads(raw) for raw in done.stderr.splitlines() if raw.startswith("{")]
+    assert {
+        "level": "INFO",
+        "logger": "tenderos_backend.domain.services.outbox_redrive",
+        "message": f"outbox event {event_id} (TenderCreated) would re-drive: "
+        "no consumer acts on this event type",
+    } in [{k: line.get(k) for k in ("level", "logger", "message")} for line in logged]
     assert "sqlalchemy.engine" not in done.stderr
     assert secret not in done.stdout + done.stderr
 

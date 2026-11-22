@@ -4,6 +4,8 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
+from tenderos_backend.core.log_redaction import startup_refusals_logged
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -13,6 +15,12 @@ class Settings(BaseSettings):
     # password are (see that trio's own comment below): worker/orchestration
     # code imports THIS Settings class, not the API's thinner one.
     app_env: str = "local"
+
+    # Observability phase, PR 30 (decision Q1 a): one JSON object per log
+    # line by default, so one request's or run's lines can be filtered with
+    # jq; "text" for reading locally (core/log_format.py). Read by
+    # configure_logging() in every process.
+    log_format: Literal["json", "text"] = "json"
 
     postgres_dsn: str
     redis_url: str
@@ -244,7 +252,17 @@ def reject_production_problems(problems: list[str]) -> None:
         )
 
 
+def run_startup_checks(s: Settings) -> None:
+    """The refusals above, in order. Observability phase, PR 30 (item 5's
+    remaining part): a refusal is also written as one ERROR line, in this
+    process's LOG_FORMAT, before it is raised (log_redaction.
+    startup_refusals_logged), since it happens at import, before any entry
+    point has configured logging, and was otherwise only a traceback."""
+    with startup_refusals_logged(s.log_format):
+        _require_jwt_signing_key_length(s.jwt_signing_key)
+        _reject_fake_provider_in_production(s.llm_provider, s.app_env)
+        reject_production_problems(_production_problems(s))
+
+
 settings = Settings()
-_require_jwt_signing_key_length(settings.jwt_signing_key)
-_reject_fake_provider_in_production(settings.llm_provider, settings.app_env)
-reject_production_problems(_production_problems(settings))
+run_startup_checks(settings)

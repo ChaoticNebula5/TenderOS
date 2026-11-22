@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, CheckConstraint, Index, func, text
+from sqlalchemy import TIMESTAMP, CheckConstraint, Index, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +12,10 @@ class OutboxEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "outbox_events"
     __table_args__ = (
         CheckConstraint("status IN ('pending','dispatched','failed')", name="ck_outbox_status"),
+        # PR 30 (migration 038): NULL, or the 32-hex shape the api binds.
+        CheckConstraint(
+            "request_id IS NULL OR request_id ~ '^[0-9a-f]{32}$'", name="ck_outbox_request_id"
+        ),
         Index(
             "idx_outbox_pending",
             "status",
@@ -43,3 +47,6 @@ class OutboxEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     dispatched_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(nullable=False, unique=True)
+    # PR 30: the api request that wrote this event, from the log context
+    # (OutboxRepository.create); handed to the job in its RQ meta.
+    request_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
