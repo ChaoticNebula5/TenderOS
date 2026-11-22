@@ -168,12 +168,19 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    # Observability PR 31: last, the metrics_exporter's login role
+    # (tenderos_backend.db.observability_role), re-run on every start so the
+    # role can read every view in the observability schema; skipped while
+    # METRICS_EXPORTER_DB_PASSWORD is empty. Not a migration: a role is
+    # server-wide and needs a password.
     command:
       - sh
       - -c
-      - /app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints
+      - /app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints && /app/.venv/bin/python -m tenderos_backend.db.observability_role
     env_file: .env
-    environment: *fake-provider
+    environment:
+      <<: *fake-provider
+      METRICS_EXPORTER_DB_PASSWORD: ${METRICS_EXPORTER_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -395,6 +402,33 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Observability PR 31 (decisions Q3 a, Q4 c): reads queues, heartbeats,
+  # runs, operations, dead letters and reaped runs from Postgres and Redis on
+  # each Prometheus scrape (tenderos_worker/metrics_exporter.py). Only in the
+  # observability profile. Least access: no env_file, so it holds none of
+  # .env's credentials, only its own Postgres login (a role that reads the
+  # observability schema's views, created by migrate) and Redis's URL. No
+  # published port: Prometheus reaches it on the compose network. Exits 1 at
+  # start while its password is empty; on-failure:3 retries a crash but does
+  # not loop on that refusal for ever.
+  metrics_exporter:
+    profiles: ["observability"]
+    restart: on-failure:3
+    init: true
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    command: ["/app/.venv/bin/python", "-m", "tenderos_worker.metrics_exporter"]
+    environment:
+      METRICS_EXPORTER_DB_PASSWORD: ${METRICS_EXPORTER_DB_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06

@@ -75,3 +75,35 @@ def install_access_log_redaction() -> None:
     if any(isinstance(f, RedactSseTicketFilter) for f in access_logger.filters):
         return
     access_logger.addFilter(RedactSseTicketFilter())
+
+
+METRICS_PATH = "/metrics"
+
+
+class SkipMetricsScrapeFilter(logging.Filter):
+    """Observability PR 31: drops the access line of a GET /metrics.
+
+    Prometheus scrapes every 15 s, so these would be about 5,760 lines a day
+    telling nothing a person reads; the scrape itself is visible in
+    Prometheus (its `up` series). Only uvicorn's access line is dropped: the
+    request is still counted by MetricsMiddleware, and an error inside the
+    route still logs. uvicorn passes (client, method, path with query,
+    HTTP version, status) as the record's args (uvicorn 0.54.0's
+    httptools and h11 protocols); a record of any other shape is kept.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            method, path = args[1], args[2]
+            if method == "GET" and isinstance(path, str):
+                return path.split("?", 1)[0] != METRICS_PATH
+        return True
+
+
+def install_metrics_scrape_skip() -> None:
+    """Attach SkipMetricsScrapeFilter to uvicorn's access logger, once."""
+    access_logger = logging.getLogger(ACCESS_LOGGER_NAME)
+    if any(isinstance(f, SkipMetricsScrapeFilter) for f in access_logger.filters):
+        return
+    access_logger.addFilter(SkipMetricsScrapeFilter())

@@ -82,6 +82,10 @@ class ReadinessResult:
     generated_at: datetime
     blockers: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
+    # When this content was last computed (plan item 93: a reuse moves it),
+    # which decides the current report. PR 31: the final gate's refusal line
+    # names it for both reports W2 compared. Not in the API response.
+    last_generated_at: datetime | None = None
 
 
 def _result_from_report(report: Any) -> ReadinessResult:
@@ -93,6 +97,7 @@ def _result_from_report(report: Any) -> ReadinessResult:
         generated_at=report.generated_at,
         blockers=report.blockers,
         counts=report.counts,
+        last_generated_at=report.last_generated_at,
     )
 
 

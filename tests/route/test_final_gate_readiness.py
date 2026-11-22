@@ -17,6 +17,7 @@ degraded stages. Since plan item 104 that document's text has also been
 read by a completed extraction.
 """
 
+import logging
 import uuid
 
 import pytest
@@ -422,6 +423,88 @@ async def test_a_version_move_between_the_recompute_and_the_write_is_refused(
     assert response.json()["error"]["code"] == "READINESS_CHANGED"
     gate = await _gate(gate_id)
     assert gate is not None and gate.status == "pending"
+
+
+_GATE_LOGGER = "tenderos_api.routes.gates"
+_REPORT_FIELDS = {"report_id", "ready", "version", "last_generated_at", "blocker_codes", "counts"}
+
+
+def _refusal_lines(caplog: pytest.LogCaptureFixture) -> list:
+    return [r for r in caplog.records if r.name == _GATE_LOGGER and "READINESS_CHANGED" in r.msg]
+
+
+async def test_a_changed_report_refusal_writes_one_line_naming_both_reports(
+    client: TestClient, register_actor, caplog: pytest.LogCaptureFixture
+):
+    """Observability PR 31 (item 117): W2's report-changed refusal explains
+    itself in one INFO line: which check fired, and for the latest stored
+    report and the recompute, ids, ready, version, last_generated_at,
+    blocker codes and counts. No blocker message: those name documents and
+    requirements."""
+    caplog.set_level(logging.INFO, logger=_GATE_LOGGER)
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    latest = _generate(client, headers, tender_id)
+    await _critical_finding(tender_id)
+
+    refused = _decide(client, headers, gate_id, waive=True)
+
+    assert refused.status_code == 409, refused.text
+    (line,) = _refusal_lines(caplog)
+    assert line.levelno == logging.INFO
+    assert line.readiness_check == "report_changed"
+    assert line.gate_id == str(gate_id)
+    assert line.log_context["tender_id"] == str(tender_id)
+    current = client.get(f"/tenders/{tender_id}/readiness", headers=headers).json()
+    assert line.latest_report["report_id"] == latest["id"]
+    assert line.recomputed_report["report_id"] == current["id"]
+    for facts in (line.latest_report, line.recomputed_report):
+        assert set(facts) == _REPORT_FIELDS
+        assert facts["version"] == latest["tender_state_version"]
+        assert facts["last_generated_at"] is not None
+    assert line.latest_report["ready"] is True and line.latest_report["blocker_codes"] == []
+    assert not hasattr(line, "shown_report")
+    assert line.recomputed_report["ready"] is False
+    assert line.recomputed_report["blocker_codes"] == [readiness_service.CRITICAL_REDTEAM_FINDING]
+    assert line.recomputed_report["counts"] == current["counts"]
+    assert "Test finding." not in repr(line.__dict__)
+
+
+async def test_a_version_move_refusal_writes_one_line_naming_the_check(
+    client: TestClient, register_actor, monkeypatch: pytest.MonkeyPatch, caplog
+):
+    """The second W2 check: the recompute matched the latest stored report,
+    then the bid's version moved before the write. The line says so, with
+    both reports (here the same one)."""
+    caplog.set_level(logging.INFO, logger=_GATE_LOGGER)
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    latest = _generate(client, headers, tender_id)
+    real = readiness_service.evaluate_readiness
+
+    async def _then_something_moves(tid):
+        result = await real(tid)
+        async with UnitOfWork() as uow:
+            await uow.tenders.bump_state_version(tid)
+            await uow.commit()
+        return result
+
+    monkeypatch.setattr(readiness_service, "evaluate_readiness", _then_something_moves)
+
+    response = _decide(client, headers, gate_id)
+
+    assert response.status_code == 409, response.text
+    (line,) = _refusal_lines(caplog)
+    assert line.readiness_check == "version_moved"
+    assert line.latest_report["report_id"] == latest["id"]
+    assert line.recomputed_report["report_id"] == latest["id"]
+    assert set(line.recomputed_report) == _REPORT_FIELDS
 
 
 async def _unapproved_compliance_entry(tender_id: uuid.UUID) -> uuid.UUID:

@@ -11,6 +11,7 @@ import models_schema
 import pytest
 from models_schema import UnsafeTestDatabaseError, rebuild_from_models
 from tenderos_backend.core.config import settings
+from tenderos_backend.db.observability import create_views_statements
 
 _GUARD_QUERY = str(models_schema._WHO_AM_I)
 
@@ -76,4 +77,6 @@ def test_a_test_database_and_a_superuser_are_rebuilt_guard_first():
         "CREATE EXTENSION pgcrypto",
         "CREATE EXTENSION vector",
         "create_all()",
+        # PR 31: then the observability schema's views (migration 039's copy).
+        *create_views_statements(),
     ]

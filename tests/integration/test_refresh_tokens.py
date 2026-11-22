@@ -10,6 +10,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
+from tenderos_backend.core.metrics import REGISTRY
 from tenderos_backend.core.security import (
     _create_token,
     create_refresh_token,
@@ -159,6 +160,21 @@ async def test_reuse_after_the_grace_window_revokes_the_whole_family_and_commits
     assert all(m.revoked_at is not None for m in members)
     with pytest.raises(auth_service.InvalidTokenError):
         await auth_service.refresh(pair.refresh_token)
+
+
+async def test_reuse_is_counted_once_per_revoked_family():
+    """Observability PR 31: the reuse WARNING has a counter beside it, so a
+    spike shows on a graph. One presentation after the window, one count."""
+    registered = await _register()
+    first = registered.refresh_token
+    await auth_service.refresh(first)
+    await _age_use(_jti(first), _past_grace())
+    before = REGISTRY.get_sample_value("tenderos_refresh_token_reuse_total") or 0.0
+
+    with pytest.raises(auth_service.InvalidTokenError):
+        await auth_service.refresh(first)
+
+    assert REGISTRY.get_sample_value("tenderos_refresh_token_reuse_total") == before + 1
 
 
 async def test_a_used_token_whose_successor_was_used_is_reuse_even_within_the_window():

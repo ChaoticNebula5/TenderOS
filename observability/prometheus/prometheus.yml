@@ -1,3 +1,7 @@
+# Observability PR 31: the api's own /metrics and the metrics_exporter, both on
+# the compose network (neither port is published for them; the api's loopback
+# port is for local tools). nginx answers /api/metrics with 404, so nothing
+# outside the stack reads the api's metrics.
 global:
   scrape_interval: 15s
 
@@ -5,3 +9,18 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+
+  # tenderos_backend/core/metrics.py: requests by route template, method and
+  # status code, their duration, the rate limiter's Redis outages and
+  # refresh-token reuse.
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # tenderos_worker/metrics_exporter.py: queues, heartbeats, runs and
+  # operations by status, dead letters, runs ended by the system.
+  - job_name: metrics_exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["metrics_exporter:9105"]

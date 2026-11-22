@@ -46,6 +46,7 @@ from tenderos_backend.domain.events.outbox_events import (
 from tenderos_backend.domain.services import operation_service, run_reaper
 from tenderos_backend.domain.services.workflow_service import resume_job_id, start_job_id
 
+from tenderos_worker.heartbeats import write_dispatcher_heartbeat
 from tenderos_worker.jobs.ingestion import PARSER_VERSION, parse_and_embed_document
 from tenderos_worker.jobs.knowledge_import import (
     process_knowledge_document_import,
@@ -914,6 +915,17 @@ async def _reap_lost_runs(inspector: RunJobInspector) -> None:
         logger.exception("workflow run cap reaper failed; will retry on a later tick")
 
 
+async def _write_heartbeat(connection: Redis) -> None:
+    """The dispatcher's heartbeat (heartbeats.py), in a worker thread like
+    every other Redis call here. Redis unreachable raises
+    RedisUnavailableError, the tick's own outage path: the WARNING without a
+    traceback and the backoff, as when an enqueue meets the same outage."""
+    try:
+        await asyncio.to_thread(write_dispatcher_heartbeat, connection)
+    except INFRASTRUCTURE_ERRORS as exc:
+        raise RedisUnavailableError("the heartbeat could not be written") from exc
+
+
 def _error_backoff_seconds(consecutive_failures: int) -> float:
     return min(POLL_INTERVAL_SECONDS * 2 ** (consecutive_failures - 1), MAX_ERROR_BACKOFF_SECONDS)
 
@@ -947,6 +959,9 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
         try:
             await _dispatch_once(queues)
             consecutive_failures = 0
+            # Observability PR 31: after a tick that finished, so a failing
+            # dispatcher's heartbeat ages too (heartbeats.py).
+            await _write_heartbeat(connection)
         except RedisUnavailableError as exc:
             # Expected during a Redis outage, once per tick: no traceback.
             consecutive_failures += 1

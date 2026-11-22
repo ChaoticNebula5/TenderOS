@@ -14,12 +14,14 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neo4j import AsyncGraphDatabase
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from redis.asyncio import Redis as AsyncRedis
 from starlette.middleware.base import BaseHTTPMiddleware
 from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
+from tenderos_backend.core.metrics import RATE_LIMITER_REDIS_UNAVAILABLE, REGISTRY
 from tenderos_backend.graph_projection.driver import close_driver
 
 from tenderos_api.client_disconnect import client_closed_response, is_client_disconnect
@@ -31,7 +33,8 @@ from tenderos_api.errors import (
     error_response,
     register_exception_handlers,
 )
-from tenderos_api.logging_filters import install_access_log_redaction
+from tenderos_api.logging_filters import install_access_log_redaction, install_metrics_scrape_skip
+from tenderos_api.middleware.metrics import MetricsMiddleware
 from tenderos_api.middleware.request_id import RequestIdMiddleware
 from tenderos_api.rate_limit import (
     GLOBAL_LIMIT,
@@ -77,6 +80,8 @@ configure_logging()
 # Phase 4 plan item 3: SSE tickets out of uvicorn's access log. See
 # logging_filters.py for why import time is after uvicorn's own setup.
 install_access_log_redaction()
+# Observability PR 31: Prometheus's scrape requests out of the access log.
+install_metrics_scrape_skip()
 # B17: a real no-op unless LLM_PROVIDER=fake (see that function's own
 # docstring) - installed at the same three entrypoints configure_logging()
 # already documents, right after it, so a fake-provider process is fully
@@ -299,6 +304,8 @@ async def _rate_limit(
         async with rate_limit_redis() as redis_client:
             rejection = await _limit_rejection(redis_client, ip, request.url.path)
     except REDIS_UNAVAILABLE_ERRORS as exc:
+        # PR 31: every such request, where the WARNING below is one a minute.
+        RATE_LIMITER_REDIS_UNAVAILABLE.inc()
         covered = redis_outage_log.record()
         if covered is not None:
             logger.warning(
@@ -349,6 +356,7 @@ async def _catch_unhandled_exceptions(
 #
 #   ServerErrorMiddleware        Starlette's own, always outermost
 #   RequestIdMiddleware
+#   MetricsMiddleware
 #   CORSMiddleware
 #   _security_headers
 #   _catch_unhandled_exceptions
@@ -369,6 +377,9 @@ async def _catch_unhandled_exceptions(
 # - RequestIdMiddleware outermost (PR 30): every response carries
 #   X-Request-ID, CORS preflights included, and every layer's log lines
 #   carry the request's id, the catch-all's traceback among them.
+# - MetricsMiddleware next (PR 31): it counts every response the app sends,
+#   a preflight, a 429 and the catch-all's 500 included, and its own
+#   lines would carry the request id.
 # - CORS next: every response that reaches the browser, including a
 #   429, a 413 and a 500 from the catch-all, carries
 #   Access-Control-Allow-Origin. Otherwise the browser hides the response
@@ -401,6 +412,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Retry-After"],
 )
+app.add_middleware(MetricsMiddleware)
 app.add_middleware(RequestIdMiddleware)
 
 
@@ -426,6 +438,17 @@ app.include_router(operations.router)
 @app.get("/health/live")
 async def health_live() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Observability PR 31: this process's metrics, in Prometheus's text
+    format (core/metrics.py). Internal only: nginx answers /api/metrics
+    with 404 itself (apps/web/nginx.conf), so this is reached only on the
+    compose network, where Prometheus scrapes it, and on the loopback port
+    for local tools. Its requests are left out of the access log
+    (logging_filters.SkipMetricsScrapeFilter)."""
+    return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 async def _check_postgres() -> bool:
