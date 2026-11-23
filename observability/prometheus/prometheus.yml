@@ -4,6 +4,13 @@
 # outside the stack reads the api's metrics.
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Observability PR 32: the alert rules. No Alertmanager here: locally the
+# alerts show as firing in Prometheus (/alerts) and in Grafana's Health
+# dashboard; where they are sent is decided at hosting.
+rule_files:
+  - /etc/prometheus/rules/*.rules.yml
 
 scrape_configs:
   - job_name: prometheus
@@ -11,8 +18,8 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # tenderos_backend/core/metrics.py: requests by route template, method and
-  # status code, their duration, the rate limiter's Redis outages and
-  # refresh-token reuse.
+  # status code, their duration, the rate limiter's Redis outages,
+  # refresh-token reuse, and each dependency's reachability (PR 32).
   - job_name: api
     metrics_path: /metrics
     static_configs:

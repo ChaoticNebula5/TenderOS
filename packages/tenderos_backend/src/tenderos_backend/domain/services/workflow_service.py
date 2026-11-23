@@ -14,6 +14,7 @@ from tenderos_backend.domain.events.outbox_events import (
     workflow_run_created_idempotency_key,
     workflow_run_created_payload,
 )
+from tenderos_backend.domain.run_endings import ACTION_RUN_TIMED_OUT
 
 # A run can be cancelled while it is active (plan item 87: the model's set,
 # not a hand-written copy).
@@ -258,7 +259,7 @@ async def mark_run_failed_on_timeout(run_id: uuid.UUID) -> None:
                 organization_id=tender.organization_id,
                 actor_type="system",
                 actor_id="rq_death_penalty",
-                action="workflow_run_timed_out",
+                action=ACTION_RUN_TIMED_OUT,
                 tender_id=run.tender_id,
                 workflow_run_id=run_id,
                 target_type="workflow_run",

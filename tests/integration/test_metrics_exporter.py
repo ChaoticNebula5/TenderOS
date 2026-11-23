@@ -27,9 +27,9 @@ from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.outbox import OutboxEvent
 from tenderos_backend.db.models.tender import Tender
-from tenderos_backend.db.models.workflow import WorkflowRun
-from tenderos_backend.db.observability import SCHEMA, VIEWS
-from tenderos_backend.db.observability_role import ensure_exporter_role
+from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
+from tenderos_backend.db.observability import EXPORTER, GRAFANA, SCHEMA, VIEWS
+from tenderos_backend.db.observability_role import ensure_reader_role
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_worker import heartbeats
 from tenderos_worker.metrics_exporter import (
@@ -56,7 +56,7 @@ async def exporter_role() -> AsyncIterator[tuple[str, str]]:
     password = uuid.uuid4().hex
     admin = await asyncpg.connect(dsn=_DSN)
     try:
-        await ensure_exporter_role(admin, password, role)
+        await ensure_reader_role(admin, EXPORTER, password, role)
         yield role, password
     finally:
         await admin.execute(f'DROP OWNED BY "{role}"')
@@ -98,8 +98,13 @@ async def test_the_role_reads_the_views_and_nothing_in_public(exporter_role):
         await admin.close()
     conn = await _as_role(role, password)
     try:
-        for name, _ in VIEWS:
+        for name in EXPORTER.views:
             await conn.fetch(f"SELECT * FROM {SCHEMA}.{name} LIMIT 1")
+        # PR 32 (answer B): not Grafana's views, which hold ids and error
+        # codes the exporter has no use for.
+        for name in GRAFANA.views:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.fetch(f"SELECT 1 FROM {SCHEMA}.{name} LIMIT 1")
         for table in ("workflow_runs", "outbox_events", "audit_events", "users"):
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await conn.fetch(f"SELECT 1 FROM public.{table} LIMIT 1")
@@ -118,11 +123,11 @@ async def test_rerunning_the_setup_changes_the_password_and_keeps_the_grants(exp
     new_password = uuid.uuid4().hex
     admin = await asyncpg.connect(dsn=_DSN)
     try:
-        views = await ensure_exporter_role(admin, new_password, role)
+        views = await ensure_reader_role(admin, EXPORTER, new_password, role)
     finally:
         await admin.close()
 
-    assert views == len(VIEWS)
+    assert views == sorted(EXPORTER.views)
     with pytest.raises(asyncpg.InvalidPasswordError):
         await _as_role(role, password)
     conn = await _as_role(role, new_password)
@@ -133,11 +138,11 @@ async def test_the_setup_refuses_an_empty_password_and_an_odd_role_name():
     admin = await asyncpg.connect(dsn=_DSN)
     try:
         with pytest.raises(ValueError, match="empty password"):
-            await ensure_exporter_role(admin, "", "tenderos_metrics_exporter_never")
+            await ensure_reader_role(admin, EXPORTER, "", "tenderos_metrics_exporter_never")
         # A quote that would end the quoted identifier; harmless even if the
         # check were gone (it is then a syntax error, not a statement).
         with pytest.raises(ValueError, match="plain role name"):
-            await ensure_exporter_role(admin, "x", 'tenderos_metrics_exporter_x"y')
+            await ensure_reader_role(admin, EXPORTER, "x", 'tenderos_metrics_exporter_x"y')
         assert not await admin.fetchval(
             "SELECT 1 FROM pg_roles WHERE rolname = 'tenderos_metrics_exporter_never'"
         )
@@ -150,6 +155,181 @@ async def test_the_setup_refuses_an_empty_password_and_an_odd_role_name():
             await admin.execute('DROP OWNED BY "tenderos_metrics_exporter_never"')
             await admin.execute('DROP ROLE "tenderos_metrics_exporter_never"')
         await admin.close()
+
+
+# --- Grafana's reader (PR 32) ---------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def grafana_role() -> AsyncIterator[tuple[str, str]]:
+    role = f"tenderos_grafana_reader_t{uuid.uuid4().hex[:8]}"
+    password = uuid.uuid4().hex
+    admin = await asyncpg.connect(dsn=_DSN)
+    try:
+        await ensure_reader_role(admin, GRAFANA, password, role)
+        # As on the stack (see the exporter's role test): USAGE on public, so
+        # a table read is refused for the missing table grant itself.
+        await admin.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+        yield role, password
+    finally:
+        await admin.execute(f'DROP OWNED BY "{role}"')
+        await admin.execute(f'DROP ROLE "{role}"')
+        await admin.close()
+
+
+async def test_grafanas_reader_reads_its_views_and_nothing_else(grafana_role):
+    role, password = grafana_role
+    conn = await _as_role(role, password)
+    try:
+        for name in GRAFANA.views:
+            await conn.fetch(f"SELECT * FROM {SCHEMA}.{name} LIMIT 1")
+        for name in EXPORTER.views:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.fetch(f"SELECT 1 FROM {SCHEMA}.{name} LIMIT 1")
+        for table in ("agent_traces", "workflow_runs", "audit_events", "users", "tenders"):
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await conn.fetch(f"SELECT 1 FROM public.{table} LIMIT 1")
+        assert await conn.fetchval("SHOW default_transaction_read_only") == "on"
+        assert await conn.fetchval("SHOW statement_timeout") == "10s"
+        with pytest.raises(asyncpg.ReadOnlySQLTransactionError):
+            await conn.execute(f"CREATE TABLE {SCHEMA}.not_allowed (x int)")
+    finally:
+        await conn.close()
+
+
+async def test_a_grant_made_by_hand_does_not_survive_the_next_start(grafana_role):
+    """PR 32 (answer B): every start revokes everything in the schema before
+    granting the reader's own views back by name."""
+    role, password = grafana_role
+    admin = await asyncpg.connect(dsn=_DSN)
+    try:
+        await admin.execute(f'GRANT SELECT ON {SCHEMA}.outbox_events TO "{role}"')
+        conn = await _as_role(role, password)
+        await conn.fetch(f"SELECT 1 FROM {SCHEMA}.outbox_events LIMIT 1")
+        await conn.close()
+
+        views = await ensure_reader_role(admin, GRAFANA, password, role)
+    finally:
+        await admin.close()
+
+    assert views == sorted(GRAFANA.views)
+    conn = await _as_role(role, password)
+    try:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await conn.fetch(f"SELECT 1 FROM {SCHEMA}.outbox_events LIMIT 1")
+    finally:
+        await conn.close()
+
+
+async def test_no_view_exposes_a_payload_free_text_or_a_name():
+    """The views expose ids, statuses, counts and times only (decision Q6 a
+    with views): no payload, prompt, refs, free-text error, audit
+    before/after or metadata, and no tender or organization name."""
+    forbidden = {
+        "payload",
+        "metadata",
+        "before",
+        "after",
+        "error_message",
+        "idempotency_key",
+        "input_refs",
+        "output_refs",
+        "tool_names",
+        "prompt_version",
+        "request_payload",
+        "decision_payload",
+        "blockers",
+        "counts",
+        "name",
+        "email",
+    }
+    admin = await asyncpg.connect(dsn=_DSN)
+    try:
+        rows = await admin.fetch(
+            "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = $1",
+            SCHEMA,
+        )
+    finally:
+        await admin.close()
+    columns = {(r["table_name"], r["column_name"]) for r in rows}
+    assert {table for table, _ in columns} == {name for name, _ in VIEWS}
+    assert {(t, c) for t, c in columns if c in forbidden} == set()
+
+
+async def test_the_stale_graph_flag_and_the_gate_waits_read_what_they_say():
+    """Two views compute rather than copy: readiness_reports.stale_graph
+    (a blocker of category stale_graph_projection) and gate_waits (pending
+    gates only, from requested_at)."""
+    async with UnitOfWork() as uow:
+        org = Organization(name="Grafana Views Org")
+        uow.session.add(org)
+        await uow.session.flush()
+        tender = Tender(organization_id=org.id, name="Grafana Views")
+        uow.session.add(tender)
+        await uow.session.flush()
+        tender_id = tender.id
+        run_id = uuid.uuid4()
+        uow.session.add(
+            WorkflowRun(
+                id=run_id,
+                tender_id=tender_id,
+                langgraph_thread_id=str(run_id),
+                status="waiting_for_human",
+                prompt_bundle_version="test",
+                model_config_json={},
+            )
+        )
+        await uow.session.flush()
+        opened = datetime.now(UTC) - timedelta(hours=5)
+        pending = ApprovalGate(
+            workflow_run_id=run_id,
+            tender_id=tender_id,
+            gate_key="requirement_review:1",
+            gate_type="requirement_review",
+            status="pending",
+            request_payload={},
+            requested_at=opened,
+        )
+        decided = ApprovalGate(
+            workflow_run_id=run_id,
+            tender_id=tender_id,
+            gate_key="compliance_review:1",
+            gate_type="compliance_review",
+            status="approved",
+            request_payload={},
+        )
+        uow.session.add_all([pending, decided])
+        await uow.commit()
+    admin = await asyncpg.connect(dsn=_DSN)
+    try:
+        for version, blockers in (
+            (1, '[{"category": "stale_graph_projection", "message": "x"}]'),
+            (2, '[{"category": "critical_redteam_finding", "message": "y"}]'),
+        ):
+            await admin.execute(
+                "INSERT INTO readiness_reports (id, tender_id, tender_state_version, counts, blockers, "
+                "ready, generated_at, content_hash, last_generated_at) VALUES (gen_random_uuid(), $1, $2, "
+                "'{}'::jsonb, $3::jsonb, false, now(), $4, now())",
+                tender_id,
+                version,
+                blockers,
+                f"hash-{version}",
+            )
+        flags = dict(
+            await admin.fetch(
+                f"SELECT tender_state_version, stale_graph FROM {SCHEMA}.readiness_reports "
+                "WHERE tender_id = $1",
+                tender_id,
+            )
+        )
+        waits = await admin.fetch(
+            f"SELECT gate_type, requested_at FROM {SCHEMA}.gate_waits WHERE tender_id = $1",
+            tender_id,
+        )
+    finally:
+        await admin.close()
+    assert flags == {1: True, 2: False}
+    assert [(w["gate_type"], w["requested_at"]) for w in waits] == [("requirement_review", opened)]
 
 
 # --- what it reads from Postgres ------------------------------------------------

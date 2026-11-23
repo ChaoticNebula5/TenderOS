@@ -1,0 +1,16 @@
+# Observability PR 32: the three dashboards, loaded from
+# observability/dashboards (mounted at /etc/grafana/dashboards). Read-only in
+# the UI and never deleted from it, so the repo is the source: a change is a
+# change to the JSON file.
+apiVersion: 1
+
+providers:
+  - name: tenderos
+    folder: TenderOS
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

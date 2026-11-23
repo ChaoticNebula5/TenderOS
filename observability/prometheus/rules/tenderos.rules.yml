@@ -1,0 +1,238 @@
+# Observability PR 32: TenderOS's alert rules (plan pr32-plan.md, decided
+# 2026-11-22). Loaded by prometheus.yml; checked in CI with promtool (check
+# rules, test rules against tenderos.rules.test.yml), and by
+# tests/unit/test_alert_rules.py (every alert has a firing and a quiet test,
+# a severity, a first check and its estimate note).
+#
+# severity: critical means users feel it now; warning means look today.
+# Every number here is an estimate, not measured on real traffic: revisit
+# with the Gemini run and at hosting (each rule's `estimate` says which).
+#
+# Three traps these rules are written around:
+# - A series that first appears above 0 has no earlier sample, so increase()
+#   and a rise from the hour's minimum cannot see its first event. The
+#   exporter emits every known event type and (action, rule) pair at 0
+#   (domain/events/outbox_events.py ALL_EVENT_TYPES, domain/run_endings.py),
+#   every run and operation status is always emitted, and the api's two
+#   unlabelled counters start at 0. A series that keeps rising is not
+#   caught by this: increase() sees it from its second sample.
+# - rate() over a window averages across the whole window, so a request
+#   series born with a surge (the first 429) reaches its full rate only once
+#   its window has filled: a ratio rule's floor (0.1 or 0.05 a second) can be
+#   crossed up to 5 minutes after the surge begins, before the hold starts.
+#   The ratio itself is unaffected (both sides ramp together).
+# - Counts a re-drive or a delete can lower (dead letters, failed runs, and
+#   runs ended by the system, read from audit_events, whose rows cascade
+#   from a deleted tender or organization) are watched as a rise from the
+#   hour's minimum, not with increase(), which would read a fall as a
+#   counter reset and count it.
+# - Scrapes (/metrics, every 15 s) and container healthchecks (/health/...)
+#   pad the request ratios' denominators and hide errors at low traffic, so
+#   the ratios leave them out. The limiter's own answers (429, login's 503)
+#   are under route="unmatched" and stay in.
+
+groups:
+  - name: tenderos.availability
+    rules:
+      - alert: TargetDown
+        expr: up{job=~"api|metrics_exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}."
+          first_check: "docker compose ps and that service's log; for the exporter, whether METRICS_EXPORTER_DB_PASSWORD is set (it refuses to start without)."
+          estimate: "The 2 minute hold is an estimate; revisit with the Gemini run and at hosting."
+
+      - alert: ExporterSourceDown
+        expr: tenderos_exporter_source_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The metrics_exporter cannot read {{ $labels.source }}; every rule built on it is silent meanwhile."
+          first_check: "The exporter's 'cannot read {{ $labels.source }}' line, then that store's container."
+          estimate: "The 2 minute hold is an estimate; revisit with the Gemini run and at hosting."
+
+      - alert: DependencyDown
+        expr: tenderos_dependency_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The api cannot reach {{ $labels.dependency }} (or it answered later than 3 s)."
+          first_check: "/health/ready's body, then the {{ $labels.dependency }} container. For neo4j, the graph routes answer 500 meanwhile."
+          estimate: "The 3 s check cap and the 2 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+  - name: tenderos.workers
+    rules:
+      - alert: QueueHasNoWorker
+        expr: tenderos_rq_workers == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No live worker serves the {{ $labels.queue }} queue."
+          first_check: "The worker container serving {{ $labels.queue }} (maintenance_worker serves maintenance, projection and evaluation). A clean stop shows at once; a crash once RQ's own key expires (up to 420 s)."
+          estimate: "The 2 minute hold is an estimate; revisit with the Gemini run and at hosting."
+
+      - alert: WorkerHeartbeatStale
+        expr: tenderos_rq_heartbeat_age_seconds > 600
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The {{ $labels.queue }} queue's worker heartbeat is over 600 s old."
+          first_check: "Whether the worker is alive but hung: its last log line and its current job."
+          estimate: "600 s is an estimate: an idle RQ worker heartbeats every 405 s (worker_ttl 420 minus 15), so it leaves 195 s of margin. Revisit with the Gemini run and at hosting."
+
+      - alert: DispatcherHeartbeatStale
+        expr: tenderos_outbox_dispatcher_heartbeat_age_seconds > 120
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The outbox dispatcher has not finished a tick for over 120 s; nothing new reaches a worker."
+          first_check: "The dispatcher's 'tick failed' WARNINGs, then Postgres and Redis. It ticks every 5 s and stamps only after a tick that finished."
+          estimate: "120 s is an estimate (its error backoff tops out at 60 s); revisit with the Gemini run and at hosting."
+
+      - alert: DispatcherHeartbeatMissing
+        expr: absent(tenderos_outbox_dispatcher_heartbeat_age_seconds) and on() tenderos_exporter_source_up{source="redis"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The outbox dispatcher has not finished one tick since Redis was emptied."
+          first_check: "The outbox_dispatcher container and its log (fake-stack.ps1 empties Redis at each start)."
+          estimate: "The 5 minute hold is an estimate; revisit with the Gemini run and at hosting."
+
+  - name: tenderos.work
+    rules:
+      - alert: DeadLetter
+        expr: tenderos_outbox_dead_letters - min_over_time(tenderos_outbox_dead_letters[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A {{ $labels.event_type }} outbox event failed every attempt within the last hour."
+          first_check: "The dispatcher's 'Failed to dispatch outbox event <id>' line for the cause (the Work dashboard lists every outstanding dead letter with its id), then a re-drive."
+          estimate: "The 1 hour window is an estimate; revisit with the Gemini run and at hosting. It fires on a new dead letter only: one that stays is listed on the Work dashboard, not alerted on again."
+
+      - alert: QueuedJobOld
+        expr: tenderos_rq_queue_oldest_job_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The {{ $labels.queue }} queue's oldest job has waited over 600 s."
+          first_check: "Live workers on {{ $labels.queue }}, and whether its worker is busy on one long job."
+          estimate: "600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+      - alert: RunQueuedTooLong
+        expr: tenderos_workflow_run_oldest_age_seconds{status="queued"} > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A workflow run has been queued for over 600 s."
+          first_check: "The run's WorkflowRunCreated outbox row (pending, or a dead letter?) and the workflow queue."
+          estimate: "600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+      - alert: RunJobTooLong
+        expr: tenderos_workflow_run_oldest_age_seconds{status="running"} > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A workflow run's current job has run for over an hour."
+          first_check: "The run's current job in RQ and the workflow worker's log. The reaper fails a job at 6 h (MAX_RUN_JOB_AGE); this is the warning before it."
+          estimate: "1 hour and the 5 minute hold are estimates (a real run took up to 45 min); revisit with the Gemini run and at hosting."
+
+      - alert: OperationQueuedTooLong
+        expr: tenderos_operation_oldest_age_seconds{status="queued"} > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "An async operation has been queued for over 600 s."
+          first_check: "The operations queue and operations_worker."
+          estimate: "600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+      # The count is read from audit_events, whose rows can be deleted:
+      # organization_id and tender_id are ON DELETE CASCADE
+      # (db/models/audit.py), so deleting a tender or an organization (by
+      # hand or by any later route; none deletes one today) lowers it. A rise
+      # from the hour's minimum, not increase(), which would read that fall
+      # as a counter reset and fire.
+      - alert: RunsEndedBySystem
+        expr: sum by (action, rule) (tenderos_workflow_runs_ended_by_system_total - min_over_time(tenderos_workflow_runs_ended_by_system_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The system ended a workflow run within the last hour ({{ $labels.action }}, rule {{ $labels.rule }})."
+          first_check: "The run's audit row and the dispatcher's reaper WARNING."
+          estimate: "The 1 hour window is an estimate; revisit with the Gemini run and at hosting."
+
+      - alert: RunsFailing
+        expr: tenderos_workflow_runs{status="failed"} - min_over_time(tenderos_workflow_runs{status="failed"}[1h]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "3 or more workflow runs failed within the last hour."
+          first_check: "The Work dashboard's failed runs by error_code."
+          estimate: "3 within an hour is an estimate; revisit with the Gemini run and at hosting."
+
+      - alert: OperationsFailing
+        expr: tenderos_operations{status="failed"} - min_over_time(tenderos_operations{status="failed"}[1h]) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "3 or more async operations failed within the last hour."
+          first_check: "The Work dashboard's failed operations by error_code."
+          estimate: "3 within an hour is an estimate; revisit with the Gemini run and at hosting."
+
+  - name: tenderos.api
+    rules:
+      - alert: RateLimiterRedisDown
+        expr: sum(increase(tenderos_rate_limiter_redis_unavailable_total[1m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The rate limiter cannot reach Redis: login answers 503 and every other route goes unlimited."
+          first_check: "Redis, then the api's rate limiter WARNING."
+          estimate: "The 1 minute window and the 2 minute hold are estimates (one request that found Redis gone must not fire it); revisit with the Gemini run and at hosting."
+
+      - alert: RateLimited429Surge
+        expr: >-
+          sum(rate(tenderos_http_requests_total{code="429",route!~"/metrics|/health/.+"}[5m]))
+          / sum(rate(tenderos_http_requests_total{route!~"/metrics|/health/.+"}[5m])) > 0.05
+          and sum(rate(tenderos_http_requests_total{code="429",route!~"/metrics|/health/.+"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 5% of api requests are answered 429."
+          first_check: "Whether every client arrives from one address (a host's proxy putting every user in one bucket, item 1): nginx's remote_addr."
+          estimate: "5%, 0.1 a second and the 10 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+      - alert: Api5xxRate
+        expr: >-
+          sum(rate(tenderos_http_requests_total{code=~"5..",route!~"/metrics|/health/.+"}[5m]))
+          / sum(rate(tenderos_http_requests_total{route!~"/metrics|/health/.+"}[5m])) > 0.05
+          and sum(rate(tenderos_http_requests_total{code=~"5..",route!~"/metrics|/health/.+"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of api requests answer 5xx."
+          first_check: "The api's 'unhandled error on' lines by route, then one request_id end to end."
+          estimate: "5%, 0.05 a second and the 5 minute hold are estimates; revisit with the Gemini run and at hosting."
+
+      - alert: RefreshTokenReuseSpike
+        expr: sum(increase(tenderos_refresh_token_reuse_total[1h])) >= 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "About 5 or more refresh tokens were presented again after rotation within the last hour."
+          first_check: "The reuse WARNINGs' users: one user many times (a client bug, two tabs without Web Locks) or many users (a broken release, or theft). One reuse never fires: it has known false positives (item 34 option 3)."
+          estimate: "5 an hour is an estimate (increase() extrapolates, so it is about 5); revisit with the Gemini run and at hosting."

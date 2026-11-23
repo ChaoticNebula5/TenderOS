@@ -56,21 +56,29 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_GATE_DECISION_RECORDED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
+
+# `X as X`: re-exported, since the dispatcher's RunJobInspector and the
+# reaper's tests read them as run_reaper.JOB_*.
+from tenderos_backend.domain.run_endings import (
+    ACTION_RUN_REAPED,
+    RULE_CAP,
+    RULE_DEAD_LETTER,
+)
+from tenderos_backend.domain.run_endings import JOB_ABANDONED as JOB_ABANDONED
+from tenderos_backend.domain.run_endings import JOB_CANCELED as JOB_CANCELED
+from tenderos_backend.domain.run_endings import JOB_FAILED as JOB_FAILED
+from tenderos_backend.domain.run_endings import JOB_FINISHED as JOB_FINISHED
+from tenderos_backend.domain.run_endings import JOB_UNKNOWN as JOB_UNKNOWN
 from tenderos_backend.domain.services.workflow_service import resume_job_id, start_job_id
 
 logger = logging.getLogger(__name__)
 
-# What RQ says about a job that will never move its run on: the verdicts the
-# dispatcher's RunJobInspector returns (None means it may still run). Each is
-# also the `rule` recorded in the run's workflow_run_reaped audit event.
-JOB_FAILED = "failed_registry"
-JOB_CANCELED = "canceled"
-JOB_FINISHED = "finished"
-JOB_UNKNOWN = "unknown"
-JOB_ABANDONED = "abandoned"
-# The two rules that are not RQ verdicts.
-RULE_CAP = "cap"
-RULE_DEAD_LETTER = "dead_letter"
+# What RQ says about a job that will never move its run on (JOB_*: the
+# verdicts the dispatcher's RunJobInspector returns; None means it may still
+# run), and the two rules that are not RQ verdicts (RULE_*). Each is the
+# `rule` recorded in the run's workflow_run_reaped audit event. Imported
+# above from domain/run_endings.py, which imports nothing, so the
+# metrics_exporter reads the same names (observability PR 32).
 
 # Design numbers, not measured.
 #
@@ -254,7 +262,7 @@ async def _fail_in(
             organization_id=tender.organization_id,
             actor_type="system",
             actor_id="run_reaper",
-            action="workflow_run_reaped",
+            action=ACTION_RUN_REAPED,
             tender_id=run.tender_id,
             workflow_run_id=run_id,
             target_type="workflow_run",

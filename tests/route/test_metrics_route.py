@@ -7,6 +7,8 @@ status is its exact code, under the label `code`. Values are read from the proce
 test session.
 """
 
+import asyncio
+import time
 import uuid
 
 import pytest
@@ -138,6 +140,102 @@ async def test_a_429_and_a_404_are_counted_under_their_own_codes(
     assert "429" not in live_after
     for code in set(after) | set(live_after):
         assert code.isdigit() and 100 <= int(code) <= 599, code
+
+
+def _dependency_up(text: str) -> dict[str, float]:
+    return {
+        sample.labels["dependency"]: sample.value
+        for family in text_string_to_metric_families(text)
+        if family.name == "tenderos_dependency_up"
+        for sample in family.samples
+    }
+
+
+async def test_each_scrape_records_which_dependencies_the_api_reaches(
+    client: TestClient, monkeypatch
+):
+    """Observability PR 32 (answer A): /metrics runs /health/ready's four
+    checks and sets tenderos_dependency_up. Up only for a check that answered
+    True; a refusal, an exception and a check slower than its cap all read
+    0, and the four run at once, so two hung checks cost one cap, not two."""
+    monkeypatch.setattr(api_main, "DEPENDENCY_CHECK_TIMEOUT_SECONDS", 0.3)
+
+    async def _up() -> bool:
+        return True
+
+    async def _refused() -> bool:
+        return False
+
+    async def _raises() -> bool:
+        raise OSError("connection refused")
+
+    async def _hangs() -> bool:
+        await asyncio.sleep(30)
+        return True
+
+    monkeypatch.setattr(api_main, "_check_postgres", _up)
+    monkeypatch.setattr(api_main, "_check_redis", _refused)
+    monkeypatch.setattr(api_main, "_check_neo4j", _hangs)
+    monkeypatch.setattr(api_main, "_check_object_storage", _raises)
+
+    started = time.perf_counter()
+    response = client.get("/metrics")
+    elapsed = time.perf_counter() - started
+
+    assert response.status_code == 200
+    assert _dependency_up(response.text) == {
+        "postgres": 1.0,
+        "redis": 0.0,
+        "neo4j": 0.0,
+        "object_storage": 0.0,
+    }
+    assert elapsed < 2.0, elapsed
+
+
+async def test_the_checks_run_at_once_so_two_hung_checks_cost_one_cap(
+    client: TestClient, monkeypatch
+):
+    monkeypatch.setattr(api_main, "DEPENDENCY_CHECK_TIMEOUT_SECONDS", 0.5)
+
+    async def _hangs() -> bool:
+        await asyncio.sleep(30)
+        return True
+
+    async def _up() -> bool:
+        return True
+
+    for name in ("_check_postgres", "_check_redis"):
+        monkeypatch.setattr(api_main, name, _up)
+    monkeypatch.setattr(api_main, "_check_neo4j", _hangs)
+    monkeypatch.setattr(api_main, "_check_object_storage", _hangs)
+
+    started = time.perf_counter()
+    response = client.get("/metrics")
+    elapsed = time.perf_counter() - started
+
+    assert _dependency_up(response.text)["neo4j"] == 0.0
+    assert _dependency_up(response.text)["object_storage"] == 0.0
+    # One cap (0.5 s) plus the request; one after another would be 1.0 s.
+    assert 0.5 <= elapsed < 0.95, elapsed
+
+
+async def test_a_dependency_that_recovers_reads_up_at_the_next_scrape(
+    client: TestClient, monkeypatch
+):
+    answers = iter([False, True])
+
+    async def _flaky() -> bool:
+        return next(answers)
+
+    async def _up() -> bool:
+        return True
+
+    for name in ("_check_postgres", "_check_redis", "_check_object_storage"):
+        monkeypatch.setattr(api_main, name, _up)
+    monkeypatch.setattr(api_main, "_check_neo4j", _flaky)
+
+    assert _dependency_up(client.get("/metrics").text)["neo4j"] == 0.0
+    assert _dependency_up(client.get("/metrics").text)["neo4j"] == 1.0
 
 
 async def test_an_unhandled_error_is_counted_as_500(

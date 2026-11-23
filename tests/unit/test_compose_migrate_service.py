@@ -36,11 +36,47 @@ def test_migrate_applies_constraints_after_alembic_and_only_if_it_succeeded():
     )
 
 
-def test_migrate_gets_the_exporters_password_and_stays_on_the_fake_provider():
+def test_migrate_gets_both_readers_passwords_and_stays_on_the_fake_provider():
     environment = _compose()["services"]["migrate"]["environment"]
 
     assert environment["METRICS_EXPORTER_DB_PASSWORD"] == "${METRICS_EXPORTER_DB_PASSWORD:-}"
+    # Observability PR 32: Grafana's reader, made by the same setup step.
+    assert environment["GRAFANA_DB_PASSWORD"] == "${GRAFANA_DB_PASSWORD:-}"
     assert environment["LLM_PROVIDER"] == "fake"
+
+
+def test_grafana_holds_only_its_own_variables_and_stays_on_loopback():
+    """Observability PR 32: no env_file, so none of .env's other
+    credentials; its admin login, its own read-only Postgres password and
+    the database's name. Anonymous access and sign-up off, nothing sent
+    outside, provisioning read-only from the repo, published on loopback
+    only (plan item 67 keeps it so at hosting)."""
+    grafana = _compose()["services"]["grafana"]
+
+    assert "env_file" not in grafana
+    environment = grafana["environment"]
+    assert {name for name in environment if not name.startswith("GF_")} == {
+        "GRAFANA_DB_PASSWORD",
+        "POSTGRES_DB",
+    }
+    assert environment["GF_AUTH_ANONYMOUS_ENABLED"] == "false"
+    assert environment["GF_USERS_ALLOW_SIGN_UP"] == "false"
+    assert environment["GF_ANALYTICS_REPORTING_ENABLED"] == "false"
+    assert "./observability/grafana/provisioning:/etc/grafana/provisioning:ro" in grafana["volumes"]
+    assert "./observability/dashboards:/etc/grafana/dashboards:ro" in grafana["volumes"]
+    assert grafana["ports"] == ["127.0.0.1:3000:3000", "[::1]:3000:3000"]
+    assert grafana["profiles"] == ["observability"]
+
+
+def test_prometheus_loads_the_alert_rules_compose_mounts():
+    prometheus = _compose()["services"]["prometheus"]
+    config = yaml.safe_load(
+        (REPO_ROOT / "observability/prometheus/prometheus.yml").read_text(encoding="utf-8")
+    )
+
+    assert "./observability/prometheus/rules:/etc/prometheus/rules:ro" in prometheus["volumes"]
+    assert config["rule_files"] == ["/etc/prometheus/rules/*.rules.yml"]
+    assert (REPO_ROOT / "observability/prometheus/rules/tenderos.rules.yml").is_file()
 
 
 def test_the_metrics_exporter_holds_only_its_own_variables():

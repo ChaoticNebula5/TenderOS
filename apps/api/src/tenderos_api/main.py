@@ -21,7 +21,7 @@ from tenderos_backend.agents.llm.factory import log_llm_provider
 from tenderos_backend.agents.llm.fake_fallbacks import install_fake_fallback_responses
 from tenderos_backend.core.config import settings as backend_settings
 from tenderos_backend.core.log_redaction import configure_logging
-from tenderos_backend.core.metrics import RATE_LIMITER_REDIS_UNAVAILABLE, REGISTRY
+from tenderos_backend.core.metrics import DEPENDENCY_UP, RATE_LIMITER_REDIS_UNAVAILABLE, REGISTRY
 from tenderos_backend.graph_projection.driver import close_driver
 
 from tenderos_api.client_disconnect import client_closed_response, is_client_disconnect
@@ -447,8 +447,49 @@ async def metrics() -> Response:
     with 404 itself (apps/web/nginx.conf), so this is reached only on the
     compose network, where Prometheus scrapes it, and on the loopback port
     for local tools. Its requests are left out of the access log
-    (logging_filters.SkipMetricsScrapeFilter)."""
+    (logging_filters.SkipMetricsScrapeFilter).
+
+    PR 32 (answer A): before serving, it runs /health/ready's four checks
+    and sets tenderos_dependency_up, so Prometheus sees a dependency down."""
+    await _record_dependencies()
     return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
+
+# Each check's cap when /metrics runs it. A hung check must not hang the
+# scrape (Prometheus's scrape_timeout is 10 s), and today's Neo4j check has
+# no timeout of its own (plan item 118). The four run at once, so a scrape
+# waits at most this long for all of them. /health/ready keeps its own
+# behaviour, uncapped.
+DEPENDENCY_CHECK_TIMEOUT_SECONDS = 3.0
+
+
+def _dependency_checks() -> dict[str, Callable[[], Awaitable[bool]]]:
+    """/health/ready's four checks, by the name both report them under.
+    Looked up at call time, so a test can replace one."""
+    return {
+        "postgres": _check_postgres,
+        "redis": _check_redis,
+        "neo4j": _check_neo4j,
+        "object_storage": _check_object_storage,
+    }
+
+
+async def _capped(check: Callable[[], Awaitable[bool]]) -> bool:
+    """True only for a check that answered True within the cap. A timeout
+    or any exception is "down". The object storage check runs in a thread
+    (boto3), which wait_for stops waiting for but cannot cancel; its own
+    short timeouts end the thread."""
+    try:
+        return (await asyncio.wait_for(check(), DEPENDENCY_CHECK_TIMEOUT_SECONDS)) is True
+    except Exception:  # noqa: BLE001 - every failure means "down", for the gauge
+        return False
+
+
+async def _record_dependencies() -> None:
+    checks = _dependency_checks()
+    results = await asyncio.gather(*(_capped(check) for check in checks.values()))
+    for name, up in zip(checks, results, strict=True):
+        DEPENDENCY_UP.labels(name).set(1 if up else 0)
 
 
 async def _check_postgres() -> bool:

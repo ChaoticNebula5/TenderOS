@@ -376,3 +376,14 @@ def operation_status_changed_idempotency_key(operation_id: uuid.UUID, status: st
     # An operation reaches each status at most once (queued, running, then
     # succeeded or failed), so the status completes the key.
     return f"operation_status_changed:{operation_id}:{status}"
+
+
+# Observability PR 32: every event type above, gathered from the module's own
+# EVENT_* names so a new one is included without a second list. The
+# metrics_exporter emits each type's dead-letter count, at 0 when it has
+# none, so the first dead letter of a type is a rise the DeadLetter alert
+# sees (a series that first appears at 1 has nothing to rise from).
+# tests/unit/test_outbox_event_types.py checks every outbox write uses one.
+ALL_EVENT_TYPES: tuple[str, ...] = tuple(
+    sorted({value for name, value in list(globals().items()) if name.startswith("EVENT_")})
+)
