@@ -117,6 +117,14 @@ def test_a_versitygw_run_line_that_drifts_from_compose_fails(tree: Path):
     assert any("VersityGW image other than" in p for p in check_pins.check(tree))
 
 
+def test_a_promtool_image_that_drifts_from_compose_fails(tree: Path):
+    """Observability PR 32: the alert-rules job runs promtool from
+    Prometheus's image, which must be the one the stack runs."""
+    ref = _compose_image(tree, "prometheus")
+    _edit(tree, _CI, ref, _another_tag(ref))
+    assert any("Prometheus image other than" in p for p in check_pins.check(tree))
+
+
 def test_an_action_pinned_by_tag_fails(tree: Path):
     uses = _ci_steps(tree, "actions/cache")[0]["uses"]
     _edit(tree, _CI, uses, "actions/cache@v6")

@@ -529,3 +529,22 @@ jobs:
       # dates are in the script.
       - name: npm audit (both apps)
         run: uv run python scripts/check_npm_audit.py apps/web apps/landing
+
+  # Observability PR 32: the alert rules, checked by promtool from the same
+  # Prometheus image the stack runs (scripts/check_pins.py fails if the image
+  # on these lines drifts from docker-compose.yml's). check config also loads
+  # the rule files prometheus.yml names; test rules runs every alert's firing
+  # and quiet cases (tenderos.rules.test.yml). tests/unit/test_alert_rules.py
+  # checks every alert has both, without Docker.
+  alert-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: promtool check config, check rules and test rules
+        run: |
+          image=prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+          mount="$PWD/observability/prometheus:/etc/prometheus:ro"
+          docker run --rm -v "$mount" --entrypoint promtool "$image" check config /etc/prometheus/prometheus.yml
+          docker run --rm -v "$mount" --entrypoint promtool "$image" check rules /etc/prometheus/rules/tenderos.rules.yml
+          docker run --rm -v "$mount" -w /etc/prometheus/rules --entrypoint promtool "$image" test rules tenderos.rules.test.yml

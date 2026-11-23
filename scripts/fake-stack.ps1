@@ -86,7 +86,7 @@ try {
     Write-Host "fake stack up: every LLM call is answered by FakeLLMClient (label all results fake)."
 
     if ($Observability) {
-        & docker compose @files up -d --build --force-recreate metrics_exporter prometheus
+        & docker compose @files up -d --build --force-recreate metrics_exporter prometheus grafana
         if ($LASTEXITCODE -ne 0) { throw "the observability services did not start" }
         $ready = $false
         for ($i = 0; $i -lt 20; $i++) {
@@ -102,7 +102,28 @@ try {
         Start-Sleep -Seconds 5
         $state = (& docker inspect -f "{{.State.Status}}" tenderos-metrics_exporter-1).Trim()
         if ($state -ne "running") { throw "metrics_exporter is $state, not running (docker compose logs metrics_exporter; is METRICS_EXPORTER_DB_PASSWORD set?)" }
-        Write-Host "observability up: Prometheus on http://127.0.0.1:9090, scraping the api and metrics_exporter."
+        # Observability PR 32: Grafana, then each provisioned datasource's own
+        # health check. Asked from inside the container with its own admin
+        # variables, so the admin password never reaches this shell.
+        $grafanaUp = $false
+        for ($i = 0; $i -lt 20; $i++) {
+            try {
+                $answer = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "http://127.0.0.1:3000/api/health"
+                if ($answer.StatusCode -eq 200) { $grafanaUp = $true; break }
+            } catch { }
+            Start-Sleep -Seconds 3
+        }
+        if (-not $grafanaUp) { throw "Grafana never became ready (docker compose logs grafana)" }
+        # No double quotes in the script: Windows PowerShell 5.1 does not
+        # escape them when passing an argument to a native program.
+        foreach ($uid in @("prometheus", "postgres-observability")) {
+            $check = 'A=$(printf %s:%s $GF_SECURITY_ADMIN_USER $GF_SECURITY_ADMIN_PASSWORD | base64 | tr -d ''\n''); wget -qO- --header ''Authorization: Basic ''$A http://127.0.0.1:3000/api/datasources/uid/' + $uid + '/health'
+            $health = (& docker compose @files exec -T grafana sh -c $check 2>&1 | Out-String).Trim()
+            if ($health -notmatch '"status":\s*"OK"') {
+                throw "Grafana's $uid datasource is not healthy: $health (for postgres-observability: is GRAFANA_DB_PASSWORD set, and did migrate set up its role?)"
+            }
+        }
+        Write-Host "observability up: Prometheus on http://127.0.0.1:9090 (the api and metrics_exporter, the alert rules), Grafana on http://127.0.0.1:3000 (both datasources healthy)."
     }
 } finally {
     Pop-Location

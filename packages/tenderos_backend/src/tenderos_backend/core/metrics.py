@@ -30,7 +30,7 @@ login's 503s (the limiter's Redis gone) and the final gate's 409s apart
 from a 404 scan, which a class would sum together.
 """
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client.gc_collector import GCCollector
 from prometheus_client.platform_collector import PlatformCollector
 from prometheus_client.process_collector import ProcessCollector
@@ -79,6 +79,19 @@ RATE_LIMITER_REDIS_UNAVAILABLE = Counter(
 REFRESH_TOKEN_REUSE = Counter(
     "tenderos_refresh_token_reuse",
     "refresh tokens presented again after rotation (each revokes its family)",
+    registry=REGISTRY,
+)
+
+
+# Observability PR 32 (answer A): what /health/ready answers, as a metric, so
+# an alert can see a dependency down (Neo4j above all: its outage shows as
+# graph routes answering 500, and no other metric carries it). Set by the
+# api's /metrics handler, which runs the same four checks before each scrape
+# (main.py); 1 for up, 0 for down or no answer within the check's cap.
+DEPENDENCY_UP = Gauge(
+    "tenderos_dependency_up",
+    "whether the api reaches each dependency, checked at each scrape (1 up, 0 down or too slow)",
+    ["dependency"],
     registry=REGISTRY,
 )
 

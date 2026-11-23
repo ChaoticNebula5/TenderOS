@@ -6,9 +6,10 @@ Action by commit SHA, and added Dependabot entries so the pins are updated
 rather than frozen. Dependabot updates each file on its own, though, and
 some copies it never reads, so a pin can drift from its sibling unnoticed:
 
-- ci.yml's `services:` images and the VersityGW image in its run step
-  (Dependabot's github-actions entry updates `uses:` only) must equal
-  docker-compose.yml's image for the same service;
+- ci.yml's `services:` images, the VersityGW image in its run step and the
+  Prometheus image its alert-rules job runs promtool from (Dependabot's
+  github-actions entry updates `uses:` only) must equal docker-compose.yml's
+  image for the same service;
 - apps/api/Dockerfile and apps/worker/Dockerfile must use the same base
   images (the uv stage and Python);
 - setup-uv's `version:` in ci.yml must equal the uv image's tag, and
@@ -124,6 +125,15 @@ def check(root: Path) -> list[str]:
                         problems.append(
                             f"{label}: job {job_name} runs a VersityGW image other than "
                             f"docker-compose.yml's {compose_images['s3']}"
+                        )
+                # Observability PR 32: promtool runs from Prometheus's image on
+                # a run line, so the alert rules are checked by the version
+                # the stack runs.
+                if "prometheus" in compose_images and "prom/prometheus" in run:
+                    if compose_images["prometheus"] not in run:
+                        problems.append(
+                            f"{label}: job {job_name} runs a Prometheus image other than "
+                            f"docker-compose.yml's {compose_images['prometheus']}"
                         )
 
     uv_tags = {

@@ -181,6 +181,8 @@ services:
     environment:
       <<: *fake-provider
       METRICS_EXPORTER_DB_PASSWORD: ${METRICS_EXPORTER_DB_PASSWORD:-}
+      # Observability PR 32: Grafana's reader, made by the same setup step.
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -435,6 +437,9 @@ services:
     profiles: ["observability"]
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      # Observability PR 32: the alert rules (prometheus.yml's rule_files),
+      # checked in CI with promtool (check rules, test rules).
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
     ports:
       - "127.0.0.1:9090:9090"
       - "[::1]:9090:9090"
@@ -442,11 +447,27 @@ services:
   grafana:
     image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
     profiles: ["observability"]
+    # Observability PR 32: provisioned from files only (datasources and the
+    # three dashboards, read-only in the UI), so the repo is the source. No
+    # env_file: its admin login, its own read-only Postgres password and the
+    # database's name, nothing else. Anonymous access and sign-up off; no
+    # usage reporting or update checks, so it calls nothing outside.
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
     ports:
       - "127.0.0.1:3000:3000"
       - "[::1]:3000:3000"

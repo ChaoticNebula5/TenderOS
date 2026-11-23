@@ -1,0 +1,599 @@
+{
+  "uid": "tenderos-health",
+  "title": "TenderOS: Health",
+  "description": "Is it up: targets, dependencies, workers, the dispatcher, the api's requests, and the alerts firing now.",
+  "tags": [
+    "tenderos"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timezone": "utc",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Targets up",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "up{job=~\"api|metrics_exporter\"}",
+          "legendFormat": "{{job}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dependencies the api reaches (1 up, 0 down or over 3 s)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_dependency_up",
+          "legendFormat": "{{dependency}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 2,
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Exporter's sources (1 readable)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_exporter_source_up",
+          "legendFormat": "{{source}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 3,
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker heartbeat age per queue (alert over 600 s)",
+      "description": "An idle worker heartbeats every 405 s, so a sawtooth up to about 405 s is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_rq_heartbeat_age_seconds",
+          "legendFormat": "{{queue}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 4,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Dispatcher heartbeat age (alert over 120 s)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_outbox_dispatcher_heartbeat_age_seconds",
+          "legendFormat": "dispatcher",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 5,
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Live workers per queue",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_rq_workers",
+          "legendFormat": "{{queue}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 6,
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 5
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests per second by code (scrapes and healthchecks left out)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (code) (rate(tenderos_http_requests_total{route!~\"/metrics|/health/.+\"}[5m]))",
+          "legendFormat": "{{code}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx and 429 ratios (scrapes and healthchecks left out)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(tenderos_http_requests_total{code=~\"5..\",route!~\"/metrics|/health/.+\"}[5m])) / sum(rate(tenderos_http_requests_total{route!~\"/metrics|/health/.+\"}[5m]))",
+          "legendFormat": "5xx",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(tenderos_http_requests_total{code=\"429\",route!~\"/metrics|/health/.+\"}[5m])) / sum(rate(tenderos_http_requests_total{route!~\"/metrics|/health/.+\"}[5m]))",
+          "legendFormat": "429",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 8,
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency by route, p50 / p95 / p99 (streams, scrapes and healthchecks left out)",
+      "description": "A stream route's duration is how long the stream stayed open, so both are left out.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, route) (rate(tenderos_http_request_duration_seconds_bucket{route!~\"/metrics|/health/.+|.*/events/stream\"}[5m])))",
+          "legendFormat": "p50 {{route}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(tenderos_http_request_duration_seconds_bucket{route!~\"/metrics|/health/.+|.*/events/stream\"}[5m])))",
+          "legendFormat": "p95 {{route}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(tenderos_http_request_duration_seconds_bucket{route!~\"/metrics|/health/.+|.*/events/stream\"}[5m])))",
+          "legendFormat": "p99 {{route}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 10
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate limiter's Redis outages and refresh-token reuse, per hour",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(tenderos_rate_limiter_redis_unavailable_total[1h]))",
+          "legendFormat": "limiter let through (Redis gone)",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(tenderos_refresh_token_reuse_total[1h]))",
+          "legendFormat": "refresh tokens reused",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 10,
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "The api process: memory and CPU",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "process_resident_memory_bytes{job=\"api\"}",
+          "legendFormat": "resident memory",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(process_cpu_seconds_total{job=\"api\"}[5m])",
+          "legendFormat": "cpu seconds per second",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 11,
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Alerts firing now",
+      "description": "Where alerts show locally; delivery is decided at hosting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "legendFormat": "",
+          "range": false,
+          "instant": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 12,
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 24,
+        "h": 8
+      }
+    }
+  ]
+}

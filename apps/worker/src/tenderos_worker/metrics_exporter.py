@@ -53,6 +53,8 @@ from tenderos_backend.db.models.async_operation import ACTIVE_STATUSES as ACTIVE
 from tenderos_backend.db.models.async_operation import OPERATION_STATUSES
 from tenderos_backend.db.models.workflow import ACTIVE_RUN_STATUSES, RUN_STATUSES
 from tenderos_backend.db.observability import EXPORTER_LOGIN_VARIABLE, EXPORTER_ROLE, SCHEMA
+from tenderos_backend.domain.events.outbox_events import ALL_EVENT_TYPES
+from tenderos_backend.domain.run_endings import KNOWN_RUN_ENDINGS
 
 from tenderos_worker.heartbeats import DISPATCHER_HEARTBEAT_KEY, heartbeat_age, queue_heartbeat_key
 from tenderos_worker.queues import KNOWN_QUEUE_NAMES
@@ -266,22 +268,29 @@ def postgres_metrics(state: PostgresState, now: float) -> Iterator[Metric]:
     for status in ACTIVE_OPERATION_STATUSES:
         operation_age.add_metric([status], _age(state.operation_oldest.get(status), now))
     yield operation_age
+    # Every known event type and every known (action, rule) pair is emitted,
+    # at 0 when it has none (PR 32, changes 1 and 2): a series that first
+    # appears at 1 has no earlier sample, so neither increase() nor the
+    # DeadLetter rule's rise from the hour's minimum could see that first
+    # event. Anything else the database holds is emitted too, so an event
+    # type or rule this list does not know still shows.
     dead = GaugeMetricFamily(
         "tenderos_outbox_dead_letters",
-        "outbox events that failed every attempt and wait for a manual re-drive, by event type",
+        "outbox events that failed every attempt and wait for a manual re-drive, by event type "
+        "(every known type, 0 when it has none)",
         labels=["event_type"],
     )
-    for event_type, count in sorted(state.dead_letters.items()):
-        dead.add_metric([event_type], count)
+    for event_type in sorted(set(ALL_EVENT_TYPES) | set(state.dead_letters)):
+        dead.add_metric([event_type], state.dead_letters.get(event_type, 0))
     yield dead
     reaped = CounterMetricFamily(
         "tenderos_workflow_runs_ended_by_system",
         "runs the reaper failed (workflow_run_reaped, by rule) or RQ's timeout ended "
-        "(workflow_run_timed_out), from the audit trail",
+        "(workflow_run_timed_out), from the audit trail (every known pair, 0 when it has none)",
         labels=["action", "rule"],
     )
-    for (action, rule), count in sorted(state.reaped.items()):
-        reaped.add_metric([action, rule], count)
+    for action, rule in sorted(set(KNOWN_RUN_ENDINGS) | set(state.reaped)):
+        reaped.add_metric([action, rule], state.reaped.get((action, rule), 0))
     yield reaped
 
 

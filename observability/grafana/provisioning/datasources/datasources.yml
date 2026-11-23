@@ -1,0 +1,39 @@
+# Observability PR 32: Grafana's two datasources, provisioned from this file
+# only (not editable in the UI). The dashboards in observability/dashboards
+# name them by uid.
+#
+# - prometheus: the stack's Prometheus, for health, queues and stuck work.
+# - postgres-observability: the stack's Postgres as tenderos_grafana_reader,
+#   a read-only login that reads only Grafana's views in the observability
+#   schema (migration 040; made by the migrate service's setup step,
+#   tenderos_backend.db.observability_role). Its password is read from the
+#   container's environment when Grafana starts, never stored here.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  - name: Postgres (observability views)
+    uid: postgres-observability
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: tenderos_grafana_reader
+    editable: false
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: disable
+      postgresVersion: 1600
+      # The role allows 4 connections.
+      maxOpenConns: 4
+      maxIdleConns: 2
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD

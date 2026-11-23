@@ -1,0 +1,301 @@
+{
+  "uid": "tenderos-llm",
+  "title": "TenderOS: LLM",
+  "description": "What did it cost and which agent is slow, from agent_traces through the llm_calls view. The fake provider costs 0 and is shown as its own provider.",
+  "tags": [
+    "tenderos"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timezone": "utc",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Cost per hour, by provider (fake shown on its own, cost 0)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), coalesce(provider, '(none)') AS metric, sum(estimated_cost_usd) AS cost_usd FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cost per organization (top 20)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT organization_id, count(*) AS calls, sum(estimated_cost_usd) AS cost_usd FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 3 DESC NULLS LAST LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 2,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cost per tender (top 20)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT tender_id, count(*) AS calls, sum(estimated_cost_usd) AS cost_usd FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 3 DESC NULLS LAST LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 3,
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cost per run (top 20)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT workflow_run_id, count(*) AS calls, sum(estimated_cost_usd) AS cost_usd FROM observability.llm_calls WHERE $__timeFilter(created_at) AND workflow_run_id IS NOT NULL GROUP BY 1 ORDER BY 3 DESC NULLS LAST LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 4,
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cost and calls per agent and model",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT agent_name, coalesce(provider, '(none)') AS provider, coalesce(model, '(none)') AS model, count(*) AS calls, sum(estimated_cost_usd) AS cost_usd, avg((attempts > 1)::int) AS share_retried FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1, 2, 3 ORDER BY 5 DESC NULLS LAST",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Latency per agent and model (latency_ms includes retries and backoff)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT agent_name, coalesce(model, '(none)') AS model, count(latency_ms) AS calls, percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_ms, percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_ms, max(latency_ms) AS max_ms FROM observability.llm_calls WHERE $__timeFilter(created_at) AND latency_ms IS NOT NULL GROUP BY 1, 2 ORDER BY 5 DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 6,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Calls by status and error_code (timeouts, rejections)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT status, coalesce(error_code, '(none)') AS error_code, count(*) AS calls FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 3 DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 7,
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Tokens per agent (thinking tokens priced as output)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT agent_name, sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens, sum(thinking_tokens) AS thinking_tokens FROM observability.llm_calls WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 3 DESC NULLS LAST",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 8,
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      }
+    }
+  ]
+}

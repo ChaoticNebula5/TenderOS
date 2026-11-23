@@ -1,0 +1,593 @@
+{
+  "uid": "tenderos-work",
+  "title": "TenderOS: Work",
+  "description": "Is work stuck, and where: queues, runs, operations, dead letters, and the rows behind each number.",
+  "tags": [
+    "tenderos"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timezone": "utc",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Jobs waiting per queue",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_rq_queue_jobs",
+          "legendFormat": "{{queue}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Head job's age per queue (alert over 600 s)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_rq_queue_oldest_job_age_seconds",
+          "legendFormat": "{{queue}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 600
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 2,
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "RQ's failed registry per queue",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_rq_failed_jobs",
+          "legendFormat": "{{queue}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 3,
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Workflow runs by status",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_workflow_runs",
+          "legendFormat": "{{status}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 4,
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Async operations by status",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_operations",
+          "legendFormat": "{{status}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 5,
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Oldest queued and running ages (a run at a gate is on its own panel below)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_workflow_run_oldest_age_seconds{status=~\"queued|running\"}",
+          "legendFormat": "run {{status}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "tenderos_operation_oldest_age_seconds",
+          "legendFormat": "operation {{status}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 6,
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Dead letters outstanding (none reads 0)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(tenderos_outbox_dead_letters) or vector(0)",
+          "legendFormat": "dead letters",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "id": 7,
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Runs ended by the system, last 24 h",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action, rule) (increase(tenderos_workflow_runs_ended_by_system_total[24h]))",
+          "legendFormat": "{{action}} {{rule}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 8,
+      "gridPos": {
+        "x": 18,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Dead letters, every outstanding one (newest first)",
+      "description": "The DeadLetter alert fires on a new one only; every one that stays is listed here.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT created_at, event_type, aggregate_type, aggregate_id, attempt_count, available_at, request_id, id FROM observability.dead_letters ORDER BY created_at DESC LIMIT 200",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 9,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Failed runs in the range, by error_code",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT coalesce(error_code, '(none)') AS error_code, count(*) AS runs FROM observability.run_history WHERE status = 'failed' AND $__timeFilter(completed_at) GROUP BY 1 ORDER BY 2 DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 10,
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Failed operations in the range, by kind and error_code",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT kind, coalesce(error_code, '(none)') AS error_code, count(*) AS operations FROM observability.operation_history WHERE status = 'failed' AND $__timeFilter(finished_at) GROUP BY 1, 2 ORDER BY 3 DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 11,
+      "gridPos": {
+        "x": 8,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Runs ended by the system in the range",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT created_at, action, coalesce(rule, '') AS rule, workflow_run_id, tender_id FROM observability.run_endings WHERE $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 200",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 12,
+      "gridPos": {
+        "x": 16,
+        "y": 32,
+        "w": 8,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Bids waiting at a gate, per gate type (the wait, from the gate's requested_at)",
+      "description": "A run at a gate is a normal wait, so nothing alerts on it.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT gate_type, count(*) AS waiting, extract(epoch FROM now() - min(requested_at))::bigint AS oldest_wait_seconds FROM observability.gate_waits GROUP BY gate_type ORDER BY 3 DESC",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 13,
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Bids whose latest readiness report holds a stale graph (item 113)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS stale FROM (SELECT DISTINCT ON (tender_id) tender_id, stale_graph FROM observability.readiness_reports ORDER BY tender_id, last_generated_at DESC) latest WHERE stale_graph",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 14,
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Graph projection runs in the range",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres-observability"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres-observability"
+          },
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table",
+          "rawSql": "SELECT started_at, tender_id, status, source_state_version, node_count, relationship_count, extract(epoch FROM completed_at - started_at) AS seconds FROM observability.graph_projection_runs WHERE $__timeFilter(started_at) ORDER BY started_at DESC LIMIT 200",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "id": 15,
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 24,
+        "h": 8
+      }
+    }
+  ]
+}

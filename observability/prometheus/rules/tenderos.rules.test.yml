@@ -1,0 +1,627 @@
+# Observability PR 32: promtool unit tests for tenderos.rules.yml
+# (`promtool test rules tenderos.rules.test.yml`, run in CI). Every alert has
+# at least one case where it fires and one where it stays quiet; each case
+# moves its series at a known moment and checks just before and just after
+# its hold, so a changed threshold, hold, label or expression fails a check.
+# promtool compares each expected alert's labels and annotations exactly.
+# Series values: "a+bxn" is a, then n more samples each b higher; "_" is a
+# missing sample (the series absent).
+rule_files:
+- tenderos.rules.yml
+evaluation_interval: 15s
+tests:
+- name: a target down fires after 2 minutes, a healthy one never
+  interval: 15s
+  input_series:
+  - series: up{job="api"}
+    values: 1x3 0x40
+  - series: up{job="metrics_exporter"}
+    values: 1x50
+  alert_rule_test:
+  - eval_time: 165s
+    alertname: TargetDown
+    exp_alerts: []
+  - eval_time: 195s
+    alertname: TargetDown
+    exp_alerts:
+    - exp_labels:
+        job: api
+        severity: critical
+      exp_annotations:
+        summary: Prometheus cannot scrape api.
+        first_check: docker compose ps and that service's log; for the exporter, whether METRICS_EXPORTER_DB_PASSWORD is set (it refuses to start without).
+        estimate: The 2 minute hold is an estimate; revisit with the Gemini run and at hosting.
+- name: a store the exporter cannot read fires after 2 minutes
+  interval: 15s
+  input_series:
+  - series: tenderos_exporter_source_up{source="postgres"}
+    values: 1x3 0x40
+  - series: tenderos_exporter_source_up{source="redis"}
+    values: 1x50
+  alert_rule_test:
+  - eval_time: 165s
+    alertname: ExporterSourceDown
+    exp_alerts: []
+  - eval_time: 195s
+    alertname: ExporterSourceDown
+    exp_alerts:
+    - exp_labels:
+        source: postgres
+        severity: critical
+      exp_annotations:
+        summary: The metrics_exporter cannot read postgres; every rule built on it is silent meanwhile.
+        first_check: The exporter's 'cannot read postgres' line, then that store's container.
+        estimate: The 2 minute hold is an estimate; revisit with the Gemini run and at hosting.
+- name: a dependency down fires after 2 minutes
+  interval: 15s
+  input_series:
+  - series: tenderos_dependency_up{dependency="neo4j"}
+    values: 1x3 0x40
+  - series: tenderos_dependency_up{dependency="postgres"}
+    values: 1x50
+  alert_rule_test:
+  - eval_time: 165s
+    alertname: DependencyDown
+    exp_alerts: []
+  - eval_time: 195s
+    alertname: DependencyDown
+    exp_alerts:
+    - exp_labels:
+        dependency: neo4j
+        severity: critical
+      exp_annotations:
+        summary: The api cannot reach neo4j (or it answered later than 3 s).
+        first_check: /health/ready's body, then the neo4j container. For neo4j, the graph routes answer 500 meanwhile.
+        estimate: The 3 s check cap and the 2 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: a queue with no live worker fires after 2 minutes
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_workers{queue="workflow"}
+    values: 1x3 0x40
+  - series: tenderos_rq_workers{queue="ingestion"}
+    values: 1x50
+  alert_rule_test:
+  - eval_time: 165s
+    alertname: QueueHasNoWorker
+    exp_alerts: []
+  - eval_time: 195s
+    alertname: QueueHasNoWorker
+    exp_alerts:
+    - exp_labels:
+        queue: workflow
+        severity: critical
+      exp_annotations:
+        summary: No live worker serves the workflow queue.
+        first_check: The worker container serving workflow (maintenance_worker serves maintenance, projection and evaluation). A clean stop shows at once; a crash once RQ's own key expires (up to 420 s).
+        estimate: The 2 minute hold is an estimate; revisit with the Gemini run and at hosting.
+- name: an idle worker's heartbeat (a 405 s sawtooth) stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_heartbeat_age_seconds{queue="workflow"}
+    values: 0+15x27 0+15x27 0+15x27
+  alert_rule_test:
+  - eval_time: 1200s
+    alertname: WorkerHeartbeatStale
+    exp_alerts: []
+- name: a heartbeat past 600 s for a minute fires
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_heartbeat_age_seconds{queue="workflow"}
+    values: 0+15x60
+  alert_rule_test:
+  - eval_time: 660s
+    alertname: WorkerHeartbeatStale
+    exp_alerts: []
+  - eval_time: 690s
+    alertname: WorkerHeartbeatStale
+    exp_alerts:
+    - exp_labels:
+        queue: workflow
+        severity: critical
+      exp_annotations:
+        summary: The workflow queue's worker heartbeat is over 600 s old.
+        first_check: 'Whether the worker is alive but hung: its last log line and its current job.'
+        estimate: '600 s is an estimate: an idle RQ worker heartbeats every 405 s (worker_ttl 420 minus 15), so it leaves 195 s of margin. Revisit with the Gemini run and at hosting.'
+- name: a dispatcher ticking every 5 s stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_outbox_dispatcher_heartbeat_age_seconds
+    values: 3x60
+  alert_rule_test:
+  - eval_time: 600s
+    alertname: DispatcherHeartbeatStale
+    exp_alerts: []
+- name: a dispatcher past 120 s for a minute fires
+  interval: 15s
+  input_series:
+  - series: tenderos_outbox_dispatcher_heartbeat_age_seconds
+    values: 0+15x40
+  alert_rule_test:
+  - eval_time: 180s
+    alertname: DispatcherHeartbeatStale
+    exp_alerts: []
+  - eval_time: 210s
+    alertname: DispatcherHeartbeatStale
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: The outbox dispatcher has not finished a tick for over 120 s; nothing new reaches a worker.
+        first_check: The dispatcher's 'tick failed' WARNINGs, then Postgres and Redis. It ticks every 5 s and stamps only after a tick that finished.
+        estimate: 120 s is an estimate (its error backoff tops out at 60 s); revisit with the Gemini run and at hosting.
+- name: no dispatcher heartbeat while Redis is readable fires after 5 minutes
+  interval: 15s
+  input_series:
+  - series: tenderos_exporter_source_up{source="redis"}
+    values: 1x40
+  alert_rule_test:
+  - eval_time: 285s
+    alertname: DispatcherHeartbeatMissing
+    exp_alerts: []
+  - eval_time: 315s
+    alertname: DispatcherHeartbeatMissing
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: The outbox dispatcher has not finished one tick since Redis was emptied.
+        first_check: The outbox_dispatcher container and its log (fake-stack.ps1 empties Redis at each start).
+        estimate: The 5 minute hold is an estimate; revisit with the Gemini run and at hosting.
+- name: a dispatcher heartbeat present stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_exporter_source_up{source="redis"}
+    values: 1x40
+  - series: tenderos_outbox_dispatcher_heartbeat_age_seconds
+    values: 3x40
+  alert_rule_test:
+  - eval_time: 315s
+    alertname: DispatcherHeartbeatMissing
+    exp_alerts: []
+- name: no heartbeat while Redis cannot be read is left to ExporterSourceDown
+  interval: 15s
+  input_series:
+  - series: tenderos_exporter_source_up{source="redis"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 315s
+    alertname: DispatcherHeartbeatMissing
+    exp_alerts: []
+- name: only a dead letter that failed within the hour fires
+  interval: 15s
+  input_series:
+  - series: tenderos_outbox_dead_letters{event_type="WorkflowRunCreated"}
+    values: 1x300
+  - series: tenderos_outbox_dead_letters{event_type="DocumentUploaded"}
+    values: 0x10 1x300
+  - series: tenderos_outbox_dead_letters{event_type="OperationRequested"}
+    values: 2x10 1x300
+  - series: tenderos_outbox_dead_letters{event_type="TenderCreated"}
+    values: _x10 1x300
+  - series: tenderos_outbox_dead_letters{event_type="GateDecisionRecorded"}
+    values: 1x10 0x10 1x300
+  alert_rule_test:
+  - eval_time: 150s
+    alertname: DeadLetter
+    exp_alerts: []
+  - eval_time: 330s
+    alertname: DeadLetter
+    exp_alerts:
+    - exp_labels:
+        event_type: DocumentUploaded
+        severity: warning
+      exp_annotations:
+        summary: A DocumentUploaded outbox event failed every attempt within the last hour.
+        first_check: The dispatcher's 'Failed to dispatch outbox event <id>' line for the cause (the Work dashboard lists every outstanding dead letter with its id), then a re-drive.
+        estimate: 'The 1 hour window is an estimate; revisit with the Gemini run and at hosting. It fires on a new dead letter only: one that stays is listed on the Work dashboard, not alerted on again.'
+    - exp_labels:
+        event_type: GateDecisionRecorded
+        severity: warning
+      exp_annotations:
+        summary: A GateDecisionRecorded outbox event failed every attempt within the last hour.
+        first_check: The dispatcher's 'Failed to dispatch outbox event <id>' line for the cause (the Work dashboard lists every outstanding dead letter with its id), then a re-drive.
+        estimate: 'The 1 hour window is an estimate; revisit with the Gemini run and at hosting. It fires on a new dead letter only: one that stays is listed on the Work dashboard, not alerted on again.'
+  - eval_time: 2400s
+    alertname: DeadLetter
+    exp_alerts:
+    - exp_labels:
+        event_type: DocumentUploaded
+        severity: warning
+      exp_annotations:
+        summary: A DocumentUploaded outbox event failed every attempt within the last hour.
+        first_check: The dispatcher's 'Failed to dispatch outbox event <id>' line for the cause (the Work dashboard lists every outstanding dead letter with its id), then a re-drive.
+        estimate: 'The 1 hour window is an estimate; revisit with the Gemini run and at hosting. It fires on a new dead letter only: one that stays is listed on the Work dashboard, not alerted on again.'
+    - exp_labels:
+        event_type: GateDecisionRecorded
+        severity: warning
+      exp_annotations:
+        summary: A GateDecisionRecorded outbox event failed every attempt within the last hour.
+        first_check: The dispatcher's 'Failed to dispatch outbox event <id>' line for the cause (the Work dashboard lists every outstanding dead letter with its id), then a re-drive.
+        estimate: 'The 1 hour window is an estimate; revisit with the Gemini run and at hosting. It fires on a new dead letter only: one that stays is listed on the Work dashboard, not alerted on again.'
+  - eval_time: 3930s
+    alertname: DeadLetter
+    exp_alerts: []
+- name: a queue's head job waiting past 600 s for 5 minutes fires
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_queue_oldest_job_age_seconds{queue="workflow"}
+    values: 0+15x80
+  - series: tenderos_rq_queue_oldest_job_age_seconds{queue="ingestion"}
+    values: '0x80'
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: QueuedJobOld
+    exp_alerts: []
+  - eval_time: 930s
+    alertname: QueuedJobOld
+    exp_alerts:
+    - exp_labels:
+        queue: workflow
+        severity: warning
+      exp_annotations:
+        summary: The workflow queue's oldest job has waited over 600 s.
+        first_check: Live workers on workflow, and whether its worker is busy on one long job.
+        estimate: 600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: a run queued past 600 s fires; a run at a gate 91 days never does
+  interval: 15s
+  input_series:
+  - series: tenderos_workflow_run_oldest_age_seconds{status="queued"}
+    values: 0+15x80
+  - series: tenderos_workflow_run_oldest_age_seconds{status="waiting_for_human"}
+    values: 7848202x80
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: RunQueuedTooLong
+    exp_alerts: []
+  - eval_time: 930s
+    alertname: RunQueuedTooLong
+    exp_alerts:
+    - exp_labels:
+        status: queued
+        severity: warning
+      exp_annotations:
+        summary: A workflow run has been queued for over 600 s.
+        first_check: The run's WorkflowRunCreated outbox row (pending, or a dead letter?) and the workflow queue.
+        estimate: 600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+  - eval_time: 930s
+    alertname: RunJobTooLong
+    exp_alerts: []
+- name: a run's current job past an hour fires
+  interval: 15s
+  input_series:
+  - series: tenderos_workflow_run_oldest_age_seconds{status="running"}
+    values: 3000+15x80
+  - series: tenderos_workflow_run_oldest_age_seconds{status="waiting_for_human"}
+    values: 7848202x80
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: RunJobTooLong
+    exp_alerts: []
+  - eval_time: 930s
+    alertname: RunJobTooLong
+    exp_alerts:
+    - exp_labels:
+        status: running
+        severity: warning
+      exp_annotations:
+        summary: A workflow run's current job has run for over an hour.
+        first_check: The run's current job in RQ and the workflow worker's log. The reaper fails a job at 6 h (MAX_RUN_JOB_AGE); this is the warning before it.
+        estimate: 1 hour and the 5 minute hold are estimates (a real run took up to 45 min); revisit with the Gemini run and at hosting.
+- name: an operation queued past 600 s fires
+  interval: 15s
+  input_series:
+  - series: tenderos_operation_oldest_age_seconds{status="queued"}
+    values: 0+15x80
+  - series: tenderos_operation_oldest_age_seconds{status="running"}
+    values: '0x80'
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: OperationQueuedTooLong
+    exp_alerts: []
+  - eval_time: 930s
+    alertname: OperationQueuedTooLong
+    exp_alerts:
+    - exp_labels:
+        status: queued
+        severity: warning
+      exp_annotations:
+        summary: An async operation has been queued for over 600 s.
+        first_check: The operations queue and operations_worker.
+        estimate: 600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: the first reap of a rule fires for an hour; old reaps never
+  interval: 15s
+  input_series:
+  - series: tenderos_workflow_runs_ended_by_system_total{action="workflow_run_reaped",rule="cap"}
+    values: 0x10 1x300
+  - series: tenderos_workflow_runs_ended_by_system_total{action="workflow_run_reaped",rule="dead_letter"}
+    values: 5x300
+  - series: tenderos_workflow_runs_ended_by_system_total{action="workflow_run_reaped",rule="abandoned"}
+    values: _x10 1x300
+  - series: tenderos_workflow_runs_ended_by_system_total{action="workflow_run_reaped",rule="unknown"}
+    values: 3x10 2x300
+  alert_rule_test:
+  - eval_time: 150s
+    alertname: RunsEndedBySystem
+    exp_alerts: []
+  - eval_time: 180s
+    alertname: RunsEndedBySystem
+    exp_alerts:
+    - exp_labels:
+        action: workflow_run_reaped
+        rule: cap
+        severity: warning
+      exp_annotations:
+        summary: The system ended a workflow run within the last hour (workflow_run_reaped, rule cap).
+        first_check: The run's audit row and the dispatcher's reaper WARNING.
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 2400s
+    alertname: RunsEndedBySystem
+    exp_alerts:
+    - exp_labels:
+        action: workflow_run_reaped
+        rule: cap
+        severity: warning
+      exp_annotations:
+        summary: The system ended a workflow run within the last hour (workflow_run_reaped, rule cap).
+        first_check: The run's audit row and the dispatcher's reaper WARNING.
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 3780s
+    alertname: RunsEndedBySystem
+    exp_alerts: []
+- name: three runs failing within an hour fires, for an hour
+  interval: 15s
+  input_series:
+  - series: tenderos_workflow_runs{status="failed"}
+    values: 10x10 11 12 13x300
+  alert_rule_test:
+  - eval_time: 180s
+    alertname: RunsFailing
+    exp_alerts: []
+  - eval_time: 210s
+    alertname: RunsFailing
+    exp_alerts:
+    - exp_labels:
+        status: failed
+        severity: warning
+      exp_annotations:
+        summary: 3 or more workflow runs failed within the last hour.
+        first_check: The Work dashboard's failed runs by error_code.
+        estimate: 3 within an hour is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 3810s
+    alertname: RunsFailing
+    exp_alerts: []
+- name: two runs failing, or a delete then two, stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_workflow_runs{status="failed"}
+    values: 10x10 11 12x300
+  - series: tenderos_workflow_runs{status="completed"}
+    values: 50x10 40x10 42x300
+  alert_rule_test:
+  - eval_time: 600s
+    alertname: RunsFailing
+    exp_alerts: []
+- name: three operations failing within an hour fires, for an hour
+  interval: 15s
+  input_series:
+  - series: tenderos_operations{status="failed"}
+    values: 10x10 11 12 13x300
+  alert_rule_test:
+  - eval_time: 180s
+    alertname: OperationsFailing
+    exp_alerts: []
+  - eval_time: 210s
+    alertname: OperationsFailing
+    exp_alerts:
+    - exp_labels:
+        status: failed
+        severity: warning
+      exp_annotations:
+        summary: 3 or more async operations failed within the last hour.
+        first_check: The Work dashboard's failed operations by error_code.
+        estimate: 3 within an hour is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 3810s
+    alertname: OperationsFailing
+    exp_alerts: []
+- name: two operations failing stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_operations{status="failed"}
+    values: 10x10 11 12x300
+  alert_rule_test:
+  - eval_time: 600s
+    alertname: OperationsFailing
+    exp_alerts: []
+- name: a sustained limiter outage fires after 2 minutes
+  interval: 15s
+  input_series:
+  - series: tenderos_rate_limiter_redis_unavailable_total
+    values: 0x10 1+1x60
+  alert_rule_test:
+  - eval_time: 270s
+    alertname: RateLimiterRedisDown
+    exp_alerts: []
+  - eval_time: 300s
+    alertname: RateLimiterRedisDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: 'The rate limiter cannot reach Redis: login answers 503 and every other route goes unlimited.'
+        first_check: Redis, then the api's rate limiter WARNING.
+        estimate: The 1 minute window and the 2 minute hold are estimates (one request that found Redis gone must not fire it); revisit with the Gemini run and at hosting.
+- name: one request that found Redis gone stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_rate_limiter_redis_unavailable_total
+    values: 0x10 1x60
+  alert_rule_test:
+  - eval_time: 300s
+    alertname: RateLimiterRedisDown
+    exp_alerts: []
+- name: a rising counter absent then appearing at 1 fires on the same schedule
+  interval: 15s
+  input_series:
+  - series: tenderos_rate_limiter_redis_unavailable_total
+    values: _x10 1+1x60
+  alert_rule_test:
+  - eval_time: 270s
+    alertname: RateLimiterRedisDown
+    exp_alerts: []
+  - eval_time: 300s
+    alertname: RateLimiterRedisDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: 'The rate limiter cannot reach Redis: login answers 503 and every other route goes unlimited.'
+        first_check: Redis, then the api's rate limiter WARNING.
+        estimate: The 1 minute window and the 2 minute hold are estimates (one request that found Redis gone must not fire it); revisit with the Gemini run and at hosting.
+- name: a 429 surge fires once its floor and the 10 minute hold are passed
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+15x100
+  - series: tenderos_http_requests_total{route="unmatched",method="GET",code="429"}
+    values: _x3 1+3x96
+  alert_rule_test:
+  - eval_time: 780s
+    alertname: RateLimited429Surge
+    exp_alerts: []
+  - eval_time: 810s
+    alertname: RateLimited429Surge
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Over 5% of api requests are answered 429.
+        first_check: 'Whether every client arrives from one address (a host''s proxy putting every user in one bucket, item 1): nginx''s remote_addr.'
+        estimate: 5%, 0.1 a second and the 10 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: one 429 at low traffic stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+1x100
+  - series: tenderos_http_requests_total{route="unmatched",method="GET",code="429"}
+    values: 0x20 1x80
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: RateLimited429Surge
+    exp_alerts: []
+- name: healthchecks and scrapes do not hide a 429 surge (change 3)
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+1x100
+  - series: tenderos_http_requests_total{route="unmatched",method="GET",code="429"}
+    values: 0+2x100
+  - series: tenderos_http_requests_total{route="/health/ready",method="GET",code="200"}
+    values: 0+40x100
+  - series: tenderos_http_requests_total{route="/metrics",method="GET",code="200"}
+    values: 0+1x100
+  alert_rule_test:
+  - eval_time: 825s
+    alertname: RateLimited429Surge
+    exp_alerts: []
+  - eval_time: 855s
+    alertname: RateLimited429Surge
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Over 5% of api requests are answered 429.
+        first_check: 'Whether every client arrives from one address (a host''s proxy putting every user in one bucket, item 1): nginx''s remote_addr.'
+        estimate: 5%, 0.1 a second and the 10 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: a 5xx rate fires once its floor and the 5 minute hold are passed
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+15x100
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}/readiness",method="GET",code="500"}
+    values: 0+3x100
+  alert_rule_test:
+  - eval_time: 375s
+    alertname: Api5xxRate
+    exp_alerts: []
+  - eval_time: 405s
+    alertname: Api5xxRate
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Over 5% of api requests answer 5xx.
+        first_check: The api's 'unhandled error on' lines by route, then one request_id end to end.
+        estimate: 5%, 0.05 a second and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: one 5xx at low traffic stays quiet
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+1x100
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}/readiness",method="GET",code="500"}
+    values: 0x20 1x80
+  alert_rule_test:
+  - eval_time: 900s
+    alertname: Api5xxRate
+    exp_alerts: []
+- name: healthchecks and scrapes do not hide a 5xx rate (change 3)
+  interval: 15s
+  input_series:
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}",method="GET",code="200"}
+    values: 0+1x100
+  - series: tenderos_http_requests_total{route="/tenders/{tender_id}/readiness",method="GET",code="500"}
+    values: 0+1x100
+  - series: tenderos_http_requests_total{route="/health/ready",method="GET",code="200"}
+    values: 0+40x100
+  - series: tenderos_http_requests_total{route="/metrics",method="GET",code="200"}
+    values: 0+1x100
+  alert_rule_test:
+  - eval_time: 525s
+    alertname: Api5xxRate
+    exp_alerts: []
+  - eval_time: 555s
+    alertname: Api5xxRate
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Over 5% of api requests answer 5xx.
+        first_check: The api's 'unhandled error on' lines by route, then one request_id end to end.
+        estimate: 5%, 0.05 a second and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: five reuses within an hour fire; four do not yet
+  interval: 15s
+  input_series:
+  - series: tenderos_refresh_token_reuse_total
+    values: 0x10 1 2 3 4 5x300
+  alert_rule_test:
+  - eval_time: 210s
+    alertname: RefreshTokenReuseSpike
+    exp_alerts: []
+  - eval_time: 240s
+    alertname: RefreshTokenReuseSpike
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: About 5 or more refresh tokens were presented again after rotation within the last hour.
+        first_check: 'The reuse WARNINGs'' users: one user many times (a client bug, two tabs without Web Locks) or many users (a broken release, or theft). One reuse never fires: it has known false positives
+          (item 34 option 3).'
+        estimate: 5 an hour is an estimate (increase() extrapolates, so it is about 5); revisit with the Gemini run and at hosting.
+  - eval_time: 900s
+    alertname: RefreshTokenReuseSpike
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: About 5 or more refresh tokens were presented again after rotation within the last hour.
+        first_check: 'The reuse WARNINGs'' users: one user many times (a client bug, two tabs without Web Locks) or many users (a broken release, or theft). One reuse never fires: it has known false positives
+          (item 34 option 3).'
+        estimate: 5 an hour is an estimate (increase() extrapolates, so it is about 5); revisit with the Gemini run and at hosting.
+- name: one reuse never fires
+  interval: 15s
+  input_series:
+  - series: tenderos_refresh_token_reuse_total
+    values: 0x10 1x300
+  alert_rule_test:
+  - eval_time: 600s
+    alertname: RefreshTokenReuseSpike
+    exp_alerts: []
