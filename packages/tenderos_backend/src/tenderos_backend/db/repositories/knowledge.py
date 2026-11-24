@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import UTC, date, datetime
 
 from sqlalchemy import func, or_, select, union, update
@@ -196,6 +196,18 @@ class KnowledgeRepository:
 
     async def get_knowledge_item(self, knowledge_item_id: uuid.UUID) -> KnowledgeItem | None:
         return await self._session.get(KnowledgeItem, knowledge_item_id)
+
+    async def get_knowledge_items(
+        self, knowledge_item_ids: Collection[uuid.UUID]
+    ) -> dict[uuid.UUID, KnowledgeItem]:
+        """Several items in one statement, by id; ids not found are absent
+        (plan item 80, PR 33: the resume review listing read one per item)."""
+        if not knowledge_item_ids:
+            return {}
+        result = await self._session.execute(
+            select(KnowledgeItem).where(KnowledgeItem.id.in_(knowledge_item_ids))
+        )
+        return {item.id: item for item in result.scalars().all()}
 
     async def get_knowledge_item_for_update(
         self, knowledge_item_id: uuid.UUID

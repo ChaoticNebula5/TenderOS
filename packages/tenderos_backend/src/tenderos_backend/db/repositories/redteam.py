@@ -260,6 +260,15 @@ class RedteamRepository:
         )
         await self._session.flush()
 
+    async def has_pass_for_operation(self, operation_id: uuid.UUID) -> bool:
+        """Whether any pass, of any outcome, is recorded as this operation's
+        (plan item 105: an operation that ended without one gets a failed
+        pass, and only once)."""
+        result = await self._session.execute(
+            select(exists().where(RedteamPass.operation_id == operation_id))
+        )
+        return bool(result.scalar())
+
     async def latest_pass(self, tender_id: uuid.UUID) -> RedteamPass | None:
         """The newest finished pass, whatever its outcome."""
         result = await self._session.execute(

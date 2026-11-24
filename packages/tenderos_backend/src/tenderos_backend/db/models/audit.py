@@ -12,6 +12,14 @@ class AuditEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __table_args__ = (
         CheckConstraint("actor_type IN ('user','agent','system')", name="ck_audit_actor_type"),
         Index("idx_audit_tender_time", "tender_id", "created_at"),
+        # 041_lookup_and_range_indexes.py (plan item 90): only the system's
+        # run endings, which the metrics exporter counts every 15 s through
+        # migration 039's runs_ended_by_system view (same predicate).
+        Index(
+            "idx_audit_run_endings",
+            "action",
+            postgresql_where=text("action IN ('workflow_run_reaped', 'workflow_run_timed_out')"),
+        ),
     )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(

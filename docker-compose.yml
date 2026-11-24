@@ -83,12 +83,19 @@ services:
       - "[::1]:7474:7474"
       - "127.0.0.1:7687:7687"
       - "[::1]:7687:7687"
+    # PR 33: each check starts a cypher-shell JVM (observed on neo4j_test:
+    # 100 to 170% CPU each time), so after start it runs every 30 s; during
+    # start_period start_interval probes every 2 s, so start-up is seen as
+    # quickly as before (start_interval needs Docker Engine 25 or later;
+    # local and CI's runners have 29). Only start-up ordering reads this
+    # (depends_on: service_healthy). Same as neo4j_test below and CI's service.
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER} -p ${NEO4J_PASSWORD} 'RETURN 1'"]
-      interval: 5s
+      interval: 30s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
 
   # Plan item 100: the backend tests' own Neo4j, so a test run never touches
   # the stack's graph (15 test files empty the whole graph they reach).
@@ -116,10 +123,11 @@ services:
       - "127.0.0.1:7688:7687"
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u ${NEO4J_USER} -p ${NEO4J_PASSWORD} -d tenderos-test 'RETURN 1'"]
-      interval: 5s
+      interval: 30s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
 
   # S3-compatible object store behind the unchanged boto3 adapter
   # (db/storage.py). VersityGW replaces MinIO: minio/minio is no longer

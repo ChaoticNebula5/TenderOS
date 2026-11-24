@@ -34,6 +34,9 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         ),
         # 004_requirements.py
         Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
+        # 041_lookup_and_range_indexes.py (plan item 90): the LLM
+        # dashboard's time range over every tender.
+        Index("idx_agent_traces_created_at", "created_at"),
     )
 
     tender_id: Mapped[uuid.UUID | None] = mapped_column(

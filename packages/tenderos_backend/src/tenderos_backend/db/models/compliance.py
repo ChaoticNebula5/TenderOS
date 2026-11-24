@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Index,
     UniqueConstraint,
     false,
     func,
@@ -37,6 +38,9 @@ class EvidenceLink(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             name="ck_evidence_link_has_source",
         ),
         UniqueConstraint("tender_id", "content_fingerprint", name="uq_evidence_link_fingerprint"),
+        # 041_lookup_and_range_indexes.py (plan item 90): the knowledge reach
+        # lookup (list_tender_ids_projecting) finds rows by item.
+        Index("idx_evidence_links_knowledge_item", "knowledge_item_id"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

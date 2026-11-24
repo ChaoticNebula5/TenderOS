@@ -6,6 +6,7 @@ from sqlalchemy import (
     TIMESTAMP,
     Boolean,
     ForeignKey,
+    Index,
     Numeric,
     UniqueConstraint,
     false,
@@ -65,6 +66,9 @@ class RoleMatch(UUIDPrimaryKeyMixin, Base):
         UniqueConstraint(
             "role_requirement_id", "employee_knowledge_item_id", name="uq_role_match_candidate"
         ),
+        # 041_lookup_and_range_indexes.py (plan item 90): the knowledge reach
+        # lookup (list_tender_ids_projecting) finds rows by item.
+        Index("idx_role_matches_employee_item", "employee_knowledge_item_id"),
     )
 
     role_requirement_id: Mapped[uuid.UUID] = mapped_column(

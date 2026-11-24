@@ -117,7 +117,9 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
       # Plan item 100: shaped like docker-compose.yml's neo4j_test, the
       # tests' own server: 7688 on the runner and one database named
-      # tenderos-test, as scripts/test-backend.env says.
+      # tenderos-test, as scripts/test-backend.env says. PR 33: the healthcheck
+      # as compose's (a cypher-shell JVM every 30 s after start, every 2 s
+      # during start; the runner's Docker 29 supports --health-start-interval).
       neo4j:
         image: neo4j:5.26.32-community@sha256:42ef3ebfd671ebd01fdebb6dcbe80cf7b45eef2aa3d346ef4132f7ef31e67d2f
         env:
@@ -127,8 +129,8 @@ jobs:
           - 7688:7687
         options: >-
           --health-cmd "cypher-shell -u neo4j -p changeme 'RETURN 1'"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-          --health-start-period 30s
+          --health-interval 30s --health-timeout 5s --health-retries 3
+          --health-start-period 120s --health-start-interval 2s
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3

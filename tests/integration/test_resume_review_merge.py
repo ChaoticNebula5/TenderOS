@@ -11,11 +11,12 @@ import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from tenderos_backend.agents.schemas.knowledge import ExtractedEmployeeProfile
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.knowledge import KnowledgeItemChunk
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.session import engine
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import EVENT_RESUME_MERGE_APPROVED
 from tenderos_backend.domain.services import document_service, knowledge_service
@@ -840,3 +841,70 @@ async def test_the_automatic_branch_keeps_an_email_differing_only_in_case():
     assert item.status == "approved", item.error_message
     employee = await _employee_row(employee_id)
     assert employee is not None and employee.email == "morgan.vale@example.test"
+
+
+# ------------------------------------------------------- the listing's reads
+
+
+async def _listing_statements(batch_id: uuid.UUID) -> tuple[list, int]:
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", count)
+    try:
+        rows = await knowledge_service.list_import_items_with_targets(batch_id)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count)
+    return rows, len(statements)
+
+
+async def _named_item(batch_id: uuid.UUID, target_id: uuid.UUID, email: str | None) -> uuid.UUID:
+    async with UnitOfWork() as uow:
+        item = await uow.knowledge.create_import_item(
+            batch_id=batch_id,
+            source_ref=f"resume-{uuid.uuid4().hex}.pdf",
+            extracted_payload=_profile(email=email).model_dump(),
+        )
+        await uow.knowledge.update_import_item(
+            item.id, status="needs_review", target_knowledge_item_id=target_id
+        )
+        await uow.commit()
+    return item.id
+
+
+async def test_the_listing_reads_every_target_at_once_whatever_the_batch_size():
+    """Plan item 80 (PR 33): it read each item's knowledge item on its own
+    (one statement per item; measured 2,003 for 2,000 items). Now the
+    statement count does not grow with the batch: the items, the batch, the
+    organization's employees and every target's knowledge item, four in all.
+    And the held-email rule reads as before: another employee's email is
+    held, the employee's own (in any case) is not."""
+    org_id, user_id = await _org()
+    jordan, _ = await _employee(
+        org_id, user_id, verified=True, email="jordan@example.test", name="Jordan Lee"
+    )
+    priya, _ = await _employee(
+        org_id, user_id, verified=True, email="priya@example.test", name="Priya Nair"
+    )
+    batch_id = await _batch(org_id, user_id)
+    takes_jordans = await _named_item(batch_id, priya, "jordan@example.test")
+    keeps_own = await _named_item(batch_id, jordan, " JORDAN@example.test")
+
+    rows, small = await _listing_statements(batch_id)
+    emails = {
+        item.id: next(f for f in target.changes if f.field == "email")
+        for item, target in rows
+        if target is not None and target.changes is not None
+    }
+    assert (emails[takes_jordans].held_by_other, emails[takes_jordans].changes) == (True, False)
+    assert emails[keeps_own].held_by_other is False
+
+    for _ in range(5):
+        extra, _ = await _employee(org_id, user_id, verified=True, name=uuid.uuid4().hex)
+        await _named_item(batch_id, extra, None)
+    rows, large = await _listing_statements(batch_id)
+    assert len(rows) == 7
+    assert all(target is not None for _, target in rows)
+    assert small == large == 4
