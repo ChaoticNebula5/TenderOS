@@ -630,10 +630,11 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
         # Fail closed instead - same posture as a genuinely stale graph
         # (this tender is not ready), distinct wording so a reader can tell
         # "confirmed stale" from "couldn't check." The neo4j driver
-        # (graph_projection/driver.py) applies its own default timeouts
-        # (connection_timeout/connection_acquisition_timeout, no explicit
-        # override in this codebase) - this does not hang forever, but a
-        # real outage can still take close to a minute to surface.
+        # (graph_projection/driver.py) has explicit timeouts since B16:
+        # connection_timeout=5 for the TCP connect and
+        # connection_acquisition_timeout=10, which since driver 6 spans
+        # getting a connection from the pool or opening a new one, so an
+        # outage surfaces here in about 10 s (read in code, not measured).
         logger.exception("graph freshness check failed for tender %s", tender_id)
         blockers.append(
             _blocker(

@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     UniqueConstraint,
     func,
@@ -139,6 +140,9 @@ class ProposalClaimEmployee(UUIDPrimaryKeyMixin, Base):
             "employee_knowledge_item_id",
             name="uq_proposal_claim_employee",
         ),
+        # 041_lookup_and_range_indexes.py (plan item 90): the knowledge reach
+        # lookup (list_tender_ids_projecting) finds rows by item.
+        Index("idx_proposal_claim_employees_item", "employee_knowledge_item_id"),
     )
 
     proposal_claim_id: Mapped[uuid.UUID] = mapped_column(

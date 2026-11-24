@@ -347,6 +347,9 @@ class TenderKnowledgeSelection(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UniqueConstraint("tender_id", "knowledge_item_id", name="uq_tender_knowledge_selection"),
         # 005_knowledge.py
         Index("idx_tender_knowledge_selected", "tender_id", "selected"),
+        # 041_lookup_and_range_indexes.py (plan item 90): the knowledge reach
+        # lookup (list_tender_ids_projecting) finds rows by item.
+        Index("idx_tender_knowledge_selections_item", "knowledge_item_id"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(

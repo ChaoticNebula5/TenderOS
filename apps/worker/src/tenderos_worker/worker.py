@@ -46,6 +46,18 @@ logger = logging.getLogger(__name__)
 WORKER_TTL = DEFAULT_WORKER_TTL
 DEQUEUE_SOCKET_MARGIN_SECONDS = 120
 
+# PR 33 (found in PR 32's stack proof, 2026-11-23): a Redis outage kills the
+# worker's RQ scheduler process, and RQ starts it again only in
+# run_maintenance_tasks, every maintenance_interval (600 s by default), which
+# the worker checks between dequeue waits (405 s each when idle). Until then
+# no scheduled job (a workflow retry, Queue.enqueue_in) is promoted: observed
+# 6.5 minutes, up to about 17 minutes by RQ 2.12's code. 60 s takes the
+# interval out of the worst case, leaving about one dequeue wait. The cost is
+# RQ's registry cleanup running every 60 s instead of every 600 s, a few
+# Redis commands per registry. The exporter's tenderos_rq_scheduled_jobs_overdue
+# and the ScheduledJobsOverdue alert show any delay that remains.
+MAINTENANCE_INTERVAL_SECONDS = 60
+
 
 def worker_socket_timeout(worker_ttl: int = WORKER_TTL) -> int:
     """The socket timeout for a worker's Redis connection: RQ's dequeue
@@ -223,6 +235,18 @@ class LogContextWorker(LogContextWorkerMixin, Worker):
     """RQ's forking Worker with the job's ids bound (LogContextWorkerMixin)."""
 
 
+def build_worker(queues: list[Queue], connection: Redis) -> LogContextWorker:
+    """The worker main() runs, with its worker_ttl and maintenance interval
+    (MAINTENANCE_INTERVAL_SECONDS above); a function so a test can read both
+    without starting it."""
+    return LogContextWorker(
+        queues,
+        connection=connection,
+        worker_ttl=WORKER_TTL,
+        maintenance_interval=MAINTENANCE_INTERVAL_SECONDS,
+    )
+
+
 def main() -> None:
     configure_logging()
     # B17: a real no-op unless LLM_PROVIDER=fake - see that function's own
@@ -236,7 +260,7 @@ def main() -> None:
         preload_operations_module()
     connection = worker_connection(settings.redis_url, WORKER_TTL)
     queues = [Queue(name, connection=connection) for name in queue_names]
-    worker = LogContextWorker(queues, connection=connection, worker_ttl=WORKER_TTL)
+    worker = build_worker(queues, connection)
     # After RQ's own setup (Worker.__init__ runs _set_connection), so this is
     # the timeout the blocking wait really gets (plan item 45).
     logger.info(

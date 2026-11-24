@@ -2,6 +2,8 @@ import hashlib
 import json
 import logging
 import uuid
+from collections import Counter
+from collections.abc import Container, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TypedDict
@@ -794,10 +796,46 @@ def emails_held_by_others(employees: list[Employee], employee_id: uuid.UUID) -> 
     return frozenset(held)
 
 
+class EmailHolders:
+    """Plan item 80 (PR 33): emails_held_by_others for many employees of one
+    list, without rebuilding the set for each. The resume review listing
+    called it once per item, normalizing every employee's email each time:
+    items times employees (measured: 4,004,000 calls, 68% of a 2,000-item
+    listing's time with 2,000 employees). Here each email is normalized
+    once, and counted: another employee holds an email when its count,
+    less this employee's own when this employee is in the list, is above 0.
+    The same answer as emails_held_by_others(employees, employee id)."""
+
+    def __init__(self, employees: Iterable[Employee]) -> None:
+        self._counts: Counter[str] = Counter()
+        self._emails: dict[uuid.UUID, str | None] = {}
+        for employee in employees:
+            email = normalize_employee_email(employee.email)
+            self._emails[employee.knowledge_item_id] = email
+            if email is not None:
+                self._counts[email] += 1
+
+    def held_by_others(self, employee_id: uuid.UUID) -> Container[str]:
+        return _HeldByOthers(self._counts, self._emails.get(employee_id))
+
+
+@dataclass(frozen=True)
+class _HeldByOthers:
+    counts: Counter[str]
+    # This employee's own email as counted, or None when it has none or is
+    # not in the list (then every holder is another employee).
+    own: str | None
+
+    def __contains__(self, email: object) -> bool:
+        if not isinstance(email, str):
+            return False
+        return self.counts[email] - (1 if email == self.own else 0) > 0
+
+
 def resume_merge_fields(
     employee: Employee,
     profile: ExtractedEmployeeProfile,
-    held_emails: frozenset[str] = frozenset(),
+    held_emails: Container[str] = frozenset(),
 ) -> list[ResumeMergeField]:
     """Every field of RESUME_MERGE_FIELDS, in that order. The rule (Q2, the
     automatic branch's since B6): the resume's value wherever it has one; a
@@ -2648,14 +2686,25 @@ async def list_import_items_with_targets(
         if batch is None or batch.import_type != "bulk_resumes":
             return [(item, None) for item in items]
         employees = await uow.knowledge.find_employee_duplicate_candidates(batch.organization_id)
+        # Plan item 80 (PR 33): the targets read together, not one item at a
+        # time. The employee comes from the organization's list just read
+        # (every employee, archived ones included); an item can only name one
+        # of its own organization's employees (import_resume's candidates are
+        # that list), so a target outside it lists none.
+        target_ids = {
+            item.target_knowledge_item_id
+            for item in items
+            if item.target_knowledge_item_id is not None
+        }
+        employees_by_id = {employee.knowledge_item_id: employee for employee in employees}
+        knowledge_items = await uow.knowledge.get_knowledge_items(target_ids)
+        holders = EmailHolders(employees)
         out: list[tuple[KnowledgeImportItem, ImportItemTarget | None]] = []
         for item in items:
             target: ImportItemTarget | None = None
             if item.target_knowledge_item_id is not None:
-                employee = await uow.knowledge.get_employee(item.target_knowledge_item_id)
-                knowledge_item = await uow.knowledge.get_knowledge_item(
-                    item.target_knowledge_item_id
-                )
+                employee = employees_by_id.get(item.target_knowledge_item_id)
+                knowledge_item = knowledge_items.get(item.target_knowledge_item_id)
                 if employee is not None and knowledge_item is not None:
                     profile = _item_profile(item)
                     target = ImportItemTarget(
@@ -2684,7 +2733,7 @@ async def list_import_items_with_targets(
                             resume_merge_fields(
                                 employee,
                                 profile,
-                                emails_held_by_others(employees, employee.knowledge_item_id),
+                                holders.held_by_others(employee.knowledge_item_id),
                             )
                             if profile is not None
                             else None

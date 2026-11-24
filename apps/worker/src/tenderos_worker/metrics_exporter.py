@@ -72,6 +72,17 @@ _QUEUE_KEY = "rq:queue:{}"
 _JOB_KEY = "rq:job:{}"
 _FAILED_REGISTRY_KEY = "rq:failed:{}"
 _WORKERS_BY_QUEUE_KEY = "rq:workers:{}"
+# PR 33: RQ's scheduled registry (a sorted set scored by the UTC time each
+# job is due, rq/registry.py ScheduledJobRegistry) and the lock a worker's
+# scheduler holds per queue while it runs (rq/scheduler.py). A Redis outage
+# kills the scheduler process and RQ restarts it only at a later maintenance
+# pass (worker.py MAINTENANCE_INTERVAL_SECONDS); meanwhile due jobs, such as
+# a workflow retry, stay in the registry.
+_SCHEDULED_KEY = "rq:scheduled:{}"
+_SCHEDULER_LOCK_KEY = "rq:scheduler-lock:{}"
+# A due job the scheduler promotes within about a second (it looks every
+# second); one still there a minute later is overdue.
+SCHEDULED_OVERDUE_SECONDS = 60
 
 _RUN_COUNTS = f"SELECT status, count(*) FROM {SCHEMA}.workflow_runs GROUP BY status"
 # Each active status's age counts from when the run's current wait began,
@@ -162,6 +173,8 @@ class QueueState:
     failed: int
     workers: int
     heartbeat_age: float | None
+    scheduled_overdue: int = 0
+    scheduler_lock_held: bool = False
 
 
 @dataclass(frozen=True)
@@ -229,6 +242,12 @@ def read_redis(
             failed=int(connection.zcard(_FAILED_REGISTRY_KEY.format(name))),
             workers=alive,
             heartbeat_age=heartbeat_age(connection.get(queue_heartbeat_key(name)), now),
+            scheduled_overdue=int(
+                connection.zcount(
+                    _SCHEDULED_KEY.format(name), "-inf", now - SCHEDULED_OVERDUE_SECONDS
+                )
+            ),
+            scheduler_lock_held=bool(connection.exists(_SCHEDULER_LOCK_KEY.format(name))),
         )
     dispatcher = heartbeat_age(connection.get(DISPATCHER_HEARTBEAT_KEY), now)
     return RedisState(queues, dispatcher)
@@ -314,12 +333,25 @@ def redis_metrics(state: RedisState, now: float) -> Iterator[Metric]:
             "first one)",
             labels=["queue"],
         ),
+        "overdue": GaugeMetricFamily(
+            "tenderos_rq_scheduled_jobs_overdue",
+            f"scheduled jobs more than {SCHEDULED_OVERDUE_SECONDS} s past their time, not yet "
+            "promoted to the queue",
+            labels=["queue"],
+        ),
+        "scheduler": GaugeMetricFamily(
+            "tenderos_rq_scheduler_lock_held",
+            "1 while a worker's RQ scheduler holds the queue's lock",
+            labels=["queue"],
+        ),
     }
     for name, queue in state.queues.items():
         families["jobs"].add_metric([name], queue.jobs)
         families["oldest"].add_metric([name], _age(queue.oldest_enqueued_at, now))
         families["failed"].add_metric([name], queue.failed)
         families["workers"].add_metric([name], queue.workers)
+        families["overdue"].add_metric([name], queue.scheduled_overdue)
+        families["scheduler"].add_metric([name], int(queue.scheduler_lock_held))
         if queue.heartbeat_age is not None:
             families["heartbeat"].add_metric([name], queue.heartbeat_age)
     yield from families.values()

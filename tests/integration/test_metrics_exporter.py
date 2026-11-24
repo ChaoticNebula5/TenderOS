@@ -19,6 +19,7 @@ import pytest
 import pytest_asyncio
 from redis import Redis
 from rq import Queue, SimpleWorker, Worker
+from rq.scheduler import RQScheduler
 from rq.timeouts import TimerDeathPenalty
 from sqlalchemy.engine import make_url
 from tenderos_backend.core.config import settings
@@ -37,6 +38,7 @@ from tenderos_worker.metrics_exporter import (
     StateCollector,
     read_postgres,
     read_redis,
+    redis_metrics,
 )
 from tenderos_worker.worker import LogContextWorkerMixin
 
@@ -620,3 +622,38 @@ def test_a_heartbeat_ages_while_nothing_renews_it(connection: Redis):
         )
     finally:
         connection.delete(heartbeats.queue_heartbeat_key(name), heartbeats.DISPATCHER_HEARTBEAT_KEY)
+
+
+def test_overdue_scheduled_jobs_and_the_scheduler_lock_read_as_rq_keeps_them(
+    connection: Redis,
+):
+    """PR 33: a job scheduled more than 60 s ago and still in RQ's scheduled
+    registry is overdue; one due 30 s ago, or not yet due, is not. Promoting
+    it (one pass of RQ's real scheduler, the one a worker runs) clears it.
+    The lock reads as RQ's scheduler holds and releases it."""
+    name = f"exporter-{uuid.uuid4().hex[:8]}"
+    queue = Queue(name, connection=connection)
+    now = time.time()
+    for offset in (-120, -30, 300):
+        queue.enqueue_at(datetime.fromtimestamp(now + offset, UTC), "builtins.print", offset)
+    scheduler = RQScheduler([name], connection=connection)
+    try:
+        before = read_redis(connection, now, [name]).queues[name]
+        assert (before.scheduled_overdue, before.scheduler_lock_held) == (1, False)
+
+        scheduler.acquire_locks()
+        held = read_redis(connection, now, [name]).queues[name]
+        assert held.scheduler_lock_held is True
+        families = {f.name: f for f in redis_metrics(read_redis(connection, now, [name]), now)}
+        assert [s.value for s in families["tenderos_rq_scheduled_jobs_overdue"].samples] == [1]
+        assert [s.value for s in families["tenderos_rq_scheduler_lock_held"].samples] == [1]
+
+        scheduler.enqueue_scheduled_jobs()
+        scheduler.release_locks()
+        after = read_redis(connection, time.time(), [name]).queues[name]
+        assert (after.scheduled_overdue, after.scheduler_lock_held) == (0, False)
+        assert queue.count == 2  # the two due jobs promoted; the future one waits
+    finally:
+        scheduler.release_locks()
+        queue.delete(delete_jobs=True)
+        connection.delete(f"rq:scheduled:{name}")

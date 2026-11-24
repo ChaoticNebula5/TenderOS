@@ -135,7 +135,8 @@ def _error_code_for(exc: BaseException) -> str:
     return "INTERNAL_ERROR"
 
 
-async def _fail(operation: AsyncOperation, code: str) -> None:
+async def _fail(operation: AsyncOperation, code: str) -> bool:
+    """Whether this call failed the operation (False: the claim was lost)."""
     assert operation.claim_token is not None
     finished = await operation_service.finish_operation(
         operation.id, operation.claim_token, "failed", code, _FAILURES[code]
@@ -144,6 +145,7 @@ async def _fail(operation: AsyncOperation, code: str) -> None:
         logger.warning(
             "operation %s: claim lost before it could be marked failed (%s)", operation.id, code
         )
+    return finished
 
 
 async def run_operation(operation_id: str) -> None:
@@ -176,6 +178,15 @@ async def run_operation(operation_id: str) -> None:
 
     try:
         await handler(operation)
+    except JobTimeoutException:
+        # PR 33 (user decision): RQ's timeout landing inside the work's own
+        # code is a timeout, not an internal error. It goes on to
+        # run_operation_job's recovery, which fails the operation as
+        # JOB_TIMEOUT (and records a red-team operation's failed pass if it
+        # has none), and RQ files the job as failed rather than finished.
+        # JobTimeoutException is an Exception subclass, so without this the
+        # clause below took it as INTERNAL_ERROR.
+        raise
     except Exception as exc:
         code = _error_code_for(exc)
         logger.exception("operation %s (%s) failed: %s", op_id, operation.kind, code)
@@ -197,7 +208,14 @@ def run_operation_job(operation_id: str) -> None:
     job passes its timeout) reaches code of ours: the operation is then
     marked failed as JOB_TIMEOUT instead of waiting for the reaper. The
     engine is disposed first because its pooled connections belong to the
-    event loop that just stopped."""
+    event loop that just stopped.
+
+    Plan item 105 (PR 33): a red-team operation failed here also gets a
+    failed pass when none was recorded. RQ's timeout landing while the event
+    loop waits surfaces outside the pass, and asyncio.run cancels it, so
+    run_red_team never records it; landing during the projection step, the
+    pass never started. Only when this recovery failed the operation itself:
+    one the reaper got to first has its pass recorded there."""
     # The first line of job code. Its timestamp, against RQ's own job
     # started_at, is the job's startup cost (forking the work-horse and
     # importing this module; see worker.py's preload).
@@ -209,8 +227,12 @@ def run_operation_job(operation_id: str) -> None:
         async def _recover() -> None:
             await engine.dispose()
             operation = await operation_service.get_operation(uuid.UUID(operation_id))
-            if operation is not None and operation.status == "running":
-                await _fail(operation, "JOB_TIMEOUT")
+            if (
+                operation is not None
+                and operation.status == "running"
+                and await _fail(operation, "JOB_TIMEOUT")
+            ):
+                await operation_service.record_failed_redteam_pass_after_timeout(operation.id)
 
         asyncio.run(_recover())
         raise

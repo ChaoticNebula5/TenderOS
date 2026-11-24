@@ -262,6 +262,40 @@ tests:
         summary: The workflow queue's oldest job has waited over 600 s.
         first_check: Live workers on workflow, and whether its worker is busy on one long job.
         estimate: 600 s and the 5 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: a scheduled job left overdue for 2 minutes fires; a queue with none never
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_scheduled_jobs_overdue{queue="workflow"}
+    values: 0x3 1x40
+  - series: tenderos_rq_scheduled_jobs_overdue{queue="ingestion"}
+    values: '0x50'
+  alert_rule_test:
+  - eval_time: 165s
+    alertname: ScheduledJobsOverdue
+    exp_alerts: []
+  - eval_time: 195s
+    alertname: ScheduledJobsOverdue
+    exp_alerts:
+    - exp_labels:
+        queue: workflow
+        severity: warning
+      exp_annotations:
+        summary: A scheduled job on the workflow queue is over a minute past its time and not promoted.
+        first_check: Whether a worker's RQ scheduler is running (the Health dashboard's scheduler lock for workflow; the worker's 'Scheduler ... raised an exception' lines). Restarting that worker starts
+          its scheduler again.
+        estimate: The 60 s overdue mark and the 2 minute hold are estimates; revisit with the Gemini run and at hosting.
+- name: an overdue job promoted within the hold never fires
+  interval: 15s
+  input_series:
+  - series: tenderos_rq_scheduled_jobs_overdue{queue="workflow"}
+    values: 0x3 1x6 0x40
+  alert_rule_test:
+  - eval_time: 195s
+    alertname: ScheduledJobsOverdue
+    exp_alerts: []
+  - eval_time: 400s
+    alertname: ScheduledJobsOverdue
+    exp_alerts: []
 - name: a run queued past 600 s fires; a run at a gate 91 days never does
   interval: 15s
   input_series:

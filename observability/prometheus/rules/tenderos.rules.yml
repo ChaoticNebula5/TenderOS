@@ -106,6 +106,22 @@ groups:
           first_check: "The outbox_dispatcher container and its log (fake-stack.ps1 empties Redis at each start)."
           estimate: "The 5 minute hold is an estimate; revisit with the Gemini run and at hosting."
 
+      # PR 33: a Redis outage kills each worker's RQ scheduler, and RQ starts
+      # it again only at a later maintenance pass (worker.py
+      # MAINTENANCE_INTERVAL_SECONDS); meanwhile a due job, such as a
+      # workflow retry, is not promoted. On the overdue jobs, not the
+      # scheduler's lock: a missing lock with nothing due harms nothing, and
+      # no worker at all is QueueHasNoWorker.
+      - alert: ScheduledJobsOverdue
+        expr: tenderos_rq_scheduled_jobs_overdue > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A scheduled job on the {{ $labels.queue }} queue is over a minute past its time and not promoted."
+          first_check: "Whether a worker's RQ scheduler is running (the Health dashboard's scheduler lock for {{ $labels.queue }}; the worker's 'Scheduler ... raised an exception' lines). Restarting that worker starts its scheduler again."
+          estimate: "The 60 s overdue mark and the 2 minute hold are estimates; revisit with the Gemini run and at hosting."
+
   - name: tenderos.work
     rules:
       - alert: DeadLetter

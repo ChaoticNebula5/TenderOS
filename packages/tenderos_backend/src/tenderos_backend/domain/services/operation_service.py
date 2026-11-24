@@ -171,8 +171,59 @@ async def reap_lapsed_operations(batch_size: int) -> list[uuid.UUID]:
         reaped = await uow.operations.reap_lapsed(batch_size)
         for operation_id in reaped:
             await _status_event(uow, operation_id, "failed")
+            # Plan item 105 (PR 33): a red-team operation whose worker was
+            # lost recorded no pass; in this transaction, so the failure and
+            # its pass commit together.
+            await record_failed_redteam_pass(uow, operation_id)
         await uow.commit()
         return reaped
+
+
+async def record_failed_redteam_pass(uow: UnitOfWork, operation_id: uuid.UUID) -> bool:
+    """Plan item 105 (PR 33): record a failed red-team pass for a redteam_run
+    operation that ended failed without one, inside the caller's
+    transaction. The caller commits. Returns whether it wrote a row.
+
+    Readiness reads the newest pass (RedteamRepository.latest_pass), so an
+    operation that ends with no pass row leaves it showing the previous
+    pass's reason. Two endings write none: RQ's timeout landing while the
+    event loop waits (asyncio.run then cancels the pass; run_operation_job's
+    recovery calls this), and a lost worker (reap_lapsed_operations above).
+    A timeout during the projection step, before the pass starts, counts
+    too: the user asked for a pass, and it failed (user decision).
+
+    Guards: the operation must be a redteam_run and already failed (each
+    caller has just failed it itself), and no pass of any outcome may be
+    recorded for it. That last one keeps a timeout landing inside the pass's
+    own code from being counted twice: run_red_team has recorded it already.
+    The error code is the operation's own (JOB_TIMEOUT, WORKER_LOST), which
+    says what ended it."""
+    operation = await uow.operations.get(operation_id)
+    if operation is None or operation.kind != "redteam_run" or operation.status != "failed":
+        return False
+    if await uow.redteam.has_pass_for_operation(operation_id):
+        return False
+    error_code = operation.error_code or "INTERNAL_ERROR"
+    await uow.redteam.record_pass(
+        operation.tender_id, outcome="failed", error_code=error_code, operation_id=operation_id
+    )
+    logger.info(
+        "recorded a failed red-team pass for operation %s (%s): it ended without one",
+        operation_id,
+        error_code,
+    )
+    return True
+
+
+async def record_failed_redteam_pass_after_timeout(operation_id: uuid.UUID) -> bool:
+    """record_failed_redteam_pass in its own transaction, for
+    run_operation_job's timeout recovery, which has just failed the
+    operation through finish_operation."""
+    async with UnitOfWork() as uow:
+        recorded = await record_failed_redteam_pass(uow, operation_id)
+        if recorded:
+            await uow.commit()
+        return recorded
 
 
 async def reap_lost_queued_operations(
