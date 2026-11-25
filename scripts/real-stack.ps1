@@ -23,12 +23,20 @@
   running containers.
   No behaviour change to the stack itself.
 
+  -Observability (PR 34, for the real Gemini run): once the live stack has
+  passed every check above, starts and checks metrics_exporter, Prometheus
+  and Grafana exactly as fake-stack.ps1 -Observability does (both call
+  scripts\observability-stack.ps1). None of the three calls an LLM. With
+  -DryRun nothing is started either way.
+
 .EXAMPLE
   scripts\real-stack.ps1 -DryRun
+  scripts\real-stack.ps1 -Observability
 #>
 param(
     [string[]]$ComposeFiles = @("docker-compose.yml", "docker-compose.e2e.yml", "docker-compose.live.yml"),
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Observability
 )
 
 # "Continue", not "Stop": in Windows PowerShell 5.1, "Stop" turns any
@@ -38,6 +46,7 @@ param(
 # refusal is an explicit throw, so nothing relies on "Stop".
 $ErrorActionPreference = "Continue"
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "observability-stack.ps1")
 
 $fakeFiles = @($ComposeFiles | Where-Object { $_ -match "fake" })
 if ($fakeFiles.Count -gt 0) {
@@ -82,6 +91,7 @@ try {
     foreach ($svc in $services) { Write-Host ("  {0,-18} LLM_PROVIDER = {1}" -f $svc, $resolved[$svc]) }
     $keyReport | ForEach-Object { Write-Host $_ }
     Write-Host "  command: $command"
+    if ($Observability) { Write-Host "  then: metrics_exporter, prometheus and grafana (scripts\observability-stack.ps1)" }
     Write-Host "################################################################" -ForegroundColor Red
     Write-Host ""
 
@@ -113,6 +123,9 @@ try {
         $p = (& docker compose @files exec -T $svc printenv LLM_PROVIDER | Out-String).Trim()
         Write-Host "${svc}: LLM_PROVIDER=$p"
         if ($p -ne "gemini") { throw "running container $svc reports LLM_PROVIDER=$p - stop the stack now" }
+    }
+    if ($Observability) {
+        Start-ObservabilityStack -ComposeArgs $files
     }
     Write-Host "real-provider stack up. Label every number from it real."
     Write-Host "When the live session is over, recreate the stack with scripts\fake-stack.ps1: these containers stay live, also after a docker compose start or a Docker restart."

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from tenderos_backend.agents.llm.client import (
+    DailyQuotaExhaustedError,
     LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
@@ -124,6 +125,11 @@ def classify_task_failure(
        `pool_pre_ping=True`, `db/session.py`).
 
     Decision made, per exception type:
+    - `DailyQuotaExhaustedError` (PR 34; a `RateLimitedError` subclass,
+      checked first): terminal. The provider's per-day quota resets only
+      with its day (midnight Pacific for Gemini), beyond any delay a task
+      retry may wait (MAX_PROVIDER_RETRY_AFTER_SECONDS), so a retry would
+      spend budget on a refusal; a person retries the run after the reset.
     - `RateLimitedError`: retryable. Honors the provider's own
       `retry_after_seconds`, up to MAX_PROVIDER_RETRY_AFTER_SECONDS (plan
       item 19), when Gemini supplied one (the most reliable
@@ -185,7 +191,13 @@ def classify_task_failure(
     if retry_budget_remaining <= 0 or attempt_count >= max_attempts:
         return RetryDecision(should_retry=False)
 
-    if isinstance(exc, ModelNotFoundError | MalformedOutputError | ProviderRequestRejectedError):
+    if isinstance(
+        exc,
+        ModelNotFoundError
+        | MalformedOutputError
+        | ProviderRequestRejectedError
+        | DailyQuotaExhaustedError,
+    ):
         return RetryDecision(should_retry=False)
 
     if isinstance(exc, RateLimitedError):

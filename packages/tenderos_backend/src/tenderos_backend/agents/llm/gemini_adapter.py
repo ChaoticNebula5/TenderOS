@@ -1,8 +1,9 @@
 import asyncio
 import hashlib
+import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from google import genai
@@ -13,6 +14,7 @@ from redis.asyncio import Redis
 
 from tenderos_backend.agents.llm.client import (
     CallMeasurement,
+    DailyQuotaExhaustedError,
     LLMError,
     LLMResult,
     LLMTimeoutError,
@@ -32,17 +34,26 @@ from tenderos_backend.agents.llm.client import (
 _MAX_TRANSIENT_RETRIES = 3
 _BASE_BACKOFF_SECONDS = 5.0
 
+logger = logging.getLogger(__name__)
+
 # Phase 4 LLM timeouts, design numbers (not measured). Before these, a call
 # had no bound at all: the client was built with no http_options, so a hung
 # provider connection could hold a worker job (or, before the move to the
 # worker, an HTTP request) indefinitely.
-# - _HTTP_TIMEOUT_MS: each HTTP request to the provider. google-genai 2.17.0
-#   takes it in milliseconds (types.HttpOptions.timeout) and, with no retry
-#   options set, makes one attempt and re-raises httpx.TimeoutException.
+# - _HTTP_TIMEOUT_MS: each HTTP request to the provider. google-genai 2.31.0
+#   (re-read in its types.py and _api_client.py for PR 34) takes it in
+#   milliseconds (types.HttpOptions.timeout) and, with no retry options set,
+#   makes one attempt and re-raises httpx.TimeoutException.
 # - _CALL_DEADLINE_SECONDS: one logical call, including this adapter's own
 #   rate-limit and 5xx retries and their 5, 10 and 20 s backoffs.
 _HTTP_TIMEOUT_MS = 60_000
 _CALL_DEADLINE_SECONDS = 180.0
+
+# PR 34: a 429's own wait is taken only when it ends this long before the
+# call deadline, so a rate-limit wait never turns into an LLMTimeoutError;
+# a longer one is raised as RateLimitedError with the provider's wait, for
+# the workflow retry policy to honour.
+_DEADLINE_MARGIN_SECONDS = 5.0
 
 # Post-B16: agent_traces.estimated_cost_usd was NULL on all 2,455 rows ever
 # written, not because the SDK doesn't return token counts (it does -
@@ -59,16 +70,24 @@ _CALL_DEADLINE_SECONDS = 180.0
 # this project's role-based EXTRACTOR_MODEL/VERIFIER_MODEL/etc. env var
 # names - a role can point at any model string, and pricing is a property
 # of the model, not the role. A model id not in this table (e.g. the
-# "changeme" placeholder REASONING_MODEL/WRITER_MODEL/CRITIC_MODEL still
-# default to, which errors out as ModelNotFoundError before ever reaching
-# here anyway) leaves estimated_cost_usd None, honestly, rather than
-# guessing another model's price for it.
+# "changeme" placeholder REASONING_MODEL still defaults to, which errors
+# out as ModelNotFoundError before ever reaching here anyway) leaves
+# estimated_cost_usd None, honestly, rather than guessing another model's
+# price for it, and factory.log_llm_provider warns at startup.
+#
+# PR 34: every row re-read on 2026-11-25 at
+# https://aistudio.google.com/docs/pricing (paid standard tier, text input).
+# gemini-3.5-flash and gemini-3.7-flash were removed: neither is on the page,
+# so their prices could not be checked. What the table does not model:
+# - gemini-3.8-flash doubles from 2027-01-01 ($1.50 in, $7.50 out);
+# - gemini-2.5-pro and gemini-3.1-pro-preview charge more above 200k prompt
+#   tokens ($2.50/$15.00 and $4.00/$18.00); no call here is near that size;
+# - gemini-2.5-pro is deprecated and routed to gemini-3.8-flash from
+#   2026-12-01, and gemini-3.1-pro-preview is not on the free tier.
 _PRICE_PER_MILLION_TOKENS_USD: dict[str, tuple[float, float]] = {
     # (input_rate, output_rate), both USD per 1,000,000 tokens.
     "gemini-3.1-flash-lite": (0.25, 1.50),
     "gemini-3.5-flash-lite": (0.30, 2.50),
-    "gemini-3.5-flash": (1.50, 9.00),
-    "gemini-3.7-flash": (0.75, 3.75),
     "gemini-3.8-flash": (0.75, 3.75),
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-3.1-pro-preview": (2.00, 12.00),
@@ -116,9 +135,83 @@ class _Requests:
     """PR 28: the provider requests one call has made so far. A mutable
     counter passed into _call_with_retry, not that coroutine's return value:
     when the call deadline cancels the retry loop, nothing is returned, and
-    the count must still reach the LLMTimeoutError's measurement."""
+    the count must still reach the LLMTimeoutError's measurement.
+
+    PR 34: also the requests answered 429 and the time spent waiting on
+    them, for the same reason."""
 
     made: int = 0
+    rate_limited: int = 0
+    rate_limit_wait_ms: int = 0
+
+
+# PR 34: what a 429 says about itself. google-genai keeps the response body
+# on the error (APIError.details); Google's 429 body is a google.rpc.Status
+# whose details list may hold a RetryInfo (retryDelay, a Duration such as
+# "37s" or "1.5s") and a QuotaFailure (violations, each with a quotaId such
+# as GenerateRequestsPerMinutePerProjectPerModel-FreeTier). Every value read
+# from it must match its pattern, so nothing else from the body is kept.
+_RETRY_INFO = "google.rpc.RetryInfo"
+_QUOTA_FAILURE = "google.rpc.QuotaFailure"
+_DETAIL_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,127}")
+_DURATION = re.compile(r"([0-9]{1,6}(?:\.[0-9]{1,9})?)s")
+_QUOTA_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+@dataclass(frozen=True)
+class RateLimitDetails:
+    """What one 429's body says, as far as it can be read.
+
+    - detail_types: the short type name of every entry in the body's details
+      list ("unrecognised" for one that is not a dict with a plain @type);
+    - retry_after_seconds: RetryInfo's retryDelay, None without a readable one;
+    - quota_ids: every readable QuotaFailure violation's quotaId;
+    - quota: "day" when any quota id is a per-day one, else "minute" when any
+      is a per-minute one, else "unknown"."""
+
+    detail_types: tuple[str, ...] = ()
+    retry_after_seconds: float | None = None
+    quota_ids: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def quota(self) -> str:
+        if any("PerDay" in quota_id for quota_id in self.quota_ids):
+            return "day"
+        if any("PerMinute" in quota_id for quota_id in self.quota_ids):
+            return "minute"
+        return "unknown"
+
+
+def parse_rate_limit(exc: genai_errors.ClientError) -> RateLimitDetails:
+    """The RetryInfo and QuotaFailure of a 429's body (see RateLimitDetails).
+    Never raises: a body of another shape reads as nothing found."""
+    body = getattr(exc, "details", None)
+    error = body.get("error") if isinstance(body, dict) else None
+    entries = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(entries, list):
+        return RateLimitDetails()
+    types: list[str] = []
+    retry_after: float | None = None
+    quota_ids: list[str] = []
+    for entry in entries:
+        raw = entry.get("@type") if isinstance(entry, dict) else None
+        name = raw.rsplit("/", 1)[-1] if isinstance(raw, str) else ""
+        if not _DETAIL_TYPE.fullmatch(name):
+            types.append("unrecognised")
+            continue
+        types.append(name)
+        if name == _RETRY_INFO:
+            delay = entry.get("retryDelay")
+            matched = _DURATION.fullmatch(delay) if isinstance(delay, str) else None
+            if matched:
+                retry_after = float(matched.group(1))
+        elif name == _QUOTA_FAILURE:
+            violations = entry.get("violations")
+            for violation in violations if isinstance(violations, list) else []:
+                quota_id = violation.get("quotaId") if isinstance(violation, dict) else None
+                if isinstance(quota_id, str) and _QUOTA_ID.fullmatch(quota_id):
+                    quota_ids.append(quota_id)
+    return RateLimitDetails(tuple(types), retry_after, tuple(quota_ids))
 
 
 def _redacted_validation_summary(exc: ValidationError) -> str:
@@ -186,9 +279,12 @@ class GeminiClient:
                 latency_ms=elapsed_ms(start),
                 estimated_cost_usd=0.0,
                 attempts=0,
+                rate_limited_requests=0,
+                rate_limit_wait_ms=0,
             )
 
         requests = _Requests()
+        deadline = start + _CALL_DEADLINE_SECONDS
         input_tokens: int | None = None
         output_tokens: int | None = None
         thinking_tokens: int | None = None
@@ -196,7 +292,13 @@ class GeminiClient:
             try:
                 response = await asyncio.wait_for(
                     self._call_with_retry(
-                        model, system_prompt, user_prompt, response_schema, requests
+                        agent_name,
+                        model,
+                        system_prompt,
+                        user_prompt,
+                        response_schema,
+                        requests,
+                        deadline,
                     ),
                     timeout=_CALL_DEADLINE_SECONDS,
                 )
@@ -250,6 +352,8 @@ class GeminiClient:
                     model, input_tokens, output_tokens, thinking_tokens
                 ),
                 thinking_tokens=thinking_tokens,
+                rate_limited_requests=requests.rate_limited,
+                rate_limit_wait_ms=requests.rate_limit_wait_ms,
             )
             raise
 
@@ -275,16 +379,33 @@ class GeminiClient:
             ),
             attempts=requests.made,
             thinking_tokens=thinking_tokens,
+            rate_limited_requests=requests.rate_limited,
+            rate_limit_wait_ms=requests.rate_limit_wait_ms,
         )
 
     async def _call_with_retry(
         self,
+        agent_name: str,
         model: str,
         system_prompt: str,
         user_prompt: str,
         response_schema: type[BaseModel],
         requests: _Requests,
+        deadline: float,
     ) -> genai_types.GenerateContentResponse:
+        """I4's retries: a 429 and a 5xx are retried up to
+        _MAX_TRANSIENT_RETRIES times, anything else is raised at once.
+
+        PR 34, a 429: the wait is the provider's own RetryInfo delay when the
+        body has one (until PR 34 it was never read: google-genai's errors have
+        no retry_after attribute), else the 5, 10 and 20 s backoff. A per-day
+        quota is raised at once as DailyQuotaExhaustedError, since no wait
+        inside one call can clear it. A wait that would end within
+        _DEADLINE_MARGIN_SECONDS of `deadline` is not taken: the
+        RateLimitedError carries it to the workflow retry policy instead.
+        Each 429 is counted and each wait timed (_Requests), and every retry
+        logs one WARNING line (status, quota, wait, agent, model; never the
+        prompt or the provider's message)."""
         attempt = 0
         while True:
             requests.made += 1
@@ -304,10 +425,27 @@ class GeminiClient:
                 if status == 404:
                     raise ModelNotFoundError(f"Model not found: {model}") from exc
                 if status == 429:
-                    retry_after = _retry_after_seconds(exc)
-                    if attempt >= _MAX_TRANSIENT_RETRIES:
-                        raise RateLimitedError(str(exc), retry_after) from exc
-                    await asyncio.sleep(retry_after or _BASE_BACKOFF_SECONDS * (2**attempt))
+                    requests.rate_limited += 1
+                    limit = parse_rate_limit(exc)
+                    _warn_if_not_understood(agent_name, model, limit)
+                    if limit.quota == "day":
+                        logger.warning(
+                            "llm rate limit: agent=%s model=%s status=429 quota=day; "
+                            "not retried, the quota resets with the provider's day",
+                            agent_name,
+                            model,
+                        )
+                        raise DailyQuotaExhaustedError(str(exc), limit.retry_after_seconds) from exc
+                    wait = (
+                        limit.retry_after_seconds
+                        if limit.retry_after_seconds is not None
+                        else _BASE_BACKOFF_SECONDS * (2**attempt)
+                    )
+                    left = deadline - time.monotonic() - _DEADLINE_MARGIN_SECONDS
+                    if attempt >= _MAX_TRANSIENT_RETRIES or wait > left:
+                        raise RateLimitedError(str(exc), limit.retry_after_seconds) from exc
+                    _log_retry(agent_name, model, 429, limit.quota, wait, attempt + 1)
+                    await _timed_wait(wait, requests)
                     attempt += 1
                     continue
                 # Any other 4xx is a deterministic request problem (I4: "no
@@ -327,8 +465,60 @@ class GeminiClient:
             except genai_errors.ServerError as exc:
                 if attempt >= _MAX_TRANSIENT_RETRIES:
                     raise TransientProviderError(str(exc)) from exc
-                await asyncio.sleep(_BASE_BACKOFF_SECONDS * (2**attempt))
+                wait = _BASE_BACKOFF_SECONDS * (2**attempt)
+                _log_retry(agent_name, model, getattr(exc, "code", None), "-", wait, attempt + 1)
+                await asyncio.sleep(wait)
                 attempt += 1
+
+
+def _log_retry(
+    agent_name: str, model: str, status: int | None, quota: str, wait: float, retry: int
+) -> None:
+    """PR 34: one WARNING per retried request, so the run's logs say which
+    calls waited, on what, and for how long."""
+    logger.warning(
+        "llm retry: agent=%s model=%s status=%s quota=%s wait_s=%.1f retry=%d of %d",
+        agent_name,
+        model,
+        status,
+        quota,
+        wait,
+        retry,
+        _MAX_TRANSIENT_RETRIES,
+    )
+
+
+def _warn_if_not_understood(agent_name: str, model: str, limit: RateLimitDetails) -> None:
+    """PR 34 (user, Q4): a 429 with no readable RetryInfo or no readable
+    QuotaFailure logs one WARNING naming the detail types it did find (type
+    names only), so a wrong guess about the body's shape shows on the first
+    real 429 instead of quietly falling back to the fixed waits."""
+    missing = [
+        name
+        for name, found in (
+            ("RetryInfo", limit.retry_after_seconds is not None),
+            ("QuotaFailure", bool(limit.quota_ids)),
+        )
+        if not found
+    ]
+    if missing:
+        logger.warning(
+            "llm 429 not understood: agent=%s model=%s no readable %s; detail types found: %s",
+            agent_name,
+            model,
+            " or ".join(missing),
+            ", ".join(limit.detail_types) or "none",
+        )
+
+
+async def _timed_wait(seconds: float, requests: _Requests) -> None:
+    """Sleep on a 429 and add the time slept to the call's rate-limit wait,
+    also when the call deadline cancels the sleep part way."""
+    started = time.monotonic()
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        requests.rate_limit_wait_ms += elapsed_ms(started)
 
 
 _ERROR_KIND = re.compile(r"[A-Z][A-Z_]{0,63}")
@@ -341,10 +531,3 @@ def _error_kind(exc: genai_errors.ClientError) -> str:
     can reach the error's message; "unknown" otherwise."""
     kind = getattr(exc, "status", None)
     return kind if isinstance(kind, str) and _ERROR_KIND.fullmatch(kind) else "unknown"
-
-
-def _retry_after_seconds(exc: genai_errors.ClientError) -> float | None:
-    # Provider-specified delay (I4) if the SDK/response surfaces one -
-    # verify the actual attribute/header name against the installed SDK
-    # (Part P); falls back to the adapter's own backoff if absent.
-    return getattr(exc, "retry_after", None)

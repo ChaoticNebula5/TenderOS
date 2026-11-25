@@ -22,6 +22,7 @@ import httpx
 import pytest
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
+from tenderos_backend.agents.llm import client as client_module
 from tenderos_backend.agents.llm import gemini_adapter
 from tenderos_backend.agents.llm.client import (
     CallMeasurement,
@@ -45,8 +46,15 @@ pytestmark = pytest.mark.asyncio
 # 46 ms), so every lower bound on a measured latency leaves 20 ms of slack.
 _TICK_SLACK_MS = 20
 
-# A model id in gemini_adapter's price table: (1.50, 9.00) USD per 1M tokens.
-_PRICED_MODEL = "gemini-3.5-flash"
+# A model id these tests put in gemini_adapter's price table, at (1.50, 9.00)
+# USD per 1M tokens (PR 34: the real table no longer has gemini-3.5-flash,
+# which these tests used, and a test should not move with Google's prices).
+_PRICED_MODEL = "test-priced-model"
+
+
+@pytest.fixture(autouse=True)
+def _priced_model(monkeypatch):
+    monkeypatch.setitem(gemini_adapter._PRICE_PER_MILLION_TOKENS_USD, _PRICED_MODEL, (1.50, 9.00))
 
 
 class _Answer(BaseModel):
@@ -450,6 +458,8 @@ async def test_trace_measurements_from_a_result():
         "output_tokens": 30,
         "estimated_cost_usd": 0.02,
         "thinking_tokens": None,  # PR 29: a field of its own; not set here
+        "rate_limited_requests": None,  # PR 34: likewise
+        "rate_limit_wait_ms": None,
     }
 
 
@@ -465,6 +475,8 @@ async def test_trace_measurements_from_a_measured_error():
         "output_tokens": None,
         "estimated_cost_usd": None,
         "thinking_tokens": None,
+        "rate_limited_requests": None,
+        "rate_limit_wait_ms": None,
     }
 
 
@@ -478,11 +490,48 @@ async def test_trace_measurements_from_an_unmeasured_error_or_nothing_are_all_un
             "output_tokens",
             "estimated_cost_usd",
             "thinking_tokens",
+            "rate_limited_requests",
+            "rate_limit_wait_ms",
         )
     )
 
     assert trace_measurements(RateLimitedError("429")) == unknown
     assert trace_measurements(None) == unknown
+
+
+async def test_trace_measurements_carry_the_rate_limit_fields():
+    exc = RateLimitedError("429")
+    exc.measurement = CallMeasurement(
+        provider="gemini",
+        latency_ms=40_000,
+        attempts=4,
+        rate_limited_requests=4,
+        rate_limit_wait_ms=35_000,
+    )
+
+    fields = trace_measurements(exc)
+
+    assert fields["rate_limited_requests"] == 4
+    assert fields["rate_limit_wait_ms"] == 35_000
+
+
+async def test_a_repaired_call_adds_up_both_requests_rate_limits():
+    first = CallMeasurement(
+        provider="gemini", latency_ms=3, attempts=2, rate_limited_requests=1, rate_limit_wait_ms=200
+    )
+    second = CallMeasurement(
+        provider="gemini", latency_ms=4, attempts=3, rate_limited_requests=2, rate_limit_wait_ms=500
+    )
+
+    both = client_module._both_requests(first, second, latency_ms=900)
+
+    assert both is not None
+    assert (both.attempts, both.rate_limited_requests, both.rate_limit_wait_ms) == (5, 3, 700)
+    unknown = client_module._both_requests(
+        first, CallMeasurement(provider="gemini", latency_ms=4, attempts=1), latency_ms=10
+    )
+    assert unknown is not None
+    assert (unknown.rate_limited_requests, unknown.rate_limit_wait_ms) == (None, None)
 
 
 async def test_every_trace_measurement_is_a_parameter_of_the_trace_repository():

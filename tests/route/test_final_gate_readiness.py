@@ -507,6 +507,71 @@ async def test_a_version_move_refusal_writes_one_line_naming_the_check(
     assert set(line.recomputed_report) == _REPORT_FIELDS
 
 
+async def test_the_refusal_lines_printed_text_carries_both_reports_facts(
+    client: TestClient, register_actor, caplog: pytest.LogCaptureFixture
+):
+    """PR 34 (item 117): the facts are in the message, so a text capture
+    shows them, not only the JSON log. caplog.text is formatted by a plain
+    text formatter that drops the extras, as pytest's printed log section
+    is. The check, both ids, versions and generation times, the blocker
+    codes added and removed, and the one count that moved."""
+    caplog.set_level(logging.INFO, logger=_GATE_LOGGER)
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    latest = _generate(client, headers, tender_id)
+    await _critical_finding(tender_id)
+
+    refused = _decide(client, headers, gate_id, waive=True)
+
+    assert refused.status_code == 409, refused.text
+    (line,) = _refusal_lines(caplog)
+    facts = {"latest": line.latest_report, "recomputed": line.recomputed_report}
+    (text_line,) = [t for t in caplog.text.splitlines() if "READINESS_CHANGED" in t]
+    assert "READINESS_CHANGED (report_changed): " in text_line
+    for name, report in facts.items():
+        assert (
+            f"{name} report {report['report_id']} version {report['version']}"
+            f" generated {report['last_generated_at']}"
+        ) in text_line
+    assert facts["latest"]["report_id"] == latest["id"]
+    assert facts["recomputed"]["report_id"] != latest["id"]
+    assert (
+        f"blockers added ['{readiness_service.CRITICAL_REDTEAM_FINDING}'] removed [];"
+        " counts changed critical_major_redteam_findings 0->1"
+    ) in text_line
+    assert "Test finding." not in caplog.text
+
+
+async def test_a_refusal_with_no_stored_report_says_so_in_its_text(
+    client: TestClient, register_actor, caplog: pytest.LogCaptureFixture
+):
+    """No report was ever generated, so there is no latest one: the refusal
+    is still a 409, not a failure building the line, and its text says
+    "latest none", with every recomputed blocker as added and every count
+    against None."""
+    caplog.set_level(logging.INFO, logger=_GATE_LOGGER)
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+
+    refused = _decide(client, headers, gate_id)
+
+    assert refused.status_code == 409, refused.text
+    (line,) = _refusal_lines(caplog)
+    assert line.latest_report is None
+    recomputed = line.recomputed_report
+    (text_line,) = [t for t in caplog.text.splitlines() if "READINESS_CHANGED" in t]
+    assert "latest none; recomputed report " + recomputed["report_id"] in text_line
+    assert f"blockers added {sorted(set(recomputed['blocker_codes']))} removed [];" in text_line
+    for name, value in recomputed["counts"].items():
+        assert f"{name} None->{value}" in text_line
+
+
 async def _unapproved_compliance_entry(tender_id: uuid.UUID) -> uuid.UUID:
     async with UnitOfWork() as uow:
         document = await uow.documents.create(

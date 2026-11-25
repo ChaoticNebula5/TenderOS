@@ -3799,7 +3799,15 @@ Each entry:
   `CRITIC_MODEL` still default to) leaves `estimated_cost_usd` `None`,
   honestly, rather than guessing another model's price for it -
   `ModelNotFoundError` would terminate that call before cost estimation
-  is ever reached anyway. `EXTRACTOR_MODEL`/`VERIFIER_MODEL` (the two
+  is ever reached anyway. **Update (PR 34, 2026-11-25):** every row was
+  re-read on Google's pricing page; `gemini-3.5-flash` and
+  `gemini-3.7-flash` are not on it and were removed (an unlisted id records
+  no cost and logs a startup warning); the table's comment notes what it
+  does not model (a dated price change, a large-prompt tier, a deprecation).
+  `PLANNER_MODEL`, `WRITER_MODEL` and `CRITIC_MODEL` were removed from
+  `.env.example`: no code ever read them. **Spec deviation, recorded:** the
+  original design had a model alias per role; the code has three settings,
+  and drafting and the red team call `REASONING_MODEL`. `EXTRACTOR_MODEL`/`VERIFIER_MODEL` (the two
   real, non-placeholder models this project actually calls today) are
   both in the table. Metric 12 becomes a real number on the next live
   run - not re-run this pass to demonstrate, matching this session's own

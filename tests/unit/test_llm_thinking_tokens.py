@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
+from tenderos_backend.agents.llm import gemini_adapter
 from tenderos_backend.agents.llm.client import (
     CallMeasurement,
     LLMResult,
@@ -28,8 +29,14 @@ from tenderos_backend.agents.llm.gemini_adapter import GeminiClient, _estimate_c
 
 pytestmark = pytest.mark.asyncio
 
-# (1.50, 9.00) USD per 1M tokens in gemini_adapter's price table.
-_PRICED_MODEL = "gemini-3.5-flash"
+# A model id these tests put in gemini_adapter's price table, at (1.50, 9.00)
+# USD per 1M tokens (PR 34: the real table no longer has gemini-3.5-flash).
+_PRICED_MODEL = "test-priced-model"
+
+
+@pytest.fixture(autouse=True)
+def _priced_model(monkeypatch):
+    monkeypatch.setitem(gemini_adapter._PRICE_PER_MILLION_TOKENS_USD, _PRICED_MODEL, (1.50, 9.00))
 
 
 class _Answer(BaseModel):

@@ -61,6 +61,40 @@ def _report_facts(result: readiness_service.ReadinessResult | None) -> dict[str,
     }
 
 
+def _report_text(facts: dict[str, Any] | None) -> str:
+    """One report as the refusal line's message names it."""
+    if facts is None:
+        return "none"
+    return (
+        f"report {facts['report_id']} version {facts['version']}"
+        f" generated {facts['last_generated_at']}"
+    )
+
+
+def _refusal_summary(latest: dict[str, Any] | None, recomputed: dict[str, Any] | None) -> str:
+    """Plan item 117: the facts of both reports in the refusal line's
+    message itself, not only in its extras, so any capture shows them. A
+    text formatter (pytest's own, for one) prints the message and drops the
+    extras. Both reports, the blocker codes the recompute added and removed,
+    and each count that differs (a count only one report has shows None on
+    the other side)."""
+    latest_codes = set(latest["blocker_codes"]) if latest else set()
+    recomputed_codes = set(recomputed["blocker_codes"]) if recomputed else set()
+    latest_counts = latest["counts"] if latest else {}
+    recomputed_counts = recomputed["counts"] if recomputed else {}
+    changed = [
+        f"{name} {latest_counts.get(name)}->{recomputed_counts.get(name)}"
+        for name in sorted(set(latest_counts) | set(recomputed_counts))
+        if latest_counts.get(name) != recomputed_counts.get(name)
+    ]
+    return (
+        f"latest {_report_text(latest)}; recomputed {_report_text(recomputed)};"
+        f" blockers added {sorted(recomputed_codes - latest_codes)}"
+        f" removed {sorted(latest_codes - recomputed_codes)};"
+        f" counts changed {', '.join(changed) or 'none'}"
+    )
+
+
 def _log_readiness_changed(
     gate: ApprovalGate,
     check: str,
@@ -76,17 +110,22 @@ def _log_readiness_changed(
     knows which report the page showed, only the latest stored one, and
     whether that is the right one to compare against is one of item 117's
     open questions. The gate's tender is bound into the log context first,
-    so this line and the rest of the request's carry it."""
+    so this line and the rest of the request's carry it. PR 34: the message
+    carries the comparison too (_refusal_summary); the extras stay for the
+    JSON log."""
     bind_log_context(tender_id=str(gate.tender_id))
+    latest_facts = _report_facts(latest)
+    recomputed_facts = _report_facts(recomputed)
     logger.info(
-        "final gate %s approval refused with READINESS_CHANGED (%s)",
+        "final gate %s approval refused with READINESS_CHANGED (%s): %s",
         gate.id,
         check,
+        _refusal_summary(latest_facts, recomputed_facts),
         extra={
             "gate_id": str(gate.id),
             "readiness_check": check,
-            "latest_report": _report_facts(latest),
-            "recomputed_report": _report_facts(recomputed),
+            "latest_report": latest_facts,
+            "recomputed_report": recomputed_facts,
         },
     )
 

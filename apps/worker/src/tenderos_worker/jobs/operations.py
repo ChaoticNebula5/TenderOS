@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 
 from rq.timeouts import JobTimeoutException
 from tenderos_backend.agents.llm.client import (
+    DailyQuotaExhaustedError,
     LLMClient,
     LLMTimeoutError,
     ProviderRequestRejectedError,
@@ -40,6 +41,9 @@ logger = logging.getLogger(__name__)
 _FAILURES: dict[str, str] = {
     "LLM_TIMEOUT": "The AI provider took too long to answer. Please try again.",
     "LLM_RATE_LIMITED": "The AI provider is busy right now. Please try again in a few minutes.",
+    # PR 34: the provider's daily quota is used up; it resets with the
+    # provider's day (midnight Pacific for Gemini), not in minutes.
+    "LLM_DAILY_LIMIT": "The AI provider's daily limit has been reached. Please try again tomorrow.",
     # PR 29 (Q6 a): the provider refused the request itself (a 4xx other
     # than 404 and 429). Retrying the same request will not help.
     "LLM_REJECTED": "The AI provider refused this request. Please contact support if it persists.",
@@ -128,6 +132,9 @@ _HANDLERS: dict[str, Callable[[AsyncOperation], Awaitable[None]]] = {
 def _error_code_for(exc: BaseException) -> str:
     if isinstance(exc, LLMTimeoutError):
         return "LLM_TIMEOUT"
+    # Before RateLimitedError, which it subclasses.
+    if isinstance(exc, DailyQuotaExhaustedError):
+        return "LLM_DAILY_LIMIT"
     if isinstance(exc, RateLimitedError):
         return "LLM_RATE_LIMITED"
     if isinstance(exc, ProviderRequestRejectedError):

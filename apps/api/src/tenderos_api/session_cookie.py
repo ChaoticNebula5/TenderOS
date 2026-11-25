@@ -16,7 +16,8 @@ The cookie (settings in config.py):
 - No Domain: a host-only cookie.
 - Max-Age: the seconds until the family expires, read from the token's own
   `exp`, so cookie and token end together. Rotation keeps the family's
-  expiry, so each new cookie's Max-Age is shorter.
+  expiry, so each new cookie's Max-Age is shorter. Rounded down (PR 34), so
+  the cookie never outlives its family.
 
 CSRF, on the four routes that set or use the cookie (login, register,
 refresh, logout), as a route dependency:
@@ -31,6 +32,7 @@ Login and register are covered too, because they set the cookie: a forged
 login would sign the victim into the attacker's account.
 """
 
+import math
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
@@ -70,7 +72,11 @@ def set_refresh_cookie(response: Response, refresh_token: str) -> None:
     exp = decode_token(refresh_token)["exp"]
     if not isinstance(exp, int):
         raise TypeError("refresh token exp is not an integer")
-    max_age = max(0, exp - int(datetime.now(UTC).timestamp()))
+    # PR 34: rounded down, with now's fraction kept. `exp - int(now)` dropped
+    # the fraction of now, so Max-Age could exceed the time left by up to a
+    # second (3601 where at most 3600 was left, observed once in PR 33's
+    # suite with the Postgres clock 0.6 s ahead of the host's).
+    max_age = max(0, math.floor(exp - datetime.now(UTC).timestamp()))
     response.set_cookie(
         settings.auth_cookie_name,
         refresh_token,

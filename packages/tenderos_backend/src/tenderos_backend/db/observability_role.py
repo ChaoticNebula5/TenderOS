@@ -33,7 +33,10 @@ What each role may do, and nothing more:
 The password is sent in the ALTER ROLE statement, quoted by the server's own
 quote_literal. Postgres stores only its SCRAM hash, but a server logging DDL
 (log_statement = ddl or all; off by default and on the stack) would write the
-statement out; keep statement logging off where this runs.
+statement out; keep statement logging off where this runs. The same holds
+for pg_stat_statements (PR 34): it keeps a utility statement's text with its
+constants, so the stack's server sets pg_stat_statements.track_utility=off
+(docker-compose.yml); a host that loads the library must set it too.
 """
 
 import asyncio

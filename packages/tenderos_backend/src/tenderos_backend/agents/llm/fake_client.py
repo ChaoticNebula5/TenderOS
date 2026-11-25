@@ -158,6 +158,8 @@ class FakeLLMClient:
                 output_tokens=0,
                 estimated_cost_usd=0.0,
                 thinking_tokens=0,
+                rate_limited_requests=0,
+                rate_limit_wait_ms=0,
             )
             raise error
 
@@ -170,8 +172,10 @@ class FakeLLMClient:
             latency_ms=elapsed_ms(start),
             estimated_cost_usd=0.0,
             attempts=1,
-            # PR 29: the fake never thinks.
+            # PR 29: the fake never thinks. PR 34: nor is it rate limited.
             thinking_tokens=0,
+            rate_limited_requests=0,
+            rate_limit_wait_ms=0,
         )
 
 
