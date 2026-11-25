@@ -31,7 +31,7 @@ CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "8080"]
 # runtime: nginx and the built files only; no Node, no node_modules, no Vite.
 # The unprivileged image runs nginx as uid 101 on port 8080 (the official one
 # runs its master process as root).
-FROM nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS runtime
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runtime
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY apps/web/proxy_headers.inc /etc/nginx/conf.d/proxy_headers.inc
 COPY --from=build /app/dist /usr/share/nginx/html
