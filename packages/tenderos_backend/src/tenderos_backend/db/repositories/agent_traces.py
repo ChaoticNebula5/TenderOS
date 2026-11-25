@@ -34,6 +34,8 @@ class AgentTraceRepository:
         estimated_cost_usd: float | None = None,
         error_code: str | None = None,
         thinking_tokens: int | None = None,
+        rate_limited_requests: int | None = None,
+        rate_limit_wait_ms: int | None = None,
     ) -> AgentTrace:
         # Exactly one of tender_id/organization_id is required - enforced by
         # ck_agent_trace_scope at the DB layer already, checked here too so a
@@ -68,6 +70,8 @@ class AgentTraceRepository:
             output_tokens=output_tokens,
             estimated_cost_usd=estimated_cost_usd,
             thinking_tokens=thinking_tokens,
+            rate_limited_requests=rate_limited_requests,
+            rate_limit_wait_ms=rate_limit_wait_ms,
             status=status,
             error_code=error_code,
         )

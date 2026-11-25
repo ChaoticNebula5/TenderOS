@@ -32,6 +32,21 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
             "thinking_tokens IS NULL OR thinking_tokens >= 0",
             name="ck_agent_trace_thinking_tokens",
         ),
+        # 042_agent_trace_rate_limits.py: neither can be negative, and the
+        # 429s are among the requests counted in attempts.
+        CheckConstraint(
+            "rate_limited_requests IS NULL OR rate_limited_requests >= 0",
+            name="ck_agent_trace_rate_limited_requests",
+        ),
+        CheckConstraint(
+            "rate_limit_wait_ms IS NULL OR rate_limit_wait_ms >= 0",
+            name="ck_agent_trace_rate_limit_wait_ms",
+        ),
+        CheckConstraint(
+            "rate_limited_requests IS NULL OR attempts IS NULL "
+            "OR rate_limited_requests <= attempts",
+            name="ck_agent_trace_rate_limited_within_attempts",
+        ),
         # 004_requirements.py
         Index("idx_agent_traces_tender_time", "tender_id", "created_at"),
         # 041_lookup_and_range_indexes.py (plan item 90): the LLM
@@ -84,6 +99,10 @@ class AgentTrace(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # PR 29: tokens the model spent thinking, billed at the output rate and
     # included in estimated_cost_usd. NULL before migration 037.
     thinking_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PR 34: requests the provider answered 429, and the time the adapter
+    # waited on them (included in latency_ms). NULL before migration 042.
+    rate_limited_requests: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_wait_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
     status: Mapped[str] = mapped_column(nullable=False)
     error_code: Mapped[str | None] = mapped_column(nullable=True)

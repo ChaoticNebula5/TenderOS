@@ -24,7 +24,11 @@ from rq import Queue
 from rq.executions import Execution
 from rq.job import JobStatus
 from sqlalchemy import func, select, text, update
-from tenderos_backend.agents.llm.client import LLMTimeoutError, ProviderRequestRejectedError
+from tenderos_backend.agents.llm.client import (
+    DailyQuotaExhaustedError,
+    LLMTimeoutError,
+    ProviderRequestRejectedError,
+)
 from tenderos_backend.agents.llm.fake_client import FakeLLMClient
 from tenderos_backend.agents.schemas.commercial import FindingExplanation
 from tenderos_backend.agents.schemas.proposal import ProposalSectionDraft
@@ -605,6 +609,23 @@ async def test_a_rejected_request_ends_the_operation_failed_with_llm_rejected(mo
     assert (final.status, final.error_code) == ("failed", "LLM_REJECTED")
     assert final.error_message == operation_jobs._FAILURES["LLM_REJECTED"]
     assert "INVALID_ARGUMENT" not in (final.error_message or "")
+
+
+async def test_a_daily_quota_ends_the_operation_failed_with_llm_daily_limit(monkeypatch):
+    # PR 34: not LLM_RATE_LIMITED, whose message says to try again in a few
+    # minutes; a daily quota resets with the provider's day.
+    async def daily(operation: AsyncOperation) -> None:
+        raise DailyQuotaExhaustedError("fake: daily quota", retry_after_seconds=3600.0)
+
+    _replace_redteam_handler(monkeypatch, daily)
+    requested = await _request("op-daily@example.com")
+
+    await run_operation(str(requested.operation.id))
+
+    final = await _reload(requested.operation.id)
+    assert (final.status, final.error_code) == ("failed", "LLM_DAILY_LIMIT")
+    assert final.error_message == operation_jobs._FAILURES["LLM_DAILY_LIMIT"]
+    assert "fake: daily quota" not in (final.error_message or "")
 
 
 async def test_an_unexpected_error_ends_failed_with_a_generic_message(monkeypatch):

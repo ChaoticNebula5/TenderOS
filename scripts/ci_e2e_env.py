@@ -66,7 +66,9 @@ _FIXED = {
 }
 
 # Placeholders that may stay: model names, which only production checks.
-_ALLOWED_PLACEHOLDERS = {"PLANNER_MODEL", "REASONING_MODEL", "WRITER_MODEL", "CRITIC_MODEL"}
+# PR 34: REASONING_MODEL only; .env.example no longer lists the three model
+# names nothing read (PLANNER_MODEL, WRITER_MODEL, CRITIC_MODEL).
+_ALLOWED_PLACEHOLDERS = {"REASONING_MODEL"}
 
 
 def _parse(template: str) -> list[tuple[str, str] | str]:

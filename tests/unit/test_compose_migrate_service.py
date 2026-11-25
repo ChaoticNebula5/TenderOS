@@ -27,13 +27,38 @@ def test_migrate_applies_constraints_after_alembic_and_only_if_it_succeeded():
     command = _compose()["services"]["migrate"]["command"]
 
     assert command[:2] == ["sh", "-c"]
-    # Observability PR 31: the metrics_exporter's role last, and only if
-    # both earlier steps succeeded (&&).
+    # Observability PR 31: the metrics_exporter's role, and only if both
+    # earlier steps succeeded (&&). PR 34: pg_stat_statements last.
     assert command[2] == (
         "/app/.venv/bin/alembic upgrade head && "
         "/app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints && "
-        "/app/.venv/bin/python -m tenderos_backend.db.observability_role"
+        "/app/.venv/bin/python -m tenderos_backend.db.observability_role && "
+        "/app/.venv/bin/python -m tenderos_backend.db.query_stats"
     )
+
+
+def test_postgres_preloads_pg_stat_statements_on_its_default_command():
+    # PR 34 (plan item 118): the image's entrypoint runs `postgres` with
+    # these arguments; no entrypoint override. track_utility off, so no
+    # utility statement's text (migrate's ALTER ROLE ... PASSWORD) is kept.
+    postgres = _compose()["services"]["postgres"]
+
+    assert postgres["command"] == [
+        "postgres",
+        "-c",
+        "shared_preload_libraries=pg_stat_statements",
+        "-c",
+        "pg_stat_statements.track_utility=off",
+    ]
+    assert "entrypoint" not in postgres
+
+
+def test_both_neo4j_servers_get_a_minute_to_stop():
+    # PR 34: Docker's default 10 s killed both before they finished stopping.
+    services = _compose()["services"]
+
+    assert services["neo4j"]["stop_grace_period"] == "60s"
+    assert services["neo4j_test"]["stop_grace_period"] == "60s"
 
 
 def test_migrate_gets_both_readers_passwords_and_stays_on_the_fake_provider():

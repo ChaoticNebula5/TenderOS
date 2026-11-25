@@ -7,6 +7,7 @@ an otherwise-retryable exception type.
 """
 
 from tenderos_backend.agents.llm.client import (
+    DailyQuotaExhaustedError,
     LLMTimeoutError,
     MalformedOutputError,
     ModelNotFoundError,
@@ -97,6 +98,18 @@ def test_rate_limited_honors_the_providers_own_retry_after():
     assert decision.should_retry is True
     assert decision.delay_seconds == 7.5
     assert decision.budget_cost == 1
+
+
+def test_a_daily_quota_is_terminal_whatever_the_providers_delay():
+    """PR 34: a per-day 429 clears only with the provider's day, so no retry,
+    even with attempts and budget left and a delay the provider gave."""
+    decision = classify_task_failure(
+        DailyQuotaExhaustedError("429", retry_after_seconds=60.0),
+        attempt_count=0,
+        max_attempts=5,
+        retry_budget_remaining=10,
+    )
+    assert decision.should_retry is False
 
 
 def test_rate_limited_without_a_provider_delay_falls_back_to_task_level_backoff():

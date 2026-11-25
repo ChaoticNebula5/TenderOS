@@ -22,6 +22,11 @@ class CallMeasurement:
     - thinking_tokens (PR 29): the tokens the model spent thinking, apart
       from output_tokens (the answer). Billed at the output rate, so
       estimated_cost_usd includes them; see gemini_adapter._estimate_cost_usd.
+    - rate_limited_requests and rate_limit_wait_ms (PR 34): how many of the
+      call's requests the provider answered 429, and the time the adapter
+      spent waiting on them, so latency without the waits is latency_ms
+      minus rate_limit_wait_ms. A 5xx backoff is not a rate-limit wait.
+      None when not known.
     """
 
     provider: str
@@ -31,6 +36,8 @@ class CallMeasurement:
     output_tokens: int | None = None
     estimated_cost_usd: float | None = None
     thinking_tokens: int | None = None
+    rate_limited_requests: int | None = None
+    rate_limit_wait_ms: int | None = None
 
 
 class LLMError(Exception):
@@ -80,6 +87,15 @@ class RateLimitedError(LLMError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class DailyQuotaExhaustedError(RateLimitedError):
+    """PR 34: a 429 whose quota is a per-day one (the provider's quota id
+    says PerDay). It clears only when the provider's day resets (midnight
+    Pacific for Gemini), so the adapter does not retry it and the workflow
+    retry policy treats it as terminal; a person retries the run after the
+    reset. A RateLimitedError subclass, so a caller that handles rate limits
+    still catches it, and its own class name is the trace row's error_code."""
+
+
 class TransientProviderError(LLMError):
     """Network/5xx-class failure - I4: exponential backoff, max 3 attempts."""
 
@@ -118,6 +134,9 @@ class LLMResult[T: BaseModel]:
     attempts: int | None
     # PR 29: thinking tokens, apart from output_tokens; see CallMeasurement.
     thinking_tokens: int | None = None
+    # PR 34: 429s answered and the time waited on them; see CallMeasurement.
+    rate_limited_requests: int | None = None
+    rate_limit_wait_ms: int | None = None
 
 
 class TraceMeasurements(TypedDict):
@@ -132,6 +151,8 @@ class TraceMeasurements(TypedDict):
     output_tokens: int | None
     estimated_cost_usd: float | None
     thinking_tokens: int | None
+    rate_limited_requests: int | None
+    rate_limit_wait_ms: int | None
 
 
 def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> TraceMeasurements:
@@ -155,6 +176,8 @@ def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> Trace
             output_tokens=None,
             estimated_cost_usd=None,
             thinking_tokens=None,
+            rate_limited_requests=None,
+            rate_limit_wait_ms=None,
         )
     return TraceMeasurements(
         provider=source.provider,
@@ -164,6 +187,8 @@ def trace_measurements(outcome: LLMResult[BaseModel] | LLMError | None) -> Trace
         output_tokens=source.output_tokens,
         estimated_cost_usd=source.estimated_cost_usd,
         thinking_tokens=source.thinking_tokens,
+        rate_limited_requests=source.rate_limited_requests,
+        rate_limit_wait_ms=source.rate_limit_wait_ms,
     )
 
 
@@ -249,6 +274,8 @@ async def call_with_repair[T: BaseModel](
         output_tokens=result.output_tokens,
         estimated_cost_usd=result.estimated_cost_usd,
         thinking_tokens=result.thinking_tokens,
+        rate_limited_requests=result.rate_limited_requests,
+        rate_limit_wait_ms=result.rate_limit_wait_ms,
     )
     # Never None here (`second` is measured); `or second` only narrows the type.
     both = _both_requests(first, second, elapsed_ms(start)) or second
@@ -260,6 +287,8 @@ async def call_with_repair[T: BaseModel](
         output_tokens=both.output_tokens,
         estimated_cost_usd=both.estimated_cost_usd,
         thinking_tokens=both.thinking_tokens,
+        rate_limited_requests=both.rate_limited_requests,
+        rate_limit_wait_ms=both.rate_limit_wait_ms,
     )
 
 
@@ -285,4 +314,6 @@ def _both_requests(
         output_tokens=_sum_known(first.output_tokens, second.output_tokens),
         estimated_cost_usd=_sum_known(first.estimated_cost_usd, second.estimated_cost_usd),
         thinking_tokens=_sum_known(first.thinking_tokens, second.thinking_tokens),
+        rate_limited_requests=_sum_known(first.rate_limited_requests, second.rate_limited_requests),
+        rate_limit_wait_ms=_sum_known(first.rate_limit_wait_ms, second.rate_limit_wait_ms),
     )

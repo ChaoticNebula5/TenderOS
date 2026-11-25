@@ -40,6 +40,26 @@ x-fake-provider: &fake-provider
 services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
+    # PR 34 (plan item 118): pg_stat_statements, loaded at server start, so
+    # every query's time is recorded, the workers' as well as the api's,
+    # before a statement_timeout is chosen. The image's entrypoint is kept;
+    # this only adds the setting to its default `postgres` command. A change
+    # here needs a restart of this container (the volume is kept). The
+    # extension itself is created by migrate's setup step
+    # (tenderos_backend.db.query_stats), which skips it on a server that
+    # does not preload the library, such as CI's own Postgres service.
+    # track_utility off: the library keeps a utility statement's text with
+    # its constants, and migrate's reader step sends ALTER ROLE ... PASSWORD
+    # (db/observability_role.py), so with it on the readers' passwords would
+    # sit in the statistics and in their file on disk. Item 118 needs the
+    # app's queries, not DDL; the query_stats step refuses to create the
+    # extension on a server that tracks utility statements.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track_utility=off
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -78,6 +98,10 @@ services:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
     volumes:
       - neo4j_data:/data
+    # PR 34: time to shut down cleanly. At Docker's default 10 s both Neo4j
+    # containers were killed (exit 137) at a restart on 2026-11-24, before
+    # they finished stopping. Same for neo4j_test below.
+    stop_grace_period: 60s
     ports:
       - "127.0.0.1:7474:7474"
       - "[::1]:7474:7474"
@@ -119,6 +143,7 @@ services:
       NEO4J_server_memory_pagecache_size: 256m
     volumes:
       - neo4j_test_data:/data
+    stop_grace_period: 60s
     ports:
       - "127.0.0.1:7688:7687"
     healthcheck:
@@ -176,15 +201,19 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    # Observability PR 31: last, the metrics_exporter's login role
+    # Observability PR 31: the metrics_exporter's login role
     # (tenderos_backend.db.observability_role), re-run on every start so the
     # role can read every view in the observability schema; skipped while
     # METRICS_EXPORTER_DB_PASSWORD is empty. Not a migration: a role is
     # server-wide and needs a password.
+    # PR 34: last, pg_stat_statements (tenderos_backend.db.query_stats), when
+    # the server preloads it. Not a migration either: it needs the server's
+    # own setting and a role that may create it, which a host may not give
+    # the migrating role; there it is skipped with a line saying why.
     command:
       - sh
       - -c
-      - /app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints && /app/.venv/bin/python -m tenderos_backend.db.observability_role
+      - /app/.venv/bin/alembic upgrade head && /app/.venv/bin/python -m tenderos_backend.graph_projection.apply_constraints && /app/.venv/bin/python -m tenderos_backend.db.observability_role && /app/.venv/bin/python -m tenderos_backend.db.query_stats
     env_file: .env
     environment:
       <<: *fake-provider

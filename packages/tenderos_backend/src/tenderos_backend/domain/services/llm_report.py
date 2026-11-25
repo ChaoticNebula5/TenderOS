@@ -5,12 +5,16 @@ from it.
 
 What it reports, for one scope (a run, a tender, an organization, a start
 date, or everything):
-- cost per organization, tender, run and agent;
+- cost per organization, tender, run, agent and (PR 34) model;
 - cost by source (run, operation, reanalysis, organization, no owner), per
   operation (with its kind) and per reanalysis claim (PR 29);
 - input, output and thinking tokens (PR 29: thinking apart from output);
-- latency p50, p95 and max per agent, provider and model;
-- timeouts and retries per agent, provider and model.
+- latency p50, p95 and max per agent, provider and model, and (PR 34) p50
+  and p95 without the rate-limit waits;
+- timeouts and retries per agent, provider and model, with (PR 34) the 429s
+  and the time waited on them;
+- (PR 34) the largest single call per agent and model in tokens, and calls
+  and requests per model per Pacific day.
 
 Its rules, each also printed in the report's notes:
 - latency_ms is each call's whole wall time, retries and backoff included,
@@ -86,6 +90,10 @@ _OPERATIONS_JOIN = "LEFT JOIN async_operations AS op ON op.id = t.operation_id"
 # row with no attempts (before migration 036, where a cache hit read as a
 # 0 ms call) are counted beside the percentiles, never in them.
 _SAMPLE = "t.attempts >= 1"
+# PR 34: a provider call's latency without its rate-limit waits, over the
+# calls whose wait is known (rows before migration 042 have none).
+_NO_WAIT = "(t.latency_ms - t.rate_limit_wait_ms)"
+_NO_WAIT_SAMPLE = f"{_SAMPLE} AND t.rate_limit_wait_ms IS NOT NULL"
 
 NOTES = [
     "latency_ms is each call's whole wall time, retries and backoff included; "
@@ -103,6 +111,11 @@ NOTES = [
     "import, and 'no owner' is on-demand verification or a row from before migration 037.",
     "Thinking tokens are counted apart from output tokens and priced as output "
     "(Google bills them at the output rate); rows before migration 037 count none.",
+    "429s are the requests the provider answered 429; their wait is inside latency_ms. Latency "
+    "without waits is latency_ms minus the wait, over calls whose wait is known (rows before "
+    "migration 042 are counted as waits unknown). A 5xx backoff is not a rate-limit wait.",
+    "Calls per model per day count days in Pacific time, the day Gemini's daily quotas reset "
+    "on; requests are the attempts the calls made, 429s included.",
 ]
 
 
@@ -217,6 +230,17 @@ async def build_report(session: AsyncSession, scope: ReportScope, *, top: int = 
     report["cost_by_agent"] = await _cost_by(
         session, [("t.agent_name", "agent_name")], where, params, top
     )
+    # PR 34: limits and prices are per model.
+    report["cost_by_model"] = await _cost_by(
+        session,
+        [
+            ("COALESCE(t.provider, 'unknown')", "provider"),
+            ("COALESCE(t.model, 'unknown')", "model"),
+        ],
+        where,
+        params,
+        top,
+    )
     # PR 29: where the spend came from, and the two owners a run is not.
     report["cost_by_source"] = await _cost_by(session, [(_SOURCE, "source")], where, params, top)
     report["cost_by_operation"] = await _cost_by(
@@ -253,7 +277,12 @@ async def build_report(session: AsyncSession, scope: ReportScope, *, top: int = 
                 FILTER (WHERE {_SAMPLE}) AS p50_ms,
             percentile_disc(0.95) WITHIN GROUP (ORDER BY t.latency_ms)
                 FILTER (WHERE {_SAMPLE}) AS p95_ms,
-            max(t.latency_ms) FILTER (WHERE {_SAMPLE}) AS max_ms
+            max(t.latency_ms) FILTER (WHERE {_SAMPLE}) AS max_ms,
+            percentile_disc(0.5) WITHIN GROUP (ORDER BY {_NO_WAIT})
+                FILTER (WHERE {_NO_WAIT_SAMPLE}) AS p50_no_wait_ms,
+            percentile_disc(0.95) WITHIN GROUP (ORDER BY {_NO_WAIT})
+                FILTER (WHERE {_NO_WAIT_SAMPLE}) AS p95_no_wait_ms,
+            count(*) FILTER (WHERE {_SAMPLE} AND t.rate_limit_wait_ms IS NULL) AS waits_unknown
         {_FROM} {where}
         GROUP BY 1, 2, 3
         ORDER BY p95_ms DESC NULLS LAST, 1, 2, 3
@@ -261,6 +290,49 @@ async def build_report(session: AsyncSession, scope: ReportScope, *, top: int = 
         params,
     )
     report["latency"] = [{k: _plain(v) for k, v in row.items()} for row in latency]
+
+    # PR 34: the largest single call per agent and model, in tokens: the
+    # context window a model must offer each agent (plan item 119).
+    largest = await _rows(
+        session,
+        f"""
+        SELECT {group},
+            count(*) FILTER (WHERE t.input_tokens IS NOT NULL) AS calls_with_tokens,
+            max(t.input_tokens) AS max_input_tokens,
+            max(t.output_tokens) AS max_output_tokens,
+            max(t.thinking_tokens) AS max_thinking_tokens,
+            max(t.input_tokens + t.output_tokens + COALESCE(t.thinking_tokens, 0))
+                AS max_total_tokens
+        {_FROM} {where}
+        GROUP BY 1, 2, 3
+        ORDER BY max_total_tokens DESC NULLS LAST, 1, 2, 3
+        """,
+        params,
+    )
+    report["largest_calls"] = [{k: _plain(v) for k, v in row.items()} for row in largest]
+
+    # PR 34: calls and requests per model per Pacific day, against a daily
+    # quota (the report cannot tell which key a call used; the run's notes do).
+    per_day = await _rows(
+        session,
+        f"""
+        SELECT (t.created_at AT TIME ZONE 'America/Los_Angeles')::date AS pacific_day,
+            COALESCE(t.provider, 'unknown') AS provider,
+            COALESCE(t.model, 'unknown') AS model,
+            count(*) AS calls,
+            COALESCE(sum(t.attempts), 0) AS requests,
+            count(*) FILTER (WHERE t.attempts IS NULL) AS attempts_unknown,
+            COALESCE(sum(t.rate_limited_requests), 0) AS rate_limited_requests
+        {_FROM} {where}
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2, 3
+        """,
+        params,
+    )
+    report["calls_by_model_day"] = [
+        {k: (v.isoformat() if k == "pacific_day" else _plain(v)) for k, v in row.items()}
+        for row in per_day
+    ]
 
     retries = await _rows(
         session,
@@ -271,7 +343,10 @@ async def build_report(session: AsyncSession, scope: ReportScope, *, top: int = 
             count(*) FILTER (WHERE t.error_code = :timeout_code) AS timeouts,
             count(*) FILTER (WHERE t.attempts > 1) AS retried_calls,
             COALESCE(sum(t.attempts - 1) FILTER (WHERE t.attempts > 1), 0) AS extra_attempts,
-            count(*) FILTER (WHERE t.attempts IS NULL) AS attempts_unknown
+            count(*) FILTER (WHERE t.attempts IS NULL) AS attempts_unknown,
+            count(*) FILTER (WHERE t.rate_limited_requests > 0) AS rate_limited_calls,
+            COALESCE(sum(t.rate_limited_requests), 0) AS rate_limited_requests,
+            COALESCE(sum(t.rate_limit_wait_ms), 0) AS rate_limit_wait_ms
         {_FROM} {where}
         GROUP BY 1, 2, 3
         ORDER BY timeouts DESC, failed DESC, retried_calls DESC, 1, 2, 3
@@ -442,6 +517,13 @@ def render_text(report: dict) -> str:
         lambda r: r["agent_name"],
         tokens=True,
     )
+    out += _cost_section(
+        "Cost per model",
+        "PROVIDER / MODEL",
+        report["cost_by_model"],
+        lambda r: f"{r['provider']} / {r['model']}",
+        tokens=True,
+    )
 
     latency = [
         [
@@ -454,13 +536,16 @@ def render_text(report: dict) -> str:
             _ms(r["p50_ms"]),
             _ms(r["p95_ms"]),
             _ms(r["max_ms"]),
+            _ms(r["p50_no_wait_ms"]),
+            _ms(r["p95_no_wait_ms"]),
+            str(r["waits_unknown"]),
             str(r["cache_hits"]),
             str(r["attempts_unknown"]),
         ]
         for r in report["latency"]
     ]
     out += [
-        "Latency per agent and model (ms, provider calls only)",
+        "Latency per agent and model (ms, provider calls only; NO WAIT leaves out 429 waits)",
         *_table(
             [
                 "AGENT",
@@ -470,11 +555,68 @@ def render_text(report: dict) -> str:
                 "P50",
                 "P95",
                 "MAX",
+                "P50 NO WAIT",
+                "P95 NO WAIT",
+                "WAITS UNKNOWN",
                 "CACHE HITS",
                 "ATTEMPTS UNKNOWN",
             ],
             latency,
-            numeric={3, 4, 5, 6, 7, 8},
+            numeric={3, 4, 5, 6, 7, 8, 9, 10, 11},
+        ),
+        "",
+    ]
+
+    largest = [
+        [
+            r["agent_name"],
+            r["provider"],
+            r["model"],
+            str(r["calls_with_tokens"]),
+            _ms(r["max_input_tokens"]),
+            _ms(r["max_output_tokens"]),
+            _ms(r["max_thinking_tokens"]),
+            _ms(r["max_total_tokens"]),
+        ]
+        for r in report["largest_calls"]
+    ]
+    out += [
+        "Largest single call per agent and model (tokens)",
+        *_table(
+            [
+                "AGENT",
+                "PROVIDER",
+                "MODEL",
+                "CALLS WITH TOKENS",
+                "MAX INPUT",
+                "MAX OUTPUT",
+                "MAX THINKING",
+                "MAX TOTAL",
+            ],
+            largest,
+            numeric={3, 4, 5, 6, 7},
+        ),
+        "",
+    ]
+
+    per_day = [
+        [
+            r["pacific_day"],
+            r["provider"],
+            r["model"],
+            str(r["calls"]),
+            str(r["requests"]),
+            str(r["attempts_unknown"]),
+            str(r["rate_limited_requests"]),
+        ]
+        for r in report["calls_by_model_day"]
+    ]
+    out += [
+        "Calls per model per day (Pacific time, the day daily quotas reset on)",
+        *_table(
+            ["DAY", "PROVIDER", "MODEL", "CALLS", "REQUESTS", "ATTEMPTS UNKNOWN", "429S"],
+            per_day,
+            numeric={3, 4, 5, 6},
         ),
         "",
     ]
@@ -490,6 +632,9 @@ def render_text(report: dict) -> str:
             str(r["retried_calls"]),
             str(r["extra_attempts"]),
             str(r["attempts_unknown"]),
+            str(r["rate_limited_calls"]),
+            str(r["rate_limited_requests"]),
+            f"{r['rate_limit_wait_ms'] / 1000:.1f}",
             ", ".join(f"{code} {n}" for code, n in r["error_codes"].items()) or "-",
         ]
         for r in report["timeouts_and_retries"]
@@ -507,10 +652,13 @@ def render_text(report: dict) -> str:
                 "RETRIED",
                 "EXTRA ATTEMPTS",
                 "ATTEMPTS UNKNOWN",
+                "CALLS WITH 429S",
+                "429S",
+                "429 WAIT S",
                 "FAILURES",
             ],
             retries,
-            numeric={3, 4, 5, 6, 7, 8},
+            numeric={3, 4, 5, 6, 7, 8, 9, 10, 11},
         ),
     ]
     return "\n".join(out) + "\n"

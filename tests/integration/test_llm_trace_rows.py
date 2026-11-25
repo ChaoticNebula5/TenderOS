@@ -5,7 +5,9 @@
 - a failed call records the provider, latency and attempts its LLMError
   carries, with error_code the exception's class, so an LLM timeout is its
   own value (LLMTimeoutError);
-- attempts can never be negative (ck_agent_trace_attempts, migration 036).
+- attempts can never be negative (ck_agent_trace_attempts, migration 036);
+- PR 34: the 429s and the time waited on them are recorded, a daily quota
+  is its own error code, and migration 042's three checks hold.
 """
 
 import uuid
@@ -15,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from tenderos_backend.agents.llm.client import (
     CallMeasurement,
+    DailyQuotaExhaustedError,
     LLMError,
     LLMTimeoutError,
     ProviderRequestRejectedError,
@@ -161,5 +164,74 @@ async def test_attempts_cannot_be_negative():
                 status="completed",
                 tender_id=tender_id,
                 attempts=-1,
+            )
+            await uow.commit()
+
+
+async def test_a_daily_quota_writes_its_own_error_code_and_its_429s():
+    # PR 34: the row says which calls stopped on a daily quota, and how many
+    # 429s and how much waiting a call had.
+    tender_id = await _tender()
+    error = DailyQuotaExhaustedError("429 daily", retry_after_seconds=3600.0)
+    error.measurement = CallMeasurement(
+        provider="gemini",
+        latency_ms=31_240,
+        attempts=3,
+        rate_limited_requests=3,
+        rate_limit_wait_ms=30_000,
+    )
+
+    with pytest.raises(DailyQuotaExhaustedError):
+        await _verify(_Failing(error), tender_id)
+
+    [row] = await _rows(tender_id)
+    assert row.error_code == "DailyQuotaExhaustedError"
+    assert row.rate_limited_requests == 3
+    assert row.rate_limit_wait_ms == 30_000
+
+
+async def test_a_completed_fake_call_records_no_rate_limit():
+    tender_id = await _tender()
+    fake = FakeLLMClient()
+    fake.script(
+        "requirement_verification",
+        VerificationOutput,
+        [
+            VerificationOutput(
+                supported_by_source=True,
+                mandatory_language_supported=True,
+                verification_confidence=0.9,
+                reasoning_summary="The source says so.",
+            )
+        ],
+    )
+
+    await _verify(fake, tender_id)
+
+    [row] = await _rows(tender_id)
+    assert (row.rate_limited_requests, row.rate_limit_wait_ms) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("fields", "constraint"),
+    [
+        ({"attempts": 1, "rate_limited_requests": -1}, "ck_agent_trace_rate_limited_requests"),
+        ({"attempts": 1, "rate_limit_wait_ms": -1}, "ck_agent_trace_rate_limit_wait_ms"),
+        (
+            {"attempts": 2, "rate_limited_requests": 3},
+            "ck_agent_trace_rate_limited_within_attempts",
+        ),
+    ],
+)
+async def test_the_rate_limit_columns_are_checked(fields, constraint):
+    tender_id = await _tender()
+
+    with pytest.raises(IntegrityError, match=constraint):
+        async with UnitOfWork() as uow:
+            await uow.agent_traces.create(
+                agent_name="requirement_verification",
+                status="completed",
+                tender_id=tender_id,
+                **fields,
             )
             await uow.commit()
