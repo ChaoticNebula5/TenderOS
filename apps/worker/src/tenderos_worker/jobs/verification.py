@@ -13,13 +13,13 @@ from tenderos_backend.domain.services.requirement_service import (
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Overridable by tests the same way orchestration/nodes/
     # requirement_extraction.py's identical helper is - see that module's
     # docstring for why this is a function, not a module-level singleton.
     # B17: delegates to agents/llm/factory.py::build_llm_client, the real
     # gemini-vs-fake decision.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 async def verify_requirement_job(requirement_id: str, event_id: str | None = None) -> None:
@@ -51,8 +51,13 @@ async def verify_requirement_job(requirement_id: str, event_id: str | None = Non
         if requirement is None:
             raise ValueError(f"Requirement {req_id} not found")
         tender_id = requirement.tender_id
+        # PR 35: the client's cache entries are the tender's organization's.
+        tender = await uow.tenders.get(tender_id)
+        if tender is None:
+            raise ValueError(f"Tender {tender_id} not found")
+        organization_id = tender.organization_id
 
-    client = _build_llm_client()
+    client = _build_llm_client(organization_id)
 
     output = await verify_and_persist(
         client,

@@ -32,7 +32,7 @@ class AllItemsFailedError(Exception):
     pass
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Same "function, not module-level singleton" shape
     # requirement_extraction_node's own helper documents - tests monkeypatch
     # this one name instead of touching a real GeminiClient. B17: the actual
@@ -43,7 +43,10 @@ def _build_llm_client() -> LLMClient:
     # own comment for why this branch specifically needs its own key; the
     # factory only uses this value in real-provider mode, ignored entirely
     # in fake mode).
-    return build_llm_client(api_key=settings.compliance_gemini_api_key or settings.gemini_api_key)
+    return build_llm_client(
+        organization_id=organization_id,
+        api_key=settings.compliance_gemini_api_key or settings.gemini_api_key,
+    )
 
 
 async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
@@ -65,7 +68,7 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
         requirements = await uow.requirements.list_for_tender(tender_id)
 
     try:
-        client = _build_llm_client()
+        client = _build_llm_client(uuid.UUID(state["organization_id"]))
         evaluated = 0
         for requirement in requirements:
             try:

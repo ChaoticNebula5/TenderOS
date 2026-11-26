@@ -73,7 +73,9 @@ class _Model:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.names: list[str] = []
         self.worked_on: list[uuid.UUID] = []
-        monkeypatch.setattr(knowledge_import, "_build_llm_client", lambda: SimpleNamespace())
+        monkeypatch.setattr(
+            knowledge_import, "_build_llm_client", lambda _organization_id: SimpleNamespace()
+        )
         monkeypatch.setattr(knowledge_import, "extract_employee_profile", self._profile)
         monkeypatch.setattr(knowledge_import, "extract_worked_on", self._worked_on)
 

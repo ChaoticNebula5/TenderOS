@@ -55,7 +55,7 @@ def _script_company_overview(fake_client: FakeLLMClient) -> None:
 async def _generate(client: TestClient, headers: dict, tender_id: str, monkeypatch) -> list:
     fake_client = FakeLLMClient()
     _script_company_overview(fake_client)
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake_client)
     response = client.post(
         f"/tenders/{tender_id}/proposal/generate",
         headers={**headers, "Idempotency-Key": str(uuid.uuid4())},

@@ -171,7 +171,7 @@ async def test_node_extracts_one_role_and_scores_one_candidate(monkeypatch):
             )
         ],
     )
-    monkeypatch.setattr(talent, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(talent, "_build_llm_client", lambda _organization_id: fake_client)
 
     task_id = await _make_talent_task(workflow_run_id)
     state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
@@ -249,7 +249,7 @@ async def test_the_nodes_scoring_calls_are_recorded_under_its_run_and_task(monke
         CandidateScoring,
         [CandidateScoring(score=0.5, strengths=[], gaps=[])],
     )
-    monkeypatch.setattr(talent, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(talent, "_build_llm_client", lambda _organization_id: fake_client)
     task_id = await _make_talent_task(workflow_run_id)
     state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
 
@@ -305,7 +305,7 @@ async def test_node_does_not_match_a_removed_employee_to_a_role(monkeypatch):
         CandidateScoring,
         [CandidateScoring(score=0.6, strengths=[], gaps=[])],
     )
-    monkeypatch.setattr(talent, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(talent, "_build_llm_client", lambda _organization_id: fake_client)
     task_id = await _make_talent_task(workflow_run_id)
     state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
 

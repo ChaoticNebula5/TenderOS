@@ -49,12 +49,12 @@ from tenderos_worker.jobs.ingestion import parse_and_embed_document
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Same per-job-invocation client construction as verification.py's
     # identical helper - no shared module-level singleton across jobs.
     # B17: delegates to tenderos_backend.agents.llm.factory.build_llm_client,
     # the real gemini-vs-fake decision.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 async def process_knowledge_document_import(document_id: str, batch_id: str) -> None:
@@ -182,7 +182,7 @@ async def _process_capability_statement(
         )
         return
 
-    client = _build_llm_client()
+    client = _build_llm_client(org_id)
     extraction = await extract_capability_statement(
         client, settings.extractor_model, chunks, org_id
     )
@@ -250,7 +250,7 @@ def resume_source_ref(document_id: uuid.UUID, filename: str) -> str:
 async def _process_resume(
     doc_id: uuid.UUID, batch_id: uuid.UUID, org_id: uuid.UUID, filename: str
 ) -> None:
-    client = _build_llm_client()
+    client = _build_llm_client(org_id)
     async with UnitOfWork() as uow:
         resume_chunks = await uow.documents.list_chunks_for_document(doc_id)
 
@@ -302,7 +302,7 @@ async def process_resume_merge_approved(import_item_id: str) -> None:
         resume_chunks = await uow.documents.list_chunks_for_document(item.source_document_id)
     profile = ExtractedEmployeeProfile.model_validate(item.extracted_payload)
     await _import_worked_on(
-        _build_llm_client(),
+        _build_llm_client(batch.organization_id),
         batch.organization_id,
         item.target_knowledge_item_id,
         resume_chunks,

@@ -71,7 +71,7 @@ async def _owners(tender_id: uuid.UUID) -> list[tuple]:
 async def test_a_red_team_operations_calls_carry_the_operation(monkeypatch):
     fake = FakeLLMClient()
     fake.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake)
     op = (await _request("owners-redteam@example.com", "redteam_run")).operation
 
     await run_operation(str(op.id))
@@ -86,7 +86,7 @@ async def test_a_proposal_generations_calls_carry_the_operation(monkeypatch):
         ProposalSectionDraft,
         [ProposalSectionDraft(content="Fake overview.", claims=[])],
     )
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake)
     op = (await _request("owners-proposal@example.com", "proposal_generation")).operation
 
     await run_operation(str(op.id))
@@ -101,7 +101,7 @@ async def test_a_commercial_validations_calls_carry_the_operation(monkeypatch):
         FindingExplanation,
         [FindingExplanation(severity="major", explanation="Fake explanation.")] * 4,
     )
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake)
     op = (await _request("owners-commercial@example.com", "commercial_validation")).operation
     await document_service.create_document(
         tender_id=op.tender_id,

@@ -50,7 +50,7 @@ def projections(monkeypatch) -> list[uuid.UUID]:
     monkeypatch.setattr(graph_service, "project_tender", project_tender)
     monkeypatch.setattr(graph_service, "preview_impact", no_impact)
     monkeypatch.setattr(redteam_checks, "check_graph_contradictions", no_contradictions)
-    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda: object())
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda _organization_id: object())
     return calls
 
 

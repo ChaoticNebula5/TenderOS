@@ -115,7 +115,9 @@ async def _finish_run(run_id: uuid.UUID) -> None:
 def _state(tender_id: uuid.UUID, run_id: uuid.UUID) -> dict:
     return {
         "tender_id": str(tender_id),
-        "organization_id": "unused-by-this-node",
+        # PR 35: the node now reads it (the LLM client's cache scope), so it
+        # must be a real uuid; the fake client ignores it.
+        "organization_id": str(uuid.uuid4()),
         "workflow_run_id": str(run_id),
         "langgraph_thread_id": str(run_id),
         "status": "extracting_requirements",
@@ -163,7 +165,9 @@ async def _extract(monkeypatch, tender_id: uuid.UUID, client: FakeLLMClient) -> 
     """Runs the real node for a new run, then ends the run so the next one
     can start. Returns the extraction task's id."""
     run_id = await _run_row(tender_id)
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: client
+    )
     await requirement_extraction_node(_state(tender_id, run_id))
     async with UnitOfWork() as uow:
         task = await uow.workflow.get_task_by_key(run_id, f"requirement_extraction:{run_id}")
@@ -248,7 +252,9 @@ async def test_a_failing_batch_marks_nothing(monkeypatch):
     client.script_malformed("requirement_extraction", ExtractionOutput)
     client.script_malformed("requirement_extraction", ExtractionOutput)
     run_id = await _run_row(tender_id)
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: client
+    )
 
     with pytest.raises(LLMError):
         await requirement_extraction_node(_state(tender_id, run_id))
@@ -267,7 +273,9 @@ async def test_a_failure_after_the_requirements_commit_marks_nothing(monkeypatch
     monkeypatch.setattr(requirement_extraction, "persist_submission_items", submission_items_fail)
     run_id = await _run_row(tender_id)
     monkeypatch.setattr(
-        requirement_extraction, "_build_llm_client", lambda: _client(_one_optional_requirement())
+        requirement_extraction,
+        "_build_llm_client",
+        lambda _organization_id: _client(_one_optional_requirement()),
     )
 
     with pytest.raises(RuntimeError, match="submission items failed"):

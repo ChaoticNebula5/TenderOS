@@ -128,12 +128,20 @@ Each entry:
   (see the entry above) — 3 "independent" runs against byte-identical
   source documents would have silently collapsed into 1 real call plus 2
   cache replays, defeating the entire point of running 3 times.
-- **Behaviour:** `agents/llm/gemini_adapter.py::_cache_key` hashes only
-  `(model, schema_name, system_prompt, user_prompt)`. Two calls with
-  identical prompt content hit the same Redis key regardless of which
+- **Behaviour (until PR 35):** `agents/llm/gemini_adapter.py::_cache_key`
+  hashed only `(model, schema_name, system_prompt, user_prompt)`. Two calls
+  with identical prompt content hit the same Redis key regardless of which
   tender, organization, or run they came from. By the time this was found,
   186 cached responses already existed in this session's Redis instance
   from ordinary B5/B6/B7 live testing.
+- **Since PR 35:** the key carries the organization the client was built
+  for (`build_llm_client` requires one), so one organization's answers never
+  serve another's call; the hash also covers the schema's JSON schema and
+  every generation setting the request sends. Within one organization the
+  cache is still shared across its tenders and runs, on purpose: that is
+  what keeps a revision pass or a reanalysis cheap. A script that builds
+  `GeminiClient` itself with no organization gets a namespace of its own,
+  shared only with other such scripts.
 - **Risk:** low for the product itself — within one real tender, prompt
   content is naturally unique (real chunk text differs per document), so
   production traffic is unlikely to collide. The real risk is entirely on
@@ -146,16 +154,16 @@ Each entry:
   A script that didn't know to work around this would report false
   "consistency" - N identical results from what looks like N live calls
   but is actually 1 live call plus N-1 cache hits.
-- **Status:** unverified / accepted as a known gap, not fixed. The correct
-  fix (if this becomes load-bearing beyond one-off verification scripts) is
-  scoping the cache key to include a caller-supplied identifier - not
-  attempted here since the workaround (isolated Redis DB per run) fully
-  solved the immediate need without touching shared adapter code B5/B6/B7
-  all already depend on working as-is.
-- **Test:** none dedicated. `verify_req073_074_divergence.py`'s own
-  per-run Redis DB isolation is the direct evidence this gap is real and
-  exploitable, not a test asserting the cache's own key-collision
-  behavior.
+- **Status:** fixed between organizations in PR 35 (the real-Gemini run
+  of 2026-11-25 had a second organization take 165 of its 228 calls from
+  the first one's entries). Still open, as accepted: repeated runs of the
+  same documents within one organization, or by scripts without one, get
+  cached replays; a script that needs independent calls still uses its own
+  Redis DB, as `verify_req073_074_divergence.py` does.
+- **Test:** `tests/unit/test_llm_cache_scope.py` (two organizations never
+  share an entry; the schema and settings parts of the key), and one
+  integration test per call site that finds the organization
+  (`tests/integration/test_llm_cache_organization_sites.py`).
 - **See also:** "Standing pattern: measurement/verification tooling is a
   recurring source of false signals" below — this is instance 3 of that
   pattern, and the one that would have produced the cleanest-looking false

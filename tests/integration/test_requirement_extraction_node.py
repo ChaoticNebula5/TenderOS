@@ -59,7 +59,9 @@ async def _make_tender_with_chunk() -> tuple[uuid.UUID, uuid.UUID]:
 def _base_state(tender_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
     return {
         "tender_id": str(tender_id),
-        "organization_id": "unused-by-this-node",
+        # PR 35: the node now reads it (the LLM client's cache scope), so it
+        # must be a real uuid; the fake client ignores it.
+        "organization_id": str(uuid.uuid4()),
         "workflow_run_id": str(workflow_run_id),
         "langgraph_thread_id": str(workflow_run_id),
         "status": "extracting_requirements",
@@ -123,7 +125,9 @@ async def test_node_persists_requirements_and_marks_task_completed(monkeypatch):
             )
         ],
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
 
     result = await requirement_extraction_node(_base_state(tender_id, workflow_run_id))
 
@@ -153,7 +157,9 @@ async def test_node_does_not_duplicate_task_on_rerun(monkeypatch):
         ExtractionOutput,
         [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])] * 2,
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
 
     state = _base_state(tender_id, workflow_run_id)
     await requirement_extraction_node(state)
@@ -177,7 +183,9 @@ async def test_node_marks_task_failed_when_extraction_raises(monkeypatch):
     # raises AssertionError on the first call, standing in for any real
     # extraction failure the node must convert into a failed task + reraise.
     fake_client = FakeLLMClient()
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
 
     with pytest.raises(AssertionError):
         await requirement_extraction_node(_base_state(tender_id, workflow_run_id))
@@ -203,7 +211,7 @@ async def test_node_marks_task_failed_when_client_construction_itself_raises(mon
     _org_id, tender_id = await _make_tender_with_chunk()
     workflow_run_id = await _make_workflow_run_row(tender_id)
 
-    def _raise() -> None:
+    def _raise(_organization_id) -> None:
         raise ValueError("No API key was provided.")
 
     monkeypatch.setattr(requirement_extraction, "_build_llm_client", _raise)

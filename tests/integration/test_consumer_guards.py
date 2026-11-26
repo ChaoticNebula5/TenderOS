@@ -115,7 +115,7 @@ async def test_a_duplicate_verification_makes_no_llm_call_but_a_request_made_in_
         ]
         * 4,
     )
-    monkeypatch.setattr(verification_job, "_build_llm_client", lambda: fake)
+    monkeypatch.setattr(verification_job, "_build_llm_client", lambda _organization_id: fake)
 
     # Two requests, the second made while the first is still in flight: both
     # events exist before the first verification runs and finishes.
@@ -173,7 +173,7 @@ async def test_a_job_queued_before_the_guard_still_runs(monkeypatch):
         ]
         * 2,
     )
-    monkeypatch.setattr(verification_job, "_build_llm_client", lambda: fake)
+    monkeypatch.setattr(verification_job, "_build_llm_client", lambda _organization_id: fake)
 
     await verification_job.verify_requirement_job(str(requirement.id))
     await verification_job.verify_requirement_job(str(requirement.id))

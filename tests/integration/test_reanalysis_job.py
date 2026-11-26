@@ -208,7 +208,7 @@ async def test_reanalyze_knowledge_selection_change_reopens_compliance_and_regro
             )
         ],
     )
-    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda _organization_id: fake_client)
 
     await reanalysis.reanalyze_knowledge_selection_change(
         str(tender_id), str(uuid.uuid4()), state_version=42
@@ -310,7 +310,7 @@ async def test_the_jobs_compliance_calls_are_recorded_under_its_reanalysis_claim
             )
         ],
     )
-    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda _organization_id: fake_client)
 
     await reanalysis.reanalyze_knowledge_selection_change(
         str(tender_id), str(knowledge_item_id), state_version=7
@@ -527,7 +527,7 @@ async def test_reanalyze_knowledge_selection_change_surfaces_deselected_fact_sti
             )
         ],
     )
-    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda _organization_id: fake_client)
 
     await reanalysis.reanalyze_knowledge_selection_change(
         str(tender_id), str(knowledge_item.id), state_version=7

@@ -24,15 +24,26 @@ not a real network call, not FakeLLMClient (which implements LLMClient,
 not GeminiClient's own __init__ signature).
 """
 
+import uuid
+
 from tenderos_backend.agents.llm import factory
 from tenderos_backend.core.config import Settings, settings
 from tenderos_backend.orchestration.nodes import commercial, compliance, talent
+
+# PR 35: the wrappers take the organization the client is built for.
+_ORG = uuid.uuid4()
 
 
 class _SpyGeminiClient:
     last_api_key: str | None = None
 
-    def __init__(self, api_key: str, redis_client: object, cache_ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        redis_client: object,
+        cache_ttl_seconds: int,
+        organization_id: uuid.UUID | None = None,
+    ) -> None:
         _SpyGeminiClient.last_api_key = api_key
 
 
@@ -51,7 +62,7 @@ def test_compliance_branch_uses_its_own_key_when_set(monkeypatch):
     monkeypatch.setattr(settings, "compliance_gemini_api_key", "compliance-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    compliance._build_llm_client()
+    compliance._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "compliance-only-key"
 
@@ -71,7 +82,7 @@ def test_compliance_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
     monkeypatch.setattr(settings, "compliance_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    compliance._build_llm_client()
+    compliance._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "shared-key"
 
@@ -91,7 +102,7 @@ def test_talent_branch_uses_its_own_key_when_set(monkeypatch):
     monkeypatch.setattr(settings, "talent_gemini_api_key", "talent-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    talent._build_llm_client()
+    talent._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "talent-only-key"
 
@@ -111,7 +122,7 @@ def test_talent_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
     monkeypatch.setattr(settings, "talent_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    talent._build_llm_client()
+    talent._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "shared-key"
 
@@ -131,7 +142,7 @@ def test_commercial_branch_uses_its_own_key_when_set(monkeypatch):
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "commercial-only-key")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    commercial._build_llm_client()
+    commercial._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "commercial-only-key"
 
@@ -151,7 +162,7 @@ def test_commercial_branch_falls_back_to_the_shared_key_when_unset(monkeypatch):
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    commercial._build_llm_client()
+    commercial._build_llm_client(_ORG)
 
     assert _SpyGeminiClient.last_api_key == "shared-key"
 
@@ -176,13 +187,13 @@ def test_the_three_branch_keys_are_independent_of_each_other(monkeypatch):
     monkeypatch.setattr(settings, "commercial_gemini_api_key", "key-c")
     monkeypatch.setattr(settings, "gemini_api_key", "shared-key")
 
-    compliance._build_llm_client()
+    compliance._build_llm_client(_ORG)
     assert _SpyGeminiClient.last_api_key == "key-a"
 
-    talent._build_llm_client()
+    talent._build_llm_client(_ORG)
     assert _SpyGeminiClient.last_api_key == "key-b"
 
-    commercial._build_llm_client()
+    commercial._build_llm_client(_ORG)
     assert _SpyGeminiClient.last_api_key == "key-c"
 
 
@@ -194,7 +205,7 @@ def test_fake_provider_returns_the_shared_fake_client_regardless_of_branch(monke
     # real GeminiClient with no real api_key, not silently pass).
     monkeypatch.setattr(settings, "llm_provider", "fake")
 
-    result = compliance._build_llm_client()
+    result = compliance._build_llm_client(_ORG)
 
     assert result is factory.fake_llm_client()
 

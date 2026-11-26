@@ -648,7 +648,7 @@ async def test_a_real_red_team_run_succeeds_through_the_worker(monkeypatch):
     with no findings, and the critique agent was called once."""
     fake_client = FakeLLMClient()
     fake_client.script("redteam_critique", RedteamCritique, [RedteamCritique(findings=[])])
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake_client)
     requested = await _request("op-real@example.com")
 
     await run_operation(str(requested.operation.id))
@@ -668,7 +668,7 @@ async def test_a_real_proposal_generation_runs_once_under_a_duplicate_delivery(m
         ProposalSectionDraft,
         [ProposalSectionDraft(content="Fake overview.", claims=[])] * 2,
     )
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake_client)
     requested = await _request("op-proposal@example.com", "proposal_generation")
     op_id = requested.operation.id
 
@@ -697,7 +697,7 @@ async def test_a_real_commercial_validation_runs_once_and_explains_only_new_find
         FindingExplanation,
         [FindingExplanation(severity="major", explanation="Fake explanation.")] * 8,
     )
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake_client)
     requested = await _request("op-commercial@example.com", "commercial_validation")
     op = requested.operation
     await document_service.create_document(

@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from redis.asyncio import Redis as AsyncRedis
 
@@ -79,7 +80,7 @@ def fake_llm_client() -> FakeLLMClient:
     return _fake_client
 
 
-def build_llm_client(*, api_key: str | None = None) -> LLMClient:
+def build_llm_client(*, organization_id: uuid.UUID, api_key: str | None = None) -> LLMClient:
     """Replaces all nine modules' own private _build_llm_client() bodies -
     each of those still exists (existing tests monkeypatch that exact
     per-module name; keeping it is what makes this refactor not also a
@@ -94,6 +95,14 @@ def build_llm_client(*, api_key: str | None = None) -> LLMClient:
     value; every other call site leaves this None and gets the shared
     settings.gemini_api_key. Irrelevant in fake mode - FakeLLMClient takes
     no key at all.
+
+    organization_id (PR 35): the organization every call of this client is
+    made for, required so no app call can reach the response cache without
+    one; the real client keys its cache entries by it, so one
+    organization's answers never serve another's call. Every caller has it
+    at hand: the workflow state, the operation's row, the import batch, or
+    the tender (reanalysis and on-demand verification). Ignored in fake
+    mode: FakeLLMClient keeps no cache.
     """
     if settings.llm_provider == "fake":
         return _fake_client
@@ -102,4 +111,5 @@ def build_llm_client(*, api_key: str | None = None) -> LLMClient:
         api_key=api_key or settings.gemini_api_key,
         redis_client=redis_client,
         cache_ttl_seconds=settings.llm_cache_ttl_seconds,
+        organization_id=organization_id,
     )

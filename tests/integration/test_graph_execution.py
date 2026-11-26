@@ -44,22 +44,24 @@ def _fake_extraction_llm(monkeypatch):
         ExtractionOutput,
         [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])] * 5,
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
     # compliance_analysis_node constructs its own LLM client unconditionally
     # (before checking whether there are any requirements to evaluate) - with
     # zero extracted requirements the fake client is never actually called,
     # but patching it here keeps this file's real-graph-execution tests from
     # ever depending on a real GEMINI_API_KEY being present.
-    monkeypatch.setattr(compliance, "_build_llm_client", lambda: FakeLLMClient())
+    monkeypatch.setattr(compliance, "_build_llm_client", lambda _organization_id: FakeLLMClient())
     # talent_analysis_node also constructs its own client unconditionally
     # (before checking whether any staffing requirements/candidates exist)
     # - same reasoning as compliance's own patch above.
-    monkeypatch.setattr(talent, "_build_llm_client", lambda: FakeLLMClient())
+    monkeypatch.setattr(talent, "_build_llm_client", lambda _organization_id: FakeLLMClient())
     # commercial_analysis_node too - this file's own fixture tender has no
     # uploaded .xlsx pricing documents, so evaluate_commercial_for_tender
     # never actually calls the LLM in practice, but the client is still
     # constructed unconditionally before that check runs.
-    monkeypatch.setattr(commercial, "_build_llm_client", lambda: FakeLLMClient())
+    monkeypatch.setattr(commercial, "_build_llm_client", lambda _organization_id: FakeLLMClient())
     # proposal_drafting_node also constructs its own client unconditionally.
     # This file's fixture tender has no approved compliance/talent/commercial
     # data, so draft_proposal_for_tender skips every data-gated section
@@ -73,7 +75,9 @@ def _fake_extraction_llm(monkeypatch):
         ProposalSectionDraft,
         [ProposalSectionDraft(content="Drafted overview.", claims=[])] * 3,
     )
-    monkeypatch.setattr(proposal, "_build_llm_client", lambda: proposal_fake_client)
+    monkeypatch.setattr(
+        proposal, "_build_llm_client", lambda _organization_id: proposal_fake_client
+    )
     # red_team_node also constructs its own client unconditionally, same
     # reasoning as compliance/talent/commercial above - B11's new fixed
     # step in this graph (project_graph -> red_team), so every real-graph
@@ -82,7 +86,7 @@ def _fake_extraction_llm(monkeypatch):
     redteam_fake_client.script(
         "redteam_critique", RedteamCritique, [RedteamCritique(findings=[])] * 3
     )
-    monkeypatch.setattr(redteam, "_build_llm_client", lambda: redteam_fake_client)
+    monkeypatch.setattr(redteam, "_build_llm_client", lambda _organization_id: redteam_fake_client)
     return fake_client
 
 
@@ -427,7 +431,7 @@ async def test_one_failing_specialist_branch_cancels_its_still_running_siblings(
 
     call_count = {"n": 0}
 
-    def _commercial_client_fails_once_then_succeeds():
+    def _commercial_client_fails_once_then_succeeds(_organization_id):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("scripted commercial failure")
@@ -519,7 +523,7 @@ async def test_siblings_cancelled_by_a_failure_that_is_not_retried_end_skipped(m
         gates = await uow.gates.list_for_run(run.id)
     await _approve(registered, gates[0])
 
-    def _terminal_failure():
+    def _terminal_failure(_organization_id):
         raise MalformedOutputError("scripted terminal commercial failure")
 
     monkeypatch.setattr(commercial, "_build_llm_client", _terminal_failure)

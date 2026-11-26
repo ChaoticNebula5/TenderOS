@@ -39,7 +39,9 @@ async def _make_run() -> WorkflowRun:
 def _base_state(run: WorkflowRun) -> dict:
     return {
         "tender_id": str(run.tender_id),
-        "organization_id": "unused-by-these-nodes",
+        # PR 35: the nodes now read it (the LLM client's cache scope), so it
+        # must be a real uuid; the fake client ignores it.
+        "organization_id": str(uuid.uuid4()),
         "workflow_run_id": str(run.id),
         "langgraph_thread_id": run.langgraph_thread_id,
         "status": "planning",

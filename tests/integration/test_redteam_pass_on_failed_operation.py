@@ -169,7 +169,7 @@ def test_a_timeout_inside_the_pass_ends_job_timeout_with_one_failed_pass(
 
     monkeypatch.setattr(redteam_service, "_run_and_record_pass", times_out_inside)
     monkeypatch.setattr(operation_jobs, "_project_if_stale", _no_projection)
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: None)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: None)
     operation_id = _sync(_request("item105-inside@example.com", "redteam_run"))
 
     job = _run_job_past_its_timeout(queue, connection, operation_id, job_timeout=600)
