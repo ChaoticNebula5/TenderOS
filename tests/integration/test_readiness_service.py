@@ -272,6 +272,8 @@ _EXPECTED_COUNTS_KEYS = {
     "selected_employees_removed",
     "documents_not_parsed",
     "documents_not_extracted",
+    # Plan item 121: reviewers' decisions a changed analysis answer reopened.
+    "compliance_decisions_reopened",
 }
 
 

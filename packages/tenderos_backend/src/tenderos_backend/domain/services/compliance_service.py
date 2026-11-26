@@ -331,10 +331,14 @@ async def persist_compliance_decision(
                 e.id for e in await uow.compliance.list_evidence_for_compliance_entry(existing.id)
             }
             new_evidence_ids = {e.id for e in materialized_evidence}
+            # Plan item 121: a reviewer's override stays the decision in
+            # effect; only the analysis's own columns take the new answer.
+            reviewer_decided = existing.decided_by == "reviewer"
+            shown_status = existing.status if reviewer_decided else sufficiency.status
             # The confidence is on the graph's Compliance node too (plan item
             # 95), and a re-evaluation rewrites it every time.
             materially_changed = (
-                existing.status != sufficiency.status
+                existing.status != shown_status
                 or not new_evidence_ids.issubset(already_linked_ids)
                 or not _same_real(existing.confidence, proposal.confidence)
             )
@@ -348,27 +352,31 @@ async def persist_compliance_decision(
             )
         else:
             update_fields: dict[str, object] = {
-                "status": sufficiency.status,
-                "reasoning_summary": proposal.reasoning_summary,
+                "automated_status": sufficiency.status,
+                "automated_reasoning_summary": proposal.reasoning_summary,
                 "confidence": proposal.confidence,
                 "last_evaluated_at": datetime.now(UTC),
             }
-            # A human's approval is an approval of the STATUS this entry
-            # showed at the time - proposal_service.py's _facts_from_
-            # compliance trusts human_approved unconditionally, and B12's
-            # own required blockers name "compliant decision without valid
-            # evidence". An automated reevaluation that flips the status
-            # (e.g. fully_compliant -> non_compliant, because the evidence
-            # backing it changed) must clear that approval rather than let
-            # it survive attached to a decision the human never actually
-            # saw - otherwise a stale approval grounds a claim inside a
-            # readiness report asserting everything checks out. An
-            # IDENTICAL status is treated as the same semantic decision the
-            # human already approved and deliberately preserves
-            # human_approved - re-running analysis against unchanged
-            # underlying data isn't a new decision to re-approve.
-            if existing.human_approved and existing.status != sufficiency.status:
+            if not reviewer_decided:
+                update_fields["status"] = sufficiency.status
+                update_fields["reasoning_summary"] = proposal.reasoning_summary
+            # A person's approval is of the decision the entry showed then;
+            # proposal_service.py's _facts_from_compliance trusts
+            # human_approved, so it must not outlive a change the person never
+            # saw. The change that counts is the analysis's own answer moving
+            # (plan item 121, Q1 a: the status after the sufficiency check),
+            # judged against the analysis's previous answer, never against the
+            # status shown: after an override that status is the reviewer's,
+            # and the analysis repeating the answer the reviewer overrode is
+            # no new information (T1, 2026-11-25: 85 overrides undone by
+            # unchanged answers). An approved analysis entry that changes
+            # takes the new status; an approved override keeps the reviewer's
+            # status and is reopened (Q2 a), which readiness then blocks on.
+            if existing.human_approved and existing.automated_status != sufficiency.status:
                 update_fields["human_approved"] = False
+                # The graph's Compliance node carries the approval, and a
+                # reopened override's status does not move.
+                materially_changed = True
                 tender = await uow.tenders.get(tender_id)
                 if tender is not None:
                     await uow.audit.create(
@@ -379,8 +387,18 @@ async def persist_compliance_decision(
                         tender_id=tender_id,
                         target_type="compliance_entry",
                         target_id=existing.id,
-                        before={"status": existing.status, "human_approved": True},
-                        after={"status": sufficiency.status, "human_approved": False},
+                        before={
+                            "status": existing.status,
+                            "human_approved": True,
+                            "decided_by": existing.decided_by,
+                            "automated_status": existing.automated_status,
+                        },
+                        after={
+                            "status": shown_status,
+                            "human_approved": False,
+                            "decided_by": existing.decided_by,
+                            "automated_status": sufficiency.status,
+                        },
                     )
             entry = await uow.compliance.update_compliance_entry(existing.id, **update_fields)
 
@@ -601,8 +619,13 @@ async def override_compliance_entry(
             "status": entry.status,
             "reasoning_summary": entry.reasoning_summary,
             "human_approved": entry.human_approved,
+            "decided_by": entry.decided_by,
         }
-        fields: dict[str, object] = {"human_approved": True}
+        # Plan item 121: from here the status and reasoning are the
+        # reviewer's, and a re-evaluation writes only the analysis's own
+        # columns. An override always approves, so an entry decided by a
+        # reviewer is unapproved only once a changed answer reopens it.
+        fields: dict[str, object] = {"human_approved": True, "decided_by": "reviewer"}
         if status is not None:
             fields["status"] = status
         if reasoning_summary is not None:
@@ -622,6 +645,7 @@ async def override_compliance_entry(
                 "status": updated.status,
                 "reasoning_summary": updated.reasoning_summary,
                 "human_approved": True,
+                "decided_by": "reviewer",
             },
         )
         # See approve_compliance_entry's own comment - same invariant, same
@@ -673,6 +697,10 @@ class ComplianceTrace:
     reasoning_summary: str | None
     human_approved: bool
     evidence: list[EvidenceTraceEntry]
+    # Plan item 121: the analysis's own answer and whose decision is shown.
+    automated_status: str
+    automated_reasoning_summary: str | None
+    decided_by: str
 
 
 async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrace:
@@ -754,4 +782,7 @@ async def get_compliance_trace(compliance_entry_id: uuid.UUID) -> ComplianceTrac
         reasoning_summary=entry.reasoning_summary,
         human_approved=entry.human_approved,
         evidence=evidence_entries,
+        automated_status=entry.automated_status,
+        automated_reasoning_summary=entry.automated_reasoning_summary,
+        decided_by=entry.decided_by,
     )

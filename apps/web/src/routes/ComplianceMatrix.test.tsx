@@ -62,11 +62,17 @@ function run(status: string): WorkflowRunResponse {
 }
 
 function entry(overrides: Partial<ComplianceResponse>): ComplianceResponse {
+  // Plan item 121: by default the analysis's own entry, its automated
+  // answer the status shown.
+  const status = overrides.status ?? "non_compliant";
   return {
     id: "c1",
     requirement_id: REQ_ID,
-    status: "non_compliant",
+    status,
     reasoning_summary: null,
+    automated_status: status,
+    automated_reasoning_summary: null,
+    decided_by: "analysis",
     confidence: 0.8999999761581421,
     human_approved: false,
     last_evaluated_at: "2026-01-01T00:00:00Z",
@@ -164,6 +170,55 @@ describe("ComplianceMatrix (restyle batch 4)", () => {
     expect(within(firstRow(container)).queryByRole("button")).toBeNull();
     // Plan item 59 (Q4): the approval names the status the row showed.
     expect(approveCompliance).toHaveBeenCalledWith("c1", "fully_compliant");
+  });
+
+  it("says whose decision a row is, and the analysis's answer only where it differs (plan item 121)", async () => {
+    listCompliance.mockResolvedValue([
+      entry({ id: "c1", status: "fully_compliant" }),
+      entry({
+        id: "c2",
+        status: "fully_compliant",
+        automated_status: "evidence_unavailable",
+        decided_by: "reviewer",
+        human_approved: true,
+      }),
+      entry({ id: "c3", status: "non_compliant", decided_by: "reviewer", human_approved: true }),
+    ]);
+    listWorkflowRuns.mockResolvedValue([]);
+    const { container } = renderScreen();
+
+    await screen.findAllByRole("combobox", { name: "Change status" });
+    const rows = Array.from(container.querySelector("table")!.querySelectorAll("tbody tr"));
+    expect(rows[0].querySelector(".compliance__note")).toBeNull();
+    expect(rows[1].querySelector(".compliance__note")?.textContent).toBe(
+      "Reviewer's decision. The analysis says: No evidence",
+    );
+    expect(rows[2].querySelector(".compliance__note")?.textContent).toBe("Reviewer's decision");
+  });
+
+  it("marks a reopened decision Reopened, keeps one select and one Approve button, and re-approves the reviewer's status (plan item 121; full-flow.spec.ts:736-745)", async () => {
+    const user = userEvent.setup();
+    const reopened = entry({
+      status: "fully_compliant",
+      automated_status: "partially_compliant",
+      decided_by: "reviewer",
+      human_approved: false,
+    });
+    listCompliance.mockResolvedValue([reopened, entry({ id: "c2", status: "non_compliant" })]);
+    listWorkflowRuns.mockResolvedValue([]);
+    approveCompliance.mockResolvedValue({ ...reopened, human_approved: true });
+    const { container } = renderScreen();
+
+    await screen.findByText("Reopened");
+    const rows = Array.from(container.querySelector("table")!.querySelectorAll("tbody tr"));
+    // An analysis entry that is not approved is not reopened.
+    expect(within(rows[1] as HTMLElement).getByText("Not approved")).toBeInTheDocument();
+    const row = rows[0] as HTMLElement;
+    expect(row.querySelectorAll("select")).toHaveLength(1);
+    expect(within(row).getAllByRole("button", { name: /Approve/ })).toHaveLength(1);
+    await user.click(within(row).getByRole("button", { name: "Approve" }));
+    expect(approveCompliance).toHaveBeenCalledWith("c1", "fully_compliant");
+    await waitFor(() => expect(within(row).getByText("Approved")).toBeInTheDocument());
   });
 
   it("reads the entry again and says why when it changed after the page loaded (409 COMPLIANCE_ENTRY_CHANGED)", async () => {

@@ -11,6 +11,13 @@
   gap: var(--space-2);
 }
 
+/* Plan item 121: whose decision the status is, under the badge and select
+   (the same size as the red-team screen's note). */
+.compliance__note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-label);
+}
+
 /* The actions column shrinks to its one button (same rule as the
    requirement register's). */
 .compliance td:last-child {

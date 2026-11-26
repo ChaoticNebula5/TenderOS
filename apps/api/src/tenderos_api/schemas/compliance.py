@@ -10,6 +10,13 @@ class ComplianceResponse(BaseModel):
     requirement_id: UUID
     status: str
     reasoning_summary: str | None
+    # Plan item 121: the analysis's own last answer, and whose decision
+    # status and reasoning_summary are ('analysis' or 'reviewer'). A
+    # reviewer's decision that is not approved was reopened by a changed
+    # analysis answer.
+    automated_status: str
+    automated_reasoning_summary: str | None
+    decided_by: str
     confidence: float | None
     human_approved: bool
     last_evaluated_at: datetime
@@ -60,3 +67,6 @@ class ComplianceTraceResponse(BaseModel):
     reasoning_summary: str | None
     human_approved: bool
     evidence: list[EvidenceTraceResponse] = Field(default_factory=list)
+    automated_status: str
+    automated_reasoning_summary: str | None
+    decided_by: str

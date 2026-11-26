@@ -336,6 +336,13 @@ export function describeApproved(approved: boolean): StatusDescriptor {
     : { tone: "neutral", label: "Not approved" };
 }
 
+// Plan item 121: a reviewer's compliance decision that a changed analysis
+// answer reopened. Warning, not Blocked: the reviewer can approve it again
+// in one step, but readiness blocks on it until then.
+export function describeReopened(): StatusDescriptor {
+  return { tone: "warning", label: "Reopened" };
+}
+
 // Candidate and knowledge-item selection (TeamWorkspace's and
 // KnowledgeSelections' Selected columns). DESIGN.md:585-587 as above.
 // chosen, not in DESIGN (tones and labels): selected -> Ready "Selected";

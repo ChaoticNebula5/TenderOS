@@ -148,6 +148,42 @@ async def test_patch_compliance_overrides_status_and_sets_human_approved(
     assert response.json()["human_approved"] is True
 
 
+async def test_an_overridden_entry_says_whose_decision_it_is_and_what_the_analysis_said(
+    client: TestClient, register_actor
+):
+    # Plan item 121: the screen reads decided_by and automated_status to
+    # mark a reviewer's decision and the analysis's own answer.
+    headers, _, org_id = register_actor()
+    tender_id, document_id = await _make_tender_with_document(client, headers, org_id)
+    _req_id, entry_id = await _requirement_and_compliance_entry(
+        tender_id, document_id, status="evidence_unavailable"
+    )
+    before = client.get(f"/compliance/{entry_id}", headers=headers).json()
+    assert (before["decided_by"], before["automated_status"]) == (
+        "analysis",
+        "evidence_unavailable",
+    )
+
+    client.patch(
+        f"/compliance/{entry_id}",
+        json={"status": "fully_compliant", "reasoning_summary": "Confirmed via phone call."},
+        headers=headers,
+    )
+
+    for path in (f"/compliance/{entry_id}", f"/compliance/{entry_id}/trace"):
+        body = client.get(path, headers=headers).json()
+        assert (body["status"], body["decided_by"], body["automated_status"]) == (
+            "fully_compliant",
+            "reviewer",
+            "evidence_unavailable",
+        ), path
+        assert body["automated_reasoning_summary"] is None, path
+    listed = client.get(f"/tenders/{tender_id}/compliance", headers=headers).json()
+    assert [(e["decided_by"], e["automated_status"]) for e in listed if e["id"] == entry_id] == [
+        ("reviewer", "evidence_unavailable")
+    ]
+
+
 async def test_approve_compliance_sets_human_approved(client: TestClient, register_actor):
     headers, _, org_id = register_actor()
     tender_id, document_id = await _make_tender_with_document(client, headers, org_id)

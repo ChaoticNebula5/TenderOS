@@ -19,8 +19,15 @@ import { TableScroll } from "../components/ui/TableScroll";
 import { formatPercent } from "../format/percent";
 import { useLatestRunGate } from "../hooks/useLatestRunGate";
 import { useReportRunStatus } from "../shell/runStatus";
-import { describeApproved, describeStatus } from "../status/statusMap";
+import { describeApproved, describeReopened, describeStatus } from "../status/statusMap";
 import "./ComplianceMatrix.css";
+
+// Plan item 121: an override always approves, so a reviewer's decision is
+// unapproved only once a changed analysis answer reopened it (the same
+// test as readiness's reopened_compliance_decision blocker).
+function isReopened(entry: ComplianceResponse): boolean {
+  return entry.decided_by === "reviewer" && !entry.human_approved;
+}
 
 // The override select's choices, in the order the screen has always listed
 // them - db/models/compliance.py:53-56. Each <option>'s VALUE stays the
@@ -215,10 +222,24 @@ export function ComplianceMatrix() {
                       ))}
                     </select>
                   </div>
+                  {/* Plan item 121: whose decision this is, and the analysis's
+                      own answer where it differs. Text only: the E2E spec
+                      finds this row's one select and its Approve button. */}
+                  {entry.decided_by === "reviewer" && (
+                    <p className="compliance__note">
+                      Reviewer&apos;s decision
+                      {entry.automated_status !== entry.status &&
+                        `. The analysis says: ${describeStatus("compliance", entry.automated_status).label}`}
+                    </p>
+                  )}
                 </td>
                 <td className="cell-num">{formatPercent(entry.confidence) ?? "Not scored"}</td>
                 <td>
-                  <StatusBadge {...describeApproved(entry.human_approved)} />
+                  <StatusBadge
+                    {...(isReopened(entry)
+                      ? describeReopened()
+                      : describeApproved(entry.human_approved))}
+                  />
                 </td>
                 <td>
                   {!entry.human_approved && (
