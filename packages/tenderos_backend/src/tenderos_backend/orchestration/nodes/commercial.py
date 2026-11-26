@@ -20,14 +20,17 @@ from tenderos_backend.orchestration.state import SpecialistTaskState, TenderStat
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Same "function, not module-level singleton" shape compliance_analysis_
     # node's and talent_analysis_node's own helpers document. B17: delegates
     # to agents/llm/factory.py::build_llm_client - still resolves its own
     # key first (B16: commercial_gemini_api_key first, falling back to the
     # shared gemini_api_key when unset - see Settings.commercial_gemini_api_key's
     # own comment for why), used only in real-provider mode.
-    return build_llm_client(api_key=settings.commercial_gemini_api_key or settings.gemini_api_key)
+    return build_llm_client(
+        organization_id=organization_id,
+        api_key=settings.commercial_gemini_api_key or settings.gemini_api_key,
+    )
 
 
 async def commercial_analysis_node(state: SpecialistTaskState) -> dict:
@@ -46,7 +49,7 @@ async def commercial_analysis_node(state: SpecialistTaskState) -> dict:
 
     await start_task(task_id)
     try:
-        client = _build_llm_client()
+        client = _build_llm_client(uuid.UUID(state["organization_id"]))
         findings = await evaluate_commercial_for_tender(
             client,
             settings.reasoning_model,

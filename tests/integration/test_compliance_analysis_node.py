@@ -62,7 +62,9 @@ async def _upload_chunk(org_id: uuid.UUID, tender_id: uuid.UUID, filename: str, 
 def _base_state(tender_id: uuid.UUID, workflow_run_id: uuid.UUID) -> dict:
     return {
         "tender_id": str(tender_id),
-        "organization_id": "unused-by-these-nodes",
+        # PR 35: the nodes now read it (the LLM client's cache scope), so it
+        # must be a real uuid; the fake client ignores it.
+        "organization_id": str(uuid.uuid4()),
         "workflow_run_id": str(workflow_run_id),
         "langgraph_thread_id": str(workflow_run_id),
         "status": "extracting_requirements",
@@ -135,7 +137,9 @@ async def test_node_creates_one_compliance_entry_per_requirement_and_completes_t
             )
         ],
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: extraction_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: extraction_client
+    )
     await requirement_extraction_node(_base_state(tender_id, workflow_run_id))
 
     async with UnitOfWork() as uow:
@@ -155,7 +159,7 @@ async def test_node_creates_one_compliance_entry_per_requirement_and_completes_t
             )
         ],
     )
-    monkeypatch.setattr(compliance, "_build_llm_client", lambda: compliance_client)
+    monkeypatch.setattr(compliance, "_build_llm_client", lambda _organization_id: compliance_client)
 
     task_id = await _make_compliance_task(workflow_run_id)
     state = {**_base_state(tender_id, workflow_run_id), "task_id": str(task_id)}
@@ -263,7 +267,9 @@ async def test_req073_074_divergent_restatements_get_independent_compliance_entr
         ]
         * 2,
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: extraction_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: extraction_client
+    )
     await requirement_extraction_node(_base_state(tender_id, workflow_run_id))
 
     # --- 1. Precondition: both survived real extraction, distinct durations intact ---
@@ -303,7 +309,7 @@ async def test_req073_074_divergent_restatements_get_independent_compliance_entr
             ),
         ],
     )
-    monkeypatch.setattr(compliance, "_build_llm_client", lambda: compliance_client)
+    monkeypatch.setattr(compliance, "_build_llm_client", lambda _organization_id: compliance_client)
 
     task_id = await _make_compliance_task(workflow_run_id)
     state = {**_base_state(tender_id, workflow_run_id), "task_id": str(task_id)}

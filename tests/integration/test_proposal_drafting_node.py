@@ -76,7 +76,7 @@ async def test_node_drafts_company_overview_and_sets_drafting_status(monkeypatch
         ProposalSectionDraft,
         [ProposalSectionDraft(content="Drafted overview.", claims=[])],
     )
-    monkeypatch.setattr(proposal, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(proposal, "_build_llm_client", lambda _organization_id: fake_client)
 
     result = await proposal_drafting_node(_base_state(tender_id, org_id, workflow_run_id))
 
@@ -100,7 +100,7 @@ async def test_node_swallows_a_drafting_failure_rather_than_raising(monkeypatch)
     # No script registered at all - draft_section's call_with_repair will
     # raise (via FakeLLMClient's own "no scripted response left" guard),
     # simulating a real drafting failure.
-    monkeypatch.setattr(proposal, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(proposal, "_build_llm_client", lambda _organization_id: fake_client)
 
     result = await proposal_drafting_node(_base_state(tender_id, org_id, workflow_run_id))
 

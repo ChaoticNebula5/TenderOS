@@ -207,7 +207,9 @@ async def test_gate_decision_via_http_uses_the_gate_types_own_rbac_action(monkey
         ExtractionOutput,
         [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])],
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
 
     async with await _client() as client:
         admin_token, tender_id = await _register_and_create_tender(

@@ -30,13 +30,13 @@ from tenderos_backend.domain.services.proposal_service import reground_claim
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Fresh client per job invocation, same as verification.py's and every
     # other worker job's identical helper - see requirement_extraction.py's
     # own docstring for why this is a function, not a module-level
     # singleton (test overridability). B17: delegates to agents/llm/
     # factory.py::build_llm_client, the real gemini-vs-fake decision.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 def _affected_ids(rows: list[dict]) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
@@ -170,7 +170,12 @@ async def reanalyze_knowledge_selection_change(
     rows = await graph_service.preview_impact(tid, kid)
     requirement_ids, claim_ids = _affected_ids(rows)
 
-    client = _build_llm_client()
+    # PR 35: the client's cache entries are the tender's organization's.
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get(tid)
+    if tender is None:
+        raise ValueError(f"Tender {tid} not found")
+    client = _build_llm_client(tender.organization_id)
     for requirement_id in requirement_ids:
         # The outbox write is INSIDE this same try/except, not after it
         # (CodeRabbit review) - the claims loop below already had this

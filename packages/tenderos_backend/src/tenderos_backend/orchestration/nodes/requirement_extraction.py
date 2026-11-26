@@ -17,7 +17,7 @@ from tenderos_backend.orchestration.state import TenderState
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # A function, not a module-level singleton, specifically so tests can
     # monkeypatch this one name (monkeypatch.setattr(module, "_build_llm_client",
     # lambda: fake_client)) instead of a real GeminiClient - every automated
@@ -27,7 +27,7 @@ def _build_llm_client() -> LLMClient:
     # by all nine call sites that used to each make this decision
     # independently - this is a one-line delegate, kept only so existing
     # tests' monkeypatch target (this exact module-level name) still works.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 async def requirement_extraction_node(state: TenderState) -> dict:
@@ -63,7 +63,7 @@ async def requirement_extraction_node(state: TenderState) -> dict:
     read_chunk_ids = [chunk.id for chunk in chunks]
 
     try:
-        client = _build_llm_client()
+        client = _build_llm_client(uuid.UUID(state["organization_id"]))
         extraction = await extract_requirements(
             client,
             settings.extractor_model,

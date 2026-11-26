@@ -33,14 +33,17 @@ class AllItemsFailedError(Exception):
     pass
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Same "function, not module-level singleton" shape compliance_analysis_
     # node's own helper documents. B17: delegates to agents/llm/factory.py::
     # build_llm_client (the real gemini-vs-fake decision) - still resolves
     # its own key first (B16: talent_gemini_api_key first, falling back to
     # the shared gemini_api_key when unset - see Settings.talent_gemini_api_key's
     # own comment for why), used only in real-provider mode.
-    return build_llm_client(api_key=settings.talent_gemini_api_key or settings.gemini_api_key)
+    return build_llm_client(
+        organization_id=organization_id,
+        api_key=settings.talent_gemini_api_key or settings.gemini_api_key,
+    )
 
 
 async def talent_analysis_node(state: SpecialistTaskState) -> dict:
@@ -63,7 +66,7 @@ async def talent_analysis_node(state: SpecialistTaskState) -> dict:
 
     await start_task(task_id)
     try:
-        client = _build_llm_client()
+        client = _build_llm_client(organization_id)
         roles = await extract_and_persist_roles(
             client,
             settings.reasoning_model,

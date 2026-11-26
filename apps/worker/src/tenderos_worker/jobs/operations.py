@@ -52,9 +52,9 @@ _FAILURES: dict[str, str] = {
 }
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Overridable by tests, like the other worker jobs' helpers.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 async def _run_redteam(operation: AsyncOperation) -> None:
@@ -62,7 +62,7 @@ async def _run_redteam(operation: AsyncOperation) -> None:
     # operation_id: the pass is recorded as this operation's (plan items 94
     # and 96), so readiness can tell which pass it is reading.
     await redteam_service.run_red_team(
-        _build_llm_client(),
+        _build_llm_client(operation.organization_id),
         settings.reasoning_model,
         operation.tender_id,
         operation_id=operation.id,
@@ -101,7 +101,7 @@ async def _run_proposal_generation(operation: AsyncOperation) -> None:
     # GET .../proposal/sections once the operation has succeeded.
     # operation_id: its calls are recorded as this operation's (PR 29).
     await proposal_service.draft_proposal_for_tender(
-        _build_llm_client(),
+        _build_llm_client(operation.organization_id),
         settings.reasoning_model,
         operation.tender_id,
         operation_id=operation.id,
@@ -114,7 +114,7 @@ async def _run_commercial_validation(operation: AsyncOperation) -> None:
     # sheet); findings already stored are looked up, not explained again.
     # operation_id: its calls are recorded as this operation's (PR 29).
     await commercial_service.evaluate_commercial_for_tender(
-        _build_llm_client(),
+        _build_llm_client(operation.organization_id),
         settings.reasoning_model,
         operation.tender_id,
         operation_id=operation.id,

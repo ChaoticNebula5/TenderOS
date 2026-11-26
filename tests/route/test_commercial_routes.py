@@ -96,7 +96,7 @@ async def test_validate_pricing_document_queues_an_operation_the_worker_runs(
         FindingExplanation,
         [FindingExplanation(severity="major", explanation="Deterministically identified.")] * 8,
     )
-    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(operation_jobs, "_build_llm_client", lambda _organization_id: fake_client)
     url = f"/pricing-documents/{pricing_document_id}/validate"
 
     response = client.post(url, headers=headers)

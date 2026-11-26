@@ -55,7 +55,9 @@ async def _tender_with_open_requirement_gate(
         ExtractionOutput,
         [ExtractionOutput(requirements=[], submission_items=[], clarifications=[])],
     )
-    monkeypatch.setattr(requirement_extraction, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
 
     tender = client.post(
         f"/organizations/{org_id}/tenders", json={"name": "Gate Route Test Bid"}, headers=headers

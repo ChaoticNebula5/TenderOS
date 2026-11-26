@@ -19,12 +19,12 @@ from tenderos_backend.orchestration.state import TenderState
 logger = logging.getLogger(__name__)
 
 
-def _build_llm_client() -> LLMClient:
+def _build_llm_client(organization_id: uuid.UUID) -> LLMClient:
     # Same "function, not module-level singleton" shape every other
     # LLM-backed node in this codebase already establishes. B17: delegates
     # to agents/llm/factory.py::build_llm_client, the real gemini-vs-fake
     # decision.
-    return build_llm_client()
+    return build_llm_client(organization_id=organization_id)
 
 
 async def red_team_node(state: TenderState) -> dict:
@@ -59,7 +59,7 @@ async def red_team_node(state: TenderState) -> dict:
     await sync_run_status(workflow_run_id, "red_teaming")
 
     try:
-        client = _build_llm_client()
+        client = _build_llm_client(uuid.UUID(state["organization_id"]))
         open_critical_finding_ids = await run_red_team(
             client, settings.reasoning_model, tender_id, workflow_run_id=workflow_run_id
         )

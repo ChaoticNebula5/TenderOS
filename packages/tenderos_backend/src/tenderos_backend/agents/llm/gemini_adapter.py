@@ -1,8 +1,10 @@
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 
 import httpx
@@ -125,9 +127,76 @@ def _estimate_cost_usd(
     return (input_tokens / 1_000_000) * input_rate + (billed_output / 1_000_000) * output_rate
 
 
-def _cache_key(model: str, system_prompt: str, user_prompt: str, schema_name: str) -> str:
-    raw = f"gemini|{model}|{schema_name}|{system_prompt}|{user_prompt}"
-    return f"llm_cache:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+def _generation_config(
+    system_prompt: str, response_schema: type[BaseModel]
+) -> genai_types.GenerateContentConfig:
+    """The one place a request's config is built, so the cache key below
+    hashes exactly what is sent (PR 35)."""
+    return genai_types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        response_mime_type="application/json",
+        response_schema=response_schema,
+        temperature=0,
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _schema_hash(response_schema: type[BaseModel]) -> str:
+    """PR 35: the schema's JSON schema, serialised with sorted keys, so two
+    equal versions hash the same in any process and a changed field does not.
+    The class name alone let a schema changed under the same name hit an
+    answer made for the old one."""
+    canonical = _canonical_json(response_schema.model_json_schema())
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _generation_settings(config: genai_types.GenerateContentConfig) -> str:
+    """PR 35: every generation setting the request carries (temperature, the
+    response type, and any output limit, thinking or safety setting added
+    later), with the prompt and the schema left to their own parts of the
+    key. Read off the config itself, so a new setting needs no change here."""
+    settings_sent = config.model_dump(
+        mode="json", exclude_none=True, exclude={"system_instruction", "response_schema"}
+    )
+    return _canonical_json(settings_sent)
+
+
+# PR 35: the key format. Bumped only when the key's layout changes; what a
+# request is (model, schema, settings, prompts) is in the hash.
+_CACHE_KEY_VERSION = "v2"
+
+
+def _cache_key(
+    organization_id: uuid.UUID | None,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    response_schema: type[BaseModel],
+    config: genai_types.GenerateContentConfig,
+) -> str:
+    """PR 35: one organization's answers never serve another's call. The
+    organization id is in the clear, outside the hash, so one organization's
+    entries can be found by prefix (to delete them, item 119). A client with
+    no organization (only scripts that build GeminiClient themselves; every
+    app call goes through the factory, which requires one) has a namespace
+    of its own. The hashed fields are a JSON array, so no prompt text can
+    run into the next field the way a "|"-joined string could."""
+    scope = f"org:{organization_id}" if organization_id is not None else "none"
+    raw = _canonical_json(
+        [
+            "gemini",
+            model,
+            _schema_hash(response_schema),
+            _generation_settings(config),
+            system_prompt,
+            user_prompt,
+        ]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"llm_cache:{_CACHE_KEY_VERSION}:{scope}:{digest}"
 
 
 @dataclass
@@ -241,13 +310,22 @@ class GeminiClient:
     provider-neutral LLMClient Protocol.
     """
 
-    def __init__(self, api_key: str, redis_client: Redis, cache_ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        redis_client: Redis,
+        cache_ttl_seconds: int,
+        organization_id: uuid.UUID | None = None,
+    ) -> None:
         self._client = genai.Client(
             api_key=api_key,
             http_options=genai_types.HttpOptions(timeout=_HTTP_TIMEOUT_MS),
         )
         self._redis = redis_client
         self._cache_ttl_seconds = cache_ttl_seconds
+        # PR 35: the organization every call of this client is made for; its
+        # cache entries are that organization's alone (see _cache_key).
+        self._organization_id = organization_id
 
     async def complete_structured[T: BaseModel](
         self,
@@ -262,16 +340,38 @@ class GeminiClient:
         # cache lookup, every retry and every backoff included; `attempts`
         # beside it says how many provider requests that time covered.
         start = time.monotonic()
-        cache_key = _cache_key(model, system_prompt, user_prompt, response_schema.__name__)
+        config = _generation_config(system_prompt, response_schema)
+        cache_key = _cache_key(
+            self._organization_id, model, system_prompt, user_prompt, response_schema, config
+        )
         cached = await self._redis.get(cache_key)
+        cached_parsed: T | None = None
         if cached is not None:
+            try:
+                cached_parsed = response_schema.model_validate_json(cached)
+            except ValidationError:
+                # PR 35: an entry that no longer validates is a miss, not a
+                # failed call (a ValidationError is no LLMError, so it would
+                # leave unmeasured, with no trace row). Deleted first, so a
+                # provider failure below does not leave it to fail the next
+                # call too. The error itself is not logged: it quotes the
+                # cached answer.
+                logger.warning(
+                    "llm cache: agent=%s model=%s a cached answer did not match %s; "
+                    "deleted, the provider is called",
+                    agent_name,
+                    model,
+                    response_schema.__name__,
+                )
+                await self._redis.delete(cache_key)
+        if cached_parsed is not None:
             # A cache hit makes no provider request (attempts 0), so it is
             # known to cost nothing: 0.0, not None (PR 28 review). Tokens
             # stay None: none were counted for this call. Rows from before
             # migration 036 wrote None here and have no attempts, so the
             # report still shows them as unknown.
             return LLMResult(
-                parsed=response_schema.model_validate_json(cached),
+                parsed=cached_parsed,
                 provider="gemini",
                 model=model,
                 input_tokens=None,
@@ -294,9 +394,8 @@ class GeminiClient:
                     self._call_with_retry(
                         agent_name,
                         model,
-                        system_prompt,
                         user_prompt,
-                        response_schema,
+                        config,
                         requests,
                         deadline,
                     ),
@@ -387,9 +486,8 @@ class GeminiClient:
         self,
         agent_name: str,
         model: str,
-        system_prompt: str,
         user_prompt: str,
-        response_schema: type[BaseModel],
+        config: genai_types.GenerateContentConfig,
         requests: _Requests,
         deadline: float,
     ) -> genai_types.GenerateContentResponse:
@@ -413,12 +511,9 @@ class GeminiClient:
                 return await self._client.aio.models.generate_content(
                     model=model,
                     contents=user_prompt,
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        response_mime_type="application/json",
-                        response_schema=response_schema,
-                        temperature=0,
-                    ),
+                    # PR 35: built once per call (_generation_config), the
+                    # same object the cache key hashed.
+                    config=config,
                 )
             except genai_errors.ClientError as exc:
                 status = getattr(exc, "code", None)

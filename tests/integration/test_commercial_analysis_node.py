@@ -106,7 +106,7 @@ async def test_node_evaluates_both_pricing_sheets_and_completes_task(monkeypatch
         FindingExplanation,
         [FindingExplanation(severity="major", explanation="Deterministically identified.")] * 8,
     )
-    monkeypatch.setattr(commercial, "_build_llm_client", lambda: fake_client)
+    monkeypatch.setattr(commercial, "_build_llm_client", lambda _organization_id: fake_client)
 
     task_id = await _make_commercial_task(workflow_run_id)
     state = {**_base_state(tender_id, org_id, workflow_run_id), "task_id": str(task_id)}
