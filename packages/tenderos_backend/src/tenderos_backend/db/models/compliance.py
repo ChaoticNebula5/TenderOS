@@ -74,6 +74,17 @@ class ComplianceEntry(UUIDPrimaryKeyMixin, Base):
             ")",
             name="ck_compliance_entry_status",
         ),
+        CheckConstraint(
+            "automated_status IN ("
+            "'fully_compliant','partially_compliant','non_compliant',"
+            "'clarification_required','evidence_unavailable','not_reviewed'"
+            ")",
+            name="ck_compliance_entry_automated_status",
+        ),
+        CheckConstraint(
+            "decided_by IN ('analysis','reviewer')",
+            name="ck_compliance_entry_decided_by",
+        ),
     )
 
     requirement_id: Mapped[uuid.UUID] = mapped_column(
@@ -82,8 +93,18 @@ class ComplianceEntry(UUIDPrimaryKeyMixin, Base):
         nullable=False,
         unique=True,
     )
+    # The decision in effect: the analysis's answer, or a reviewer's override
+    # (decided_by says which). Readiness, proposals and the graph read these.
     status: Mapped[str] = mapped_column(nullable=False)
     reasoning_summary: Mapped[str | None] = mapped_column(nullable=True)
+    # Plan item 121: the analysis's own last answer, after the sufficiency
+    # check, kept beside the decision so a re-evaluation compares the
+    # analysis with itself, never with a reviewer's override (migration 043).
+    automated_status: Mapped[str] = mapped_column(nullable=False)
+    automated_reasoning_summary: Mapped[str | None] = mapped_column(nullable=True)
+    decided_by: Mapped[str] = mapped_column(
+        nullable=False, default="analysis", server_default=text("'analysis'")
+    )
     confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
     human_approved: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()

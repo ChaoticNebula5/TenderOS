@@ -56,6 +56,9 @@ DOCUMENT_NOT_PARSED = "document_not_parsed"
 # requirement extraction has read (added after the run's extraction, or
 # changed by a re-parse), or that has no readable text at all.
 DOCUMENT_NOT_EXTRACTED = "document_not_extracted"
+# Plan item 121: a reviewer's compliance decision reopened because the
+# analysis's own answer changed after it was made.
+REOPENED_COMPLIANCE_DECISION = "reopened_compliance_decision"
 
 # Every blocker-10 message ends on how to get a new run. A run still open
 # (one waiting at the final gate, say) refuses a new one (WORKFLOW_RUN_ACTIVE)
@@ -363,9 +366,31 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
         )
         awaiting_approval = 0
         without_valid_evidence = 0
+        reopened = 0
+        display_codes = {r.id: r.display_code for r in requirements}
         for entry in compliance_entries:
             if not entry.human_approved:
                 awaiting_approval += 1
+            # Blocker 11 (plan item 121, Q2 a): a reviewer's decision that a
+            # changed analysis answer reopened. An override always approves
+            # (compliance_service.override_compliance_entry), so a reviewer's
+            # decision is unapproved only once a re-evaluation reopened it; a
+            # reviewer part-way through a review has no such entry. Unlike a
+            # plain unapproved decision (only counted above), it blocks: its
+            # status is the reviewer's, so blockers 1 and 2 may not see it.
+            if entry.decided_by == "reviewer" and not entry.human_approved:
+                reopened += 1
+                code = display_codes.get(entry.requirement_id, str(entry.requirement_id))
+                blockers.append(
+                    _blocker(
+                        REOPENED_COMPLIANCE_DECISION,
+                        "compliance_entry",
+                        entry.id,
+                        f"The compliance decision for requirement {code} was reopened: the "
+                        f"analysis now says {entry.automated_status}, the reviewer decided "
+                        f"{entry.status}. Approve it again or change it on the Compliance page.",
+                    )
+                )
             if entry.status not in _COMPLIANT_STATUSES:
                 continue
             evidence = evidence_by_entry.get(entry.id, [])
@@ -382,6 +407,7 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
                 )
         counts["compliance_decisions_awaiting_approval"] = awaiting_approval
         counts["requirements_lacking_valid_evidence"] = without_valid_evidence
+        counts["compliance_decisions_reopened"] = reopened
 
         # ------------------------------------------------------------
         # 3. Critical red-team finding (reuses B11's own repository query)

@@ -102,10 +102,16 @@ class ComplianceRepository:
         reasoning_summary: str | None = None,
         confidence: float | None = None,
     ) -> ComplianceEntry:
+        # A new entry is always the analysis's answer (an override edits an
+        # existing one), so its automated_* columns start as its own values
+        # and decided_by as 'analysis' (plan item 121).
         entry = ComplianceEntry(
             requirement_id=requirement_id,
             status=status,
             reasoning_summary=reasoning_summary,
+            automated_status=status,
+            automated_reasoning_summary=reasoning_summary,
+            decided_by="analysis",
             confidence=confidence,
         )
         self._session.add(entry)

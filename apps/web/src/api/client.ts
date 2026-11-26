@@ -1233,6 +1233,12 @@ export interface ComplianceResponse {
   requirement_id: string;
   status: string;
   reasoning_summary: string | null;
+  // Plan item 121: the analysis's own last answer, and whose decision
+  // status is. A reviewer's decision that is not approved was reopened by a
+  // changed analysis answer.
+  automated_status: string;
+  automated_reasoning_summary: string | null;
+  decided_by: "analysis" | "reviewer";
   confidence: number | null;
   human_approved: boolean;
   last_evaluated_at: string;
@@ -1603,6 +1609,8 @@ export interface ReadinessCounts {
   documents_not_parsed?: number | null;
   // Plan item 104: null on a report stored before this count existed.
   documents_not_extracted?: number | null;
+  // Plan item 121: null on a report stored before this count existed.
+  compliance_decisions_reopened?: number | null;
 }
 
 export interface ReadinessReportResponse {
