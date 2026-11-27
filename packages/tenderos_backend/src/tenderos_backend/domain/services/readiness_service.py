@@ -85,10 +85,14 @@ class ReadinessResult:
     generated_at: datetime
     blockers: list[dict[str, Any]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
-    # When this content was last computed (plan item 93: a reuse moves it),
-    # which decides the current report. PR 31: the final gate's refusal line
-    # names it for both reports W2 compared. Not in the API response.
+    # When this content was last computed (plan item 93: a reuse moves it).
+    # PR 31: the final gate's refusal line names it for both reports W2
+    # compared. Not in the API response.
     last_generated_at: datetime | None = None
+    # Plan item 120: the report's place in its tender's order, which decides
+    # the current report (the highest is current). The refusal line names it
+    # beside last_generated_at (Q4 a). Not in the API response.
+    generation: int | None = None
 
 
 def _result_from_report(report: Any) -> ReadinessResult:
@@ -101,6 +105,7 @@ def _result_from_report(report: Any) -> ReadinessResult:
         blockers=report.blockers,
         counts=report.counts,
         last_generated_at=report.last_generated_at,
+        generation=report.generation,
     )
 
 
@@ -683,7 +688,18 @@ async def _evaluate_readiness_once(tender_id: uuid.UUID) -> ReadinessResult | No
         # wrapper to recompute fresh against the new version, rather than
         # this function silently persisting a report under a version
         # number that may already be behind reality.
-        current_tender = await uow.tenders.get(tender_id)
+        #
+        # Plan item 120 (Q2 a): read under the tender's row lock (FOR NO KEY
+        # UPDATE, the lock a state-version bump takes), held to the commit.
+        # A second generate for this tender waits here, so its generation
+        # comes after this one commits: one tender's generations follow
+        # commit order, and "latest" is the last report committed. A bump in
+        # flight finishes first, so the version compared is the committed
+        # one. Only the version read, the upsert and its read-back run under
+        # it; the reads above are outside. No caller holds this lock in
+        # another session meanwhile (the route, the run's node and the
+        # final gate's approval each call this with no session open).
+        current_tender = await uow.tenders.get_for_update(tender_id)
         if current_tender is None:
             raise TenderNotFoundError(f"Tender {tender_id} not found")
         if current_tender.state_version != state_version:
@@ -719,7 +735,7 @@ async def get_report(report_id: uuid.UUID) -> ReadinessResult | None:
 
 async def get_latest_readiness(tender_id: uuid.UUID) -> ReadinessResult | None:
     # The current report: the newest generated or reused (plan item 93,
-    # ordered by last_generated_at, ties by id). Read by GET
+    # ordered by generation since plan item 120). Read by GET
     # /tenders/{id}/readiness (the Readiness page) and by the final gate's
     # approval in routes/gates.py, which reads it before its own generate
     # and refuses when the generate lands on a different report. None means

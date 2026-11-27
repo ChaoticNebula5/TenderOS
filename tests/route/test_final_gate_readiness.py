@@ -29,6 +29,7 @@ from readiness_facts import (
     project_and_review,
     record_complete_pass,
 )
+from sqlalchemy import text
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import graph_service, readiness_service
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
@@ -143,6 +144,57 @@ async def test_a_ready_bid_is_approved_against_the_report_that_was_shown(
     gate = await _gate(gate_id)
     assert gate is not None and gate.status == "approved"
     assert gate.decision_payload["waived"] is False
+
+
+async def test_an_older_report_stamped_later_by_a_clock_step_does_not_refuse_the_approval(
+    client: TestClient, register_actor
+):
+    """Plan item 120 and item 117's failure: an older report at the same
+    version, its last_generated_at stamped after the current one's (the
+    database clock stepped back between them). The approval reads the latest
+    report, recomputes, and lands on the current one: by generation those
+    are the same report and the approval goes through. Ordered by the clock,
+    the older report would read as latest and the approval would be refused
+    READINESS_CHANGED with nothing changed."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    async with UnitOfWork() as uow:
+        tender = await uow.tenders.get_for_update(tender_id)
+        assert tender is not None
+        older = await uow.readiness.upsert_report(
+            tender_id, tender.state_version, "an-older-content", {}, [], True
+        )
+        await uow.commit()
+    current = _generate(client, headers, tender_id)
+    async with UnitOfWork() as uow:
+        await uow.session.execute(
+            text(
+                "UPDATE readiness_reports SET last_generated_at = now() + interval '1 hour' "
+                "WHERE id = :id"
+            ),
+            {"id": older.id},
+        )
+        by_the_clock = (
+            await uow.session.execute(
+                text(
+                    "SELECT id FROM readiness_reports WHERE tender_id = :t "
+                    "ORDER BY last_generated_at DESC, id DESC LIMIT 1"
+                ),
+                {"t": tender_id},
+            )
+        ).scalar_one()
+        await uow.commit()
+    assert by_the_clock == older.id, "the old order would read the older report as latest"
+    assert current["ready"] is True
+
+    response = _decide(client, headers, gate_id)
+
+    assert response.status_code == 200, response.text
+    gate = await _gate(gate_id)
+    assert gate is not None and gate.status == "approved"
 
 
 async def test_a_report_changed_since_it_was_shown_is_refused_then_approved(
@@ -426,7 +478,16 @@ async def test_a_version_move_between_the_recompute_and_the_write_is_refused(
 
 
 _GATE_LOGGER = "tenderos_api.routes.gates"
-_REPORT_FIELDS = {"report_id", "ready", "version", "last_generated_at", "blocker_codes", "counts"}
+# Plan item 120 (Q4 a): each report's generation, the order that decides it.
+_REPORT_FIELDS = {
+    "report_id",
+    "ready",
+    "version",
+    "generation",
+    "last_generated_at",
+    "blocker_codes",
+    "counts",
+}
 
 
 def _refusal_lines(caplog: pytest.LogCaptureFixture) -> list:
@@ -465,6 +526,8 @@ async def test_a_changed_report_refusal_writes_one_line_naming_both_reports(
         assert set(facts) == _REPORT_FIELDS
         assert facts["version"] == latest["tender_state_version"]
         assert facts["last_generated_at"] is not None
+    # Plan item 120: the recompute's report came after the latest one.
+    assert line.recomputed_report["generation"] > line.latest_report["generation"]
     assert line.latest_report["ready"] is True and line.latest_report["blocker_codes"] == []
     assert not hasattr(line, "shown_report")
     assert line.recomputed_report["ready"] is False
@@ -534,7 +597,7 @@ async def test_the_refusal_lines_printed_text_carries_both_reports_facts(
     for name, report in facts.items():
         assert (
             f"{name} report {report['report_id']} version {report['version']}"
-            f" generated {report['last_generated_at']}"
+            f" generation {report['generation']} generated {report['last_generated_at']}"
         ) in text_line
     assert facts["latest"]["report_id"] == latest["id"]
     assert facts["recomputed"]["report_id"] != latest["id"]

@@ -53,6 +53,9 @@ def _report_facts(result: readiness_service.ReadinessResult | None) -> dict[str,
         "report_id": str(result.report_id),
         "ready": result.ready,
         "version": result.tender_state_version,
+        # Plan item 120 (Q4 a): the order that decides which report is the
+        # latest, beside the time, which no longer does.
+        "generation": result.generation,
         "last_generated_at": (
             result.last_generated_at.isoformat() if result.last_generated_at else None
         ),
@@ -67,7 +70,7 @@ def _report_text(facts: dict[str, Any] | None) -> str:
         return "none"
     return (
         f"report {facts['report_id']} version {facts['version']}"
-        f" generated {facts['last_generated_at']}"
+        f" generation {facts['generation']} generated {facts['last_generated_at']}"
     )
 
 
