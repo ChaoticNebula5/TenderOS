@@ -24,17 +24,19 @@ Real Postgres; the fixture test runs the real parser and embedder.
 import io
 import json
 import re
+import unicodedata
 import uuid
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text
+from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.requirement import Requirement, RequirementCitation
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import document_service
+from tenderos_backend.domain.services import document_service, requirement_service
 from tenderos_backend.domain.services.requirement_service import (
     RequirementDraft,
     citations_for,
@@ -514,3 +516,167 @@ async def test_a_copy_already_cited_is_matched_whatever_its_flags():
     await persist_extraction_results(tender_id, [_draft(document_id, later)])
 
     assert [r.id for r in await _rows(tender_id)] == [row.id]
+
+
+# ----------------------------------------------------------------------
+# Plan item 126: an overlap copy of a row a person changed. The real run
+# found 3 of the 14 boundary requirements in one chunk only, so the other
+# chunk's copy can first appear after a person edited, merged, split or
+# re-flagged the row: the text and flags no longer find it, its key in the
+# neighbour chunk does.
+# ----------------------------------------------------------------------
+
+
+def _key(document_id: uuid.UUID, chunk_id: uuid.UUID, wording: str = REQUIREMENT) -> str:
+    # requirement_service._fingerprint's formula, computed here independently.
+    return sha256_hex(f"{document_id}|{chunk_id}|{' '.join(wording.split())}".encode())
+
+
+async def _keys_of(requirement_id: uuid.UUID) -> set[str]:
+    async with UnitOfWork() as uow:
+        return set(await uow.requirements.list_keys(requirement_id))
+
+
+async def _seen_in_the_earlier_chunk(
+    tender_id: uuid.UUID, org_id: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, Requirement]:
+    document_id, earlier, later = await _neighbours(tender_id, org_id)
+    (row,) = await persist_extraction_results(tender_id, [_draft(document_id, earlier)])
+    return document_id, earlier, later, row
+
+
+async def _found_again_in_the_other_chunk(
+    tender_id: uuid.UUID, document_id: uuid.UUID, later: uuid.UUID, expected: uuid.UUID
+) -> None:
+    (again,) = await persist_extraction_results(tender_id, [_draft(document_id, later)])
+    assert again.id == expected
+    assert later in await _citations(expected)
+    assert _key(document_id, later) in await _keys_of(expected), "the copy's key, recorded"
+
+
+@pytest.mark.parametrize("seen_first", ["earlier", "later"])
+async def test_an_edited_rows_copy_first_seen_in_the_neighbour_chunk_is_that_row(seen_first: str):
+    """Either way round: the row seen in the earlier chunk and its copy in
+    the later one, or the other way."""
+    org_id, tender_id = await _tender()
+    document_id, earlier, later = await _neighbours(tender_id, org_id)
+    first, then = (earlier, later) if seen_first == "earlier" else (later, earlier)
+    (row,) = await persist_extraction_results(tender_id, [_draft(document_id, first)])
+    await requirement_service.patch_requirement(
+        row.id,
+        org_id,
+        uuid.uuid4(),
+        requirement_text="The bidder shall hold a current tax clearance certificate.",
+    )
+
+    await _found_again_in_the_other_chunk(tender_id, document_id, then, row.id)
+
+    assert [r.id for r in await _rows(tender_id)] == [row.id]
+
+
+async def test_a_merged_rows_copy_first_seen_in_the_neighbour_chunk_is_the_survivor():
+    """The row found in the earlier chunk is merged into another, which
+    survives: the earlier chunk's key moved to the survivor."""
+    org_id, tender_id = await _tender()
+    document_id, _earlier, later, row = await _seen_in_the_earlier_chunk(tender_id, org_id)
+    distant = await _chunk(document_id, 5, ["Section 9.", OTHER])
+    (other,) = await persist_extraction_results(tender_id, [_draft(document_id, distant, OTHER)])
+    await requirement_service.merge_requirements(
+        [other.id, row.id], "Both requirements, merged.", "eligibility", True, org_id, uuid.uuid4()
+    )
+
+    await _found_again_in_the_other_chunk(tender_id, document_id, later, other.id)
+
+    assert [r.id for r in await _rows(tender_id)] == [other.id]
+
+
+async def test_a_split_rows_copy_first_seen_in_the_neighbour_chunk_is_its_first_part():
+    org_id, tender_id = await _tender()
+    document_id, _earlier, later, row = await _seen_in_the_earlier_chunk(tender_id, org_id)
+    parts = await requirement_service.split_requirement(
+        row.id,
+        [
+            {"requirement_text": "The bidder shall hold a tax clearance certificate."},
+            {"requirement_text": "The certificate shall be valid on the closing date."},
+        ],
+        org_id,
+        uuid.uuid4(),
+    )
+
+    await _found_again_in_the_other_chunk(tender_id, document_id, later, row.id)
+
+    assert {r.id for r in await _rows(tender_id)} == {p.id for p in parts}
+
+
+async def test_a_reflagged_rows_copy_first_seen_in_the_neighbour_chunk_is_that_row():
+    """The person made it optional; the model still says mandatory. A
+    reviewed row's flags are the person's, so they are not compared."""
+    org_id, tender_id = await _tender()
+    document_id, _earlier, later, row = await _seen_in_the_earlier_chunk(tender_id, org_id)
+    await requirement_service.patch_requirement(row.id, org_id, uuid.uuid4(), mandatory=False)
+
+    await _found_again_in_the_other_chunk(tender_id, document_id, later, row.id)
+
+    (kept,) = await _rows(tender_id)
+    assert kept.id == row.id and kept.mandatory is False, "a match changes nothing on the row"
+
+
+async def test_a_reviewed_rows_copy_outside_the_carried_lines_stays_separate():
+    org_id, tender_id = await _tender()
+    document_id = await _document(tender_id, org_id)
+    earlier = await _chunk(document_id, 0, [REQUIREMENT, OTHER])
+    later = await _chunk(document_id, 1, [OTHER, "Bids are valid for ninety days.", REQUIREMENT])
+    (row,) = await persist_extraction_results(tender_id, [_draft(document_id, earlier)])
+    await requirement_service.patch_requirement(row.id, org_id, uuid.uuid4(), mandatory=False)
+
+    await persist_extraction_results(tender_id, [_draft(document_id, later)])
+
+    assert len(await _rows(tender_id)) == 2
+
+
+async def test_a_reviewed_rows_copy_across_a_page_boundary_stays_separate():
+    org_id, tender_id = await _tender()
+    document_id = await _document(tender_id, org_id)
+    earlier = await _chunk(document_id, 0, [OTHER, REQUIREMENT], page=1)
+    later = await _chunk(document_id, 1, [REQUIREMENT, "Bids are valid for ninety days."], page=2)
+    (row,) = await persist_extraction_results(tender_id, [_draft(document_id, earlier)])
+    await requirement_service.patch_requirement(row.id, org_id, uuid.uuid4(), mandatory=False)
+
+    await persist_extraction_results(tender_id, [_draft(document_id, later)])
+
+    assert len(await _rows(tender_id)) == 2
+
+
+# Plan item 126: the overlap check's words are NFKC-normalized before they
+# are casefolded, on both sides.
+
+
+async def test_a_ligature_in_the_carried_line_matches_its_letters_in_the_requirement():
+    """The user's case: "ﬁ" (one character) in the chunk, "fi" in the
+    requirement. casefold already expands the Latin ligatures, so this
+    passes with or without NFKC; pdfplumber expands them on extraction too."""
+    org_id, tender_id = await _tender()
+    wording = "The bidder shall submit audited financial statements."
+    carried = wording.replace("fi", "ﬁ")
+    document_id, earlier, later = await _french_neighbours(tender_id, org_id, carried)
+    (row,) = await persist_extraction_results(
+        tender_id,
+        [_draft(document_id, earlier, wording), _draft(document_id, later, wording)],
+    )
+    assert await _citations(row.id) == {earlier, later}
+
+
+async def test_decomposed_accents_in_the_carried_line_match_the_composed_requirement():
+    """The chunk stores "é" as "e" and a combining accent (NFD, as some
+    editors save it); the model writes the composed character. The combining
+    accent is not a word character, so without NFKC the chunk's "répondre"
+    splits into "re" and "pondre" and the copies stay apart."""
+    org_id, tender_id = await _tender()
+    carried = unicodedata.normalize("NFD", FRENCH)
+    assert carried != FRENCH, "the premise: the two forms differ"
+    document_id, earlier, later = await _french_neighbours(tender_id, org_id, carried)
+    (row,) = await persist_extraction_results(
+        tender_id,
+        [_draft(document_id, earlier, FRENCH), _draft(document_id, later, FRENCH)],
+    )
+    assert await _citations(row.id) == {earlier, later}

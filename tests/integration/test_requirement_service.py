@@ -126,7 +126,7 @@ async def test_patch_requirement_reject_soft_deletes_and_is_excluded_by_default(
     assert rejected.id in {r.id for r in with_rejected}
 
 
-async def test_merge_requirements_creates_one_and_deletes_originals():
+async def test_merge_requirements_keeps_the_first_and_deletes_the_others():
     org_id, tender_id = await _make_tender()
     document_id, chunk_id = await _make_chunk_id(tender_id, org_id)
     drafts = [
@@ -160,9 +160,11 @@ async def test_merge_requirements_creates_one_and_deletes_originals():
 
     remaining = await requirement_service.list_requirements_for_tender(tender_id)
     remaining_ids = {r.id for r in remaining}
+    # Plan item 126 (Q1 a): the first original is the survivor, in place.
+    assert merged.id == originals[0].id
     assert merged.id in remaining_ids
-    for original in originals:
-        assert original.id not in remaining_ids, "merged-from rows must be gone, not soft-deleted"
+    assert merged.requirement_text == "The vendor shall provide onsite and phone support."
+    assert originals[1].id not in remaining_ids, "the other is gone, not soft-deleted"
 
 
 async def test_merge_requirements_rejects_cross_tender_ids():
@@ -204,7 +206,7 @@ async def test_merge_requirements_rejects_cross_tender_ids():
         )
 
 
-async def test_split_requirement_creates_multiple_and_deletes_original():
+async def test_split_requirement_keeps_the_original_as_its_first_part():
     org_id, tender_id = await _make_tender()
     document_id, chunk_id = await _make_chunk_id(tender_id, org_id)
     [original] = await requirement_service.persist_extraction_results(
@@ -234,7 +236,10 @@ async def test_split_requirement_creates_multiple_and_deletes_original():
     assert len(created) == 2
     remaining = await requirement_service.list_requirements_for_tender(tender_id)
     remaining_ids = {r.id for r in remaining}
-    assert original.id not in remaining_ids
+    # Plan item 126: the original is the first part, in place.
+    assert created[0].id == original.id
+    assert created[0].requirement_text == "Bidders must submit A."
+    assert created[1].id != original.id
     assert all(r.id in remaining_ids for r in created)
     assert all(r.human_reviewed for r in created)
 

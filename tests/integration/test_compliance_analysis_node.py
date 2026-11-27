@@ -5,6 +5,7 @@ requirement, and the REQ-073/074 divergent-restatement regression test
 scheduled for verification here once evidence-linking exists)."""
 
 import io
+import logging
 import uuid
 
 import docx
@@ -20,7 +21,11 @@ from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import document_service
+from tenderos_backend.domain.services import document_service, requirement_service
+from tenderos_backend.domain.services.requirement_service import (
+    RequirementDraft,
+    persist_extraction_results,
+)
 from tenderos_backend.orchestration.nodes import compliance, requirement_extraction
 from tenderos_backend.orchestration.nodes.compliance import compliance_analysis_node
 from tenderos_backend.orchestration.nodes.requirement_extraction import (
@@ -328,3 +333,81 @@ async def test_req073_074_divergent_restatements_get_independent_compliance_entr
     assert "one-year" not in (entry_074.reasoning_summary or ""), (
         "REQ-074's compliance entry must not reference REQ-073's duration"
     )
+
+
+async def test_a_requirement_merged_away_during_the_analysis_loop_is_a_skip(monkeypatch, caplog):
+    """Plan item 126: the node reads the bid's requirements, then a person's
+    merge commits after the first one is analysed, deleting the second. Its
+    analysis is skipped at INFO and counted as skipped, not as a failure,
+    and the task completes."""
+    org_id, tender_id = await _make_org_and_tender("Compliance Node Merge Test")
+    await _upload_chunk(
+        org_id, tender_id, "rfp.docx", "Bidders must hold a valid data protection certification."
+    )
+    workflow_run_id = await _make_workflow_run_row(tender_id)
+    async with UnitOfWork() as uow:
+        (chunk,) = await uow.documents.list_chunks_for_tender(tender_id)
+    persisted = await persist_extraction_results(
+        tender_id,
+        [
+            RequirementDraft(
+                requirement_text=text,
+                category="eligibility",
+                mandatory=True,
+                source_chunk_id=chunk.id,
+                document_id=chunk.document_id,
+            )
+            for text in (
+                "Bidders must hold a valid data protection certification.",
+                "Bidders must hold a data protection certification on the closing date.",
+            )
+        ],
+    )
+    compliance_client = FakeLLMClient()
+    compliance_client.script(
+        "compliance_proposal",
+        ComplianceProposal,
+        [
+            ComplianceProposal(
+                status="evidence_unavailable",
+                evidence_refs=[],
+                confidence=0.4,
+                reasoning_summary="No supporting evidence was retrieved.",
+            )
+        ],
+    )
+    monkeypatch.setattr(compliance, "_build_llm_client", lambda _organization_id: compliance_client)
+    real_evaluate = compliance.evaluate_compliance_for_requirement
+    calls: list[uuid.UUID] = []
+
+    async def evaluate_then_merge(client, model, requirement_id, *args, **kwargs):
+        calls.append(requirement_id)
+        entry = await real_evaluate(client, model, requirement_id, *args, **kwargs)
+        if len(calls) == 1:
+            other = next(r.id for r in persisted if r.id != requirement_id)
+            await requirement_service.merge_requirements(
+                [requirement_id, other], "Merged.", "eligibility", True, org_id, uuid.uuid4()
+            )
+        return entry
+
+    monkeypatch.setattr(compliance, "evaluate_compliance_for_requirement", evaluate_then_merge)
+    task_id = await _make_compliance_task(workflow_run_id)
+    state = {**_base_state(tender_id, workflow_run_id), "task_id": str(task_id)}
+
+    with caplog.at_level(logging.INFO, logger=compliance.__name__):
+        result = await compliance_analysis_node(state)
+
+    assert result == {"completed_task_ids": [str(task_id)]}
+    assert len(calls) == 2, "the loop reached the merged-away requirement"
+    async with UnitOfWork() as uow:
+        task = await uow.workflow.get_task_by_key(
+            workflow_run_id, f"compliance_analysis:{workflow_run_id}"
+        )
+    assert task is not None and task.status == "completed"
+    assert task.output_refs == {"requirement_count": 2, "evaluated_count": 1, "skipped_count": 1}
+    node_records = [r for r in caplog.records if r.name == compliance.__name__]
+    assert any(
+        r.levelno == logging.INFO and f"requirement {calls[1]} no longer exists" in r.getMessage()
+        for r in node_records
+    )
+    assert not any(r.levelno >= logging.WARNING for r in node_records), "not a failure"

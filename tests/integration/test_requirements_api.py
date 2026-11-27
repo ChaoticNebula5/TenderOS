@@ -229,10 +229,11 @@ async def test_merge_two_requirements_into_one():
         )
         assert resp.status_code == 200
         assert resp.json()["requirement_text"] == "Bidders must submit forms F1 and F2."
+        # Plan item 126 (Q1 a): the first is the survivor, the other is gone.
+        assert resp.json()["id"] == requirements[0]["id"]
 
-        for original in requirements:
-            check = await client.get(f"/requirements/{original['id']}", headers=headers)
-            assert check.status_code == 404
+        check = await client.get(f"/requirements/{requirements[1]['id']}", headers=headers)
+        assert check.status_code == 404
 
 
 async def test_split_one_requirement_into_two():
@@ -257,9 +258,121 @@ async def test_split_one_requirement_into_two():
         )
         assert resp.status_code == 200
         assert len(resp.json()) == 2
+        # Plan item 126: the original is the first part, in place.
+        assert resp.json()[0]["id"] == requirements[0]["id"]
 
         check = await client.get(f"/requirements/{requirements[0]['id']}", headers=headers)
-        assert check.status_code == 404
+        assert check.status_code == 200
+        assert check.json()["requirement_text"] == "Bidders must submit form G."
+
+
+async def test_merging_requirements_with_different_decisions_answers_409_naming_each():
+    """Plan item 126 (Q2 a): nothing is written, and the body names each
+    original's decision by display code."""
+    async with await _client() as client:
+        token, _tender_id, requirements = await _make_tender_with_requirements(
+            client,
+            "req-api-126a@example.com",
+            "Req API Org 126a",
+            ["Bidders must submit form K1.", "Bidders must submit form K2."],
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        async with UnitOfWork() as uow:
+            for requirement, status in zip(
+                requirements, ("fully_compliant", "non_compliant"), strict=True
+            ):
+                await uow.compliance.create_compliance_entry(
+                    requirement_id=uuid.UUID(requirement["id"]), status=status
+                )
+            await uow.commit()
+
+        resp = await client.post(
+            "/requirements/merge",
+            json={
+                "requirement_ids": [r["id"] for r in requirements],
+                "merged_text": "Bidders must submit forms K1 and K2.",
+                "category": "other",
+                "mandatory": True,
+            },
+            headers=headers,
+        )
+
+        assert resp.status_code == 409, resp.text
+        error = resp.json()["error"]
+        assert error["code"] == "MERGE_COMPLIANCE_CONFLICT"
+        assert sorted(error["details"].values()) == [
+            "fully_compliant, decided by analysis, not approved",
+            "non_compliant, decided by analysis, not approved",
+        ]
+        for requirement in requirements:
+            check = await client.get(f"/requirements/{requirement['id']}", headers=headers)
+            assert check.status_code == 200
+            assert check.json()["requirement_text"] == requirement["text"]
+
+
+async def test_merging_one_requirement_with_itself_answers_400():
+    """Plan item 126: the first id survives, so a repeat would delete it."""
+    async with await _client() as client:
+        token, _tender_id, requirements = await _make_tender_with_requirements(
+            client, "req-api-126c@example.com", "Req API Org 126c", ["Bidders must submit M."]
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = await client.post(
+            "/requirements/merge",
+            json={
+                "requirement_ids": [requirements[0]["id"]] * 2,
+                "merged_text": "Bidders must submit M twice.",
+                "category": "other",
+                "mandatory": True,
+            },
+            headers=headers,
+        )
+
+        assert resp.status_code == 400, resp.text
+        check = await client.get(f"/requirements/{requirements[0]['id']}", headers=headers)
+        assert check.status_code == 200
+
+
+async def test_a_split_into_one_part_is_refused_before_anything_is_written():
+    """A split needs at least two parts (SplitRequirementRequest); one part
+    is an edit, which PATCH makes."""
+    async with await _client() as client:
+        token, _tender_id, requirements = await _make_tender_with_requirements(
+            client, "req-api-126d@example.com", "Req API Org 126d", ["Bidders must submit N."]
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = await client.post(
+            f"/requirements/{requirements[0]['id']}/split",
+            json={"new_items": [{"requirement_text": "N only."}]},
+            headers=headers,
+        )
+
+        assert resp.status_code == 422, resp.text
+        check = await client.get(f"/requirements/{requirements[0]['id']}", headers=headers)
+        assert check.json()["requirement_text"] == "Bidders must submit N."
+
+
+async def test_splitting_a_rejected_requirement_answers_409():
+    async with await _client() as client:
+        token, _tender_id, requirements = await _make_tender_with_requirements(
+            client, "req-api-126b@example.com", "Req API Org 126b", ["Bidders must submit L."]
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        rejected = await client.patch(
+            f"/requirements/{requirements[0]['id']}", json={"action": "reject"}, headers=headers
+        )
+        assert rejected.status_code == 200, rejected.text
+
+        resp = await client.post(
+            f"/requirements/{requirements[0]['id']}/split",
+            json={"new_items": [{"requirement_text": "L1."}, {"requirement_text": "L2."}]},
+            headers=headers,
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "REQUIREMENT_REJECTED"
 
 
 async def test_requirements_are_not_visible_across_organizations():

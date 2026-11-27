@@ -3,6 +3,7 @@ FakeLLMClient - task creation, persistence, the mandatory-classifier/LLM
 combination, and the extract-then-verify pass over mandatory items."""
 
 import io
+import logging
 import uuid
 
 import docx
@@ -19,7 +20,7 @@ from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.workflow import WorkflowTask
 from tenderos_backend.db.session import get_session
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import document_service
+from tenderos_backend.domain.services import document_service, requirement_service
 from tenderos_backend.orchestration.nodes import requirement_extraction
 from tenderos_backend.orchestration.nodes.requirement_extraction import (
     requirement_extraction_node,
@@ -226,3 +227,88 @@ async def test_node_marks_task_failed_when_client_construction_itself_raises(mon
     assert task is not None
     assert task.status == "failed"
     assert task.error_code == "ValueError"
+
+
+async def test_a_requirement_merged_away_during_the_verification_pass_is_a_skip(
+    monkeypatch, caplog
+):
+    """Plan item 126: a person's merge commits between the first mandatory
+    requirement's verification and the second's, deleting the second. Its
+    verification is skipped at INFO, not logged as a failure, and the task
+    completes."""
+    org_id, tender_id = await _make_tender_with_chunk()
+    workflow_run_id = await _make_workflow_run_row(tender_id)
+    texts = [
+        "Bidders must hold a valid tax clearance certificate.",
+        "Bidders must hold a tax clearance certificate on the closing date.",
+    ]
+    fake_client = FakeLLMClient()
+    fake_client.script(
+        "requirement_extraction",
+        ExtractionOutput,
+        [
+            ExtractionOutput(
+                requirements=[
+                    ExtractedRequirement(
+                        requirement_text=text,
+                        category="eligibility",
+                        mandatory=True,
+                        source_chunk_ref="chunk_1",
+                        confidence=0.9,
+                    )
+                    for text in texts
+                ]
+            )
+        ],
+    )
+    fake_client.script(
+        "requirement_verification",
+        VerificationOutput,
+        [
+            VerificationOutput(
+                supported_by_source=True,
+                mandatory_language_supported=True,
+                verification_confidence=0.95,
+                reasoning_summary="Source text directly states this requirement.",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        requirement_extraction, "_build_llm_client", lambda _organization_id: fake_client
+    )
+    real_verify = requirement_extraction.verify_and_persist
+    calls: list[uuid.UUID] = []
+
+    async def verify_then_merge(client, model, requirement_id, *args, **kwargs):
+        calls.append(requirement_id)
+        result = await real_verify(client, model, requirement_id, *args, **kwargs)
+        if len(calls) == 1:
+            async with UnitOfWork() as uow:
+                both = [r.id for r in await uow.requirements.list_for_tender(tender_id)]
+            survivor = requirement_id
+            other = next(r for r in both if r != survivor)
+            await requirement_service.merge_requirements(
+                [survivor, other], "Merged.", "eligibility", True, org_id, uuid.uuid4()
+            )
+        return result
+
+    monkeypatch.setattr(requirement_extraction, "verify_and_persist", verify_then_merge)
+
+    with caplog.at_level(logging.INFO, logger=requirement_extraction.__name__):
+        result = await requirement_extraction_node(_base_state(tender_id, workflow_run_id))
+
+    assert result == {"status": "awaiting_requirement_review"}
+    assert len(calls) == 2, "the loop reached the merged-away requirement"
+    async with UnitOfWork() as uow:
+        remaining = await uow.requirements.list_for_tender(tender_id)
+        task = await uow.workflow.get_task_by_key(
+            workflow_run_id, f"requirement_extraction:{workflow_run_id}"
+        )
+    assert [r.id for r in remaining] == [calls[0]]
+    assert task is not None and task.status == "completed"
+    node_records = [r for r in caplog.records if r.name == requirement_extraction.__name__]
+    assert any(
+        r.levelno == logging.INFO and f"requirement {calls[1]} no longer exists" in r.getMessage()
+        for r in node_records
+    )
+    assert not any(r.levelno >= logging.WARNING for r in node_records), "not a failure"

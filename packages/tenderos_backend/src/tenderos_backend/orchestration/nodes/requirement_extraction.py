@@ -8,6 +8,7 @@ from tenderos_backend.agents.requirements.verify import verify_and_persist
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.requirement_service import (
+    RequirementNotFoundError,
     persist_clarifications,
     persist_extraction_results,
     persist_submission_items,
@@ -94,6 +95,15 @@ async def requirement_extraction_node(state: TenderState) -> dict:
                     tender_id,
                     workflow_run_id=workflow_run_id,
                     task_id=task.id,
+                )
+            except RequirementNotFoundError:
+                # Plan item 126: a person's merge or split committed since
+                # the requirements were persisted and deleted this one. Not
+                # a failure: there is nothing left to verify.
+                logger.info(
+                    "requirement %s no longer exists (merged or split meanwhile); "
+                    "verification skipped",
+                    requirement.id,
                 )
             except Exception:
                 # One requirement's verification failing (a transient

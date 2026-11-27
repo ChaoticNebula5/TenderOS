@@ -7,6 +7,7 @@ from tenderos_backend.agents.requirements.verify import verify_and_persist
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services.requirement_service import (
+    RequirementNotFoundError,
     verification_recorded_for_event,
 )
 
@@ -49,7 +50,12 @@ async def verify_requirement_job(requirement_id: str, event_id: str | None = Non
     async with UnitOfWork() as uow:
         requirement = await uow.requirements.get(req_id)
         if requirement is None:
-            raise ValueError(f"Requirement {req_id} not found")
+            # Plan item 126: a person's merge or split deletes requirements,
+            # and a verification requested before it may still be queued.
+            # Nothing is left to verify: a skip, never a failed job (one in
+            # RQ's failed registry, tenderos_rq_failed_jobs).
+            logger.info("requirement %s no longer exists; verification skipped", req_id)
+            return
         tender_id = requirement.tender_id
         # PR 35: the client's cache entries are the tender's organization's.
         tender = await uow.tenders.get(tender_id)
@@ -59,13 +65,19 @@ async def verify_requirement_job(requirement_id: str, event_id: str | None = Non
 
     client = _build_llm_client(organization_id)
 
-    output = await verify_and_persist(
-        client,
-        settings.verifier_model,
-        req_id,
-        tender_id,
-        event_id=uuid.UUID(event_id) if event_id is not None else None,
-    )
+    try:
+        output = await verify_and_persist(
+            client,
+            settings.verifier_model,
+            req_id,
+            tender_id,
+            event_id=uuid.UUID(event_id) if event_id is not None else None,
+        )
+    except RequirementNotFoundError:
+        # Deleted by a merge or split while the model judged it: its verdict
+        # has nothing to land on (the trace still records the call).
+        logger.info("requirement %s was deleted during verification; nothing written", req_id)
+        return
     logger.info(
         "verification completed for requirement %s (supported=%s, mandatory_ok=%s)",
         req_id,

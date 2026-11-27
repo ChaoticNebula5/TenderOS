@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
     Index,
+    Integer,
     UniqueConstraint,
     false,
     func,
@@ -50,6 +51,49 @@ class RequirementCitation(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class RequirementKey(Base):
+    """Plan item 126 (migration 046): every extraction key that finds a
+    requirement.
+
+    Extraction keys a requirement by sha256(document | chunk | normalized
+    text) and looks the key up here. A requirement answers to several keys:
+    its own, an overlap copy's (plan item 125), and after a manual merge each
+    original's, after a split the original's (its first part). Every
+    requirement's content_fingerprint is here, split parts' included.
+    """
+
+    __tablename__ = "requirement_keys"
+    __table_args__ = (
+        # Merge and split move and copy a requirement's keys.
+        Index("idx_requirement_keys_requirement", "requirement_id"),
+    )
+
+    content_fingerprint: Mapped[str] = mapped_column(primary_key=True)
+    requirement_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RequirementCodeCounter(Base):
+    """Migration 046 (the user's review of PR 39): the last number handed
+    out for a display code prefix in a bid ("ELIG" -> 4 after ELIG-004).
+    Extraction and split take the next one; a merge deleting a row never
+    gives its number out again, as a count of the category's rows did."""
+
+    __tablename__ = "requirement_code_counters"
+
+    tender_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenders.id", ondelete="CASCADE"), primary_key=True
+    )
+    prefix: Mapped[str] = mapped_column(primary_key=True)
+    last_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

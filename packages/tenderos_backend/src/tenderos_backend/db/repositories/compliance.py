@@ -1,6 +1,7 @@
 import uuid
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -152,6 +153,57 @@ class ComplianceRepository:
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def lock_compliance_entries_by_requirements(
+        self, requirement_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, ComplianceEntry]:
+        """These requirements' entries keyed by requirement, their rows
+        locked FOR UPDATE in entry id order (plan item 126). A merge or split
+        takes them before the requirements: approve, override and
+        re-evaluation lock the entry first too, and a re-evaluation then
+        writes rows referencing the requirement, so locking the requirement
+        first could wait on it in a cycle."""
+        if not requirement_ids:
+            return {}
+        result = await self._session.execute(
+            select(ComplianceEntry)
+            .where(ComplianceEntry.requirement_id.in_(requirement_ids))
+            .order_by(ComplianceEntry.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return {entry.requirement_id: entry for entry in result.scalars().all()}
+
+    async def copy_evidence(
+        self, from_entry_ids: list[uuid.UUID], to_entry_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Attach to `to_entry_id` every evidence link of these entries it
+        lacks (plan item 126: the entry a merge keeps gains the dropped
+        entries' evidence). Returns the links added."""
+        if not from_entry_ids:
+            return []
+        source = (
+            select(literal(to_entry_id, UUID(as_uuid=True)), ComplianceEvidence.evidence_link_id)
+            .where(ComplianceEvidence.compliance_entry_id.in_(from_entry_ids))
+            .distinct()
+        )
+        result = await self._session.execute(
+            pg_insert(ComplianceEvidence)
+            .from_select(["compliance_entry_id", "evidence_link_id"], source)
+            .on_conflict_do_nothing(constraint="uq_compliance_evidence")
+            .returning(ComplianceEvidence.evidence_link_id)
+        )
+        return sorted(result.scalars().all())
+
+    async def delete_compliance_entry(self, compliance_entry_id: uuid.UUID) -> None:
+        """Plan item 126: a merge drops the entries it does not keep. Its
+        evidence attachments cascade; the evidence links stay (other entries
+        and claims may cite them)."""
+        await self._session.execute(
+            delete(ComplianceEntry)
+            .where(ComplianceEntry.id == compliance_entry_id)
+            .execution_options(synchronize_session=False)
+        )
 
     async def get_compliance_entry_by_requirement(
         self, requirement_id: uuid.UUID

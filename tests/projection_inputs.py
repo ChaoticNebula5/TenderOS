@@ -142,6 +142,9 @@ PROJECTED_WRITERS = frozenset(
         "ComplianceRepository.update_compliance_entry",
         "ComplianceRepository.link_evidence",
         "ComplianceRepository.unlink_all_evidence",
+        # Plan item 126: merge's evidence union and dropped entries.
+        "ComplianceRepository.copy_evidence",
+        "ComplianceRepository.delete_compliance_entry",
         "KnowledgeRepository.update_knowledge_item",
         "KnowledgeRepository.create_employee",
         "KnowledgeRepository.update_employee",
@@ -156,6 +159,8 @@ PROJECTED_WRITERS = frozenset(
         "ProposalRepository.update_proposal_claim",
         "ProposalRepository.link_claim_evidence",
         "ProposalRepository.link_claim_requirement",
+        # Plan item 126: merge and split copy claim links and role sources.
+        "ProposalRepository.copy_claim_links",
         "ProposalRepository.link_claim_employee",
         "RequirementRepository.create",
         "RequirementRepository.update_fields",
@@ -164,6 +169,7 @@ PROJECTED_WRITERS = frozenset(
         "RequirementRepository.reject",
         "TalentRepository.create_role_requirement",
         "TalentRepository.link_role_requirement_source",
+        "TalentRepository.copy_role_sources",
         "TalentRepository.create_role_match",
         "TalentRepository.update_role_match",
         "TenderRepository.create",

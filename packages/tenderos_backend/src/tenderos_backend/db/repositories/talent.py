@@ -1,6 +1,7 @@
 import uuid
 
-from sqlalchemy import ColumnElement, exists, or_, select
+from sqlalchemy import ColumnElement, exists, literal, or_, select
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,6 +107,30 @@ class TalentRepository:
         )
         await self._session.execute(stmt)
         await self._session.flush()
+
+    async def copy_role_sources(
+        self, from_requirement_ids: list[uuid.UUID], to_requirement_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Make `to_requirement_id` a source of every role these requirements
+        are sources of, where it is not one already (plan item 126: a merge's
+        survivor, a split's later parts). Returns the roles newly sourced."""
+        if not from_requirement_ids:
+            return []
+        source = (
+            select(
+                RoleRequirementSource.role_requirement_id,
+                literal(to_requirement_id, UUID(as_uuid=True)),
+            )
+            .where(RoleRequirementSource.requirement_id.in_(from_requirement_ids))
+            .distinct()
+        )
+        result = await self._session.execute(
+            pg_insert(RoleRequirementSource)
+            .from_select(["role_requirement_id", "requirement_id"], source)
+            .on_conflict_do_nothing(constraint="uq_role_requirement_source")
+            .returning(RoleRequirementSource.role_requirement_id)
+        )
+        return sorted(result.scalars().all())
 
     async def list_sources_for_role(
         self, role_requirement_id: uuid.UUID

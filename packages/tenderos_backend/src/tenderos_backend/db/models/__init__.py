@@ -42,6 +42,8 @@ from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
     RequirementCitation,
+    RequirementCodeCounter,
+    RequirementKey,
     SubmissionItem,
 )
 from tenderos_backend.db.models.talent import (
@@ -102,6 +104,8 @@ __all__ = [
     "RefreshToken",
     "Requirement",
     "RequirementCitation",
+    "RequirementCodeCounter",
+    "RequirementKey",
     "RoleMatch",
     "RoleMatchEvidence",
     "RoleRequirement",

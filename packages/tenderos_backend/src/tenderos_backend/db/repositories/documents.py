@@ -222,6 +222,22 @@ class DocumentRepository:
     async def get_chunk(self, chunk_id: uuid.UUID) -> DocumentChunk | None:
         return await self._session.get(DocumentChunk, chunk_id)
 
+    async def list_adjacent_parsed_chunks(self, chunk: DocumentChunk) -> list[DocumentChunk]:
+        """The parsed chunks of this chunk's document one index before and
+        after it (plan item 126): the only chunks the chunker can have carried
+        text into or out of it. The caller still checks the rest of
+        requirement_service._overlapping_neighbours (parent and provenance)."""
+        result = await self._session.execute(
+            select(DocumentChunk)
+            .where(
+                DocumentChunk.document_id == chunk.document_id,
+                DocumentChunk.origin == CHUNK_ORIGIN_PARSED,
+                DocumentChunk.chunk_index.in_([chunk.chunk_index - 1, chunk.chunk_index + 1]),
+            )
+            .order_by(DocumentChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
     async def list_chunks_for_tender(self, tender_id: uuid.UUID) -> list[DocumentChunk]:
         # Ordered by (document, chunk_index) so batch.py's provenance-respecting
         # batcher sees each document's chunks contiguously and in original
