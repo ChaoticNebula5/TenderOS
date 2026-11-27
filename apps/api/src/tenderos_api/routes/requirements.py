@@ -1,6 +1,8 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from tenderos_backend.db.models.requirement import Requirement
 from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import requirement_service, tender_service
 
@@ -17,13 +19,30 @@ from tenderos_api.schemas.requirements import (
 router = APIRouter(tags=["requirements"])
 
 
+async def _responses(requirements: Sequence[Requirement]) -> list[RequirementResponse]:
+    """The requirements as the API returns them, each with every chunk it
+    was found in (plan item 125), read in one query for the whole list."""
+    cited = await requirement_service.citations_for([r.id for r in requirements])
+    return [
+        RequirementResponse.model_validate(r, from_attributes=True).model_copy(
+            update={"source_chunk_ids": cited.get(r.id, [])}
+        )
+        for r in requirements
+    ]
+
+
+async def _response(requirement: Requirement) -> RequirementResponse:
+    (response,) = await _responses([requirement])
+    return response
+
+
 @router.get("/tenders/{tender_id}/requirements", response_model=list[RequirementResponse])
 async def list_requirements(
     tender_id: UUID,
     current_user: User = Depends(require_permission("review_requirements")),
 ) -> list[RequirementResponse]:
     requirements = await requirement_service.list_requirements_for_tender(tender_id)
-    return [RequirementResponse.model_validate(r, from_attributes=True) for r in requirements]
+    return await _responses(requirements)
 
 
 @router.get("/requirements/{requirement_id}", response_model=RequirementResponse)
@@ -34,7 +53,7 @@ async def get_requirement(
     requirement = await requirement_service.get_requirement(requirement_id)
     if requirement is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found")
-    return RequirementResponse.model_validate(requirement, from_attributes=True)
+    return await _response(requirement)
 
 
 @router.patch("/requirements/{requirement_id}", response_model=RequirementResponse)
@@ -60,7 +79,7 @@ async def patch_requirement(
         action=body.action,
         notes=body.notes,
     )
-    return RequirementResponse.model_validate(updated, from_attributes=True)
+    return await _response(updated)
 
 
 @router.post(
@@ -81,7 +100,7 @@ async def verify_requirement(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found")
 
     await requirement_service.request_verification(requirement_id)
-    return RequirementResponse.model_validate(requirement, from_attributes=True)
+    return await _response(requirement)
 
 
 @router.post("/requirements/merge", response_model=RequirementResponse)
@@ -115,7 +134,7 @@ async def merge_requirements(
             status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
         ) from exc
 
-    return RequirementResponse.model_validate(merged, from_attributes=True)
+    return await _response(merged)
 
 
 @router.post("/requirements/{requirement_id}/split", response_model=list[RequirementResponse])
@@ -135,7 +154,7 @@ async def split_requirement(
     created = await requirement_service.split_requirement(
         requirement_id, new_items, tender.organization_id, current_user.id
     )
-    return [RequirementResponse.model_validate(r, from_attributes=True) for r in created]
+    return await _responses(created)
 
 
 # review_requirements, not a dedicated action: Part H's RBAC matrix never

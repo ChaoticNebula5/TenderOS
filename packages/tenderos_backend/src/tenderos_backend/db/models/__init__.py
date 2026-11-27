@@ -41,6 +41,7 @@ from tenderos_backend.db.models.refresh_token import RefreshToken
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
+    RequirementCitation,
     SubmissionItem,
 )
 from tenderos_backend.db.models.talent import (
@@ -100,6 +101,7 @@ __all__ = [
     "RedteamPass",
     "RefreshToken",
     "Requirement",
+    "RequirementCitation",
     "RoleMatch",
     "RoleMatchEvidence",
     "RoleRequirement",

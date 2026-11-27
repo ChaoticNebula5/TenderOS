@@ -102,6 +102,47 @@ async def test_list_and_get_requirements():
         assert got.json()["requirement_text"] == requirements[0]["text"]
 
 
+async def test_every_route_returns_each_chunk_the_requirement_was_found_in():
+    """Plan item 125: source_chunk_ids lists every citation, the primary one
+    (source_chunk_id) first, on the list, get and patch routes."""
+    async with await _client() as client:
+        token, tender_id, requirements = await _make_tender_with_requirements(
+            client,
+            "req-api-cited@example.com",
+            "Req API Cited Org",
+            ["Bidders must submit form A."],
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        requirement_id = uuid.UUID(requirements[0]["id"])
+        async with UnitOfWork() as uow:
+            requirement = await uow.requirements.get(requirement_id)
+            assert requirement is not None
+            primary = await uow.documents.get_chunk(requirement.source_chunk_id)
+            assert primary is not None
+            second = await uow.documents.create_chunk(
+                document_id=primary.document_id,
+                chunk_index=primary.chunk_index + 1,
+                chunk_text="Bidders must submit form A.\nForm B follows.",
+                normalized_text="Bidders must submit form A. Form B follows.",
+                content_hash=uuid.uuid4().hex,
+            )
+            await uow.requirements.add_citation(requirement_id, second.id)
+            await uow.commit()
+        expected = [str(primary.id), str(second.id)]
+
+        listed = await client.get(f"/tenders/{tender_id}/requirements", headers=headers)
+        got = await client.get(f"/requirements/{requirement_id}", headers=headers)
+        patched = await client.patch(
+            f"/requirements/{requirement_id}", json={"action": "confirm"}, headers=headers
+        )
+
+        assert [r["source_chunk_ids"] for r in listed.json()] == [expected]
+        assert got.json()["source_chunk_ids"] == expected
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["source_chunk_ids"] == expected
+        assert got.json()["source_chunk_id"] == expected[0]
+
+
 async def test_patch_confirm_sets_human_reviewed():
     async with await _client() as client:
         token, _tender_id, requirements = await _make_tender_with_requirements(

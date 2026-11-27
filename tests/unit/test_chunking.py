@@ -8,6 +8,7 @@ from tenderos_backend.ingestion.chunk import (
     MAX_CHUNK_TOKENS,
     ExtractedBlock,
     build_chunks,
+    carried_overlap,
 )
 
 
@@ -183,3 +184,31 @@ def test_unpunctuated_row_terminates_and_keeps_provenance():
 
 def test_empty_input_produces_no_chunks():
     assert build_chunks([]) == []
+
+
+# Plan item 125: carried_overlap reads back what _pack_units carried.
+
+
+def test_carried_overlap_is_what_the_packer_carried_into_the_next_chunk():
+    """Built by the real chunker, then read back: every consecutive pair of
+    a long section shares exactly the lines carried between them."""
+    lines = [f"Clause {i}: the bidder shall meet condition number {i} in full." for i in range(40)]
+    drafts = build_chunks([ExtractedBlock(text="\n".join(lines), page_num=1)])
+    assert len(drafts) > 2
+    for earlier, later in zip(drafts, drafts[1:], strict=False):
+        carried = carried_overlap(earlier.chunk_text, later.chunk_text)
+        assert carried, "the packer carries into every next chunk of one group"
+        assert later.chunk_text.startswith(carried)
+        assert earlier.chunk_text.endswith(carried)
+
+
+def test_carried_overlap_is_never_the_whole_earlier_chunk():
+    """_overlap_tail never carries a chunk's first unit, so a later chunk
+    that repeats all of an earlier one's lines carried none of them."""
+    assert carried_overlap("Only line.", "Only line.\nNext line.") == ""
+    assert carried_overlap("First.\nSecond.", "First.\nSecond.\nThird.") == ""
+    assert carried_overlap("First.\nSecond.", "Second.\nThird.") == "Second."
+
+
+def test_carried_overlap_is_empty_when_the_later_chunk_starts_elsewhere():
+    assert carried_overlap("First.\nSecond.", "Third.\nSecond.") == ""
