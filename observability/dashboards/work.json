@@ -538,7 +538,7 @@
           "rawQuery": true,
           "editorMode": "code",
           "format": "table",
-          "rawSql": "SELECT count(*) AS stale FROM (SELECT DISTINCT ON (tender_id) tender_id, stale_graph FROM observability.readiness_reports ORDER BY tender_id, last_generated_at DESC) latest WHERE stale_graph",
+          "rawSql": "SELECT count(*) AS stale FROM (SELECT DISTINCT ON (tender_id) tender_id, stale_graph FROM observability.readiness_reports ORDER BY tender_id, generation DESC) latest WHERE stale_graph",
           "refId": "A"
         }
       ],

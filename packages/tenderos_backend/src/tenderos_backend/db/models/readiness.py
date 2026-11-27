@@ -1,11 +1,26 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, BigInteger, Boolean, ForeignKey, UniqueConstraint, func
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Sequence,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from tenderos_backend.db.models.base import Base, UUIDPrimaryKeyMixin
+
+# Plan item 120 (migration 044): the order of reports, never a clock. Taken on
+# insert (the column's default) and on every reuse (upsert_report), under the
+# tender's row lock (readiness_service), so one tender's generations follow
+# the order its reports were committed. Declared on the metadata so the
+# models' build (tests/models_schema.py) creates it as the migration does.
+GENERATION_SEQUENCE = Sequence("readiness_report_generation_seq", metadata=Base.metadata)
 
 
 class ReadinessReport(UUIDPrimaryKeyMixin, Base):
@@ -13,14 +28,17 @@ class ReadinessReport(UUIDPrimaryKeyMixin, Base):
     __table_args__ = (
         # Plan item 93 (migration 030): one row per distinct content at a
         # version, not one per version. A generate whose content already has
-        # a row reuses it and moves its last_generated_at, so the newest by
-        # last_generated_at (ties by id) is the current report.
+        # a row reuses it and gives it a new generation, so the highest
+        # generation is the current report (plan item 120).
         UniqueConstraint(
             "tender_id",
             "tender_state_version",
             "content_hash",
             name="uq_readiness_report_content",
         ),
+        # Plan item 120: no two of one tender's reports share a generation,
+        # and "latest" reads this key's index.
+        UniqueConstraint("tender_id", "generation", name="uq_readiness_report_generation"),
     )
 
     tender_id: Mapped[uuid.UUID] = mapped_column(
@@ -45,8 +63,15 @@ class ReadinessReport(UUIDPrimaryKeyMixin, Base):
     # (readiness_service.report_content_hash). Rows from before migration 030
     # hold 'legacy-' plus their id, which no real hash equals.
     content_hash: Mapped[str] = mapped_column(nullable=False)
-    # Set on insert and again whenever a generate reuses this row: "the latest
-    # report" orders by it, so content that goes X, Y, X makes X current again.
+    # Set on insert and again whenever a generate reuses this row, for display
+    # and the final gate's refusal line. Since plan item 120 it orders
+    # nothing: the database clock behind it steps back (item 117).
     last_generated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Plan item 120: taken from GENERATION_SEQUENCE on insert and again on
+    # every reuse, so content that goes X, Y, X makes X current again. "The
+    # latest report" is the one with the highest generation.
+    generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=GENERATION_SEQUENCE.next_value()
     )

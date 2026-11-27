@@ -106,9 +106,11 @@ VIEWS: tuple[tuple[str, str], ...] = (
     ),
     (
         "readiness_reports",
+        # Plan item 120 (migration 044): generation appended, so the Work
+        # dashboard picks each tender's newest report by it, not by a clock.
         "SELECT tender_id, tender_state_version, ready, generated_at, last_generated_at, "
-        'blockers @> \'[{"category": "stale_graph_projection"}]\'::jsonb AS stale_graph '
-        "FROM public.readiness_reports",
+        'blockers @> \'[{"category": "stale_graph_projection"}]\'::jsonb AS stale_graph, '
+        "generation FROM public.readiness_reports",
     ),
     (
         "graph_projection_runs",
