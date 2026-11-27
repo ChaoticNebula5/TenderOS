@@ -82,14 +82,17 @@ class ClarificationDraft:
     requirement_id: uuid.UUID | None = None
 
 
-_WORD = re.compile(r"[a-z0-9\[\]\-]+")
+_WORD = re.compile(r"[\w\[\]-]+")
 
 
 def _words(text: str) -> set[str]:
-    """A text's words for the overlap check: lower-cased, every character
-    but letters, digits, brackets and hyphens a separator (the planted
-    "[REQ-024]" stays one word)."""
-    return set(_WORD.findall(text.lower()))
+    """A text's words for the overlap check: casefolded, every character but
+    word characters (any script's letters and digits), brackets and hyphens
+    a separator (the planted "[REQ-024]" stays one word). Unicode-aware, so
+    an accented or non-Latin word is checked like any other rather than
+    dropped (security review of PR 38: an ASCII-only pattern checked only
+    a mixed text's ASCII words)."""
+    return set(_WORD.findall(text.casefold()))
 
 
 def _overlapping_neighbours(a: DocumentChunk, b: DocumentChunk) -> bool:

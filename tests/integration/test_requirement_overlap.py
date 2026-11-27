@@ -396,6 +396,48 @@ async def test_identical_text_under_another_parent_stays_separate():
     await _two_rows(tender_id, [_draft(document_id, earlier), _draft(document_id, later)])
 
 
+# Security review of PR 38: the overlap check's words are Unicode-aware, so a
+# non-English requirement is checked word for word like an English one.
+FRENCH = "Le soumissionnaire doit répondre à la question."
+
+
+async def _french_neighbours(tender_id, org_id, carried: str):
+    document_id = await _document(tender_id, org_id)
+    earlier = await _chunk(document_id, 0, ["Section 4 : Questions.", carried])
+    later = await _chunk(
+        document_id, 1, [carried, "Les offres restent valables quatre-vingt-dix jours."]
+    )
+    return document_id, earlier, later
+
+
+async def test_an_accented_word_missing_from_the_carried_lines_stops_the_merge():
+    """The carried line lacks the requirement's "à". An ASCII-only pattern
+    dropped "à" altogether and split "répondre" into the same pieces on both
+    sides, so it saw every word present and merged."""
+    org_id, tender_id = await _tender()
+    document_id, earlier, later = await _french_neighbours(
+        tender_id, org_id, "Le soumissionnaire doit répondre la question."
+    )
+    await _two_rows(
+        tender_id,
+        [_draft(document_id, earlier, FRENCH), _draft(document_id, later, FRENCH)],
+    )
+
+
+async def test_the_same_accented_words_in_the_carried_lines_allow_the_merge():
+    """The carried line has the requirement's words in capitals ("RÉPONDRE
+    À"): casefolded, they are the same words, so the copies are one row."""
+    org_id, tender_id = await _tender()
+    document_id, earlier, later = await _french_neighbours(
+        tender_id, org_id, "LE SOUMISSIONNAIRE DOIT RÉPONDRE À LA QUESTION."
+    )
+    (row,) = await persist_extraction_results(
+        tender_id,
+        [_draft(document_id, earlier, FRENCH), _draft(document_id, later, FRENCH)],
+    )
+    assert await _citations(row.id) == {earlier, later}
+
+
 async def test_identical_text_outside_the_carried_lines_stays_separate():
     """Neighbours with carried lines, but the requirement repeated in the
     second chunk's own text, not in what was carried."""
