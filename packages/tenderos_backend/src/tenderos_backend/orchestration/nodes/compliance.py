@@ -8,7 +8,10 @@ from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.services import gate_summary_service
-from tenderos_backend.domain.services.compliance_service import evaluate_compliance_for_requirement
+from tenderos_backend.domain.services.compliance_service import (
+    RequirementNotFoundError,
+    evaluate_compliance_for_requirement,
+)
 from tenderos_backend.domain.services.workflow_service import (
     is_cancelled,
     start_task,
@@ -70,6 +73,7 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
     try:
         client = _build_llm_client(uuid.UUID(state["organization_id"]))
         evaluated = 0
+        skipped = 0
         for requirement in requirements:
             try:
                 await evaluate_compliance_for_requirement(
@@ -80,10 +84,20 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
                     task_id=task_id,
                 )
                 evaluated += 1
+            except RequirementNotFoundError:
+                # Plan item 126: a person's merge or split deleted it after
+                # the list above was read. Not a failure: it is out of the
+                # bid, and its survivor or first part is in the list.
+                skipped += 1
+                logger.info(
+                    "requirement %s no longer exists (merged or split meanwhile); "
+                    "compliance analysis skipped",
+                    requirement.id,
+                )
             except Exception:
                 logger.exception("compliance analysis failed for requirement %s", requirement.id)
 
-        if requirements and evaluated == 0:
+        if len(requirements) > skipped and evaluated == 0:
             # Every requirement in a non-empty batch failed - a completed
             # task with evaluated_count=0 would be indistinguishable from a
             # tender with zero requirements, and B12's readiness report
@@ -100,6 +114,7 @@ async def compliance_analysis_node(state: SpecialistTaskState) -> dict:
                 output_refs={
                     "requirement_count": len(requirements),
                     "evaluated_count": evaluated,
+                    "skipped_count": skipped,
                 },
             )
             await uow.commit()

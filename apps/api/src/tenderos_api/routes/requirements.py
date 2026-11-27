@@ -7,6 +7,7 @@ from tenderos_backend.db.models.user import User
 from tenderos_backend.domain.services import requirement_service, tender_service
 
 from tenderos_api.dependencies import require_merge_permission, require_permission
+from tenderos_api.errors import MergeComplianceConflictAPIError, RequirementRejectedAPIError
 from tenderos_api.schemas.requirements import (
     MergeRequirementsRequest,
     PatchRequirementRequest,
@@ -129,9 +130,26 @@ async def merge_requirements(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="All requirement_ids must belong to the same tender",
         ) from exc
+    except requirement_service.RepeatedRequirementError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Each requirement_id may be given once",
+        ) from exc
     except requirement_service.RequirementNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
+        ) from exc
+    except requirement_service.RequirementRejectedError as exc:
+        raise RequirementRejectedAPIError(exc.display_codes) from exc
+    except requirement_service.MergeComplianceConflictError as exc:
+        raise MergeComplianceConflictAPIError(
+            {
+                d.display_code: (
+                    f"{d.status}, decided by {d.decided_by}, "
+                    f"{'approved' if d.human_approved else 'not approved'}"
+                )
+                for d in exc.decisions
+            }
         ) from exc
 
     return await _response(merged)
@@ -151,9 +169,16 @@ async def split_requirement(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tender not found")
 
     new_items = [item.model_dump(exclude_none=True) for item in body.new_items]
-    created = await requirement_service.split_requirement(
-        requirement_id, new_items, tender.organization_id, current_user.id
-    )
+    try:
+        created = await requirement_service.split_requirement(
+            requirement_id, new_items, tender.organization_id, current_user.id
+        )
+    except requirement_service.RequirementNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Requirement not found"
+        ) from exc
+    except requirement_service.RequirementRejectedError as exc:
+        raise RequirementRejectedAPIError(exc.display_codes) from exc
     return await _responses(created)
 
 

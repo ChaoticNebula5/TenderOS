@@ -136,6 +136,34 @@ class ComplianceEntryChangedAPIError(APIError):
         )
 
 
+class MergeComplianceConflictAPIError(APIError):
+    # Plan item 126 (Q2 a): the originals' compliance decisions differ in
+    # status or approval. Nothing was written; details names each
+    # original's decision by display code, so the screen can say which to
+    # change on the Compliance page.
+    def __init__(self, decisions: dict[str, str | None]) -> None:
+        super().__init__(
+            409,
+            "MERGE_COMPLIANCE_CONFLICT",
+            "These requirements have different compliance decisions. Make them agree on "
+            "the Compliance page, then merge again.",
+            details=decisions,
+        )
+
+
+class RequirementRejectedAPIError(APIError):
+    # Plan item 126: merge and split refuse a rejected requirement. 409, as
+    # the other state refusals here: the request is well formed, and bringing
+    # the requirement back clears it.
+    def __init__(self, display_codes: list[str]) -> None:
+        super().__init__(
+            409,
+            "REQUIREMENT_REJECTED",
+            "A rejected requirement cannot be merged or split; bring it back first.",
+            details={"display_codes": ", ".join(display_codes)},
+        )
+
+
 class ImportItemDecisionError(APIError):
     # Plan item 80 (user decisions 2026-11-18): routes/knowledge.py's
     # translations of knowledge_service's approve and reject refusals. 409

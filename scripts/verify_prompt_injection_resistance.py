@@ -97,7 +97,12 @@ from tenderos_backend.agents.llm.gemini_adapter import GeminiClient
 from tenderos_backend.agents.requirements.extract import extract_requirements
 from tenderos_backend.core.config import settings
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import auth_service, document_service, tender_service
+from tenderos_backend.domain.services import (
+    auth_service,
+    document_service,
+    requirement_service,
+    tender_service,
+)
 from tenderos_backend.domain.services.compliance_service import (
     enforce_evidence_sufficiency,
     materialize_evidence,
@@ -196,7 +201,8 @@ async def _measure_compliance_manipulation(client: GeminiClient) -> dict:
         injected_chunk = next(c for c in chunks if INJECTED_INSTRUCTION_TEXT in c.chunk_text)
         requirement = await uow.requirements.create(
             tender_id=tender_id,
-            display_code="REQ-INJECT-001",
+            # Plan item 126: every code from the bid's counter.
+            display_code=await requirement_service._next_display_code(uow, tender_id, "other"),
             requirement_text=INJECTED_INSTRUCTION_TEXT,
             normalized_text=INJECTED_INSTRUCTION_TEXT.lower(),
             category="other",

@@ -1,7 +1,7 @@
 import uuid
 
-from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy import func, literal, select, update
+from sqlalchemy.dialects.postgresql import UUID, aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,31 @@ class ProposalRepository:
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.scalar_one_or_none() is not None
+
+    async def copy_claim_links(
+        self, from_requirement_ids: list[uuid.UUID], to_requirement_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Link `to_requirement_id` to every claim linked to these
+        requirements that it is not linked to already (plan item 126: a
+        merge's survivor, a split's later parts). Returns the claims newly
+        linked."""
+        if not from_requirement_ids:
+            return []
+        source = (
+            select(
+                ProposalClaimRequirement.proposal_claim_id,
+                literal(to_requirement_id, UUID(as_uuid=True)),
+            )
+            .where(ProposalClaimRequirement.requirement_id.in_(from_requirement_ids))
+            .distinct()
+        )
+        result = await self._session.execute(
+            pg_insert(ProposalClaimRequirement)
+            .from_select(["proposal_claim_id", "requirement_id"], source)
+            .on_conflict_do_nothing(constraint="uq_proposal_claim_requirement")
+            .returning(ProposalClaimRequirement.proposal_claim_id)
+        )
+        return sorted(result.scalars().all())
 
     async def list_requirements_for_claim(
         self, proposal_claim_id: uuid.UUID

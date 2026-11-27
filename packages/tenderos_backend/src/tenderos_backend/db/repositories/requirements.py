@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal, select, text, update
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,8 +12,16 @@ from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
     RequirementCitation,
+    RequirementCodeCounter,
+    RequirementKey,
     SubmissionItem,
 )
+
+# The first key of the two-key advisory lock on a tender's set of
+# requirements (plan item 126). Distinct from refresh_tokens.py's 3401,
+# graph_projection.py's 3402 and documents.py's 3403
+# (tests/unit/test_advisory_lock_classes.py).
+_REQUIREMENT_SET_LOCK_CLASS = 3404
 
 
 @dataclass(frozen=True)
@@ -61,16 +70,146 @@ class RequirementRepository:
         result = await self._session.execute(stmt.order_by(Requirement.display_code))
         return list(result.scalars().all())
 
+    async def lock_tender_requirements(self, tender_id: uuid.UUID) -> None:
+        """Take the tender's transaction-scoped advisory lock on its set of
+        requirements; it is released when the transaction ends (plan item
+        126). Extraction's persist, merge and split take it first, so they run
+        one at a time per bid: an extraction never finds a requirement by a
+        key that a merge then moves, or cites a row a merge then deletes.
+
+        An advisory lock, not the tender's row: an edit locks its requirement
+        and then the tender (the bump), so a merge locking the tender before
+        the originals could deadlock with it. Edits, verification and
+        compliance writes do not take it; they change no row's existence and
+        no key. Lock order: this lock, then compliance entries, then
+        requirements, then the tender. hashtext() can map two tenders to one
+        key; they then wait on each other briefly."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_class, hashtext(:tender_id))"),
+            {"lock_class": _REQUIREMENT_SET_LOCK_CLASS, "tender_id": str(tender_id)},
+        )
+
+    async def lock_for_merge(self, requirement_ids: list[uuid.UUID]) -> list[Requirement]:
+        """The requirements, their rows locked FOR UPDATE in id order until
+        this transaction ends (plan item 126): merge and split update one and
+        delete the others, and a delete needs this lock. Id order, so two
+        merges sharing a requirement never wait on each other in a cycle.
+        populate_existing: values read before the lock are read again."""
+        if not requirement_ids:
+            return []
+        result = await self._session.execute(
+            select(Requirement)
+            .where(Requirement.id.in_(requirement_ids))
+            .order_by(Requirement.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars().all())
+
     async def get_by_fingerprint(
         self, tender_id: uuid.UUID, content_fingerprint: str
     ) -> Requirement | None:
+        """The tender's requirement this extraction key finds (plan item
+        126): read from requirement_keys, so a key merge or split moved finds
+        the row it now names, and an overlap copy's key finds its row."""
         result = await self._session.execute(
-            select(Requirement).where(
+            select(Requirement)
+            .join(RequirementKey, RequirementKey.requirement_id == Requirement.id)
+            .where(
                 Requirement.tender_id == tender_id,
-                Requirement.content_fingerprint == content_fingerprint,
+                RequirementKey.content_fingerprint == content_fingerprint,
             )
         )
         return result.scalar_one_or_none()
+
+    async def next_display_number(self, tender_id: uuid.UUID, prefix: str) -> int:
+        """The bid's next display code number for this prefix (migration 046):
+        one statement that creates the counter at 1 or adds 1 to it, and
+        returns the number. Never a count of rows, so a number a merge's
+        deleted row held is never handed out again. The counter's row lock
+        is held until the transaction ends, after the bid's requirement-set
+        lock that every caller takes first."""
+        counter = RequirementCodeCounter.__table__
+        result = await self._session.execute(
+            pg_insert(RequirementCodeCounter)
+            .values(tender_id=tender_id, prefix=prefix, last_number=1)
+            .on_conflict_do_update(
+                index_elements=["tender_id", "prefix"],
+                set_={"last_number": counter.c.last_number + 1},
+            )
+            .returning(RequirementCodeCounter.last_number)
+        )
+        return int(result.scalar_one())
+
+    async def add_key(self, requirement_id: uuid.UUID, content_fingerprint: str) -> bool:
+        """Record that this extraction key finds the requirement (plan item
+        126). True when the key is new; a key already recorded is left with
+        the requirement it names."""
+        result = await self._session.execute(
+            pg_insert(RequirementKey)
+            .values(content_fingerprint=content_fingerprint, requirement_id=requirement_id)
+            .on_conflict_do_nothing(index_elements=["content_fingerprint"])
+            .returning(RequirementKey.content_fingerprint)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def list_keys(self, requirement_id: uuid.UUID) -> list[str]:
+        result = await self._session.execute(
+            select(RequirementKey.content_fingerprint)
+            .where(RequirementKey.requirement_id == requirement_id)
+            .order_by(RequirementKey.created_at, RequirementKey.content_fingerprint)
+        )
+        return list(result.scalars().all())
+
+    async def move_keys(self, from_ids: list[uuid.UUID], to_id: uuid.UUID) -> list[str]:
+        """Point every key of these requirements at `to_id` (a merge's
+        survivor), so the next extraction finds it for any original's text.
+        Returns the keys moved."""
+        if not from_ids:
+            return []
+        result = await self._session.execute(
+            update(RequirementKey)
+            .where(RequirementKey.requirement_id.in_(from_ids))
+            .values(requirement_id=to_id)
+            .returning(RequirementKey.content_fingerprint)
+            .execution_options(synchronize_session=False)
+        )
+        return sorted(result.scalars().all())
+
+    async def copy_citations(self, from_ids: list[uuid.UUID], to_id: uuid.UUID) -> list[uuid.UUID]:
+        """Give `to_id` every citation of these requirements it lacks (a
+        merge's survivor, a split's later parts). Returns the chunks added."""
+        if not from_ids:
+            return []
+        source = (
+            select(literal(to_id, UUID(as_uuid=True)), RequirementCitation.chunk_id)
+            .where(RequirementCitation.requirement_id.in_(from_ids))
+            .distinct()
+        )
+        result = await self._session.execute(
+            pg_insert(RequirementCitation)
+            .from_select(["requirement_id", "chunk_id"], source)
+            .on_conflict_do_nothing(index_elements=["requirement_id", "chunk_id"])
+            .returning(RequirementCitation.chunk_id)
+        )
+        return sorted(result.scalars().all())
+
+    async def move_clarifications(
+        self, from_ids: list[uuid.UUID], to_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Link every clarification of these requirements to `to_id` (a
+        merge's survivor). Each keeps its fingerprint, which names the
+        original; see merge_requirements for why. Returns the ones moved."""
+        if not from_ids:
+            return []
+        result = await self._session.execute(
+            update(ClarificationItem)
+            .where(ClarificationItem.requirement_id.in_(from_ids))
+            .values(requirement_id=to_id)
+            .returning(ClarificationItem.id)
+            .execution_options(synchronize_session=False)
+        )
+        return sorted(result.scalars().all())
 
     async def create(
         self,
@@ -101,6 +240,9 @@ class RequirementRepository:
         # requirement_citations, so "every chunk it was found in" is one
         # query (extraction, merge and split all create through here).
         await self.add_citation(requirement.id, source_chunk_id)
+        # Plan item 126: and its own key is in requirement_keys, where
+        # extraction looks keys up.
+        await self.add_key(requirement.id, content_fingerprint)
         return requirement
 
     async def add_citation(self, requirement_id: uuid.UUID, chunk_id: uuid.UUID) -> bool:
