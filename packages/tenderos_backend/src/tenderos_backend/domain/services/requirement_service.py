@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -5,6 +6,7 @@ from sqlalchemy import exists, select
 
 from tenderos_backend.core.hashing import sha256_hex
 from tenderos_backend.db.models.agent_trace import AgentTrace
+from tenderos_backend.db.models.document import CHUNK_ORIGIN_PARSED, DocumentChunk
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
@@ -17,7 +19,7 @@ from tenderos_backend.domain.events.outbox_events import (
     requirement_verification_requested_idempotency_key,
     requirement_verification_requested_payload,
 )
-from tenderos_backend.ingestion.chunk import normalize_text
+from tenderos_backend.ingestion.chunk import carried_overlap, normalize_text
 
 _CATEGORY_PREFIX = {
     "technical": "TECH",
@@ -80,6 +82,86 @@ class ClarificationDraft:
     requirement_id: uuid.UUID | None = None
 
 
+_WORD = re.compile(r"[a-z0-9\[\]\-]+")
+
+
+def _words(text: str) -> set[str]:
+    """A text's words for the overlap check: lower-cased, every character
+    but letters, digits, brackets and hyphens a separator (the planted
+    "[REQ-024]" stays one word)."""
+    return set(_WORD.findall(text.lower()))
+
+
+def _overlapping_neighbours(a: DocumentChunk, b: DocumentChunk) -> bool:
+    """Two chunks _pack_units could have carried text between: parsed chunks
+    of one document, one index apart, with the same parent and the same
+    provenance (page, sheet, cell range, heading path), since it carries only
+    inside one provenance group (ingestion/chunk.py)."""
+    return (
+        a.document_id == b.document_id
+        and a.origin == CHUNK_ORIGIN_PARSED
+        and b.origin == CHUNK_ORIGIN_PARSED
+        and abs(a.chunk_index - b.chunk_index) == 1
+        and a.parent_chunk_id == b.parent_chunk_id
+        and a.page_num == b.page_num
+        and a.sheet_name == b.sheet_name
+        and a.cell_range == b.cell_range
+        and a.heading_path == b.heading_path
+    )
+
+
+def _in_carried_overlap(normalized_text: str, a: DocumentChunk, b: DocumentChunk) -> bool:
+    """Whether every word of the requirement is in the lines carried between
+    the two chunks (user decision Q1 a: every word). The model restates a
+    requirement (observed: "[REQ-024] The platform is encouraged ..." from
+    "The platform [REQ-024] is encouraged ..."), so its text is checked by
+    its words, not verbatim; on the real-provider run every one of the 22
+    doubled rows scored every word."""
+    earlier, later = (a, b) if a.chunk_index < b.chunk_index else (b, a)
+    words = _words(normalized_text)
+    return bool(words) and words <= _words(carried_overlap(earlier.chunk_text, later.chunk_text))
+
+
+async def _same_requirement(
+    uow: UnitOfWork, tender_id: uuid.UUID, draft: RequirementDraft, normalized: str
+) -> Requirement | None:
+    """Plan item 125: the existing row (rejected ones included) this draft is
+    another copy of, or None.
+
+    - A row with exactly this text that already cites the draft's chunk (a
+      second extraction, finding a copy recorded before): whatever its flags,
+      as the exact key ignores them.
+    - Otherwise a row with exactly this text, category and mandatory flag that
+      cites an overlapping neighbour of the draft's chunk, with the
+      requirement inside the lines carried between them.
+
+    Never the same sentence in a distant section, across a page or heading,
+    in another document, outside the carried lines, or in other words.
+    """
+    candidates = await uow.requirements.list_by_normalized_text(tender_id, normalized)
+    if not candidates:
+        return None
+    citations = await uow.requirements.list_citations([row.id for row in candidates])
+    for row in candidates:
+        if draft.source_chunk_id in citations[row.id]:
+            return row
+    draft_chunk = await uow.documents.get_chunk(draft.source_chunk_id)
+    if draft_chunk is None:
+        return None
+    for row in candidates:
+        if row.category != draft.category or row.mandatory != draft.mandatory:
+            continue
+        for chunk_id in citations[row.id]:
+            cited = await uow.documents.get_chunk(chunk_id)
+            if (
+                cited is not None
+                and _overlapping_neighbours(cited, draft_chunk)
+                and _in_carried_overlap(normalized, cited, draft_chunk)
+            ):
+                return row
+    return None
+
+
 async def persist_extraction_results(
     tender_id: uuid.UUID, drafts: list[RequirementDraft]
 ) -> list[Requirement]:
@@ -89,6 +171,18 @@ async def persist_extraction_results(
     same call). Fingerprint-based dedup means a retried workflow run replays
     safely: existing rows are returned as-is, only genuinely new content
     creates a row.
+
+    Plan item 125: a requirement the chunker's overlap put whole in two
+    neighbouring chunks is found from both, and the two copies' keys differ
+    only in their chunk. _same_requirement recognises the second copy (and a
+    copy found again by a later extraction), which then adds its chunk to the
+    row's citations instead of making a row. All drafts persist in this one
+    transaction, so the rows created earlier in the batch are seen here.
+
+    Returns each requirement once, in the order it was first met: a second
+    copy (an overlap copy, or the same requirement twice from one chunk)
+    resolves to a row already in the list. The extraction node verifies once
+    per entry (a model call) and counts the entries in its task output.
     """
     persisted: list[Requirement] = []
     async with UnitOfWork() as uow:
@@ -101,6 +195,14 @@ async def persist_extraction_results(
             existing = await uow.requirements.get_by_fingerprint(tender_id, fingerprint)
             if existing is not None:
                 persisted.append(existing)
+                continue
+            # Plan item 125: the same requirement found again, in a chunk the
+            # row already cites or in that chunk's overlapping neighbour,
+            # adds a citation rather than a row.
+            same = await _same_requirement(uow, tender_id, draft, normalized)
+            if same is not None:
+                await uow.requirements.add_citation(same.id, draft.source_chunk_id)
+                persisted.append(same)
                 continue
 
             category_count = len(
@@ -132,7 +234,10 @@ async def persist_extraction_results(
             # (plan item 95). It runs before the run's project_graph step.
             await uow.tenders.bump_state_version(tender_id)
         await uow.commit()
-    return persisted
+    unique: dict[uuid.UUID, Requirement] = {}
+    for requirement in persisted:
+        unique.setdefault(requirement.id, requirement)
+    return list(unique.values())
 
 
 async def persist_submission_items(
@@ -264,6 +369,13 @@ async def persist_clarifications(
             persisted.append(created)
         await uow.commit()
     return persisted
+
+
+async def citations_for(requirement_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Each requirement's cited chunks, the primary citation first (plan item
+    125): what the API returns as source_chunk_ids."""
+    async with UnitOfWork() as uow:
+        return await uow.requirements.list_citations(requirement_ids)
 
 
 async def get_requirement(requirement_id: uuid.UUID) -> Requirement | None:

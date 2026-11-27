@@ -288,6 +288,24 @@ def _split_to_token_limit(text: str) -> list[str]:
     return _split_to_token_limit(left) + _split_to_token_limit(right)
 
 
+def carried_overlap(earlier_text: str, later_text: str) -> str:
+    """The lines _pack_units carried from one chunk into the next: the longest
+    run of the earlier chunk's trailing lines that the later chunk starts
+    with, never all of the earlier chunk's lines (_overlap_tail never carries
+    the first unit). Empty when nothing was carried, as between chunks of
+    different provenance groups or after a token-limit split.
+
+    Plan item 125: a requirement found whole in this text was found in both
+    chunks, so extraction keeps one row for it with both citations.
+    """
+    earlier = earlier_text.split("\n")
+    later = later_text.split("\n")
+    for k in range(min(len(earlier) - 1, len(later)), 0, -1):
+        if earlier[-k:] == later[:k]:
+            return "\n".join(later[:k])
+    return ""
+
+
 def _overlap_tail(units: list[str]) -> list[str]:
     """The trailing units totalling at most OVERLAP_CHARS. Never returns the
     whole list - carrying everything forward would mean the next chunk starts

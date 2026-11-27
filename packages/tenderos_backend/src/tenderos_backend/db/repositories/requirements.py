@@ -4,11 +4,13 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tenderos_backend.db.models.requirement import (
     ClarificationItem,
     Requirement,
+    RequirementCitation,
     SubmissionItem,
 )
 
@@ -95,7 +97,65 @@ class RequirementRepository:
         )
         self._session.add(requirement)
         await self._session.flush()
+        # Plan item 125: every requirement's primary citation is also in
+        # requirement_citations, so "every chunk it was found in" is one
+        # query (extraction, merge and split all create through here).
+        await self.add_citation(requirement.id, source_chunk_id)
         return requirement
+
+    async def add_citation(self, requirement_id: uuid.UUID, chunk_id: uuid.UUID) -> bool:
+        """Record that the requirement was found in this chunk (plan item 125).
+        True when the citation is new; a citation already recorded is left
+        as it is."""
+        result = await self._session.execute(
+            pg_insert(RequirementCitation)
+            .values(requirement_id=requirement_id, chunk_id=chunk_id)
+            .on_conflict_do_nothing(index_elements=["requirement_id", "chunk_id"])
+            .returning(RequirementCitation.requirement_id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def list_citations(
+        self, requirement_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[uuid.UUID]]:
+        """Each requirement's cited chunks, the primary citation first, then
+        the others in the order they were found (plan item 125)."""
+        if not requirement_ids:
+            return {}
+        result = await self._session.execute(
+            select(
+                RequirementCitation.requirement_id,
+                RequirementCitation.chunk_id,
+                Requirement.source_chunk_id,
+            )
+            .join(Requirement, Requirement.id == RequirementCitation.requirement_id)
+            .where(RequirementCitation.requirement_id.in_(requirement_ids))
+            .order_by(RequirementCitation.created_at, RequirementCitation.chunk_id)
+        )
+        cited: dict[uuid.UUID, list[uuid.UUID]] = {rid: [] for rid in requirement_ids}
+        for requirement_id, chunk_id, primary in result.all():
+            if chunk_id == primary:
+                cited[requirement_id].insert(0, chunk_id)
+            else:
+                cited[requirement_id].append(chunk_id)
+        return cited
+
+    async def list_by_normalized_text(
+        self, tender_id: uuid.UUID, normalized_text: str
+    ) -> list[Requirement]:
+        """The tender's requirements, rejected ones included, whose normalized
+        text is exactly this: the candidates for a draft's overlap copy (plan
+        item 125). Rejected rows are included so a rejected requirement is not
+        brought back by its copy in the next chunk."""
+        result = await self._session.execute(
+            select(Requirement)
+            .where(
+                Requirement.tender_id == tender_id,
+                Requirement.normalized_text == normalized_text,
+            )
+            .order_by(Requirement.created_at, Requirement.id)
+        )
+        return list(result.scalars().all())
 
     async def update_fields(self, requirement_id: uuid.UUID, **fields: object) -> Requirement:
         requirement = await self._session.get(Requirement, requirement_id)

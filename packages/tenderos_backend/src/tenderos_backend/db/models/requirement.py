@@ -19,6 +19,39 @@ from sqlalchemy.orm import Mapped, mapped_column
 from tenderos_backend.db.models.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
 
 
+class RequirementCitation(Base):
+    """Plan item 125 (migration 045): every chunk a requirement was found in.
+
+    The chunker carries a chunk's trailing lines into the next one
+    (ingestion/chunk.py, OVERLAP_CHARS), so a short requirement there is found
+    whole in both. Extraction keeps one row for it and records both chunks
+    here. The primary citation is here too and stays in
+    requirements.source_chunk_id. A pure association, as knowledge_item_chunks:
+    a composite key, both foreign keys cascading, so a re-parse that removes a
+    chunk can only fail on the primary citation (plan item 108), never here.
+    """
+
+    __tablename__ = "requirement_citations"
+    __table_args__ = (
+        # Extraction asks which requirements cite a given chunk.
+        Index("idx_requirement_citations_chunk", "chunk_id"),
+    )
+
+    requirement_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_chunks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Requirement(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "requirements"
     __table_args__ = (

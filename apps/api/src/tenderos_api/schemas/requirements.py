@@ -14,6 +14,11 @@ class RequirementResponse(BaseModel):
     category: str
     mandatory: bool
     source_chunk_id: UUID
+    # Plan item 125: every chunk the requirement was found in, the primary
+    # citation (source_chunk_id) first. A requirement the chunker's overlap
+    # put in two neighbouring chunks has both. Filled by the routes'
+    # _responses, never read off the ORM row.
+    source_chunk_ids: list[UUID] = Field(default_factory=list)
     confidence: float | None
     verified: bool
     # Plan item 59, Q5 (PR 21): when the last verdict was written. With
