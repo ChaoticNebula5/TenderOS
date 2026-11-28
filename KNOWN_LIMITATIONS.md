@@ -11608,9 +11608,46 @@ Resolves the entry above, "A rate-limited request (429) is shown as
      its mutation (the job ignoring a refused claim, the key without
      `state_version`, the takeover without its lease or status check,
      completion without the token, a plain insert, the lease without its
-     margin). **Accepted limit:** a job that raises part-way keeps its
+     margin). ~~**Accepted limit:** a job that raises part-way keeps its
      claim `running` until the lease lapses, so a re-drive inside those 31
-     minutes is refused (tested). A claim row is kept per selection
+     minutes is refused (tested).~~ **RESOLVED by plan item 124
+     (2026-11-27, migration 047).** The limit was worse than written: a
+     dispatched event is never delivered again (the dispatcher reads only
+     pending and failed rows, the re-drive refuses a dispatched event, and
+     RQ keeps a failed job's id for a year), so no takeover ever came, and
+     such a claim stayed `running` for good. Seen in both Gemini runs and
+     one fake E2E: a reanalysis whose impact preview found the graph stale
+     (`GraphStaleError`), because the person's next selection had moved the
+     bid on; 7 claims were stuck on the development stack. Now:
+     - the job projects and previews again when the graph moved on, up to
+       5 attempts with waits of 2, 5, 10 and 20 s (sized to outlast a burst
+       of changes; the operations worker's proposal drafting and pricing
+       validation move the version too, not only the API), then ends its
+       claim `failed` as `GRAPH_STALE` and returns;
+     - any other exception ends the claim `failed` with the exception's
+       class name and is raised again (the metric counts it as
+       `JOB_ERROR`, so a first failure of a new kind still alerts);
+     - the dispatcher's reaper, once a minute, ends a running claim whose
+       RQ job will never finish it (failed, canceled, finished, unknown, or
+       abandoned on two looks: the run reaper's own inspector) or whose
+       lease lapsed (no Redis needed), as `WORKER_LOST` with the rule;
+     - a failed claim is terminal; the person re-runs it with two
+       selection changes that leave the item as it is now (a re-run
+       control is noted for the web redesign);
+     - readiness blocks the bid (`reanalysis_not_applied`) while an item's
+       latest failed claim has no completed claim at a later version; its
+       message says whether the item is selected and gives both steps in
+       order, or, for an item deleted since, that it cannot be re-run and
+       the final gate's waiver is the way on; the final gate's approval
+       recomputes readiness, so a claim that fails after the last report
+       reaches it;
+     - the metrics exporter counts claims by status, failed claims by
+       `GRAPH_STALE`, `WORKER_LOST` or `JOB_ERROR` (each always emitted),
+       and running claims whose lease lapsed; `ReanalysisFailed` alerts on
+       a rise from the hour's minimum.
+     Tested in `test_reanalysis_guard.py`, `test_reanalysis_job.py`,
+     `test_reanalysis_reaper.py`, `test_readiness_reanalysis_not_applied.py`
+     and the final gate's route tests. A claim row is kept per selection
      change, with no cleanup; one row per change is small.
   2. **Two concurrent resumes for the same gate have a narrow window.**
      Resuming re-runs the gate node from its start, and gate nodes set the

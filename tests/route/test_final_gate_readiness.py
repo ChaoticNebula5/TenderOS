@@ -31,7 +31,7 @@ from readiness_facts import (
 )
 from sqlalchemy import text
 from tenderos_backend.db.unit_of_work import UnitOfWork
-from tenderos_backend.domain.services import graph_service, readiness_service
+from tenderos_backend.domain.services import graph_service, readiness_service, reanalysis_service
 from tenderos_backend.graph_projection.driver import get_session as get_neo4j_session
 from tenderos_backend.orchestration.gates import build_gate_payload
 
@@ -699,3 +699,44 @@ async def test_final_gate_target_updates_are_refused_before_anything_applies(
     assert entry is not None and entry.human_approved is False
     gate = await _gate(gate_id)
     assert gate is not None and gate.status == "pending"
+
+
+async def test_a_reanalysis_failing_after_the_page_reaches_the_final_gate(
+    client: TestClient, register_actor
+):
+    """Plan item 124 with W2: a selection change's reanalysis that fails
+    after the page's report moves no version (a claim ending moves none),
+    but adds reanalysis_not_applied, so the approval's recompute lands on a
+    different report and is refused once; approving again needs the waiver,
+    and records this blocker among the waived ones."""
+    headers, _, org_id = register_actor()
+    tender_id = _tender(client, headers, org_id)
+    await add_parsed_document(tender_id)
+    await project_and_review(tender_id)
+    gate_id = await _final_gate(tender_id)
+    shown = _generate(client, headers, tender_id)
+    assert shown["ready"] is True
+    version = await _version(tender_id)
+    knowledge_item_id = uuid.uuid4()
+    token = await reanalysis_service.claim_reanalysis(tender_id, knowledge_item_id, version)
+    assert token is not None
+    assert await reanalysis_service.fail_reanalysis(token, "GRAPH_STALE")
+    assert await _version(tender_id) == version, "precondition: a failed claim moves no version"
+
+    changed = _decide(client, headers, gate_id)
+    not_waived = _decide(client, headers, gate_id)
+    pending = await _gate(gate_id)
+    approved = _decide(client, headers, gate_id, waive=True)
+
+    assert changed.json()["error"]["code"] == "READINESS_CHANGED"
+    assert not_waived.status_code != 200, not_waived.text
+    assert pending is not None and pending.status == "pending"
+    assert approved.status_code == 200, approved.text
+    gate = await _gate(gate_id)
+    assert gate is not None and gate.decision_payload["waived"] is True
+    assert [b["category"] for b in gate.decision_payload["waived_blockers"]] == [
+        readiness_service.REANALYSIS_NOT_APPLIED
+    ]
+    # The Readiness page reads it through the API's category list.
+    after = _generate(client, headers, tender_id)
+    assert [b["category"] for b in after["blockers"]] == ["reanalysis_not_applied"]

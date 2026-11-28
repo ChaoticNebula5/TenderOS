@@ -38,7 +38,7 @@ import signal
 import threading
 import time
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -51,6 +51,11 @@ from tenderos_backend.core.log_format import LOG_FORMATS
 from tenderos_backend.core.log_redaction import configure_logging, log_startup_refusal
 from tenderos_backend.db.models.async_operation import ACTIVE_STATUSES as ACTIVE_OPERATION_STATUSES
 from tenderos_backend.db.models.async_operation import OPERATION_STATUSES
+from tenderos_backend.db.models.reanalysis_claim import (
+    REANALYSIS_CLAIM_STATUSES,
+    REANALYSIS_GRAPH_STALE,
+    REANALYSIS_WORKER_LOST,
+)
 from tenderos_backend.db.models.workflow import ACTIVE_RUN_STATUSES, RUN_STATUSES
 from tenderos_backend.db.observability import EXPORTER_LOGIN_VARIABLE, EXPORTER_ROLE, SCHEMA
 from tenderos_backend.domain.events.outbox_events import ALL_EVENT_TYPES
@@ -115,6 +120,29 @@ _REAPED = (
     f"SELECT action, coalesce(rule, ''), count(*) FROM {SCHEMA}.runs_ended_by_system "
     "GROUP BY action, rule"
 )
+# Plan item 124 (migration 047's view): claims by status, failed claims by
+# error code, and running claims whose lease lapsed.
+_CLAIM_COUNTS = f"SELECT status, count(*) FROM {SCHEMA}.reanalysis_claims GROUP BY status"
+_CLAIMS_FAILED = (
+    f"SELECT error_code, count(*) FROM {SCHEMA}.reanalysis_claims "
+    "WHERE status = 'failed' GROUP BY error_code"
+)
+_CLAIMS_ORPHANED = f"SELECT count(*) FROM {SCHEMA}.reanalysis_claims WHERE lease_lapsed"
+# The failed gauge's error_code label is one of three, each always emitted
+# (PR 40's review). The job ends a claim with its exception's class name; as
+# its own label, a class failing for the first time would be a series that
+# first appears at its value, whose rise from the hour's minimum is 0, so
+# ReanalysisFailed would miss exactly the real faults. Every code that is not
+# one of the two this code writes counts as JOB_ERROR; the class name stays
+# on the claim row and in the job's traceback.
+CLAIM_FAILURE_JOB_ERROR = "JOB_ERROR"
+CLAIM_FAILURE_LABELS = (REANALYSIS_GRAPH_STALE, REANALYSIS_WORKER_LOST, CLAIM_FAILURE_JOB_ERROR)
+
+
+def claim_failure_label(error_code: str) -> str:
+    if error_code in (REANALYSIS_GRAPH_STALE, REANALYSIS_WORKER_LOST):
+        return error_code
+    return CLAIM_FAILURE_JOB_ERROR
 
 
 class ExporterRefusedError(RuntimeError):
@@ -164,6 +192,10 @@ class PostgresState:
     operation_oldest: dict[str, datetime]
     dead_letters: dict[str, int]
     reaped: dict[tuple[str, str], int]
+    # Plan item 124.
+    claims: dict[str, int] = field(default_factory=dict)
+    claims_failed: dict[str, int] = field(default_factory=dict)
+    claims_orphaned: int = 0
 
 
 @dataclass(frozen=True)
@@ -207,9 +239,22 @@ async def read_postgres(config: ExporterConfig) -> PostgresState:
             )
             dead_letters = dict(await conn.fetch(_DEAD_LETTERS))
             reaped = {(r[0], r[1]): r[2] for r in await conn.fetch(_REAPED)}
+            claims = dict(await conn.fetch(_CLAIM_COUNTS))
+            claims_failed = dict(await conn.fetch(_CLAIMS_FAILED))
+            claims_orphaned = int(await conn.fetchval(_CLAIMS_ORPHANED))
     finally:
         await conn.close()
-    return PostgresState(runs, run_oldest, operations, operation_oldest, dead_letters, reaped)
+    return PostgresState(
+        runs,
+        run_oldest,
+        operations,
+        operation_oldest,
+        dead_letters,
+        reaped,
+        claims,
+        claims_failed,
+        claims_orphaned,
+    )
 
 
 def _enqueued_at(raw: bytes | str | None) -> datetime | None:
@@ -311,6 +356,35 @@ def postgres_metrics(state: PostgresState, now: float) -> Iterator[Metric]:
     for action, rule in sorted(set(KNOWN_RUN_ENDINGS) | set(state.reaped)):
         reaped.add_metric([action, rule], state.reaped.get((action, rule), 0))
     yield reaped
+    # Plan item 124. Gauges, not counters: a tender's claims go with it.
+    claims = GaugeMetricFamily(
+        "tenderos_reanalysis_claims",
+        "knowledge-selection reanalysis claims by status (every status, 0 when it has none)",
+        labels=["status"],
+    )
+    for status in sorted(set(REANALYSIS_CLAIM_STATUSES) | set(state.claims)):
+        claims.add_metric([status], state.claims.get(status, 0))
+    yield claims
+    failed = GaugeMetricFamily(
+        "tenderos_reanalysis_claims_failed",
+        "reanalysis claims that ended failed, by error code: GRAPH_STALE (the graph moved on "
+        "through every attempt), WORKER_LOST (the reaper: RQ's job will never finish it, or its "
+        "lease lapsed), or JOB_ERROR (the job raised; the claim row and the traceback name the "
+        "exception) (all three always, 0 when none)",
+        labels=["error_code"],
+    )
+    by_label = dict.fromkeys(CLAIM_FAILURE_LABELS, 0)
+    for code, count in state.claims_failed.items():
+        by_label[claim_failure_label(code)] += count
+    for label in CLAIM_FAILURE_LABELS:
+        failed.add_metric([label], by_label[label])
+    yield failed
+    yield GaugeMetricFamily(
+        "tenderos_reanalysis_claims_orphaned",
+        "running reanalysis claims whose lease lapsed: the reaper ends them within about a "
+        "minute, so a count that stays means the reaper is not doing its work",
+        value=state.claims_orphaned,
+    )
 
 
 def redis_metrics(state: RedisState, now: float) -> Iterator[Metric]:

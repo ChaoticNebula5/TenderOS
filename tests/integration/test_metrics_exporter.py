@@ -27,6 +27,7 @@ from tenderos_backend.db.models.async_operation import AsyncOperation
 from tenderos_backend.db.models.audit import AuditEvent
 from tenderos_backend.db.models.organization import Organization
 from tenderos_backend.db.models.outbox import OutboxEvent
+from tenderos_backend.db.models.reanalysis_claim import ReanalysisClaim
 from tenderos_backend.db.models.tender import Tender
 from tenderos_backend.db.models.workflow import ApprovalGate, WorkflowRun
 from tenderos_backend.db.observability import EXPORTER, GRAFANA, SCHEMA, VIEWS
@@ -459,6 +460,32 @@ async def _seed() -> _Seeded:
                     event_metadata=metadata,
                 )
             )
+        # Plan item 124: claims in every state. A day either side of now, so
+        # the host's clock and the database's cannot disagree on the leases.
+        now = datetime.now(UTC)
+        for status, lease, ended in (
+            ("running", now + timedelta(days=1), {}),
+            ("running", now - timedelta(days=1), {}),
+            ("completed", now, {"completed_at": now}),
+            ("failed", now, {"failed_at": now, "error_code": "GRAPH_STALE"}),
+            ("failed", now, {"failed_at": now, "error_code": "GRAPH_STALE"}),
+            (
+                "failed",
+                now - timedelta(days=1),
+                {"failed_at": now, "error_code": "WORKER_LOST", "reaped_rule": "lease"},
+            ),
+        ):
+            uow.session.add(
+                ReanalysisClaim(
+                    tender_id=tenders[0].id,
+                    knowledge_item_id=uuid.uuid4(),
+                    state_version=1,
+                    status=status,
+                    claim_token=uuid.uuid4(),
+                    locked_until=lease,
+                    **ended,
+                )
+            )
         await uow.commit()
     return seeded
 
@@ -480,8 +507,25 @@ async def test_the_postgres_numbers_match_sql_on_the_tables(exporter_role):
                 "SELECT event_type, count(*) FROM outbox_events WHERE status = 'failed' GROUP BY 1"
             )
         )
+        claims = dict(
+            await admin.fetch("SELECT status, count(*) FROM reanalysis_claims GROUP BY 1")
+        )
+        claims_failed = dict(
+            await admin.fetch(
+                "SELECT error_code, count(*) FROM reanalysis_claims WHERE status = 'failed' "
+                "GROUP BY 1"
+            )
+        )
+        orphaned = await admin.fetchval(
+            "SELECT count(*) FROM reanalysis_claims "
+            "WHERE status = 'running' AND locked_until < now()"
+        )
     finally:
         await admin.close()
+    # Plan item 124.
+    assert state.claims == claims == {"running": 2, "completed": 1, "failed": 3}
+    assert state.claims_failed == claims_failed == {"GRAPH_STALE": 2, "WORKER_LOST": 1}
+    assert state.claims_orphaned == orphaned == 1
     assert state.runs == runs == {"running": 2, "waiting_for_human": 1, "failed": 2, "completed": 1}
     assert state.operations == operations == {"queued": 1, "running": 1, "succeeded": 1}
     assert state.dead_letters == dead == {"WorkflowRunCreated": 2, "DocumentUploaded": 1}

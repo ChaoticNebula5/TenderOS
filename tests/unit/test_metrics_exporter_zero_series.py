@@ -68,6 +68,37 @@ def test_a_run_ending_with_a_rule_the_list_does_not_know_still_shows():
     assert samples[(("action", ACTION_RUN_REAPED), ("rule", "brand_new"))] == 1
 
 
+def test_every_claim_status_and_all_three_failure_labels_are_emitted_at_zero():
+    """Plan item 124: ReanalysisFailed is a rise from the hour's minimum, so
+    a failure label's series must exist at 0 before its first failure."""
+    assert _samples(_empty_state(), "tenderos_reanalysis_claims") == {
+        (("status", s),): 0 for s in ("running", "completed", "failed")
+    }
+    assert _samples(_empty_state(), "tenderos_reanalysis_claims_failed") == {
+        (("error_code", "GRAPH_STALE"),): 0,
+        (("error_code", "WORKER_LOST"),): 0,
+        (("error_code", "JOB_ERROR"),): 0,
+    }
+    assert _samples(_empty_state(), "tenderos_reanalysis_claims_orphaned") == {(): 0}
+
+
+def test_an_exception_class_name_counts_under_job_error():
+    """PR 40's review: the job ends a claim with its exception's class name.
+    As its own label it would first appear at its value, which a rise from
+    the hour's minimum never sees, so every such code is JOB_ERROR."""
+    samples = _samples(
+        _empty_state(claims_failed={"GRAPH_STALE": 2, "ServiceUnavailable": 1, "TimeoutError": 2}),
+        "tenderos_reanalysis_claims_failed",
+    )
+    assert samples == {
+        (("error_code", "GRAPH_STALE"),): 2,
+        (("error_code", "WORKER_LOST"),): 0,
+        (("error_code", "JOB_ERROR"),): 3,
+    }
+    orphaned = _samples(_empty_state(claims_orphaned=3), "tenderos_reanalysis_claims_orphaned")
+    assert orphaned == {(): 3}
+
+
 def test_the_known_rules_are_the_reapers_own():
     """Every rule the reaper can record, and only those: its RQ verdicts and
     its two own rules, read from the reaper module itself."""

@@ -501,6 +501,7 @@ async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
         "idempotency": [],
         "reaper": [],
         "run_reaper": [],
+        "claim_reaper": [],
     }
 
     async def no_events(queues=None):
@@ -522,15 +523,26 @@ async def test_a_refresh_token_cleanup_failure_skips_nothing_else(monkeypatch):
         # loop's one inspector.
         assert isinstance(inspector, outbox_dispatcher.RunJobInspector)
         calls["run_reaper"].append(1)
+        seen_inspectors.add(id(inspector))
 
+    async def counted_claim_reaper(inspector):
+        # Plan item 124: the reanalysis claim reaper, on the same cadence,
+        # with the same one inspector as the run reaper.
+        assert isinstance(inspector, outbox_dispatcher.RunJobInspector)
+        calls["claim_reaper"].append(1)
+        seen_inspectors.add(id(inspector))
+
+    seen_inspectors: set[int] = set()
     monkeypatch.setattr(outbox_dispatcher, "_dispatch_once", no_events)
     monkeypatch.setattr(RefreshTokenRepository, "delete_expired", broken_refresh_cleanup)
     monkeypatch.setattr(IdempotencyRepository, "delete_expired", counted_idempotency_cleanup)
     monkeypatch.setattr(outbox_dispatcher, "_reap_lapsed_operations", counted_reaper)
     monkeypatch.setattr(outbox_dispatcher, "_reap_lost_runs", counted_run_reaper)
+    monkeypatch.setattr(outbox_dispatcher, "_reap_lost_reanalyses", counted_claim_reaper)
 
     await _run_loop_until(lambda: all(len(c) >= 3 for c in calls.values()))
     assert calls["refresh"][0] == outbox_dispatcher.CLEANUP_BATCH_SIZE
+    assert len(seen_inspectors) == 1
 
 
 # ---------------------------------------------------------------------------
