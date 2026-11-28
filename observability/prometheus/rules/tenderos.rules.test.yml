@@ -466,6 +466,85 @@ tests:
   - eval_time: 600s
     alertname: OperationsFailing
     exp_alerts: []
+- name: a failed reanalysis fires for an hour; a count that stays never does
+  interval: 15s
+  input_series:
+  - series: tenderos_reanalysis_claims_failed{error_code="GRAPH_STALE"}
+    values: 0x10 1x300
+  - series: tenderos_reanalysis_claims_failed{error_code="WORKER_LOST"}
+    values: 7x310
+  alert_rule_test:
+  - eval_time: 150s
+    alertname: ReanalysisFailed
+    exp_alerts: []
+  - eval_time: 180s
+    alertname: ReanalysisFailed
+    exp_alerts:
+    - exp_labels:
+        error_code: GRAPH_STALE
+        severity: warning
+      exp_annotations:
+        summary: A knowledge-selection reanalysis failed within the last hour (GRAPH_STALE).
+        first_check: "GRAPH_STALE: the workflow worker's 'reanalysis failed' WARNING (the bid kept moving through every attempt). WORKER_LOST: the dispatcher's 'ended ... reanalysis claim(s)' WARNING (RQ's verdict or the lease). JOB_ERROR: the job's traceback, in the workflow worker's log and RQ's failed registry, names the exception (the claim's error_code holds its class name). Readiness's reanalysis_not_applied blocker tells the person how to re-run it."
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 2400s
+    alertname: ReanalysisFailed
+    exp_alerts:
+    - exp_labels:
+        error_code: GRAPH_STALE
+        severity: warning
+      exp_annotations:
+        summary: A knowledge-selection reanalysis failed within the last hour (GRAPH_STALE).
+        first_check: "GRAPH_STALE: the workflow worker's 'reanalysis failed' WARNING (the bid kept moving through every attempt). WORKER_LOST: the dispatcher's 'ended ... reanalysis claim(s)' WARNING (RQ's verdict or the lease). JOB_ERROR: the job's traceback, in the workflow worker's log and RQ's failed registry, names the exception (the claim's error_code holds its class name). Readiness's reanalysis_not_applied blocker tells the person how to re-run it."
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
+  - eval_time: 3780s
+    alertname: ReanalysisFailed
+    exp_alerts: []
+- name: failed reanalyses falling (a tender deleted) stay quiet; a failure after the fall fires
+  interval: 15s
+  input_series:
+  - series: tenderos_reanalysis_claims_failed{error_code="WORKER_LOST"}
+    values: 5x10 3x20 4x300
+  alert_rule_test:
+  - eval_time: 300s
+    alertname: ReanalysisFailed
+    exp_alerts: []
+  - eval_time: 450s
+    alertname: ReanalysisFailed
+    exp_alerts: []
+  - eval_time: 495s
+    alertname: ReanalysisFailed
+    exp_alerts:
+    - exp_labels:
+        error_code: WORKER_LOST
+        severity: warning
+      exp_annotations:
+        summary: A knowledge-selection reanalysis failed within the last hour (WORKER_LOST).
+        first_check: "GRAPH_STALE: the workflow worker's 'reanalysis failed' WARNING (the bid kept moving through every attempt). WORKER_LOST: the dispatcher's 'ended ... reanalysis claim(s)' WARNING (RQ's verdict or the lease). JOB_ERROR: the job's traceback, in the workflow worker's log and RQ's failed registry, names the exception (the claim's error_code holds its class name). Readiness's reanalysis_not_applied blocker tells the person how to re-run it."
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
+- name: a first job error (JOB_ERROR from 0 to 1) fires
+  interval: 15s
+  input_series:
+  - series: tenderos_reanalysis_claims_failed{error_code="GRAPH_STALE"}
+    values: 0x310
+  - series: tenderos_reanalysis_claims_failed{error_code="WORKER_LOST"}
+    values: 0x310
+  - series: tenderos_reanalysis_claims_failed{error_code="JOB_ERROR"}
+    values: 0x10 1x300
+  alert_rule_test:
+  - eval_time: 150s
+    alertname: ReanalysisFailed
+    exp_alerts: []
+  - eval_time: 180s
+    alertname: ReanalysisFailed
+    exp_alerts:
+    - exp_labels:
+        error_code: JOB_ERROR
+        severity: warning
+      exp_annotations:
+        summary: A knowledge-selection reanalysis failed within the last hour (JOB_ERROR).
+        first_check: "GRAPH_STALE: the workflow worker's 'reanalysis failed' WARNING (the bid kept moving through every attempt). WORKER_LOST: the dispatcher's 'ended ... reanalysis claim(s)' WARNING (RQ's verdict or the lease). JOB_ERROR: the job's traceback, in the workflow worker's log and RQ's failed registry, names the exception (the claim's error_code holds its class name). Readiness's reanalysis_not_applied blocker tells the person how to re-run it."
+        estimate: The 1 hour window is an estimate; revisit with the Gemini run and at hosting.
 - name: a sustained limiter outage fires after 2 minutes
   interval: 15s
   input_series:

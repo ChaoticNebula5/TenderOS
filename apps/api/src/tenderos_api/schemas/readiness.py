@@ -4,12 +4,13 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-# The 12 blocker categories readiness_service.py actually produces
+# The 13 blocker categories readiness_service.py actually produces
 # (the constants atop readiness_service.py - the Build Guide's 7 required
 # categories plus this project's own red_team_review_incomplete, since plan
 # item 86 selected_employee_removed, since plan item 99
-# document_not_parsed, since plan item 104 document_not_extracted, and since
-# plan item 121 reopened_compliance_decision). Restated
+# document_not_parsed, since plan item 104 document_not_extracted, since
+# plan item 121 reopened_compliance_decision, and since plan item 124
+# reanalysis_not_applied). Restated
 # here as literal strings rather than imported, matching this schema
 # module's existing convention (schemas/gates.py's GateDecisionRequest.
 # decision does the same for its three values) - a new category added to that file without
@@ -30,6 +31,8 @@ _BlockerCategory = Literal[
     # Plan item 121: a reviewer's compliance decision a changed analysis
     # answer reopened.
     "reopened_compliance_decision",
+    # Plan item 124: a knowledge selection change whose reanalysis failed.
+    "reanalysis_not_applied",
 ]
 
 

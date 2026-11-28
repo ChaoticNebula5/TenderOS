@@ -35,7 +35,8 @@ def test_the_two_readers_and_their_limits():
     assert [r.role for r in READERS] == ["tenderos_metrics_exporter", "tenderos_grafana_reader"]
     assert EXPORTER.statement_timeout == "5s"
     assert GRAFANA.statement_timeout == "10s"
-    assert len(EXPORTER.views) == 4 and len(GRAFANA.views) == 8
+    # Plan item 124: the exporter's fifth view, reanalysis_claims.
+    assert len(EXPORTER.views) == 5 and len(GRAFANA.views) == 8
 
 
 def test_each_readers_password_is_named_in_env_example_and_passed_to_migrate():

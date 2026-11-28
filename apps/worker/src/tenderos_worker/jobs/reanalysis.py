@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 
@@ -5,6 +6,7 @@ from tenderos_backend.agents.llm.client import LLMClient
 from tenderos_backend.agents.llm.factory import build_llm_client
 from tenderos_backend.core.config import settings
 from tenderos_backend.core.log_context import bind_log_context
+from tenderos_backend.db.models.reanalysis_claim import REANALYSIS_GRAPH_STALE
 from tenderos_backend.db.unit_of_work import UnitOfWork
 from tenderos_backend.domain.events.outbox_events import (
     AGGREGATE_COMPLIANCE_ENTRY,
@@ -146,8 +148,16 @@ async def reanalyze_knowledge_selection_change(
     # once, and every step below repeats on a second delivery (paid
     # compliance calls, the state_version bump, the findings). Claim the
     # change first, in its own committed transaction; a delivery that gets
-    # no claim does nothing. A job that raises part-way leaves its claim
-    # running until the lease lapses, then a re-drive can take it over.
+    # no claim does nothing.
+    #
+    # Plan item 124: a job that cannot finish ends its claim failed, for
+    # good. Nothing delivers a dispatched event again, so a claim left
+    # running was never taken over: it stayed running. A graph that kept
+    # moving through every attempt ends it GRAPH_STALE and the job returns
+    # (a moving bid, not a bug); any other exception ends it with the
+    # exception's class name and is raised again, so RQ files the job as
+    # failed with its traceback. What no code here sees (a lost worker, a
+    # timeout outside this code) the dispatcher's reaper ends.
     claim_token = await reanalysis_service.claim_reanalysis(tid, kid, state_version)
     if claim_token is None:
         logger.info(
@@ -166,8 +176,110 @@ async def reanalyze_knowledge_selection_change(
     # coroutine in its own event loop task, so the binding ends with it.
     bind_log_context(reanalysis_claim_id=reanalysis_claim_id)
 
-    await graph_service.project_tender(tid)
-    rows = await graph_service.preview_impact(tid, kid)
+    try:
+        await _reanalyze(tid, kid, state_version, reanalysis_claim_id)
+        completed = await reanalysis_service.complete_reanalysis(claim_token)
+    except _GraphKeptMovingError as moved:
+        logger.warning(
+            "reanalysis failed: tender=%s knowledge_item=%s state_version=%s: the graph moved "
+            "on before each of %d impact previews (last: state version %s, projected %s, "
+            "reason %s); claim ended as %s. Readiness's reanalysis_not_applied blocker says "
+            "how to re-run it",
+            tid,
+            kid,
+            state_version,
+            moved.attempts,
+            moved.stale.current_state_version,
+            moved.stale.projected_state_version,
+            moved.stale.reason,
+            REANALYSIS_GRAPH_STALE,
+        )
+        await _fail_claim(claim_token, REANALYSIS_GRAPH_STALE)
+        return
+    except Exception as exc:
+        await _fail_claim(claim_token, type(exc).__name__)
+        raise
+    if not completed:
+        # The claim was taken over by another delivery, or the reaper ended
+        # it, before this job finished.
+        logger.warning(
+            "reanalysis: claim for tender=%s knowledge_item=%s state_version=%s was ended or "
+            "taken over before this job finished",
+            tid,
+            kid,
+            state_version,
+        )
+
+
+class _GraphKeptMovingError(Exception):
+    """Every attempt's impact preview found the graph stale again."""
+
+    def __init__(self, stale: graph_service.GraphStaleError, attempts: int) -> None:
+        super().__init__(str(stale))
+        self.stale = stale
+        self.attempts = attempts
+
+
+async def _fail_claim(claim_token: uuid.UUID, error_code: str) -> None:
+    """End this job's claim failed. A failure to write it is logged and
+    swallowed, so the job's own error is the one raised; the reaper ends
+    the claim instead (RQ's rule, or the lease)."""
+    try:
+        if not await reanalysis_service.fail_reanalysis(claim_token, error_code):
+            logger.warning(
+                "reanalysis: claim not ended as %s: it was taken over or already ended",
+                error_code,
+            )
+    except Exception:
+        logger.exception(
+            "reanalysis: could not end the claim as %s; the reaper will end it", error_code
+        )
+
+
+async def _project_and_preview(tid: uuid.UUID, kid: uuid.UUID) -> list[dict]:
+    """Project the graph, then read this item's blast radius from it.
+
+    Plan item 124 (user decision Q1): when the bid's state version moved
+    between the projection and the preview (a person's next change, or an
+    operation's write, read on the preview's freshness check), project
+    again and preview again, after the waits in
+    reanalysis_service.STALE_PREVIEW_WAITS_SECONDS, sized to outlast a
+    burst of changes. Right to do: a projection at a later version holds
+    this change too, so the preview is this item's current blast radius,
+    which is what the steps below act on; the screen's own preview does the
+    same, once. Either reason (stale, or damaged: the graph without its
+    completion marker) is the same remedy. After the last attempt,
+    _GraphKeptMovingError."""
+    waits = reanalysis_service.STALE_PREVIEW_WAITS_SECONDS
+    attempts = len(waits) + 1
+    for attempt in range(1, attempts + 1):
+        await graph_service.project_tender(tid)
+        try:
+            return await graph_service.preview_impact(tid, kid)
+        except graph_service.GraphStaleError as stale:
+            if attempt == attempts:
+                raise _GraphKeptMovingError(stale, attempts) from stale
+            wait = waits[attempt - 1]
+            logger.info(
+                "reanalysis: the graph moved on before the impact preview (state version %s, "
+                "projected %s, reason %s); attempt %d of %d, projecting again in %.0f s",
+                stale.current_state_version,
+                stale.projected_state_version,
+                stale.reason,
+                attempt,
+                attempts,
+                wait,
+            )
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable: the last attempt returns or raises")
+
+
+async def _reanalyze(
+    tid: uuid.UUID, kid: uuid.UUID, state_version: int, reanalysis_claim_id: uuid.UUID | None
+) -> None:
+    """Steps (1) to (5) of reanalyze_knowledge_selection_change's docstring,
+    run under its claim."""
+    rows = await _project_and_preview(tid, kid)
     requirement_ids, claim_ids = _affected_ids(rows)
 
     # PR 35: the client's cache entries are the tender's organization's.
@@ -301,13 +413,3 @@ async def reanalyze_knowledge_selection_change(
         len(claim_ids),
         len(contradiction_drafts),
     )
-    if not await reanalysis_service.complete_reanalysis(claim_token):
-        # The lease lapsed while this job ran and another delivery took the
-        # claim over; that delivery completes it.
-        logger.warning(
-            "reanalysis: claim for tender=%s knowledge_item=%s state_version=%s was taken "
-            "over before this job finished",
-            tid,
-            kid,
-            state_version,
-        )

@@ -40,7 +40,13 @@ class Reader:
 
 EXPORTER_ROLE = "tenderos_metrics_exporter"
 EXPORTER_LOGIN_VARIABLE = "METRICS_EXPORTER_DB_PASSWORD"
-EXPORTER_VIEWS = ("workflow_runs", "operations", "outbox_events", "runs_ended_by_system")
+EXPORTER_VIEWS = (
+    "workflow_runs",
+    "operations",
+    "outbox_events",
+    "runs_ended_by_system",
+    "reanalysis_claims",
+)
 
 GRAFANA_ROLE = "tenderos_grafana_reader"
 GRAFANA_LOGIN_VARIABLE = "GRAFANA_DB_PASSWORD"
@@ -62,7 +68,8 @@ GRAFANA = Reader(GRAFANA_ROLE, GRAFANA_LOGIN_VARIABLE, GRAFANA_VIEWS, "10s")
 READERS = (EXPORTER, GRAFANA)
 
 # (name, SELECT) for each view: the exporter's four as migration 039 creates
-# them, then Grafana's eight as migration 040 does. Ids only, never a tender's
+# them and its fifth as migration 047 does, then Grafana's eight as migration
+# 040 does (readiness_reports as 044 replaced it). Ids only, never a tender's
 # or an organization's name, a payload, free text or before/after values.
 VIEWS: tuple[tuple[str, str], ...] = (
     ("workflow_runs", "SELECT status, created_at, current_job_at FROM public.workflow_runs"),
@@ -72,6 +79,14 @@ VIEWS: tuple[tuple[str, str], ...] = (
         "runs_ended_by_system",
         "SELECT action, metadata ->> 'rule' AS rule FROM public.audit_events "
         "WHERE action IN ('workflow_run_reaped', 'workflow_run_timed_out')",
+    ),
+    (
+        # Plan item 124, migration 047: the exporter's claim counts. No ids,
+        # no tender, no item.
+        "reanalysis_claims",
+        "SELECT status, error_code, reaped_rule, "
+        "(status = 'running' AND locked_until < now()) AS lease_lapsed "
+        "FROM public.reanalysis_claims",
     ),
     (
         "llm_calls",

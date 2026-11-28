@@ -81,15 +81,17 @@ def test_no_rule_alerts_on_a_wait_at_a_gate_or_on_every_409():
 
 def test_counts_that_can_fall_are_watched_as_a_rise_not_an_increase():
     """Dead letters and failed runs fall on a re-drive or a delete, and runs
-    ended by the system fall when a tender or organization is deleted (its
-    audit_events rows cascade); increase() would read a fall as a counter
-    reset and count it."""
+    ended by the system and failed reanalysis claims fall when a tender or
+    organization is deleted (their rows cascade); increase() would read a
+    fall as a counter reset and count it."""
     rules = _rules()
     for name, gauge in (
         ("DeadLetter", "tenderos_outbox_dead_letters"),
         ("RunsFailing", "tenderos_workflow_runs"),
         ("OperationsFailing", "tenderos_operations"),
         ("RunsEndedBySystem", "tenderos_workflow_runs_ended_by_system_total"),
+        # Plan item 124: a tender's reanalysis claims go with it.
+        ("ReanalysisFailed", "tenderos_reanalysis_claims_failed"),
     ):
         expr = rules[name]["expr"]
         assert "min_over_time(" in expr and "[1h]" in expr, name

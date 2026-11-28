@@ -17,6 +17,7 @@ already established (project_tender for real, _clean_neo4j autouse fixture),
 not a new pattern."""
 
 import io
+import types
 import uuid
 
 import docx
@@ -561,3 +562,53 @@ async def test_reanalyze_knowledge_selection_change_surfaces_deselected_fact_sti
         "must be D7-coverage-graded via find_contradictions_for_redteam, not left at "
         "whatever a bare Cypher row would default to"
     )
+
+
+async def test_a_bid_that_moved_on_after_the_projection_is_projected_again_and_completes(
+    monkeypatch,
+):
+    """Plan item 124 (J1), against the real graph: the real projection, the
+    real impact preview and its real freshness check, nothing stubbed but
+    the waits (recorded, not slept) and the LLM client (no requirement is
+    affected, so it is never called). Right after the job's first
+    projection the bid's state version moves, as a person's next selection
+    would move it; the preview then finds the graph stale (observed in the
+    Gemini runs and PR 38's fake E2E). The job projects again after the
+    first wait, previews the item at the later version, and completes."""
+    _org_id, tender_id = await _make_org_and_tender("Reanalysis Stale Once Test")
+    knowledge_item_id = uuid.uuid4()
+    real_project = reanalysis.graph_service.project_tender
+    projected_versions: list[int] = []
+    sleeps: list[float] = []
+
+    async def project_then_a_persons_change(tender: uuid.UUID):
+        run = await real_project(tender)
+        projected_versions.append(run.source_state_version)
+        if len(projected_versions) == 1:
+            async with UnitOfWork() as uow:
+                await uow.tenders.increment_state_version(tender)
+                await uow.commit()
+        return run
+
+    async def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(reanalysis.graph_service, "project_tender", project_then_a_persons_change)
+    monkeypatch.setattr(reanalysis, "asyncio", types.SimpleNamespace(sleep=record_sleep))
+    monkeypatch.setattr(reanalysis, "_build_llm_client", lambda _org: FakeLLMClient())
+
+    await reanalysis.reanalyze_knowledge_selection_change(
+        str(tender_id), str(knowledge_item_id), state_version=1
+    )
+
+    # Step 1's two projections, the second at the moved version, then step 5's.
+    assert len(projected_versions) == 3
+    assert projected_versions[1] == projected_versions[0] + 1
+    assert sleeps == [2.0]
+    async with get_session() as session:
+        claim = (
+            await session.execute(
+                select(ReanalysisClaim).where(ReanalysisClaim.tender_id == tender_id)
+            )
+        ).scalar_one()
+    assert (claim.status, claim.error_code) == ("completed", None)

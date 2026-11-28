@@ -206,6 +206,22 @@ groups:
           first_check: "The Work dashboard's failed operations by error_code."
           estimate: "3 within an hour is an estimate; revisit with the Gemini run and at hosting."
 
+      # Plan item 124: a failed reanalysis leaves a bid's compliance
+      # decisions, approvals and claim grounding not reflecting a knowledge
+      # change (readiness blocks it as reanalysis_not_applied). Any one is
+      # worth a look. The count falls when a tender is deleted (its claims
+      # cascade), so a rise from the hour's minimum, not increase(). The
+      # exporter emits error_code as one of three labels, each at 0 when
+      # none, so the first failure of any kind is a rise (PR 40's review).
+      - alert: ReanalysisFailed
+        expr: tenderos_reanalysis_claims_failed - min_over_time(tenderos_reanalysis_claims_failed[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A knowledge-selection reanalysis failed within the last hour ({{ $labels.error_code }})."
+          first_check: "GRAPH_STALE: the workflow worker's 'reanalysis failed' WARNING (the bid kept moving through every attempt). WORKER_LOST: the dispatcher's 'ended ... reanalysis claim(s)' WARNING (RQ's verdict or the lease). JOB_ERROR: the job's traceback, in the workflow worker's log and RQ's failed registry, names the exception (the claim's error_code holds its class name). Readiness's reanalysis_not_applied blocker tells the person how to re-run it."
+          estimate: "The 1 hour window is an estimate; revisit with the Gemini run and at hosting."
+
   - name: tenderos.api
     rules:
       - alert: RateLimiterRedisDown

@@ -43,7 +43,7 @@ from tenderos_backend.domain.events.outbox_events import (
     EVENT_RESUME_MERGE_APPROVED,
     EVENT_WORKFLOW_RUN_CREATED,
 )
-from tenderos_backend.domain.services import operation_service, run_reaper
+from tenderos_backend.domain.services import operation_service, reanalysis_service, run_reaper
 from tenderos_backend.domain.services.workflow_service import resume_job_id, start_job_id
 
 from tenderos_worker.heartbeats import write_dispatcher_heartbeat
@@ -321,8 +321,10 @@ def _knowledge_selection_changed_dispatch(
         # two different items deselected in quick succession are two
         # different state_versions and so two different jobs, matching the
         # outbox event's own idempotency_key (both derived from the same
-        # tender mutation - see outbox_events.py).
-        f"reanalyze_{tender_id}_{state_version}",
+        # tender mutation - see outbox_events.py). Plan item 124: built by
+        # reanalysis_service.reanalysis_job_id, which the claim reaper uses
+        # to ask RQ about the same job.
+        reanalysis_service.reanalysis_job_id(tender_id, state_version),
     )
 
 
@@ -915,6 +917,36 @@ async def _reap_lost_runs(inspector: RunJobInspector) -> None:
         logger.exception("workflow run cap reaper failed; will retry on a later tick")
 
 
+async def _reap_lost_reanalyses(inspector: RunJobInspector) -> None:
+    """Plan item 124: end running reanalysis claims whose job RQ says will
+    never finish them, then those whose lease lapsed, one bounded batch
+    each, each claim in its own transaction. The same inspector as the run
+    reaper's (reanalysis jobs are on the workflow queue), so an abandoned
+    job's two looks are kept across ticks. Like _reap_lost_runs, a failure
+    in either is logged and swallowed and does not skip the other: a Redis
+    outage stops only the RQ rule, never the lease."""
+    try:
+        lost = await reanalysis_service.reap_lost_reanalyses(REAPER_BATCH_SIZE, inspector.verdict)
+        if lost:
+            logger.warning(
+                "ended %d reanalysis claim(s) whose RQ job will never finish them: %s",
+                len(lost),
+                ", ".join(f"{r.claim_id} ({r.error_code}, {r.rule}, job {r.job_id})" for r in lost),
+            )
+    except Exception:
+        logger.exception("reanalysis claim reaper failed; will retry on a later tick")
+    try:
+        lapsed = await reanalysis_service.reap_lapsed_reanalyses(REAPER_BATCH_SIZE)
+        if lapsed:
+            logger.warning(
+                "ended %d reanalysis claim(s) whose lease lapsed: %s",
+                len(lapsed),
+                ", ".join(f"{r.claim_id} ({r.error_code}, job {r.job_id})" for r in lapsed),
+            )
+    except Exception:
+        logger.exception("reanalysis claim lease reaper failed; will retry on a later tick")
+
+
 async def _write_heartbeat(connection: Redis) -> None:
     """The dispatcher's heartbeat (heartbeats.py), in a worker thread like
     every other Redis call here. Redis unreachable raises
@@ -949,7 +981,8 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
         stop = asyncio.Event()
     connection = _redis_connection(settings.redis_url)
     queues = _queues(connection)
-    # One for the process: it holds the abandoned check's first sightings.
+    # One for the process: it holds the abandoned check's first sightings,
+    # for runs' jobs and reanalysis jobs alike (plan item 124).
     run_jobs = RunJobInspector(connection)
     tick = 0
     consecutive_failures = 0
@@ -989,6 +1022,7 @@ async def _run_forever(stop: asyncio.Event | None = None) -> None:
             await _delete_old_dead_letters()
             await _reap_lapsed_operations(connection)
             await _reap_lost_runs(run_jobs)
+            await _reap_lost_reanalyses(run_jobs)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop.wait(), timeout=delay)
     logger.info("outbox dispatcher stopping after tick %d", tick)

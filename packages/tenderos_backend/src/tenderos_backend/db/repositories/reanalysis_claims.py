@@ -1,7 +1,8 @@
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,17 @@ from tenderos_backend.db.models.reanalysis_claim import ReanalysisClaim
 # IdempotencyRepository. Nothing here commits: reanalysis_service owns the
 # transactions, and a claim must commit on its own before the job does any
 # work, so the unique key's lock is held only for that short insert.
+
+
+@dataclass(frozen=True)
+class RunningClaim:
+    """A running claim as the reaper reads it (plan item 124)."""
+
+    claim_id: uuid.UUID
+    tender_id: uuid.UUID
+    state_version: int
+    claim_token: uuid.UUID
+    lease_lapsed: bool
 
 
 class ReanalysisClaimRepository:
@@ -127,3 +139,79 @@ class ReanalysisClaimRepository:
             .execution_options(synchronize_session=False)
         )
         return result.scalar_one_or_none() is not None
+
+    async def fail(self, claim_token: uuid.UUID, error_code: str) -> bool:
+        """Plan item 124: the job ends its own claim failed, only while its
+        token is still the current one and the claim is running (a claim
+        another delivery took over, or the reaper already ended, is left
+        alone). reaped_rule stays null. Returns whether it was marked."""
+        result = await self._session.execute(
+            update(ReanalysisClaim)
+            .where(
+                ReanalysisClaim.claim_token == claim_token,
+                ReanalysisClaim.status == "running",
+            )
+            .values(status="failed", failed_at=func.now(), error_code=error_code)
+            .returning(ReanalysisClaim.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def list_running(self, batch_size: int) -> list[RunningClaim]:
+        """Plan item 124: running claims for the reaper, oldest first, at
+        most batch_size, each with the token read now and whether its lease
+        lapsed on the database clock."""
+        result = await self._session.execute(
+            select(
+                ReanalysisClaim.id,
+                ReanalysisClaim.tender_id,
+                ReanalysisClaim.state_version,
+                ReanalysisClaim.claim_token,
+                ReanalysisClaim.locked_until < func.now(),
+            )
+            .where(ReanalysisClaim.status == "running")
+            .order_by(ReanalysisClaim.created_at, ReanalysisClaim.id)
+            .limit(batch_size)
+        )
+        return [
+            RunningClaim(claim_id, tender_id, state_version, token, bool(lapsed))
+            for claim_id, tender_id, state_version, token, lapsed in result.all()
+        ]
+
+    async def reap(
+        self, claim_id: uuid.UUID, token_seen: uuid.UUID, error_code: str, rule: str
+    ) -> bool:
+        """Plan item 124: the reaper ends a running claim failed, only while
+        it is still running with the token the reaper read: a job that
+        completed or failed it meanwhile, or a takeover with a new token, is
+        never touched. Returns whether it was marked."""
+        result = await self._session.execute(
+            update(ReanalysisClaim)
+            .where(
+                ReanalysisClaim.id == claim_id,
+                ReanalysisClaim.claim_token == token_seen,
+                ReanalysisClaim.status == "running",
+            )
+            .values(status="failed", failed_at=func.now(), error_code=error_code, reaped_rule=rule)
+            .returning(ReanalysisClaim.id)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def items_not_applied(self, tender_id: uuid.UUID) -> list[uuid.UUID]:
+        """Plan item 124, readiness's reanalysis_not_applied: the knowledge
+        items of this tender with a failed claim and no completed claim at a
+        later state version, sorted. A running claim after the failure does
+        not clear it; only a completed one does."""
+        failed = func.max(ReanalysisClaim.state_version).filter(ReanalysisClaim.status == "failed")
+        completed = func.max(ReanalysisClaim.state_version).filter(
+            ReanalysisClaim.status == "completed"
+        )
+        result = await self._session.execute(
+            select(ReanalysisClaim.knowledge_item_id)
+            .where(ReanalysisClaim.tender_id == tender_id)
+            .group_by(ReanalysisClaim.knowledge_item_id)
+            .having(failed.is_not(None), or_(completed.is_(None), completed < failed))
+            .order_by(ReanalysisClaim.knowledge_item_id)
+        )
+        return list(result.scalars().all())
